@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: ["main", "master"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  native:
+    name: native check + test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout garth
+        uses: actions/checkout@v4
+        with:
+          path: garth
+
+      # cokret-rust-sdk is a local path dependency; check it out as a sibling
+      # so `../cokret-rust-sdk/crates/*` resolves.
+      - name: Checkout cokret-rust-sdk
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/cokret-rust-sdk
+          path: cokret-rust-sdk
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: garth
+      - name: Formatting
+        working-directory: garth
+        run: cargo fmt --all -- --check
+      - name: Native check
+        working-directory: garth
+        run: cargo check --features native
+      - name: Clippy
+        working-directory: garth
+        run: cargo clippy --features native --all-targets -- -D warnings
+      - name: Tests
+        working-directory: garth
+        run: cargo test --features native
+
+  wasm:
+    name: wasm32 check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout garth
+        uses: actions/checkout@v4
+        with:
+          path: garth
+      - name: Checkout cokret-rust-sdk
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/cokret-rust-sdk
+          path: cokret-rust-sdk
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: garth
+      - name: Wasm check
+        working-directory: garth
+        run: cargo check --target wasm32-unknown-unknown --no-default-features --features wasm
