@@ -1,0 +1,42 @@
+[workspace]
+
+[package]
+authors = ["Chris Young <chris@sonc.ai>"]
+categories = ["api-bindings", "network-programming", "cryptography"]
+description = "Runtime-neutral shared client engine for Cokret v1 applications."
+edition = "2024"
+homepage = "https://github.com/cokret/garth"
+keywords = ["cokret", "client", "garth"]
+license = "Apache-2.0"
+name = "garth"
+readme = "README.md"
+repository = "https://github.com/cokret/garth"
+rust-version = "1.96"
+version = "0.3.0"
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
+[features]
+default = []
+mls = ["cokret/mls"]
+native = ["dep:tokio"]
+wasm = ["dep:gloo-timers", "dep:wasm-bindgen-futures"]
+
+[dependencies]
+chrono = {version = "0.4.45",default-features = false,features = ["clock", "std", "serde"]}
+cokret = {path = "../cokret-rust-sdk/crates/sdk",default-features = false,features = ["client", "full-surface", "signer", "sync-runtime"]}
+cokret-core = {path = "../cokret-rust-sdk/crates/core",default-features = false}
+cokret-http-client = {path = "../cokret-rust-sdk/crates/http-client",default-features = false}
+ed25519-dalek = {version = "2.2.0",default-features = false,features = ["std", "rand_core"]}
+gloo-timers = {version = "0.3",default-features = false,features = ["futures"],optional = true}
+serde = {version = "1.0.228",default-features = false,features = ["std", "derive"]}
+serde_json = {version = "1.0.150",default-features = false,features = ["std"]}
+thiserror = {version = "2.0.18",default-features = false}
+tokio = {version = "1.52.3",default-features = false,features = ["rt", "time"],optional = true}
+wasm-bindgen-futures = {version = "0.4",optional = true}
+zeroize = {version = "1.8.2",default-features = false,features = ["derive"]}
+
+[dev-dependencies]
+tokio = {version = "1.52.3",default-features = false,features = ["macros", "rt", "time"]}
