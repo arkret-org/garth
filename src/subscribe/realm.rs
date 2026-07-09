@@ -1,9 +1,10 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use cokret_core::{Did, Event, EventsSubscribeFrame, EventsSubscribeFrameKind, RealmId, Result};
+use cokret_core::{
+    Did, Event, EventId, EventsSubscribeFrame, EventsSubscribeFrameKind, RealmId, Result,
+};
 
-use super::dedupe::EventDedupe;
 use crate::{
     ClientEvent, ClientEventSink, ClientProjector, CursorScope, CursorStore, DecodedInbound,
     EventCacheStore, InboundDecoder, OpaqueCursor,
@@ -89,7 +90,7 @@ pub enum RealmStreamStopReason {
 #[derive(Clone, Debug)]
 pub struct RealmEventsDriver<C, D> {
     cursor_store: C,
-    dedupe: EventDedupe<D>,
+    event_cache_store: D,
     decoder: InboundDecoder,
     service_did: Option<Did>,
 }
@@ -102,7 +103,7 @@ where
     pub fn new(cursor_store: C, event_cache_store: D) -> Self {
         Self {
             cursor_store,
-            dedupe: EventDedupe::new(event_cache_store),
+            event_cache_store,
             decoder: InboundDecoder::new(),
             service_did: None,
         }
@@ -210,7 +211,7 @@ where
                     // frame and wedge realm sync permanently.
                     if let Ok(event) = serde_json::from_value::<Event>(frame.payload) {
                         let event_id = event.event_id.clone();
-                        if !self.dedupe.seen(event_id.clone()).await? {
+                        if !self.event_cache_store.seen(event_id.clone()).await? {
                             let batch = self.decode_event_batch(event);
                             if !batch.is_empty() {
                                 // Gate: project must persist before the cursor moves.
@@ -221,7 +222,7 @@ where
                             // the dedupe cache untouched, so the redelivered
                             // frame is projected again instead of being
                             // silently swallowed by dedupe.
-                            self.dedupe.remember(event_id).await?;
+                            self.event_cache_store.remember(event_id).await?;
                         }
                     }
                 }
@@ -293,7 +294,7 @@ where
                 // frame and wedge realm sync permanently.
                 match serde_json::from_value::<Event>(frame.payload) {
                     Ok(event) => {
-                        if self.dedupe.remember_if_new(event.event_id.clone()).await? {
+                        if self.remember_if_new(event.event_id.clone()).await? {
                             self.emit_event(event, sink);
                         }
                     }
@@ -341,6 +342,14 @@ where
             }
             DecodedInbound::Event(event) => sink.emit(ClientEvent::Event(event)),
         }
+    }
+
+    async fn remember_if_new(&self, event_id: EventId) -> Result<bool> {
+        if self.event_cache_store.seen(event_id.clone()).await? {
+            return Ok(false);
+        }
+        self.event_cache_store.remember(event_id).await?;
+        Ok(true)
     }
 
     fn scope(&self, realm_id: &RealmId) -> CursorScope {

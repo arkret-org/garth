@@ -1,5 +1,4 @@
 pub mod account;
-pub mod dedupe;
 pub mod driver;
 pub mod realm;
 pub mod scan;

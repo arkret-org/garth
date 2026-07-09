@@ -134,7 +134,6 @@ where
         provider: &TP,
         projector: &P,
         control: &SyncLoopControl,
-        _options: RunOptions,
     ) -> Result<RunStop>
     where
         TP: TransportProvider,
