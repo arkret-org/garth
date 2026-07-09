@@ -3,6 +3,7 @@ use std::pin::Pin;
 
 use cokret_core::{Did, RealmId, Result, SyncBackfillOutcome};
 
+use super::{ProjectedRunError, ProjectedRunResult};
 use crate::{CursorScope, CursorStore, OpaqueCursor};
 
 pub type BoxScanFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
@@ -132,8 +133,9 @@ where
     where
         T: EventsScanTransport + ?Sized,
     {
-        self.scan_realm_catchup_inner(transport, realm_id, options, true)
+        self.scan_realm_catchup_inner_classified(transport, realm_id, options, true)
             .await
+            .map_err(ProjectedRunError::into_error)
     }
 
     pub async fn scan_realm_catchup_uncheckpointed<T>(
@@ -145,22 +147,39 @@ where
     where
         T: EventsScanTransport + ?Sized,
     {
-        self.scan_realm_catchup_inner(transport, realm_id, options, false)
+        self.scan_realm_catchup_uncheckpointed_classified(transport, realm_id, options)
+            .await
+            .map_err(ProjectedRunError::into_error)
+    }
+
+    pub(crate) async fn scan_realm_catchup_uncheckpointed_classified<T>(
+        &self,
+        transport: &T,
+        realm_id: RealmId,
+        options: ScanCatchupOptions,
+    ) -> ProjectedRunResult<SyncBackfillOutcome>
+    where
+        T: EventsScanTransport + ?Sized,
+    {
+        self.scan_realm_catchup_inner_classified(transport, realm_id, options, false)
             .await
     }
 
-    async fn scan_realm_catchup_inner<T>(
+    async fn scan_realm_catchup_inner_classified<T>(
         &self,
         transport: &T,
         realm_id: RealmId,
         options: ScanCatchupOptions,
         checkpoint: bool,
-    ) -> Result<SyncBackfillOutcome>
+    ) -> ProjectedRunResult<SyncBackfillOutcome>
     where
         T: EventsScanTransport + ?Sized,
     {
         let scope = self.scope(&realm_id);
-        let mut after = self.after_cursor(scope.clone(), options.after).await?;
+        let mut after = self
+            .after_cursor(scope.clone(), options.after)
+            .await
+            .map_err(ProjectedRunError::Store)?;
         let mut aggregate = SyncBackfillOutcome {
             events: Vec::new(),
             snapshot_bootstrap: None,
@@ -179,7 +198,8 @@ where
                     order: options.order.clone(),
                     limit: options.limit,
                 })
-                .await?;
+                .await
+                .map_err(ProjectedRunError::Transport)?;
             if aggregate.prev_cursor.is_none() {
                 aggregate.prev_cursor = outcome.prev_cursor.clone();
             }
@@ -193,7 +213,8 @@ where
             aggregate.limited = limited;
             if checkpoint {
                 self.save_next_cursor(scope.clone(), next_cursor.clone())
-                    .await?;
+                    .await
+                    .map_err(ProjectedRunError::Store)?;
             }
 
             match (limited, next_cursor) {

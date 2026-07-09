@@ -3,13 +3,13 @@ pub mod driver;
 pub mod realm;
 pub mod scan;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 
 pub use account::emit_account_updates;
 use cokret::{
     AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot, SyncLoopStep,
 };
-use cokret_core::{DeviceId, Did, RealmId, Result};
+use cokret_core::{DeviceId, Did, Error, RealmId, Result};
 pub use driver::{SubscriptionLoopDriver, SubscriptionStopReason};
 pub use realm::{
     BoxRealmStreamFuture, RealmEventsDriver, RealmEventsFrameSource, RealmEventsTransport,
@@ -21,6 +21,23 @@ use crate::{
     ClientEvent, ClientEventSink, ClientProjector, CursorScope, CursorStore, EventCacheStore,
     Executor, OpaqueCursor,
 };
+
+pub(crate) type ProjectedRunResult<T> = std::result::Result<T, ProjectedRunError>;
+
+#[derive(Debug)]
+pub(crate) enum ProjectedRunError {
+    Store(Error),
+    Transport(Error),
+    Projector(Error),
+}
+
+impl ProjectedRunError {
+    pub(crate) fn into_error(self) -> Error {
+        match self {
+            Self::Store(error) | Self::Transport(error) | Self::Projector(error) => error,
+        }
+    }
+}
 
 #[derive(Clone, Debug)]
 pub struct SubscriptionEngine<E, C, D> {
@@ -226,13 +243,28 @@ where
         T: RealmEventsTransport + EventsScanTransport + ?Sized,
         P: ClientProjector + ?Sized,
     {
+        self.run_realm_projected_classified(transport, realm_id, projector)
+            .await
+            .map_err(ProjectedRunError::into_error)
+    }
+
+    pub(crate) async fn run_realm_projected_classified<T, P>(
+        &self,
+        transport: &T,
+        realm_id: RealmId,
+        projector: &P,
+    ) -> ProjectedRunResult<RealmStreamStopReason>
+    where
+        T: RealmEventsTransport + EventsScanTransport + ?Sized,
+        P: ClientProjector + ?Sized,
+    {
         let mut driver =
             RealmEventsDriver::new(self.cursor_store.clone(), self.event_cache_store.clone());
         if let Some(service_did) = self.service_did.clone() {
             driver = driver.with_service_did(service_did);
         }
         let reason = driver
-            .run_realm_projected(transport, realm_id.clone(), projector)
+            .run_realm_projected_classified(transport, realm_id.clone(), projector)
             .await?;
         match reason {
             RealmStreamStopReason::Dropped {
@@ -240,7 +272,7 @@ where
                 reconnect_after_ms,
             } => {
                 let outcome = self
-                    .scan_realm_catchup_uncheckpointed(
+                    .scan_realm_catchup_uncheckpointed_classified(
                         transport,
                         realm_id.clone(),
                         ScanCatchupOptions {
@@ -258,9 +290,11 @@ where
                         realm_id: realm_id.clone(),
                         outcome,
                     }])
-                    .await?;
+                    .await
+                    .map_err(ProjectedRunError::Projector)?;
                 self.save_realm_cursor_after_project(realm_id.clone(), next_cursor)
-                    .await?;
+                    .await
+                    .map_err(ProjectedRunError::Store)?;
                 if let Some(reconnect_after_ms) = reconnect_after_ms {
                     self.executor
                         .sleep(std::time::Duration::from_millis(reconnect_after_ms))
@@ -275,7 +309,10 @@ where
                 cursor: None,
                 reconnect_after_ms,
             } => {
-                self.cursor_store.clear(self.realm_scope(realm_id)).await?;
+                self.cursor_store
+                    .clear(self.realm_scope(realm_id))
+                    .await
+                    .map_err(ProjectedRunError::Store)?;
                 if let Some(reconnect_after_ms) = reconnect_after_ms {
                     self.executor
                         .sleep(std::time::Duration::from_millis(reconnect_after_ms))
@@ -303,12 +340,12 @@ where
         scan.scan_realm_catchup(transport, realm_id, options).await
     }
 
-    async fn scan_realm_catchup_uncheckpointed<T>(
+    async fn scan_realm_catchup_uncheckpointed_classified<T>(
         &self,
         transport: &T,
         realm_id: RealmId,
         options: ScanCatchupOptions,
-    ) -> Result<cokret_core::SyncBackfillOutcome>
+    ) -> ProjectedRunResult<cokret_core::SyncBackfillOutcome>
     where
         T: EventsScanTransport + ?Sized,
     {
@@ -316,7 +353,7 @@ where
         if let Some(service_did) = self.service_did.clone() {
             scan = scan.with_service_did(service_did);
         }
-        scan.scan_realm_catchup_uncheckpointed(transport, realm_id, options)
+        scan.scan_realm_catchup_uncheckpointed_classified(transport, realm_id, options)
             .await
     }
 
@@ -333,7 +370,7 @@ where
         Ok(())
     }
 
-    async fn restore_account_loop(&self, scope: CursorScope) -> Result<SyncLoop> {
+    pub(crate) async fn restore_account_loop(&self, scope: CursorScope) -> Result<SyncLoop> {
         let token = self.cursor_store.load(scope).await?;
         Ok(SyncLoop::from_snapshot(SyncLoopSnapshot {
             token,
@@ -342,7 +379,7 @@ where
         }))
     }
 
-    async fn checkpoint_account_cursor(
+    pub(crate) async fn checkpoint_account_cursor(
         &self,
         scope: CursorScope,
         token: Option<OpaqueCursor>,
@@ -353,7 +390,7 @@ where
         }
     }
 
-    fn account_scope(&self, actor_id: Did, device_id: DeviceId) -> CursorScope {
+    pub(crate) fn account_scope(&self, actor_id: Did, device_id: DeviceId) -> CursorScope {
         CursorScope::Account {
             service_did: self.service_did.clone(),
             actor_id,

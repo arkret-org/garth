@@ -5,6 +5,7 @@ use cokret_core::{
     Did, Event, EventId, EventsSubscribeFrame, EventsSubscribeFrameKind, RealmId, Result,
 };
 
+use super::{ProjectedRunError, ProjectedRunResult};
 use crate::{
     ClientEvent, ClientEventSink, ClientProjector, CursorScope, CursorStore, DecodedInbound,
     EventCacheStore, InboundDecoder, OpaqueCursor,
@@ -183,13 +184,37 @@ where
         T: RealmEventsTransport + ?Sized,
         P: ClientProjector + ?Sized,
     {
+        self.run_realm_projected_classified(transport, realm_id, projector)
+            .await
+            .map_err(ProjectedRunError::into_error)
+    }
+
+    pub(crate) async fn run_realm_projected_classified<T, P>(
+        &self,
+        transport: &T,
+        realm_id: RealmId,
+        projector: &P,
+    ) -> ProjectedRunResult<RealmStreamStopReason>
+    where
+        T: RealmEventsTransport + ?Sized,
+        P: ClientProjector + ?Sized,
+    {
         let scope = self.scope(&realm_id);
-        let after = self.cursor_store.load(scope.clone()).await?;
+        let after = self
+            .cursor_store
+            .load(scope.clone())
+            .await
+            .map_err(ProjectedRunError::Store)?;
         let mut source = transport
             .open_realm_events(&realm_id, after.as_deref())
-            .await?;
+            .await
+            .map_err(ProjectedRunError::Transport)?;
 
-        while let Some(frame) = source.next_frame().await? {
+        while let Some(frame) = source
+            .next_frame()
+            .await
+            .map_err(ProjectedRunError::Transport)?
+        {
             let cursor = frame
                 .cursor
                 .as_ref()
@@ -211,18 +236,29 @@ where
                     // frame and wedge realm sync permanently.
                     if let Ok(event) = serde_json::from_value::<Event>(frame.payload) {
                         let event_id = event.event_id.clone();
-                        if !self.event_cache_store.seen(event_id.clone()).await? {
+                        if !self
+                            .event_cache_store
+                            .seen(event_id.clone())
+                            .await
+                            .map_err(ProjectedRunError::Store)?
+                        {
                             let batch = self.decode_event_batch(event);
                             if !batch.is_empty() {
                                 // Gate: project must persist before the cursor moves.
-                                projector.project(batch).await?;
+                                projector
+                                    .project(batch)
+                                    .await
+                                    .map_err(ProjectedRunError::Projector)?;
                             }
                             // Remember only after a successful projection: a
                             // projector error must leave BOTH the cursor and
                             // the dedupe cache untouched, so the redelivered
                             // frame is projected again instead of being
                             // silently swallowed by dedupe.
-                            self.event_cache_store.remember(event_id).await?;
+                            self.event_cache_store
+                                .remember(event_id)
+                                .await
+                                .map_err(ProjectedRunError::Store)?;
                         }
                     }
                 }
@@ -237,7 +273,10 @@ where
                     });
                 }
                 EventsSubscribeFrameKind::ResyncRequired => {
-                    self.cursor_store.clear(scope.clone()).await?;
+                    self.cursor_store
+                        .clear(scope.clone())
+                        .await
+                        .map_err(ProjectedRunError::Store)?;
                     return Ok(RealmStreamStopReason::ResyncRequired {
                         reconnect_after_ms: frame.reconnect_after_ms,
                     });
@@ -255,7 +294,10 @@ where
 
             if should_checkpoint {
                 if let Some(cursor) = cursor {
-                    self.cursor_store.save(scope.clone(), cursor).await?;
+                    self.cursor_store
+                        .save(scope.clone(), cursor)
+                        .await
+                        .map_err(ProjectedRunError::Store)?;
                 }
             }
         }
