@@ -509,7 +509,7 @@ mod tests {
         LoginKind::DidProof(DidProofLogin {
             principal_id: did(),
             device_id: device_id(),
-            requested_scope: vec!["ck.self.events.stream.subscribe".to_owned()],
+            requested_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
             dpop_binding_proof: Some(SessionGrantDpopBindingProof {
                 proof_jwt: "dpop-proof".to_owned(),
             }),
@@ -522,7 +522,7 @@ mod tests {
         LoginKind::HolderProof(HolderProofLogin {
             principal_id: did(),
             device_id: Some(device_id()),
-            requested_scope: vec!["ck.self.account.query.viewer".to_owned()],
+            requested_scope: vec!["ak.self.account.query.viewer".to_owned()],
             dpop_binding_proof: Some(SessionGrantDpopBindingProof {
                 proof_jwt: "holder-dpop-proof".to_owned(),
             }),
@@ -552,7 +552,7 @@ mod tests {
     fn agent_login() -> LoginKind {
         LoginKind::AgentKeyProof(AgentKeyProofLogin {
             principal_id: did(),
-            requested_scope: vec!["ck.self.events.stream.subscribe".to_owned()],
+            requested_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
             agent_key_authorization_ref: "ak:event:01904100-0000-7000-8000-000000000002".to_owned(),
             agent_scope_request: json!({"kind": "realm"}),
             dpop_binding_proof: SessionGrantDpopBindingProof {
@@ -581,7 +581,7 @@ mod tests {
             grant_id: Some(grant),
             session_public_key: Some("session-public-key".to_owned()),
             audience: Some(audience()),
-            granted_scope: vec!["ck.self.events.stream.subscribe".to_owned()],
+            granted_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
             scope_details: None::<SessionGrantScopeDetails>,
         }
     }
@@ -594,7 +594,7 @@ mod tests {
             grant_jwt: "grant-1".to_owned(),
             expires_at: now() + Duration::minutes(20),
             audience: audience(),
-            granted_scope: vec!["ck.self.events.stream.subscribe".to_owned()],
+            granted_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
             session_public_key: Some("session-public-key".to_owned()),
             dpop_jkt: Some("jkt-1".to_owned()),
         }
@@ -629,7 +629,7 @@ mod tests {
             session_public_key: "session-public-key".to_owned(),
             expires_at: now() + Duration::hours(1),
             audience: audience(),
-            scopes: vec!["ck.self.events.stream.subscribe".to_owned()],
+            scopes: vec!["ak.self.events.stream.subscribe".to_owned()],
             dpop_jkt: "jkt-1".to_owned(),
             previous_grant_id: grant_id(1),
         }

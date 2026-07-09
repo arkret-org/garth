@@ -440,7 +440,7 @@ mod tests {
             1,
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
             json!({
-                "content": {"kind": "ck.content.text", "body": "hello"},
+                "content": {"kind": "ak.content.text", "body": "hello"},
                 "strand_id": "ak:strand:01904100-0000-7000-8000-000000000002",
                 "track_name": "discussion"
             }),

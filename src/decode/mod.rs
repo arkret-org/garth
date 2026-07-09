@@ -90,7 +90,7 @@ mod tests {
                 json!({
                     "strand_id": "ak:strand:01904100-0000-7000-8000-000000000002",
                     "track_name": "discussion",
-                    "content": {"kind": "ck.content.text", "body": "hello"}
+                    "content": {"kind": "ak.content.text", "body": "hello"}
                 }),
             ))
             .unwrap();
@@ -131,7 +131,7 @@ mod tests {
     fn try_decode_event_rejects_invalid_standard_message_payload() {
         let result = InboundDecoder::new().try_decode_event(event(
             kinds::MESSAGE_CREATE,
-            json!({"content": {"kind": "ck.content.text", "body": "missing strand"}}),
+            json!({"content": {"kind": "ak.content.text", "body": "missing strand"}}),
         ));
 
         assert!(result.is_err());

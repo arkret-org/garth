@@ -209,7 +209,7 @@ mod tests {
         let request = LoginKind::DidProof(DidProofLogin {
             principal_id: did(),
             device_id: device_id(),
-            requested_scope: vec!["ck.self.events.stream.subscribe".to_owned()],
+            requested_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
             dpop_binding_proof: None,
             applet_delegation: None,
             proof: proof_fields(),
@@ -232,7 +232,7 @@ mod tests {
         let request = LoginKind::HolderProof(HolderProofLogin {
             principal_id: did(),
             device_id: Some(device_id()),
-            requested_scope: vec!["ck.self.account.query.viewer".to_owned()],
+            requested_scope: vec!["ak.self.account.query.viewer".to_owned()],
             dpop_binding_proof: Some(SessionGrantDpopBindingProof {
                 proof_jwt: "holder-dpop-proof".to_owned(),
             }),
@@ -290,7 +290,7 @@ mod tests {
     fn agent_key_proof_login_reuses_sdk_request_builder() {
         let request = LoginKind::AgentKeyProof(AgentKeyProofLogin {
             principal_id: did(),
-            requested_scope: vec!["ck.self.events.stream.subscribe".to_owned()],
+            requested_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
             agent_key_authorization_ref: "ak:event:01904100-0000-7000-8000-000000000002".to_owned(),
             agent_scope_request: json!({"kind": "realm"}),
             dpop_binding_proof: SessionGrantDpopBindingProof {
