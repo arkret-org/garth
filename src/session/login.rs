@@ -1,9 +1,9 @@
 use chrono::{DateTime, Utc};
-use cokret::session_grant::{
+use arkret::session_grant::{
     SessionGrantProofFields, did_proof_session_grant_request, holder_proof_session_grant_request,
     oidc_session_grant_request,
 };
-use cokret::{
+use arkret::{
     DeviceId, Did, Hash, Result, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
     SessionGrantRequestBody,
 };
@@ -51,7 +51,7 @@ pub struct AgentKeyProofLogin {
 
 impl AgentKeyProofLogin {
     pub fn into_session_grant_request(self) -> Result<SessionGrantRequestBody> {
-        cokret::agent::agent_key_proof_session_grant_request(
+        arkret::agent::agent_key_proof_session_grant_request(
             self.principal_id,
             self.requested_scope,
             self.agent_key_authorization_ref,
@@ -171,7 +171,7 @@ impl LoginKind {
 
 #[cfg(test)]
 mod tests {
-    use cokret::SessionGrantProofKind;
+    use arkret::SessionGrantProofKind;
     use serde_json::json;
 
     use super::*;
@@ -181,7 +181,7 @@ mod tests {
     }
 
     fn device_id() -> DeviceId {
-        DeviceId::new("ck:device:01904100-0000-7000-8000-000000000001").unwrap()
+        DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap()
     }
 
     fn digest() -> Hash {
@@ -291,7 +291,7 @@ mod tests {
         let request = LoginKind::AgentKeyProof(AgentKeyProofLogin {
             principal_id: did(),
             requested_scope: vec!["ck.self.events.stream.subscribe".to_owned()],
-            agent_key_authorization_ref: "ck:event:01904100-0000-7000-8000-000000000002".to_owned(),
+            agent_key_authorization_ref: "ak:event:01904100-0000-7000-8000-000000000002".to_owned(),
             agent_scope_request: json!({"kind": "realm"}),
             dpop_binding_proof: SessionGrantDpopBindingProof {
                 proof_jwt: "dpop-proof".to_owned(),
@@ -312,7 +312,7 @@ mod tests {
         );
         assert_eq!(
             request.agent_key_authorization_ref.as_deref(),
-            Some("ck:event:01904100-0000-7000-8000-000000000002")
+            Some("ak:event:01904100-0000-7000-8000-000000000002")
         );
         assert_eq!(
             request.dpop_binding_proof.as_ref().unwrap().proof_jwt,

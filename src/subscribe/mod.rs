@@ -6,7 +6,7 @@ pub mod scan;
 pub(crate) mod test_support;
 
 pub use account::account_updates_to_events;
-use cokret::{AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot};
+use arkret::{AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot};
 use cokret_core::{DeviceId, Did, Error, RealmId, Result};
 pub use driver::{SubscriptionLoopDriver, SubscriptionStopReason};
 pub use realm::{
@@ -290,7 +290,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use cokret::{AccountStreamInterrupt, Error, SyncRequestBody};
+    use arkret::{AccountStreamInterrupt, Error, SyncRequestBody};
     use cokret_core::identifiers::Cursor;
     use cokret_core::{EventsSubscribeFrame, EventsSubscribeFrameKind, SyncBackfillOutcome};
     use serde_json::Value;
@@ -306,11 +306,11 @@ mod tests {
     }
 
     fn device_id() -> DeviceId {
-        DeviceId::new("ck:device:01904100-0000-7000-8000-000000000001").unwrap()
+        DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap()
     }
 
     fn realm_id() -> RealmId {
-        RealmId::new("ck:realm:01904100-0000-7000-8000-000000000001").unwrap()
+        RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap()
     }
 
     fn account_scope() -> CursorScope {
@@ -352,14 +352,14 @@ mod tests {
     async fn engine_restores_and_checkpoints_account_cursor() {
         let store = MemoryStore::new();
         store
-            .save(account_scope(), "ck:cursor:stored".to_owned())
+            .save(account_scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
         let seen_after = Arc::new(Mutex::new(Vec::new()));
         let seen_after_for_transport = Arc::clone(&seen_after);
         let transport = move |request: SyncRequestBody| {
             seen_after_for_transport.lock().unwrap().push(request.after);
-            async { Ok(sync_response("ck:cursor:next")) }
+            async { Ok(sync_response("ak:cursor:next")) }
         };
         let engine =
             SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store.clone());
@@ -378,11 +378,11 @@ mod tests {
         assert_eq!(reason, SubscriptionStopReason::Cancelled);
         assert_eq!(
             seen_after.lock().unwrap().as_slice(),
-            &[Some("ck:cursor:stored".to_owned())]
+            &[Some("ak:cursor:stored".to_owned())]
         );
         assert_eq!(
             store.load(account_scope()).await.unwrap().as_deref(),
-            Some("ck:cursor:next")
+            Some("ak:cursor:next")
         );
     }
 
@@ -390,7 +390,7 @@ mod tests {
     async fn engine_clears_account_cursor_after_resync_interrupt() {
         let store = MemoryStore::new();
         store
-            .save(account_scope(), "ck:cursor:stored".to_owned())
+            .save(account_scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
         let executor = RecordingExecutor::default();
@@ -518,16 +518,16 @@ mod tests {
     async fn engine_recovers_dropped_realm_stream_with_scan_catchup() {
         let store = MemoryStore::new();
         store
-            .save(realm_scope(), "ck:cursor:stored".to_owned())
+            .save(realm_scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
         let executor = RecordingExecutor::default();
         let mut dropped = realm_frame(EventsSubscribeFrameKind::Dropped);
-        dropped.cursor = Some(Cursor::new("ck:cursor:dropped").unwrap());
+        dropped.cursor = Some(Cursor::new("ak:cursor:dropped").unwrap());
         dropped.reconnect_after_ms = Some(25);
         let transport = RealmRecoveryTransport::new(
             vec![dropped],
-            vec![backfill_outcome(Some("ck:cursor:next"))],
+            vec![backfill_outcome(Some("ak:cursor:next"))],
         );
         let projector = RecordingProjector {
             batches: Arc::new(Mutex::new(Vec::new())),
@@ -544,17 +544,17 @@ mod tests {
         assert_eq!(
             reason,
             RealmStreamStopReason::Dropped {
-                cursor: Some("ck:cursor:dropped".to_owned()),
+                cursor: Some("ak:cursor:dropped".to_owned()),
                 reconnect_after_ms: Some(25)
             }
         );
         let scans = transport.scans();
         assert_eq!(scans.len(), 1);
-        assert_eq!(scans[0].after.as_deref(), Some("ck:cursor:stored"));
-        assert_eq!(scans[0].before.as_deref(), Some("ck:cursor:dropped"));
+        assert_eq!(scans[0].after.as_deref(), Some("ak:cursor:stored"));
+        assert_eq!(scans[0].before.as_deref(), Some("ak:cursor:dropped"));
         assert_eq!(
             store.load(realm_scope()).await.unwrap().as_deref(),
-            Some("ck:cursor:next")
+            Some("ak:cursor:next")
         );
         assert_eq!(executor.sleeps(), vec![Duration::from_millis(25)]);
         let batches = projector.batches.lock().unwrap();
@@ -569,14 +569,14 @@ mod tests {
     async fn engine_projected_backfill_checkpoints_after_project_ok() {
         let store = MemoryStore::new();
         store
-            .save(realm_scope(), "ck:cursor:stored".to_owned())
+            .save(realm_scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
         let mut dropped = realm_frame(EventsSubscribeFrameKind::Dropped);
-        dropped.cursor = Some(Cursor::new("ck:cursor:dropped").unwrap());
+        dropped.cursor = Some(Cursor::new("ak:cursor:dropped").unwrap());
         let transport = RealmRecoveryTransport::new(
             vec![dropped],
-            vec![backfill_outcome(Some("ck:cursor:next"))],
+            vec![backfill_outcome(Some("ak:cursor:next"))],
         );
         let projector = RecordingProjector {
             batches: Arc::new(Mutex::new(Vec::new())),
@@ -594,14 +594,14 @@ mod tests {
         assert_eq!(
             reason,
             RealmStreamStopReason::Dropped {
-                cursor: Some("ck:cursor:dropped".to_owned()),
+                cursor: Some("ak:cursor:dropped".to_owned()),
                 reconnect_after_ms: None
             }
         );
         assert_eq!(projector.batches.lock().unwrap()[0].len(), 1);
         assert_eq!(
             store.load(realm_scope()).await.unwrap().as_deref(),
-            Some("ck:cursor:next")
+            Some("ak:cursor:next")
         );
     }
 
@@ -609,14 +609,14 @@ mod tests {
     async fn engine_projected_backfill_does_not_checkpoint_when_project_errs() {
         let store = MemoryStore::new();
         store
-            .save(realm_scope(), "ck:cursor:stored".to_owned())
+            .save(realm_scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
         let mut dropped = realm_frame(EventsSubscribeFrameKind::Dropped);
-        dropped.cursor = Some(Cursor::new("ck:cursor:dropped").unwrap());
+        dropped.cursor = Some(Cursor::new("ak:cursor:dropped").unwrap());
         let transport = RealmRecoveryTransport::new(
             vec![dropped],
-            vec![backfill_outcome(Some("ck:cursor:next"))],
+            vec![backfill_outcome(Some("ak:cursor:next"))],
         );
         let projector = RecordingProjector {
             batches: Arc::new(Mutex::new(Vec::new())),
@@ -634,7 +634,7 @@ mod tests {
         assert_eq!(projector.batches.lock().unwrap()[0].len(), 1);
         assert_eq!(
             store.load(realm_scope()).await.unwrap().as_deref(),
-            Some("ck:cursor:stored")
+            Some("ak:cursor:stored")
         );
     }
 
@@ -642,7 +642,7 @@ mod tests {
     async fn engine_treats_dropped_without_cursor_as_realm_resync() {
         let store = MemoryStore::new();
         store
-            .save(realm_scope(), "ck:cursor:stored".to_owned())
+            .save(realm_scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
         let executor = RecordingExecutor::default();

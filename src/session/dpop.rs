@@ -25,10 +25,10 @@ pub fn build_http_dpop_proof(
     request: cokret_http_client::DpopProofRequest,
     signing_key: &SigningKey,
 ) -> cokret_core::Result<String> {
-    let mut sdk_request = cokret::dpop::DpopProofRequest::new(request.method, request.htu);
+    let mut sdk_request = arkret::dpop::DpopProofRequest::new(request.method, request.htu);
     if let Some(access_token) = request.access_token {
         sdk_request = sdk_request.access_token(access_token);
     }
-    let proof = cokret::dpop::build_dpop_proof(&sdk_request, signing_key)?;
+    let proof = arkret::dpop::build_dpop_proof(&sdk_request, signing_key)?;
     Ok(proof.header_value)
 }

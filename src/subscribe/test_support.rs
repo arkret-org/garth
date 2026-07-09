@@ -10,7 +10,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use cokret::{Result, SyncOutcome, SyncRequestBody};
+use arkret::{Result, SyncOutcome, SyncRequestBody};
 use serde_json::Value;
 
 use crate::Executor;

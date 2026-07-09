@@ -1,4 +1,4 @@
-use cokret::{
+use arkret::{
     ContentBlock, Did, EventEnvelope, GrantId, Hlc, MessageCreatePayload, OP_MESSAGE_CREATE,
     Operation, OperationEnvelope, OperationEnvelopeBuilder, OperationEventConversion, OperationId,
     OperationKindRegistry, RealmId, Result, StrandId, new_prefixed_uuid7,
@@ -137,7 +137,7 @@ impl OutboundBuilder {
         // `?`-propagate) a UUID on every call even when the caller supplied one.
         let operation_id = match options.operation_id.clone() {
             Some(id) => id,
-            None => OperationId::new(new_prefixed_uuid7("ck:operation:"))?,
+            None => OperationId::new(new_prefixed_uuid7("ak:operation:"))?,
         };
         let payload = self.message_create_payload(options, content)?.to_value()?;
         Ok(Operation::create(
@@ -218,11 +218,11 @@ impl OutboundBuilder {
         // strand id when the caller already provided one.
         let strand_id = match options.strand_id {
             Some(id) => id,
-            None => StrandId::new(new_prefixed_uuid7("ck:strand:"))?,
+            None => StrandId::new(new_prefixed_uuid7("ak:strand:"))?,
         };
         let message_id = options
             .message_id
-            .unwrap_or_else(|| new_prefixed_uuid7("ck:message:"));
+            .unwrap_or_else(|| new_prefixed_uuid7("ak:message:"));
         let mut payload =
             MessageCreatePayload::with_content(strand_id, options.track_name, content)
                 .with_message_id(message_id);
@@ -235,12 +235,12 @@ impl OutboundBuilder {
 
 #[cfg(test)]
 mod tests {
-    use cokret::{EventId, EventRef};
+    use arkret::{EventId, EventRef};
 
     use super::*;
 
     fn realm_id() -> RealmId {
-        RealmId::new("ck:realm:01904100-0000-7000-8000-000000000001").unwrap()
+        RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap()
     }
 
     fn actor_id() -> Did {
@@ -256,12 +256,12 @@ mod tests {
         let builder = OutboundBuilder::new();
         let options = MessageCreateOptions::default()
             .with_operation_id(
-                OperationId::new("ck:operation:01904100-0000-7000-8000-000000000010").unwrap(),
+                OperationId::new("ak:operation:01904100-0000-7000-8000-000000000010").unwrap(),
             )
             .with_strand_id(
-                StrandId::new("ck:strand:01904100-0000-7000-8000-000000000011").unwrap(),
+                StrandId::new("ak:strand:01904100-0000-7000-8000-000000000011").unwrap(),
             )
-            .with_message_id("ck:message:01904100-0000-7000-8000-000000000012");
+            .with_message_id("ak:message:01904100-0000-7000-8000-000000000012");
 
         let operation = builder
             .text_message_operation_with(realm_id(), options, "hello")
@@ -271,15 +271,15 @@ mod tests {
         assert_eq!(operation.object_type, OP_MESSAGE_CREATE);
         assert_eq!(
             operation.operation_id.as_str(),
-            "ck:operation:01904100-0000-7000-8000-000000000010"
+            "ak:operation:01904100-0000-7000-8000-000000000010"
         );
         assert_eq!(
             operation.payload["strand_id"],
-            "ck:strand:01904100-0000-7000-8000-000000000011"
+            "ak:strand:01904100-0000-7000-8000-000000000011"
         );
         assert_eq!(
             operation.payload["message_id"],
-            "ck:message:01904100-0000-7000-8000-000000000012"
+            "ak:message:01904100-0000-7000-8000-000000000012"
         );
         assert_eq!(operation.payload["track_name"], "discussion");
         assert_eq!(operation.payload["content"]["kind"], "ck.content.text");
@@ -291,16 +291,16 @@ mod tests {
         let builder = OutboundBuilder::new();
         let options = MessageCreateOptions::default()
             .with_operation_id(
-                OperationId::new("ck:operation:01904100-0000-7000-8000-000000000020").unwrap(),
+                OperationId::new("ak:operation:01904100-0000-7000-8000-000000000020").unwrap(),
             )
             .with_strand_id(
-                StrandId::new("ck:strand:01904100-0000-7000-8000-000000000021").unwrap(),
+                StrandId::new("ak:strand:01904100-0000-7000-8000-000000000021").unwrap(),
             );
         let context = OutboundCommandContext::new(actor_id(), 7, hlc())
             .with_dependency(
-                OperationId::new("ck:operation:01904100-0000-7000-8000-000000000022").unwrap(),
+                OperationId::new("ak:operation:01904100-0000-7000-8000-000000000022").unwrap(),
             )
-            .with_authz_ref(GrantId::new("ck:grant:01904100-0000-7000-8000-000000000023").unwrap());
+            .with_authz_ref(GrantId::new("ak:grant:01904100-0000-7000-8000-000000000023").unwrap());
 
         let envelope = builder
             .message_create_envelope_with(
@@ -318,7 +318,7 @@ mod tests {
         assert_eq!(envelope.causal.deps.len(), 1);
         assert_eq!(
             envelope.authz_ref.as_ref().unwrap().as_str(),
-            "ck:grant:01904100-0000-7000-8000-000000000023"
+            "ak:grant:01904100-0000-7000-8000-000000000023"
         );
 
         let event = builder
@@ -326,10 +326,10 @@ mod tests {
                 envelope,
                 OperationEventConversion::default()
                     .with_prev_ref(
-                        EventId::new("ck:event:01904100-0000-7000-8000-000000000024").unwrap(),
+                        EventId::new("ak:event:01904100-0000-7000-8000-000000000024").unwrap(),
                     )
                     .with_authorized_by_ref(
-                        GrantId::new("ck:grant:01904100-0000-7000-8000-000000000023").unwrap(),
+                        GrantId::new("ak:grant:01904100-0000-7000-8000-000000000023").unwrap(),
                     ),
             )
             .unwrap();
@@ -341,7 +341,7 @@ mod tests {
         assert_eq!(
             event.refs,
             vec![EventRef::authorized_by_grant(
-                GrantId::new("ck:grant:01904100-0000-7000-8000-000000000023").unwrap()
+                GrantId::new("ak:grant:01904100-0000-7000-8000-000000000023").unwrap()
             )]
         );
     }

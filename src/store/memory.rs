@@ -91,7 +91,7 @@ mod tests {
         CursorScope::Account {
             service_did: None,
             actor_id: Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
-            device_id: DeviceId::new("ck:device:01904100-0000-7000-8000-000000000001").unwrap(),
+            device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
         }
     }
 
@@ -99,17 +99,17 @@ mod tests {
     async fn stores_cursors_by_scope() {
         let store = MemoryStore::new();
         store
-            .save(account_scope(), "ck:cursor:account".to_owned())
+            .save(account_scope(), "ak:cursor:account".to_owned())
             .await
             .unwrap();
         assert_eq!(
             store.load(account_scope()).await.unwrap().as_deref(),
-            Some("ck:cursor:account")
+            Some("ak:cursor:account")
         );
     }
 
     fn event_id(n: usize) -> EventId {
-        EventId::new(format!("ck:event:01904100-0000-7000-8000-{n:012}")).unwrap()
+        EventId::new(format!("ak:event:01904100-0000-7000-8000-{n:012}")).unwrap()
     }
 
     #[tokio::test]

@@ -267,7 +267,7 @@ mod tests {
     use crate::store::CursorStore;
 
     fn realm_id() -> RealmId {
-        RealmId::new("ck:realm:01904100-0000-7000-8000-000000000001").unwrap()
+        RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap()
     }
 
     fn scope() -> CursorScope {
@@ -291,14 +291,14 @@ mod tests {
     async fn scan_once_uses_stored_cursor_and_saves_next_cursor() {
         let store = MemoryStore::new();
         store
-            .save(scope(), "ck:cursor:stored".to_owned())
+            .save(scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
         let requests = Arc::new(Mutex::new(Vec::new()));
         let requests_for_transport = Arc::clone(&requests);
         let transport = move |request: EventsScanRequest| {
             requests_for_transport.lock().unwrap().push(request);
-            async { Ok(outcome(Some("ck:cursor:next"), false)) }
+            async { Ok(outcome(Some("ak:cursor:next"), false)) }
         };
 
         let catchup = ScanCatchup::new(store.clone());
@@ -307,14 +307,14 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.next_cursor.as_deref(), Some("ck:cursor:next"));
+        assert_eq!(response.next_cursor.as_deref(), Some("ak:cursor:next"));
         assert_eq!(
             requests.lock().unwrap()[0].after.as_deref(),
-            Some("ck:cursor:stored")
+            Some("ak:cursor:stored")
         );
         assert_eq!(
             store.load(scope()).await.unwrap().as_deref(),
-            Some("ck:cursor:next")
+            Some("ak:cursor:next")
         );
     }
 
@@ -322,8 +322,8 @@ mod tests {
     async fn scan_catchup_pages_until_range_is_not_limited() {
         let store = MemoryStore::new();
         let responses = Arc::new(Mutex::new(VecDeque::from([
-            outcome(Some("ck:cursor:p2"), true),
-            outcome(Some("ck:cursor:p3"), false),
+            outcome(Some("ak:cursor:p2"), true),
+            outcome(Some("ak:cursor:p3"), false),
         ])));
         let afters = Arc::new(Mutex::new(Vec::new()));
         let responses_for_transport = Arc::clone(&responses);
@@ -341,14 +341,14 @@ mod tests {
             .unwrap();
 
         assert!(!response.limited);
-        assert_eq!(response.next_cursor.as_deref(), Some("ck:cursor:p3"));
+        assert_eq!(response.next_cursor.as_deref(), Some("ak:cursor:p3"));
         assert_eq!(
             afters.lock().unwrap().as_slice(),
-            &[None, Some("ck:cursor:p2".to_owned())]
+            &[None, Some("ak:cursor:p2".to_owned())]
         );
         assert_eq!(
             store.load(scope()).await.unwrap().as_deref(),
-            Some("ck:cursor:p3")
+            Some("ak:cursor:p3")
         );
     }
 
@@ -356,11 +356,11 @@ mod tests {
     async fn scan_catchup_uncheckpointed_leaves_cursor_unchanged() {
         let store = MemoryStore::new();
         store
-            .save(scope(), "ck:cursor:stored".to_owned())
+            .save(scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
         let transport =
-            move |_request: EventsScanRequest| async { Ok(outcome(Some("ck:cursor:next"), false)) };
+            move |_request: EventsScanRequest| async { Ok(outcome(Some("ak:cursor:next"), false)) };
 
         let catchup = ScanCatchup::new(store.clone());
         let response = catchup
@@ -372,10 +372,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(response.next_cursor.as_deref(), Some("ck:cursor:next"));
+        assert_eq!(response.next_cursor.as_deref(), Some("ak:cursor:next"));
         assert_eq!(
             store.load(scope()).await.unwrap().as_deref(),
-            Some("ck:cursor:stored")
+            Some("ak:cursor:stored")
         );
     }
 }

@@ -469,15 +469,15 @@ mod tests {
     }
 
     fn device_id() -> DeviceId {
-        DeviceId::new("ck:device:01904100-0000-7000-8000-000000000001").unwrap()
+        DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap()
     }
 
     fn other_device_id() -> DeviceId {
-        DeviceId::new("ck:device:01904100-0000-7000-8000-000000000002").unwrap()
+        DeviceId::new("ak:device:01904100-0000-7000-8000-000000000002").unwrap()
     }
 
     fn grant_id(n: u64) -> GrantId {
-        GrantId::new(format!("ck:grant:01904100-0000-7000-8000-{n:012}")).unwrap()
+        GrantId::new(format!("ak:grant:01904100-0000-7000-8000-{n:012}")).unwrap()
     }
 
     fn digest() -> Hash {
@@ -548,7 +548,7 @@ mod tests {
         LoginKind::AgentKeyProof(AgentKeyProofLogin {
             principal_id: did(),
             requested_scope: vec!["ck.self.events.stream.subscribe".to_owned()],
-            agent_key_authorization_ref: "ck:event:01904100-0000-7000-8000-000000000002".to_owned(),
+            agent_key_authorization_ref: "ak:event:01904100-0000-7000-8000-000000000002".to_owned(),
             agent_scope_request: json!({"kind": "realm"}),
             dpop_binding_proof: SessionGrantDpopBindingProof {
                 proof_jwt: "agent-dpop-proof".to_owned(),

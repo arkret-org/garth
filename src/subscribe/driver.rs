@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use cokret::{AsyncSyncTransport, SyncLoop, SyncLoopControl, SyncLoopStep};
+use arkret::{AsyncSyncTransport, SyncLoop, SyncLoopControl, SyncLoopStep};
 use cokret_core::Result;
 
 use super::{ProjectedRunError, ProjectedRunResult, account_updates_to_events};
@@ -115,7 +115,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
-    use cokret::Error;
+    use arkret::Error;
 
     use super::super::test_support::{RecordingExecutor, queued_transport, sync_response};
     use super::*;

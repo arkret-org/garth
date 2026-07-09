@@ -15,7 +15,7 @@
 
 use std::time::Duration;
 
-use cokret::{AsyncSyncTransport, SyncLoopControl, SyncLoopStep};
+use arkret::{AsyncSyncTransport, SyncLoopControl, SyncLoopStep};
 use cokret_core::{DeviceId, Did, RealmId, Result};
 
 use crate::subscribe::{
@@ -214,7 +214,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use cokret::{AccountStreamInterrupt, BoxSyncFuture, Error, SyncOutcome, SyncRequestBody};
+    use arkret::{AccountStreamInterrupt, BoxSyncFuture, Error, SyncOutcome, SyncRequestBody};
     use cokret_core::events::kinds;
     use cokret_core::{
         EventsSubscribeFrame, EventsSubscribeFrameKind, Hlc, RealmId, SyncBackfillOutcome,
@@ -392,11 +392,11 @@ mod tests {
     }
 
     fn device_id() -> DeviceId {
-        DeviceId::new("ck:device:01904100-0000-7000-8000-000000000001").unwrap()
+        DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap()
     }
 
     fn realm_id() -> RealmId {
-        RealmId::new("ck:realm:01904100-0000-7000-8000-000000000001").unwrap()
+        RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap()
     }
 
     fn account_scope() -> CursorScope {
@@ -441,7 +441,7 @@ mod tests {
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
             json!({
                 "content": {"kind": "ck.content.text", "body": "hello"},
-                "strand_id": "ck:strand:01904100-0000-7000-8000-000000000002",
+                "strand_id": "ak:strand:01904100-0000-7000-8000-000000000002",
                 "track_name": "discussion"
             }),
         )
@@ -651,7 +651,7 @@ mod tests {
             Ok(AccountTransport::new(Err(Error::Protocol(
                 "network down".to_owned(),
             )))),
-            Ok(AccountTransport::new(Ok(sync_response("ck:cursor:next")))),
+            Ok(AccountTransport::new(Ok(sync_response("ak:cursor:next")))),
         ]);
         let control = SyncLoopControl::new();
         let (projector, calls) = projector(Some(control.clone()), false);
@@ -673,7 +673,7 @@ mod tests {
         assert_eq!(*calls.lock().unwrap(), 1);
         assert_eq!(
             store.load(account_scope()).await.unwrap().as_deref(),
-            Some("ck:cursor:next")
+            Some("ak:cursor:next")
         );
         assert_eq!(executor.sleeps().len(), 1);
     }

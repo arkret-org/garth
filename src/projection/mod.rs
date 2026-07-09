@@ -1,4 +1,4 @@
-use cokret::RealmState;
+use arkret::RealmState;
 use cokret_core::{Event, RealmId, Result};
 
 pub trait DomainProjector {
@@ -67,7 +67,7 @@ mod tests {
     }
 
     fn realm_id() -> RealmId {
-        RealmId::new("ck:realm:01904100-0000-7000-8000-000000000001").unwrap()
+        RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap()
     }
 
     #[test]

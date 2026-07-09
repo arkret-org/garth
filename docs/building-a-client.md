@@ -1,6 +1,6 @@
 # Building a client on garth
 
-garth is the runtime-neutral engine that Cokret clients (`inkson`, `savfox`, a
+garth is the runtime-neutral engine that Arkret clients (`inkson`, `savfox`, a
 future `applet`) build on. It owns the whole runtime loop — refresh, event
 polling, cursor checkpointing, dedupe, drop/resync recovery, backoff,
 cancellation. A client provides only two things:
@@ -75,7 +75,7 @@ use garth::{CokretClient, RunOptions, SyncLoopControl, TransportProvider};
 // restarts (the runner re-provides on the next start).
 struct MyTransport { /* base url + session */ }
 impl TransportProvider for MyTransport {
-    type Transport = cokret::Client;
+    type Transport = arkret::Client;
     fn provide(&self) -> impl std::future::Future<Output = cokret_core::Result<Self::Transport>> + '_ {
         async move { /* build/refresh -> Client */ }
     }

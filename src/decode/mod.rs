@@ -63,7 +63,7 @@ mod tests {
     use super::*;
 
     fn realm_id() -> RealmId {
-        RealmId::new("ck:realm:01904100-0000-7000-8000-000000000001").unwrap()
+        RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap()
     }
 
     fn actor_id() -> Did {
@@ -88,7 +88,7 @@ mod tests {
             .try_decode_event(event(
                 kinds::MESSAGE_CREATE,
                 json!({
-                    "strand_id": "ck:strand:01904100-0000-7000-8000-000000000002",
+                    "strand_id": "ak:strand:01904100-0000-7000-8000-000000000002",
                     "track_name": "discussion",
                     "content": {"kind": "ck.content.text", "body": "hello"}
                 }),
@@ -112,7 +112,7 @@ mod tests {
             .try_decode_event(event(
                 kinds::REACTION_ADD,
                 json!({
-                    "target_ref": "ck:event:01904100-0000-7000-8000-000000000099",
+                    "target_ref": "ak:event:01904100-0000-7000-8000-000000000099",
                     "key": "+1"
                 }),
             ))

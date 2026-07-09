@@ -3,14 +3,14 @@
 [package]
 authors = ["Chris Young <chris@sonc.ai>"]
 categories = ["api-bindings", "network-programming", "cryptography"]
-description = "Runtime-neutral shared client engine for Cokret v1 applications."
+description = "Runtime-neutral shared client engine for Arkret v1 applications."
 edition = "2024"
-homepage = "https://github.com/cokret/garth"
-keywords = ["cokret", "client", "garth"]
+homepage = "https://github.com/arkret/garth"
+keywords = ["arkret", "client", "garth"]
 license = "Apache-2.0"
 name = "garth"
 readme = "README.md"
-repository = "https://github.com/cokret/garth"
+repository = "https://github.com/arkret/garth"
 rust-version = "1.96"
 version = "0.3.0"
 
@@ -20,15 +20,15 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-mls = ["cokret/mls"]
+mls = ["arkret/mls"]
 native = ["dep:tokio"]
 wasm = ["dep:gloo-timers"]
 
 [dependencies]
 chrono = {version = "0.4.45",default-features = false,features = ["clock", "std", "serde"]}
-cokret = {version = "0.3.0",path = "../cokret-rust-sdk/crates/sdk",default-features = false,features = ["client", "full-surface", "signer", "sync-runtime"]}
-cokret-core = {version = "0.3.0",path = "../cokret-rust-sdk/crates/core",default-features = false}
-cokret-http-client = {version = "0.3.0",path = "../cokret-rust-sdk/crates/http-client",default-features = false}
+arkret = {version = "0.3.0",path = "../arkret-rust-sdk/crates/sdk",default-features = false,features = ["client", "full-surface", "signer", "sync-runtime"]}
+arkret-core = {version = "0.3.0",path = "../arkret-rust-sdk/crates/core",default-features = false}
+arkret-http-client = {version = "0.3.0",path = "../arkret-rust-sdk/crates/http-client",default-features = false}
 ed25519-dalek = {version = "2.2.0",default-features = false,features = ["std", "rand_core"]}
 gloo-timers = {version = "0.3",default-features = false,features = ["futures"],optional = true}
 serde = {version = "1.0.228",default-features = false,features = ["std", "derive"]}

@@ -22,13 +22,13 @@ jobs:
         with:
           path: garth
 
-      # cokret-rust-sdk is a local path dependency; check it out as a sibling
-      # so `../cokret-rust-sdk/crates/*` resolves.
-      - name: Checkout cokret-rust-sdk
+      # arkret-rust-sdk is a local path dependency; check it out as a sibling
+      # so `../arkret-rust-sdk/crates/*` resolves.
+      - name: Checkout arkret-rust-sdk
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/cokret-rust-sdk
-          path: cokret-rust-sdk
+          repository: ${{ github.repository_owner }}/arkret-rust-sdk
+          path: arkret-rust-sdk
           token: ${{ secrets.CI_REPO_TOKEN || github.token }}
 
       - uses: dtolnay/rust-toolchain@master
@@ -62,11 +62,11 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: garth
-      - name: Checkout cokret-rust-sdk
+      - name: Checkout arkret-rust-sdk
         uses: actions/checkout@v4
         with:
-          repository: ${{ github.repository_owner }}/cokret-rust-sdk
-          path: cokret-rust-sdk
+          repository: ${{ github.repository_owner }}/arkret-rust-sdk
+          path: arkret-rust-sdk
           token: ${{ secrets.CI_REPO_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@master
         with:

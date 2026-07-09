@@ -1,4 +1,4 @@
-use cokret::{
+use arkret::{
     CryptoStore, CryptoStoreBackupEnvelope, MemoryCryptoStore, MlsEpochSecretRecord,
     MlsGroupStateRecord, MlsRecoveryPlan, StoredDeviceVerification,
 };

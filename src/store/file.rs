@@ -258,14 +258,14 @@ mod tests {
         CursorScope::Account {
             service_did: None,
             actor_id: Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
-            device_id: DeviceId::new("ck:device:01904100-0000-7000-8000-000000000001").unwrap(),
+            device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
         }
     }
 
     fn realm_scope() -> CursorScope {
         CursorScope::RealmEvents {
             service_did: None,
-            realm_id: RealmId::new("ck:realm:01904100-0000-7000-8000-000000000009").unwrap(),
+            realm_id: RealmId::new("ak:realm:01904100-0000-7000-8000-000000000009").unwrap(),
         }
     }
 
@@ -276,11 +276,11 @@ mod tests {
         {
             let store = FileStore::open(&path).unwrap();
             store
-                .save(account_scope(), "ck:cursor:acct".to_owned())
+                .save(account_scope(), "ak:cursor:acct".to_owned())
                 .await
                 .unwrap();
             store
-                .save(realm_scope(), "ck:cursor:realm".to_owned())
+                .save(realm_scope(), "ak:cursor:realm".to_owned())
                 .await
                 .unwrap();
         }
@@ -288,18 +288,18 @@ mod tests {
         let reopened = FileStore::open(&path).unwrap();
         assert_eq!(
             reopened.load(account_scope()).await.unwrap().as_deref(),
-            Some("ck:cursor:acct")
+            Some("ak:cursor:acct")
         );
         assert_eq!(
             reopened.load(realm_scope()).await.unwrap().as_deref(),
-            Some("ck:cursor:realm")
+            Some("ak:cursor:realm")
         );
         // Scopes do not collide.
         reopened.clear(account_scope()).await.unwrap();
         assert!(reopened.load(account_scope()).await.unwrap().is_none());
         assert_eq!(
             reopened.load(realm_scope()).await.unwrap().as_deref(),
-            Some("ck:cursor:realm")
+            Some("ak:cursor:realm")
         );
         let _ = std::fs::remove_file(&path);
     }
@@ -308,7 +308,7 @@ mod tests {
     async fn dedupe_survives_reopen() {
         let path = temp_path("dedupe-roundtrip");
         let _ = std::fs::remove_file(&path);
-        let event = EventId::new("ck:event:01904100-0000-7000-8000-0000000000aa").unwrap();
+        let event = EventId::new("ak:event:01904100-0000-7000-8000-0000000000aa").unwrap();
         {
             let store = FileStore::open(&path).unwrap();
             assert!(!store.seen(event.clone()).await.unwrap());
@@ -326,8 +326,8 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let store = FileStore::open(&path).unwrap();
 
-        let account_save = store.save(account_scope(), "ck:cursor:account".to_owned());
-        let realm_save = store.save(realm_scope(), "ck:cursor:realm".to_owned());
+        let account_save = store.save(account_scope(), "ak:cursor:account".to_owned());
+        let realm_save = store.save(realm_scope(), "ak:cursor:realm".to_owned());
         let (account_result, realm_result) = tokio::join!(account_save, realm_save);
         account_result.unwrap();
         realm_result.unwrap();
@@ -335,11 +335,11 @@ mod tests {
         let reopened = FileStore::open(&path).unwrap();
         assert_eq!(
             reopened.load(account_scope()).await.unwrap().as_deref(),
-            Some("ck:cursor:account")
+            Some("ak:cursor:account")
         );
         assert_eq!(
             reopened.load(realm_scope()).await.unwrap().as_deref(),
-            Some("ck:cursor:realm")
+            Some("ak:cursor:realm")
         );
         let _ = std::fs::remove_file(&path);
     }
@@ -354,9 +354,9 @@ mod tests {
         let mut older = FileState::default();
         older
             .cursors
-            .insert(key.clone(), "ck:cursor:older".to_owned());
+            .insert(key.clone(), "ak:cursor:older".to_owned());
         let mut newer = older.clone();
-        newer.cursors.insert(key, "ck:cursor:newer".to_owned());
+        newer.cursors.insert(key, "ak:cursor:newer".to_owned());
 
         store
             .persist_snapshot(PersistSnapshot {
@@ -378,7 +378,7 @@ mod tests {
         let reopened = FileStore::open(&path).unwrap();
         assert_eq!(
             reopened.load(account_scope()).await.unwrap().as_deref(),
-            Some("ck:cursor:newer")
+            Some("ak:cursor:newer")
         );
         let _ = std::fs::remove_file(&path);
     }
@@ -391,7 +391,7 @@ mod tests {
         let store = FileStore::open(&path).unwrap();
 
         let err = store
-            .save(account_scope(), "ck:cursor:account".to_owned())
+            .save(account_scope(), "ak:cursor:account".to_owned())
             .await
             .unwrap_err();
         assert!(
@@ -402,7 +402,7 @@ mod tests {
     }
 
     fn event_id(n: usize) -> EventId {
-        EventId::new(format!("ck:event:01904100-0000-7000-8000-{n:012}")).unwrap()
+        EventId::new(format!("ak:event:01904100-0000-7000-8000-{n:012}")).unwrap()
     }
 
     #[tokio::test]

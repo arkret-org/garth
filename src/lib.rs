@@ -1,4 +1,4 @@
-//! Runtime-neutral shared client engine for Cokret v1 applications.
+//! Runtime-neutral shared client engine for Arkret v1 applications.
 //!
 //! This crate holds the orchestration seams shared by UI clients and agent
 //! clients: executor binding, durable cursor/event caches, secure secret
@@ -15,7 +15,7 @@ pub mod session;
 pub mod store;
 pub mod subscribe;
 
-pub use cokret::SyncLoopControl;
+pub use arkret::SyncLoopControl;
 pub use decode::{DecodedInbound, DecodedMessage, DecodedNotification, InboundDecoder};
 pub use event::{ClientEvent, ClientProjector};
 pub use executor::Executor;
