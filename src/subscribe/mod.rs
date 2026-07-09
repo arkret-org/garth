@@ -17,6 +17,7 @@ pub use realm::{
 };
 pub use scan::{EventsScanRequest, EventsScanTransport, ScanCatchup, ScanCatchupOptions};
 
+use crate::event::SinkProjector;
 use crate::{
     ClientEvent, ClientEventSink, ClientProjector, CursorScope, CursorStore, EventCacheStore,
     Executor, OpaqueCursor,
@@ -96,26 +97,16 @@ where
         T: AsyncSyncTransport + ?Sized,
         S: ClientEventSink + ?Sized,
     {
-        let scope = self.account_scope(actor_id, device_id);
-        let mut sync_loop = self.restore_account_loop(scope.clone()).await?;
-
-        // Reuse the shared account loop from `SubscriptionLoopDriver`, injecting
-        // cursor checkpointing as the per-step hook so the `SyncLoopStep`
-        // dispatch is not duplicated across the two entry points.
-        let driver =
-            SubscriptionLoopDriver::with_control(self.executor.clone(), self.control.clone());
-        driver
-            .run_account_checkpointed(&mut sync_loop, transport, sink, |token| {
-                self.checkpoint_account_cursor(scope.clone(), token)
-            })
+        let projector = SinkProjector::new(sink);
+        self.run_account_projected(actor_id, device_id, transport, &projector)
             .await
     }
 
-    /// Projector-driven account loop (orchestrator seam). Unlike
-    /// [`Self::run_account`] — which checkpoints the cursor BEFORE emitting to
-    /// the sink — this awaits the async [`ClientProjector`] and checkpoints the
-    /// cursor ONLY after `project` returns `Ok`, so the projector's durable
-    /// write gates cursor advance (uniform with the realm loop, crash-safe).
+    /// Projector-driven account loop (orchestrator seam). This awaits the async
+    /// [`ClientProjector`] and checkpoints the cursor ONLY after `project`
+    /// returns `Ok`, so the projector's durable write gates cursor advance
+    /// (uniform with the realm loop, crash-safe). The synchronous sink entry
+    /// point adapts to this same path.
     pub async fn run_account_projected<T, P>(
         &self,
         actor_id: Did,
@@ -176,55 +167,9 @@ where
         T: RealmEventsTransport + EventsScanTransport + ?Sized,
         S: ClientEventSink + ?Sized,
     {
-        let mut driver =
-            RealmEventsDriver::new(self.cursor_store.clone(), self.event_cache_store.clone());
-        if let Some(service_did) = self.service_did.clone() {
-            driver = driver.with_service_did(service_did);
-        }
-        let reason = driver.run_stream(transport, realm_id.clone(), sink).await?;
-        match reason {
-            RealmStreamStopReason::Dropped {
-                cursor: Some(cursor),
-                reconnect_after_ms,
-            } => {
-                let outcome = self
-                    .scan_realm_catchup(
-                        transport,
-                        realm_id.clone(),
-                        ScanCatchupOptions {
-                            before: Some(cursor.clone()),
-                            after: None,
-                            order: None,
-                            limit: None,
-                            max_pages: 64,
-                        },
-                    )
-                    .await?;
-                sink.emit(ClientEvent::Backfill { realm_id, outcome });
-                if let Some(reconnect_after_ms) = reconnect_after_ms {
-                    self.executor
-                        .sleep(std::time::Duration::from_millis(reconnect_after_ms))
-                        .await;
-                }
-                Ok(RealmStreamStopReason::Dropped {
-                    cursor: Some(cursor),
-                    reconnect_after_ms,
-                })
-            }
-            RealmStreamStopReason::Dropped {
-                cursor: None,
-                reconnect_after_ms,
-            } => {
-                self.cursor_store.clear(self.realm_scope(realm_id)).await?;
-                if let Some(reconnect_after_ms) = reconnect_after_ms {
-                    self.executor
-                        .sleep(std::time::Duration::from_millis(reconnect_after_ms))
-                        .await;
-                }
-                Ok(RealmStreamStopReason::ResyncRequired { reconnect_after_ms })
-            }
-            other => Ok(other),
-        }
+        let projector = SinkProjector::new(sink);
+        self.run_realm_projected_stream(transport, realm_id, &projector)
+            .await
     }
 
     /// Projector-driven realm loop (orchestrator seam). Mirrors

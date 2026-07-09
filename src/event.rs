@@ -61,3 +61,25 @@ pub trait ClientProjector {
         batch: Vec<ClientEvent>,
     ) -> impl std::future::Future<Output = cokret_core::Result<()>> + '_;
 }
+
+pub(crate) struct SinkProjector<'a, S: ?Sized> {
+    sink: &'a S,
+}
+
+impl<'a, S: ?Sized> SinkProjector<'a, S> {
+    pub(crate) fn new(sink: &'a S) -> Self {
+        Self { sink }
+    }
+}
+
+impl<S> ClientProjector for SinkProjector<'_, S>
+where
+    S: ClientEventSink + ?Sized,
+{
+    async fn project(&self, batch: Vec<ClientEvent>) -> cokret_core::Result<()> {
+        for event in batch {
+            self.sink.emit(event);
+        }
+        Ok(())
+    }
+}

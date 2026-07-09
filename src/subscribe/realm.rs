@@ -1,11 +1,10 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use cokret_core::{
-    Did, Event, EventId, EventsSubscribeFrame, EventsSubscribeFrameKind, RealmId, Result,
-};
+use cokret_core::{Did, Event, EventsSubscribeFrame, EventsSubscribeFrameKind, RealmId, Result};
 
 use super::{ProjectedRunError, ProjectedRunResult};
+use crate::event::SinkProjector;
 use crate::{
     ClientEvent, ClientEventSink, ClientProjector, CursorScope, CursorStore, DecodedInbound,
     EventCacheStore, InboundDecoder, OpaqueCursor,
@@ -124,46 +123,9 @@ where
         T: RealmEventsTransport + ?Sized,
         S: ClientEventSink + ?Sized,
     {
-        let scope = self.scope(&realm_id);
-        let after = self.cursor_store.load(scope.clone()).await?;
-        let mut source = transport
-            .open_realm_events(&realm_id, after.as_deref())
-            .await?;
-
-        while let Some(frame) = source.next_frame().await? {
-            let cursor = frame
-                .cursor
-                .as_ref()
-                .map(|cursor| cursor.as_str().to_owned());
-            let should_checkpoint = matches!(
-                frame.kind,
-                EventsSubscribeFrameKind::Event
-                    | EventsSubscribeFrameKind::Heartbeat
-                    | EventsSubscribeFrameKind::Frontier
-                    | EventsSubscribeFrameKind::CatchupComplete
-                    | EventsSubscribeFrameKind::EpochRotation
-            );
-
-            if let Some(reason) = self.handle_frame(frame, sink).await? {
-                match reason {
-                    RealmStreamStopReason::ResyncRequired { .. } => {
-                        self.cursor_store.clear(scope.clone()).await?;
-                    }
-                    RealmStreamStopReason::Dropped { .. }
-                    | RealmStreamStopReason::Unauthorized { .. }
-                    | RealmStreamStopReason::StreamEnded => {}
-                }
-                return Ok(reason);
-            }
-
-            if should_checkpoint {
-                if let Some(cursor) = cursor {
-                    self.cursor_store.save(scope.clone(), cursor).await?;
-                }
-            }
-        }
-
-        Ok(RealmStreamStopReason::StreamEnded)
+        let projector = SinkProjector::new(sink);
+        self.run_projected_stream(transport, realm_id, &projector)
+            .await
     }
 
     /// Projector-driven realm loop (orchestrator seam). Same frame handling as
@@ -305,10 +267,10 @@ where
     }
 
     /// Decode a wire event into the `ClientEvent`(s) a host projector consumes.
-    /// Mirrors [`Self::emit_event`] — including the fault-tolerant decode: an
-    /// event whose business payload is invalid degrades to a raw
-    /// `ClientEvent::Event` for the host to inspect, rather than erroring the
-    /// loop (which would wedge the stream on the same frame every reconnect).
+    /// Fault-tolerant decode: an event whose business payload is invalid
+    /// degrades to a raw `ClientEvent::Event` for the host to inspect, rather
+    /// than erroring the loop (which would wedge the stream on the same frame
+    /// every reconnect).
     fn decode_event_batch(&self, event: Event) -> Vec<ClientEvent> {
         match self.decoder.decode_event(event) {
             DecodedInbound::Message(message) => vec![ClientEvent::Message(message)],
@@ -317,80 +279,6 @@ where
             }
             DecodedInbound::Event(event) => vec![ClientEvent::Event(event)],
         }
-    }
-
-    async fn handle_frame<S>(
-        &self,
-        frame: EventsSubscribeFrame,
-        sink: &S,
-    ) -> Result<Option<RealmStreamStopReason>>
-    where
-        S: ClientEventSink + ?Sized,
-    {
-        match frame.kind {
-            EventsSubscribeFrameKind::Event => {
-                // A malformed Event frame must not poison the stream: if the
-                // payload cannot be parsed as an `Event` we skip it and let the
-                // cursor advance, otherwise every reconnect would replay the same
-                // frame and wedge realm sync permanently.
-                match serde_json::from_value::<Event>(frame.payload) {
-                    Ok(event) => {
-                        if self.remember_if_new(event.event_id.clone()).await? {
-                            self.emit_event(event, sink);
-                        }
-                    }
-                    Err(_) => {
-                        // Unparseable frame; drop it and continue.
-                    }
-                }
-                Ok(None)
-            }
-            EventsSubscribeFrameKind::Heartbeat
-            | EventsSubscribeFrameKind::Frontier
-            | EventsSubscribeFrameKind::CatchupComplete
-            | EventsSubscribeFrameKind::EpochRotation => Ok(None),
-            EventsSubscribeFrameKind::Dropped => Ok(Some(RealmStreamStopReason::Dropped {
-                cursor: frame.cursor.map(|cursor| cursor.as_str().to_owned()),
-                reconnect_after_ms: frame.reconnect_after_ms,
-            })),
-            EventsSubscribeFrameKind::ResyncRequired => {
-                Ok(Some(RealmStreamStopReason::ResyncRequired {
-                    reconnect_after_ms: frame.reconnect_after_ms,
-                }))
-            }
-            EventsSubscribeFrameKind::Unauthorized => {
-                let reason = frame
-                    .payload
-                    .get("reason")
-                    .and_then(|reason| reason.as_str())
-                    .map(str::to_owned);
-                Ok(Some(RealmStreamStopReason::Unauthorized { reason }))
-            }
-            _ => Ok(None),
-        }
-    }
-
-    fn emit_event<S>(&self, event: Event, sink: &S)
-    where
-        S: ClientEventSink + ?Sized,
-    {
-        // Use the fault-tolerant decoder: an event whose business payload is
-        // invalid falls back to a raw `Event` rather than aborting the stream.
-        match self.decoder.decode_event(event) {
-            DecodedInbound::Message(message) => sink.emit(ClientEvent::Message(message)),
-            DecodedInbound::Notification(notification) => {
-                sink.emit(ClientEvent::Event(notification.event));
-            }
-            DecodedInbound::Event(event) => sink.emit(ClientEvent::Event(event)),
-        }
-    }
-
-    async fn remember_if_new(&self, event_id: EventId) -> Result<bool> {
-        if self.event_cache_store.seen(event_id.clone()).await? {
-            return Ok(false);
-        }
-        self.event_cache_store.remember(event_id).await?;
-        Ok(true)
     }
 
     fn scope(&self, realm_id: &RealmId) -> CursorScope {
