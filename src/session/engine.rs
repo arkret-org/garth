@@ -3,7 +3,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use chrono::{DateTime, Utc};
-use cokret_core::{
+use arkret_core::{
     DeviceId, Did, Error, GrantId, Result, SessionGrantOutcome, SessionGrantRefreshOutcome,
     SessionGrantRefreshProof, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
 };
@@ -30,7 +30,7 @@ pub trait SessionGrantTransport {
     ) -> BoxSessionFuture<'a, SessionGrantRefreshOutcome>;
 }
 
-impl SessionGrantTransport for cokret_http_client::Client {
+impl SessionGrantTransport for arkret_http_client::Client {
     fn issue_session_grant<'a>(
         &'a self,
         request: SessionGrantRequestBody,
@@ -394,7 +394,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use chrono::Duration;
-    use cokret_core::{
+    use arkret_core::{
         Hash, SessionGrantDpopBindingProof, SessionGrantProofKind, SessionGrantScopeDetails,
     };
     use serde_json::json;

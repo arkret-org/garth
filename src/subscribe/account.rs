@@ -1,4 +1,4 @@
-use cokret_core::SyncUpdates;
+use arkret_core::SyncUpdates;
 
 use crate::ClientEvent;
 
@@ -29,7 +29,7 @@ pub fn account_updates_to_events(updates: SyncUpdates) -> Vec<ClientEvent> {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use cokret_core::{DeviceListChanges, NotificationDelta, RealmId, RealmUpdate, SyncUpdates};
+    use arkret_core::{DeviceListChanges, NotificationDelta, RealmId, RealmUpdate, SyncUpdates};
     use serde_json::Value;
 
     use super::*;

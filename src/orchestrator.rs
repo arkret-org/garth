@@ -16,7 +16,7 @@
 use std::time::Duration;
 
 use arkret::{AsyncSyncTransport, SyncLoopControl, SyncLoopStep};
-use cokret_core::{DeviceId, Did, RealmId, Result};
+use arkret_core::{DeviceId, Did, RealmId, Result};
 
 use crate::subscribe::{
     EventsScanTransport, ProjectedRunError, RealmEventsTransport, RealmStreamStopReason,
@@ -215,8 +215,8 @@ mod tests {
     use std::time::Duration;
 
     use arkret::{AccountStreamInterrupt, BoxSyncFuture, Error, SyncOutcome, SyncRequestBody};
-    use cokret_core::events::kinds;
-    use cokret_core::{
+    use arkret_core::events::kinds;
+    use arkret_core::{
         EventsSubscribeFrame, EventsSubscribeFrameKind, Hlc, RealmId, SyncBackfillOutcome,
     };
     use serde_json::{Value, json};
@@ -433,7 +433,7 @@ mod tests {
     }
 
     fn event_frame() -> EventsSubscribeFrame {
-        let event = cokret_core::Event::new(
+        let event = arkret_core::Event::new(
             kinds::MESSAGE_CREATE,
             realm_id(),
             actor_id(),

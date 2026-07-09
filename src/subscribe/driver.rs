@@ -1,7 +1,7 @@
 use std::future::Future;
 
 use arkret::{AsyncSyncTransport, SyncLoop, SyncLoopControl, SyncLoopStep};
-use cokret_core::Result;
+use arkret_core::Result;
 
 use super::{ProjectedRunError, ProjectedRunResult, account_updates_to_events};
 use crate::{ClientProjector, Executor};
@@ -130,7 +130,7 @@ mod tests {
         fn project(
             &self,
             batch: Vec<ClientEvent>,
-        ) -> impl Future<Output = cokret_core::Result<()>> + '_ {
+        ) -> impl Future<Output = arkret_core::Result<()>> + '_ {
             let events = Arc::clone(&self.events);
             let control = self.control.clone();
             async move {

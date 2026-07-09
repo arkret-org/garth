@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use cokret_core::{Error, EventId, Result};
+use arkret_core::{Error, EventId, Result};
 
 use super::seen_window::BoundedSeenWindow;
 use super::{CursorScope, CursorStore, EventCacheStore, OpaqueCursor};
@@ -83,7 +83,7 @@ impl EventCacheStore for MemoryStore {
 
 #[cfg(test)]
 mod tests {
-    use cokret_core::{DeviceId, Did, EventId};
+    use arkret_core::{DeviceId, Did, EventId};
 
     use super::*;
 

@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use cokret_core::{Did, RealmId, Result, SyncBackfillOutcome};
+use arkret_core::{Did, RealmId, Result, SyncBackfillOutcome};
 
 use super::{ProjectedRunError, ProjectedRunResult};
 use crate::{CursorScope, CursorStore, OpaqueCursor};
@@ -38,7 +38,7 @@ where
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl EventsScanTransport for cokret_http_client::Client {
+impl EventsScanTransport for arkret_http_client::Client {
     fn scan_events<'a>(
         &'a self,
         request: EventsScanRequest,

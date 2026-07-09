@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use cokret_core::{Did, Event, EventsSubscribeFrame, EventsSubscribeFrameKind, RealmId, Result};
+use arkret_core::{Did, Event, EventsSubscribeFrame, EventsSubscribeFrameKind, RealmId, Result};
 
 use super::{ProjectedRunError, ProjectedRunResult};
 use crate::{
@@ -44,15 +44,15 @@ pub trait RealmEventsTransport {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl RealmEventsFrameSource for cokret_http_client::EventsSubscribeFrameStream {
+impl RealmEventsFrameSource for arkret_http_client::EventsSubscribeFrameStream {
     fn next_frame<'a>(&'a mut self) -> BoxRealmStreamFuture<'a, Option<EventsSubscribeFrame>> {
         Box::pin(async move { self.next_frame().await })
     }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-impl RealmEventsTransport for cokret_http_client::Client {
-    type Source = cokret_http_client::EventsSubscribeFrameStream;
+impl RealmEventsTransport for arkret_http_client::Client {
+    type Source = arkret_http_client::EventsSubscribeFrameStream;
 
     fn open_realm_events<'a>(
         &'a self,
@@ -60,7 +60,7 @@ impl RealmEventsTransport for cokret_http_client::Client {
         after: Option<&'a str>,
     ) -> BoxRealmStreamFuture<'a, Self::Source> {
         Box::pin(async move {
-            let mut options = cokret_http_client::EventsSubscribeOptions::new()
+            let mut options = arkret_http_client::EventsSubscribeOptions::new()
                 .realm(realm_id.as_str().to_owned());
             if let Some(after) = after {
                 options = options.after(after.to_owned());
@@ -277,9 +277,9 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
-    use cokret_core::events::kinds;
-    use cokret_core::identifiers::Cursor;
-    use cokret_core::{Did, Event, Hlc};
+    use arkret_core::events::kinds;
+    use arkret_core::identifiers::Cursor;
+    use arkret_core::{Did, Event, Hlc};
     use serde_json::{Value, json};
 
     use super::*;
@@ -539,7 +539,7 @@ mod tests {
             async move {
                 batches.lock().unwrap().push(batch.len());
                 if fail {
-                    Err(cokret_core::Error::Protocol("projector failed".to_owned()))
+                    Err(arkret_core::Error::Protocol("projector failed".to_owned()))
                 } else {
                     Ok(())
                 }

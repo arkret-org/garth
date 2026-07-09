@@ -40,7 +40,7 @@ impl ClientProjector for MyProjector {
     fn project(
         &self,
         batch: Vec<ClientEvent>,
-    ) -> impl std::future::Future<Output = cokret_core::Result<()>> + '_ {
+    ) -> impl std::future::Future<Output = arkret_core::Result<()>> + '_ {
         async move {
             for event in batch {
                 match event {
@@ -76,7 +76,7 @@ use garth::{CokretClient, RunOptions, SyncLoopControl, TransportProvider};
 struct MyTransport { /* base url + session */ }
 impl TransportProvider for MyTransport {
     type Transport = arkret::Client;
-    fn provide(&self) -> impl std::future::Future<Output = cokret_core::Result<Self::Transport>> + '_ {
+    fn provide(&self) -> impl std::future::Future<Output = arkret_core::Result<Self::Transport>> + '_ {
         async move { /* build/refresh -> Client */ }
     }
 }

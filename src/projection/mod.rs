@@ -1,5 +1,5 @@
 use arkret::RealmState;
-use cokret_core::{Event, RealmId, Result};
+use arkret_core::{Event, RealmId, Result};
 
 pub trait DomainProjector {
     fn apply_domain_events(&mut self, realm_id: &RealmId, events: &[Event]) -> Result<()>;
@@ -46,7 +46,7 @@ impl DomainProjector for () {
 
 #[cfg(test)]
 mod tests {
-    use cokret_core::RealmId;
+    use arkret_core::RealmId;
 
     use super::*;
 

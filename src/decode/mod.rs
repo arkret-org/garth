@@ -1,5 +1,5 @@
-use cokret_core::events::kinds;
-use cokret_core::{Event, MessageEventPayload, Result};
+use arkret_core::events::kinds;
+use arkret_core::{Event, MessageEventPayload, Result};
 
 #[derive(Clone, Debug)]
 pub struct DecodedMessage {
@@ -56,8 +56,8 @@ impl InboundDecoder {
 
 #[cfg(test)]
 mod tests {
-    use cokret_core::events::kinds;
-    use cokret_core::{Did, Event, Hlc, MessageEventPayload, RealmId};
+    use arkret_core::events::kinds;
+    use arkret_core::{Did, Event, Hlc, MessageEventPayload, RealmId};
     use serde_json::{Value, json};
 
     use super::*;

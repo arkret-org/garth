@@ -7,7 +7,7 @@ mod seen_window;
 
 use std::future::Future;
 
-use cokret_core::{DeviceId, Did, EventId, RealmId, Result};
+use arkret_core::{DeviceId, Did, EventId, RealmId, Result};
 pub use crypto_store::SecureCryptoStoreAdapter;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use file::FileStore;

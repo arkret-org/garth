@@ -7,7 +7,7 @@ pub(crate) mod test_support;
 
 pub use account::account_updates_to_events;
 use arkret::{AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot};
-use cokret_core::{DeviceId, Did, Error, RealmId, Result};
+use arkret_core::{DeviceId, Did, Error, RealmId, Result};
 pub use driver::{SubscriptionLoopDriver, SubscriptionStopReason};
 pub use realm::{
     BoxRealmStreamFuture, RealmEventsDriver, RealmEventsFrameSource, RealmEventsTransport,
@@ -207,7 +207,7 @@ where
         transport: &T,
         realm_id: RealmId,
         options: ScanCatchupOptions,
-    ) -> Result<cokret_core::SyncBackfillOutcome>
+    ) -> Result<arkret_core::SyncBackfillOutcome>
     where
         T: EventsScanTransport + ?Sized,
     {
@@ -223,7 +223,7 @@ where
         transport: &T,
         realm_id: RealmId,
         options: ScanCatchupOptions,
-    ) -> ProjectedRunResult<cokret_core::SyncBackfillOutcome>
+    ) -> ProjectedRunResult<arkret_core::SyncBackfillOutcome>
     where
         T: EventsScanTransport + ?Sized,
     {
@@ -291,8 +291,8 @@ mod tests {
     use std::time::Duration;
 
     use arkret::{AccountStreamInterrupt, Error, SyncRequestBody};
-    use cokret_core::identifiers::Cursor;
-    use cokret_core::{EventsSubscribeFrame, EventsSubscribeFrameKind, SyncBackfillOutcome};
+    use arkret_core::identifiers::Cursor;
+    use arkret_core::{EventsSubscribeFrame, EventsSubscribeFrameKind, SyncBackfillOutcome};
     use serde_json::Value;
 
     use super::realm::BoxRealmStreamFuture;

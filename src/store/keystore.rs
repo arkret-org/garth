@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::str;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use cokret_core::{Error, KeyStore, KeyStoreError};
+use arkret_core::{Error, KeyStore, KeyStoreError};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -240,7 +240,7 @@ impl<S> KeyStore for SdkKeyStoreAdapter<S>
 where
     S: SecureKeyStore,
 {
-    fn load(&self, id: &str) -> cokret_core::Result<cokret_core::KeyBytes> {
+    fn load(&self, id: &str) -> arkret_core::Result<arkret_core::KeyBytes> {
         let bytes = self.inner.get_secret_bytes(id).map_err(|err| match err {
             SecureKeyStoreError::NotFound => Error::from(KeyStoreError::not_found(id)),
             other => Error::from(other),
@@ -248,15 +248,15 @@ where
         bytes.ok_or_else(|| KeyStoreError::not_found(id).into())
     }
 
-    fn store(&self, id: &str, key: &[u8]) -> cokret_core::Result<()> {
+    fn store(&self, id: &str, key: &[u8]) -> arkret_core::Result<()> {
         self.inner.store_secret_bytes(id, key).map_err(Error::from)
     }
 
-    fn list(&self) -> cokret_core::Result<Vec<String>> {
+    fn list(&self) -> arkret_core::Result<Vec<String>> {
         self.inner.list_secret_keys(None).map_err(Error::from)
     }
 
-    fn delete(&self, id: &str) -> cokret_core::Result<()> {
+    fn delete(&self, id: &str) -> arkret_core::Result<()> {
         self.inner.delete_secret(id).map_err(Error::from)
     }
 }
@@ -334,19 +334,19 @@ mod tests {
     struct MissingKeyStore;
 
     impl KeyStore for MissingKeyStore {
-        fn load(&self, id: &str) -> cokret_core::Result<cokret_core::KeyBytes> {
+        fn load(&self, id: &str) -> arkret_core::Result<arkret_core::KeyBytes> {
             Err(KeyStoreError::not_found(id).into())
         }
 
-        fn store(&self, _id: &str, _key: &[u8]) -> cokret_core::Result<()> {
+        fn store(&self, _id: &str, _key: &[u8]) -> arkret_core::Result<()> {
             Ok(())
         }
 
-        fn list(&self) -> cokret_core::Result<Vec<String>> {
+        fn list(&self) -> arkret_core::Result<Vec<String>> {
             Ok(Vec::new())
         }
 
-        fn delete(&self, _id: &str) -> cokret_core::Result<()> {
+        fn delete(&self, _id: &str) -> arkret_core::Result<()> {
             Ok(())
         }
     }
@@ -355,21 +355,21 @@ mod tests {
     struct BackendTextKeyStore;
 
     impl KeyStore for BackendTextKeyStore {
-        fn load(&self, _id: &str) -> cokret_core::Result<cokret_core::KeyBytes> {
+        fn load(&self, _id: &str) -> arkret_core::Result<arkret_core::KeyBytes> {
             Err(Error::Protocol(
                 "backend text mentions key not found but is not typed".to_owned(),
             ))
         }
 
-        fn store(&self, _id: &str, _key: &[u8]) -> cokret_core::Result<()> {
+        fn store(&self, _id: &str, _key: &[u8]) -> arkret_core::Result<()> {
             Ok(())
         }
 
-        fn list(&self) -> cokret_core::Result<Vec<String>> {
+        fn list(&self) -> arkret_core::Result<Vec<String>> {
             Ok(Vec::new())
         }
 
-        fn delete(&self, _id: &str) -> cokret_core::Result<()> {
+        fn delete(&self, _id: &str) -> arkret_core::Result<()> {
             Ok(())
         }
     }

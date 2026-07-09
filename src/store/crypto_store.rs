@@ -2,7 +2,7 @@ use arkret::{
     CryptoStore, CryptoStoreBackupEnvelope, MemoryCryptoStore, MlsEpochSecretRecord,
     MlsGroupStateRecord, MlsRecoveryPlan, StoredDeviceVerification,
 };
-use cokret_core::{
+use arkret_core::{
     DeviceId, Did, MlsCommitEnvelope, MlsKeyPackageRecord, MlsWelcomeEnvelope, Result,
 };
 

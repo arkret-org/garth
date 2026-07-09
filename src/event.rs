@@ -1,4 +1,4 @@
-use cokret_core::{
+use arkret_core::{
     Event, NotificationDelta, RealmId, RealmUpdate, SyncBackfillOutcome, SyncUpdates,
     ToDeviceMessage,
 };
@@ -39,5 +39,5 @@ pub trait ClientProjector {
     fn project(
         &self,
         batch: Vec<ClientEvent>,
-    ) -> impl std::future::Future<Output = cokret_core::Result<()>> + '_;
+    ) -> impl std::future::Future<Output = arkret_core::Result<()>> + '_;
 }

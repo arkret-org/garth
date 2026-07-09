@@ -11,7 +11,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use cokret_core::{Error, EventId, Result};
+use arkret_core::{Error, EventId, Result};
 use serde::{Deserialize, Serialize};
 
 use super::seen_window::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
@@ -140,7 +140,7 @@ impl FileStore {
 }
 
 fn scope_key(scope: &CursorScope) -> String {
-    fn did(value: &Option<cokret_core::Did>) -> String {
+    fn did(value: &Option<arkret_core::Did>) -> String {
         value
             .as_ref()
             .map(|d| d.as_str().to_owned())
@@ -245,7 +245,7 @@ impl EventCacheStore for FileStore {
 
 #[cfg(test)]
 mod tests {
-    use cokret_core::{DeviceId, Did, RealmId};
+    use arkret_core::{DeviceId, Did, RealmId};
 
     use super::*;
 
