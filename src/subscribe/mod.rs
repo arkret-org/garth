@@ -18,7 +18,8 @@ pub use realm::{
 pub use scan::{EventsScanRequest, EventsScanTransport, ScanCatchup, ScanCatchupOptions};
 
 use crate::{
-    ClientEvent, ClientEventSink, CursorScope, CursorStore, EventCacheStore, Executor, OpaqueCursor,
+    ClientEvent, ClientEventSink, ClientProjector, CursorScope, CursorStore, EventCacheStore,
+    Executor, OpaqueCursor,
 };
 
 #[derive(Clone, Debug)]
@@ -48,6 +49,14 @@ where
 
     pub fn with_service_did(mut self, service_did: Did) -> Self {
         self.service_did = Some(service_did);
+        self
+    }
+
+    /// Use a caller-owned cancellation control instead of the engine's own, so
+    /// a host that holds a clone can `cancel()` a running loop (used by the
+    /// [`crate::CokretClient`] orchestrator).
+    pub fn with_control(mut self, control: SyncLoopControl) -> Self {
+        self.control = control;
         self
     }
 
@@ -85,6 +94,55 @@ where
             .await
     }
 
+    /// Projector-driven account loop (orchestrator seam). Unlike
+    /// [`Self::run_account`] — which checkpoints the cursor BEFORE emitting to
+    /// the sink — this awaits the async [`ClientProjector`] and checkpoints the
+    /// cursor ONLY after `project` returns `Ok`, so the projector's durable
+    /// write gates cursor advance (uniform with the realm loop, crash-safe).
+    pub async fn run_account_projected<T, P>(
+        &self,
+        actor_id: Did,
+        device_id: DeviceId,
+        transport: &T,
+        projector: &P,
+    ) -> Result<SubscriptionStopReason>
+    where
+        T: AsyncSyncTransport + ?Sized,
+        P: ClientProjector + ?Sized,
+    {
+        let scope = self.account_scope(actor_id, device_id);
+        let mut sync_loop = self.restore_account_loop(scope.clone()).await?;
+
+        loop {
+            match sync_loop
+                .step_async_with_control(transport, &self.control)
+                .await
+            {
+                SyncLoopStep::Updates(updates) => {
+                    let batch = account::account_updates_to_events(updates);
+                    if !batch.is_empty() {
+                        // Gate: project must persist before the cursor moves.
+                        projector.project(batch).await?;
+                    }
+                    self.checkpoint_account_cursor(scope.clone(), sync_loop.token())
+                        .await?;
+                }
+                SyncLoopStep::Retry { retry_after, .. } => {
+                    self.checkpoint_account_cursor(scope.clone(), sync_loop.token())
+                        .await?;
+                    self.executor.sleep(retry_after).await;
+                }
+                SyncLoopStep::Backpressure { retry_after } => {
+                    self.executor.sleep(retry_after).await;
+                }
+                SyncLoopStep::Cancelled => return Ok(SubscriptionStopReason::Cancelled),
+                SyncLoopStep::Unauthorized { reason } => {
+                    return Ok(SubscriptionStopReason::Unauthorized { reason });
+                }
+            }
+        }
+    }
+
     pub async fn run_realm<T, S>(
         &self,
         transport: &T,
@@ -120,6 +178,77 @@ where
                     )
                     .await?;
                 sink.emit(ClientEvent::Backfill { realm_id, outcome });
+                if let Some(reconnect_after_ms) = reconnect_after_ms {
+                    self.executor
+                        .sleep(std::time::Duration::from_millis(reconnect_after_ms))
+                        .await;
+                }
+                Ok(RealmStreamStopReason::Dropped {
+                    cursor: Some(cursor),
+                    reconnect_after_ms,
+                })
+            }
+            RealmStreamStopReason::Dropped {
+                cursor: None,
+                reconnect_after_ms,
+            } => {
+                self.cursor_store.clear(self.realm_scope(realm_id)).await?;
+                if let Some(reconnect_after_ms) = reconnect_after_ms {
+                    self.executor
+                        .sleep(std::time::Duration::from_millis(reconnect_after_ms))
+                        .await;
+                }
+                Ok(RealmStreamStopReason::ResyncRequired { reconnect_after_ms })
+            }
+            other => Ok(other),
+        }
+    }
+
+    /// Projector-driven realm loop (orchestrator seam). Mirrors
+    /// [`Self::run_realm`] — including the `Dropped` -> scan-catchup ->
+    /// backfill recovery — but the recovered backfill and every decoded event
+    /// go through the async [`ClientProjector`], and the cursor advances only
+    /// after `project` returns `Ok` (see
+    /// [`RealmEventsDriver::run_realm_projected`]).
+    pub async fn run_realm_projected<T, P>(
+        &self,
+        transport: &T,
+        realm_id: RealmId,
+        projector: &P,
+    ) -> Result<RealmStreamStopReason>
+    where
+        T: RealmEventsTransport + EventsScanTransport + ?Sized,
+        P: ClientProjector + ?Sized,
+    {
+        let mut driver =
+            RealmEventsDriver::new(self.cursor_store.clone(), self.event_cache_store.clone());
+        if let Some(service_did) = self.service_did.clone() {
+            driver = driver.with_service_did(service_did);
+        }
+        let reason = driver
+            .run_realm_projected(transport, realm_id.clone(), projector)
+            .await?;
+        match reason {
+            RealmStreamStopReason::Dropped {
+                cursor: Some(cursor),
+                reconnect_after_ms,
+            } => {
+                let outcome = self
+                    .scan_realm_catchup(
+                        transport,
+                        realm_id.clone(),
+                        ScanCatchupOptions {
+                            before: Some(cursor.clone()),
+                            after: None,
+                            order: None,
+                            limit: None,
+                            max_pages: 64,
+                        },
+                    )
+                    .await?;
+                projector
+                    .project(vec![ClientEvent::Backfill { realm_id, outcome }])
+                    .await?;
                 if let Some(reconnect_after_ms) = reconnect_after_ms {
                     self.executor
                         .sleep(std::time::Duration::from_millis(reconnect_after_ms))

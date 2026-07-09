@@ -8,6 +8,7 @@ pub mod decode;
 pub mod event;
 pub mod executor;
 pub mod facade;
+pub mod orchestrator;
 pub mod outbound;
 pub mod projection;
 pub mod session;
@@ -15,19 +16,23 @@ pub mod store;
 pub mod subscribe;
 
 pub use decode::{DecodedInbound, DecodedMessage, DecodedNotification, InboundDecoder};
-pub use event::{ClientEvent, ClientEventSink};
+pub use event::{ClientEvent, ClientEventSink, ClientProjector};
 pub use executor::Executor;
 #[cfg(feature = "native")]
 pub use executor::NativeExecutor;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use executor::WasmExecutor;
+pub use cokret::SyncLoopControl;
 pub use facade::CokretClient;
+pub use orchestrator::{RunOptions, RunStop, TransportProvider};
 pub use outbound::{MessageCreateOptions, OutboundBuilder, OutboundCommandContext};
 pub use session::{
     AgentKeyProofLogin, DidProofLogin, HolderProofLogin, LoginKind, OidcLogin, SessionEngine,
     SessionGrantState, SessionGrantTransport, SessionHandle, SessionProofFields,
     SessionRefreshOptions,
 };
+#[cfg(feature = "native")]
+pub use store::FileStore;
 pub use store::{
     CursorScope, CursorStore, EventCacheStore, MemorySecureKeyStore, MemoryStore, OpaqueCursor,
     PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter, SecretBytes, SecretClass,
