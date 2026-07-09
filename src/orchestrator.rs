@@ -108,10 +108,12 @@ where
                     reconnect_after_ms, ..
                 }
                 | RealmStreamStopReason::ResyncRequired { reconnect_after_ms } => {
-                    let delay = reconnect_after_ms
-                        .map(Duration::from_millis)
-                        .unwrap_or(backoff);
-                    self.executor.sleep(delay).await;
+                    // The engine already honored a server-provided
+                    // `reconnect_after_ms` before returning; only apply the
+                    // local backoff when the server gave no hint.
+                    if reconnect_after_ms.is_none() {
+                        self.executor.sleep(backoff).await;
+                    }
                     backoff = backoff.saturating_mul(2).min(options.max_backoff);
                 }
                 RealmStreamStopReason::Unauthorized { reason } => {

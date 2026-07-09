@@ -204,12 +204,24 @@ where
 
             match frame.kind {
                 EventsSubscribeFrameKind::Event => {
-                    let event: Event = serde_json::from_value(frame.payload)?;
-                    if self.dedupe.remember_if_new(event.event_id.clone()).await? {
-                        let batch = self.decode_event_batch(event)?;
-                        if !batch.is_empty() {
-                            // Gate: project must persist before the cursor moves.
-                            projector.project(batch).await?;
+                    // A malformed Event frame must not poison the stream
+                    // (mirrors the sink path): skip it and let the cursor
+                    // advance, otherwise every reconnect would replay the same
+                    // frame and wedge realm sync permanently.
+                    if let Ok(event) = serde_json::from_value::<Event>(frame.payload) {
+                        let event_id = event.event_id.clone();
+                        if !self.dedupe.seen(event_id.clone()).await? {
+                            let batch = self.decode_event_batch(event);
+                            if !batch.is_empty() {
+                                // Gate: project must persist before the cursor moves.
+                                projector.project(batch).await?;
+                            }
+                            // Remember only after a successful projection: a
+                            // projector error must leave BOTH the cursor and
+                            // the dedupe cache untouched, so the redelivered
+                            // frame is projected again instead of being
+                            // silently swallowed by dedupe.
+                            self.dedupe.remember(event_id).await?;
                         }
                     }
                 }
@@ -251,14 +263,16 @@ where
     }
 
     /// Decode a wire event into the `ClientEvent`(s) a host projector consumes.
-    /// Mirrors [`Self::emit_event`] but returns the batch instead of pushing to
-    /// a sink.
-    fn decode_event_batch(&self, event: Event) -> Result<Vec<ClientEvent>> {
-        Ok(match self.decoder.try_decode_event(event)? {
+    /// Mirrors [`Self::emit_event`] — including the fault-tolerant decode: an
+    /// event whose business payload is invalid degrades to a raw
+    /// `ClientEvent::Event` for the host to inspect, rather than erroring the
+    /// loop (which would wedge the stream on the same frame every reconnect).
+    fn decode_event_batch(&self, event: Event) -> Vec<ClientEvent> {
+        match self.decoder.decode_event(event) {
             DecodedInbound::Message(message) => vec![ClientEvent::Message(message)],
             DecodedInbound::Notification(notification) => vec![ClientEvent::Event(notification.event)],
             DecodedInbound::Event(event) => vec![ClientEvent::Event(event)],
-        })
+        }
     }
 
     async fn handle_frame<S>(
@@ -623,6 +637,110 @@ mod tests {
             store.load(scope()).await.unwrap().as_deref(),
             Some("ck:cursor:frame1")
         );
+    }
+
+    #[tokio::test]
+    async fn realm_projected_redelivers_after_project_error() {
+        // A transient projector failure must NOT poison dedupe: the redelivered
+        // frame (cursor did not advance) must reach the projector again.
+        let store = MemoryStore::new();
+        let payload = serde_json::to_value(message_event()).unwrap();
+        let mut event_frame = frame(EventsSubscribeFrameKind::Event, payload.clone());
+        event_frame.cursor = Some(Cursor::new("ck:cursor:frame1").unwrap());
+        let driver = RealmEventsDriver::new(store.clone(), store.clone());
+
+        let failing = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: true,
+        };
+        let transport = VecTransport::new(vec![event_frame.clone()]);
+        assert!(
+            driver
+                .run_realm_projected(&transport, realm_id(), &failing)
+                .await
+                .is_err()
+        );
+        assert!(store.load(scope()).await.unwrap().is_none());
+
+        // Server redelivers the same frame on the next subscribe.
+        let succeeding = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+        };
+        let transport = VecTransport::new(vec![event_frame]);
+        let reason = driver
+            .run_realm_projected(&transport, realm_id(), &succeeding)
+            .await
+            .unwrap();
+
+        assert_eq!(reason, RealmStreamStopReason::StreamEnded);
+        // The redelivered event was projected (not swallowed by dedupe)...
+        assert_eq!(succeeding.batches.lock().unwrap().as_slice(), &[1]);
+        // ...and only now does the cursor advance.
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ck:cursor:frame1")
+        );
+    }
+
+    #[tokio::test]
+    async fn realm_projected_skips_malformed_event_frame() {
+        // An unparseable Event frame must not wedge the stream: skip it and
+        // let the cursor advance past it (mirrors the sink path).
+        let store = MemoryStore::new();
+        let mut bad_frame = frame(EventsSubscribeFrameKind::Event, json!({"not": "an event"}));
+        bad_frame.cursor = Some(Cursor::new("ck:cursor:frame1").unwrap());
+        let transport = VecTransport::new(vec![bad_frame]);
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+        };
+        let driver = RealmEventsDriver::new(store.clone(), store.clone());
+
+        let reason = driver
+            .run_realm_projected(&transport, realm_id(), &projector)
+            .await
+            .unwrap();
+
+        assert_eq!(reason, RealmStreamStopReason::StreamEnded);
+        assert!(projector.batches.lock().unwrap().is_empty());
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ck:cursor:frame1")
+        );
+    }
+
+    #[tokio::test]
+    async fn realm_projected_degrades_invalid_payload_to_raw_event() {
+        // A known kind with an invalid business payload degrades to a raw
+        // `ClientEvent::Event` instead of erroring the loop.
+        let store = MemoryStore::new();
+        let event = Event::new(
+            kinds::MESSAGE_CREATE,
+            realm_id(),
+            Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            1,
+            Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
+            json!({"content": {"kind": "ck.content.text", "body": "missing strand"}}),
+        )
+        .unwrap();
+        let transport = VecTransport::new(vec![frame(
+            EventsSubscribeFrameKind::Event,
+            serde_json::to_value(event).unwrap(),
+        )]);
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+        };
+        let driver = RealmEventsDriver::new(store.clone(), store.clone());
+
+        let reason = driver
+            .run_realm_projected(&transport, realm_id(), &projector)
+            .await
+            .unwrap();
+
+        assert_eq!(reason, RealmStreamStopReason::StreamEnded);
+        assert_eq!(projector.batches.lock().unwrap().as_slice(), &[1]);
     }
 
     #[tokio::test]

@@ -81,10 +81,41 @@ pub struct SessionRefreshOptions {
     pub expected_dpop_jkt: Option<String>,
 }
 
+/// Cooldown after a successful refresh during which `refresh_if_due` returns
+/// the current handle instead of hitting the transport again. Guards against a
+/// refresh treadmill when issued grants are short-lived enough to be
+/// immediately `Due` again (many independent callers would otherwise each fire
+/// a rotation).
+pub const REFRESH_SUCCESS_COOLDOWN_SECS: i64 = 3;
+
+/// Refresh coordination shared by all clones of a [`SessionEngine`]:
+/// single-flight (only one transport refresh at a time) plus the
+/// last-success timestamp backing the cooldown.
+#[derive(Debug, Default)]
+struct RefreshGate {
+    in_flight: bool,
+    last_success_at: Option<DateTime<Utc>>,
+}
+
+/// Clears the in-flight flag when the winning refresh finishes — including
+/// when its future is dropped mid-await, so a cancelled refresh can never
+/// wedge the gate shut.
+struct RefreshInFlightGuard(Arc<Mutex<RefreshGate>>);
+
+impl Drop for RefreshInFlightGuard {
+    fn drop(&mut self) {
+        self.0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .in_flight = false;
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SessionEngine<T> {
     transport: T,
     state: Arc<Mutex<Option<SessionGrantState>>>,
+    refresh_gate: Arc<Mutex<RefreshGate>>,
 }
 
 impl<T> SessionEngine<T>
@@ -95,6 +126,7 @@ where
         Self {
             transport,
             state: Arc::new(Mutex::new(None)),
+            refresh_gate: Arc::new(Mutex::new(RefreshGate::default())),
         }
     }
 
@@ -102,6 +134,7 @@ where
         Self {
             transport,
             state: Arc::new(Mutex::new(Some(state))),
+            refresh_gate: Arc::new(Mutex::new(RefreshGate::default())),
         }
     }
 
@@ -112,6 +145,21 @@ where
     // lock failures to a value rather than aborting).
     fn state_lock(&self) -> MutexGuard<'_, Option<SessionGrantState>> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn gate_lock(&self) -> MutexGuard<'_, RefreshGate> {
+        self.refresh_gate
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    fn within_refresh_cooldown(&self, now: DateTime<Utc>) -> bool {
+        match self.gate_lock().last_success_at {
+            Some(at) => {
+                now.signed_duration_since(at).num_seconds() < REFRESH_SUCCESS_COOLDOWN_SECS
+            }
+            None => false,
+        }
     }
 
     pub fn current_state(&self) -> Option<SessionGrantState> {
@@ -144,7 +192,14 @@ where
     ) -> Result<SessionHandle> {
         match self.refresh_decision(now) {
             RefreshDecision::Fresh => self.current_handle().ok_or_else(no_active_grant),
-            RefreshDecision::Due => self.refresh_once(options, now).await,
+            RefreshDecision::Due => {
+                // A refresh just succeeded (possibly by another caller): the
+                // grant is as fresh as it gets, do not fire another rotation.
+                if self.within_refresh_cooldown(now) {
+                    return self.current_handle().ok_or_else(no_active_grant);
+                }
+                self.refresh_once(options, now).await
+            }
             RefreshDecision::NoGrant => Err(no_active_grant()),
             RefreshDecision::GrantExpired => Err(protocol("session grant is expired")),
         }
@@ -155,6 +210,20 @@ where
         options: SessionRefreshOptions,
         now: DateTime<Utc>,
     ) -> Result<SessionHandle> {
+        // Single-flight: the grant JWT is consumed by rotation, so a second
+        // concurrent refresh would race the winner with an already-spent JWT.
+        // Losers return the still-valid current handle; the winner installs
+        // the rotated grant into the shared state for everyone.
+        let _in_flight = {
+            let mut gate = self.gate_lock();
+            if gate.in_flight {
+                drop(gate);
+                return self.current_handle().ok_or_else(no_active_grant);
+            }
+            gate.in_flight = true;
+            RefreshInFlightGuard(Arc::clone(&self.refresh_gate))
+        };
+
         let current = self.current_state().ok_or_else(no_active_grant)?;
         if refresh_decision(Some(&current.refresh_state()), now) == RefreshDecision::GrantExpired {
             return Err(protocol("session grant is expired"));
@@ -169,6 +238,7 @@ where
             state_from_refresh_outcome(&current, &request, &expected_dpop_jkt, outcome, now)?;
         let handle = state.handle();
         *self.state_lock() = Some(state);
+        self.gate_lock().last_success_at = Some(now);
         Ok(handle)
     }
 }
@@ -761,5 +831,111 @@ mod tests {
             assert_eq!(engine.current_state().unwrap().grant_jwt, "grant-1");
             assert_eq!(transport.refresh_requests().len(), 1);
         }
+    }
+
+    /// Refresh transport whose future stays pending until released, so a test
+    /// can hold a refresh in flight while a second caller races it.
+    struct GatedRefreshTransport {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        refresh_calls: Arc<Mutex<usize>>,
+        outcome: SessionGrantRefreshOutcome,
+    }
+
+    impl SessionGrantTransport for GatedRefreshTransport {
+        fn issue_session_grant<'a>(
+            &'a self,
+            _request: SessionGrantRequestBody,
+        ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
+            Box::pin(async move { Err(Error::Protocol("issue not expected".to_owned())) })
+        }
+
+        fn refresh_session_grant<'a>(
+            &'a self,
+            _request: SessionGrantRefreshRequestBody,
+        ) -> BoxSessionFuture<'a, SessionGrantRefreshOutcome> {
+            *self.refresh_calls.lock().unwrap() += 1;
+            let started = Arc::clone(&self.started);
+            let release = Arc::clone(&self.release);
+            let outcome = self.outcome.clone();
+            Box::pin(async move {
+                started.notify_one();
+                release.notified().await;
+                Ok(outcome)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_refresh_is_single_flight() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let refresh_calls = Arc::new(Mutex::new(0usize));
+        let transport = GatedRefreshTransport {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+            refresh_calls: Arc::clone(&refresh_calls),
+            outcome: refresh_outcome("grant-2", grant_id(2)),
+        };
+        let engine = Arc::new(SessionEngine::with_state(transport, active_state()));
+
+        let winner = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move { engine.refresh_once(refresh_options(), now()).await })
+        };
+        // Wait until the winner's transport call is in flight...
+        started.notified().await;
+        // ...then race a second refresh: it must NOT fire a transport call and
+        // returns the still-valid current handle instead.
+        let loser = engine.refresh_once(refresh_options(), now()).await.unwrap();
+        assert_eq!(loser.access_token, "grant-1");
+        assert_eq!(*refresh_calls.lock().unwrap(), 1);
+
+        release.notify_one();
+        let winner = winner.await.unwrap().unwrap();
+        assert_eq!(winner.access_token, "grant-2");
+        assert_eq!(*refresh_calls.lock().unwrap(), 1);
+        // The winner installed the rotated grant for everyone.
+        assert_eq!(engine.current_state().unwrap().grant_jwt, "grant-2");
+    }
+
+    #[tokio::test]
+    async fn refresh_if_due_honors_success_cooldown() {
+        // A rotated grant that is still short-lived enough to be immediately
+        // `Due` again (the refresh-treadmill shape).
+        let mut short_lived = refresh_outcome("grant-2", grant_id(2));
+        short_lived.expires_at = now() + Duration::minutes(10);
+        let mut after_cooldown = refresh_outcome("grant-3", grant_id(3));
+        after_cooldown.previous_grant_id = grant_id(2);
+        after_cooldown.expires_at = now() + Duration::minutes(10);
+        let transport = MockSessionTransport::with_refresh_responses(vec![
+            Ok(short_lived),
+            Ok(after_cooldown),
+        ]);
+        let engine = SessionEngine::with_state(transport.clone(), active_state());
+
+        // First call rotates.
+        let handle = engine.refresh_if_due(refresh_options(), now()).await.unwrap();
+        assert_eq!(handle.access_token, "grant-2");
+        assert_eq!(transport.refresh_requests().len(), 1);
+
+        // Still Due, but within the cooldown: no second transport call.
+        let handle = engine
+            .refresh_if_due(refresh_options(), now() + Duration::seconds(1))
+            .await
+            .unwrap();
+        assert_eq!(handle.access_token, "grant-2");
+        assert_eq!(transport.refresh_requests().len(), 1);
+
+        // Past the cooldown the due refresh fires again.
+        let handle = engine
+            .refresh_if_due(
+                refresh_options(),
+                now() + Duration::seconds(REFRESH_SUCCESS_COOLDOWN_SECS),
+            )
+            .await
+            .unwrap();
+        assert_eq!(handle.access_token, "grant-3");
+        assert_eq!(transport.refresh_requests().len(), 2);
     }
 }

@@ -27,9 +27,11 @@ pub use facade::CokretClient;
 pub use orchestrator::{RunOptions, RunStop, TransportProvider};
 pub use outbound::{MessageCreateOptions, OutboundBuilder, OutboundCommandContext};
 pub use session::{
-    AgentKeyProofLogin, DidProofLogin, HolderProofLogin, LoginKind, OidcLogin, SessionEngine,
-    SessionGrantState, SessionGrantTransport, SessionHandle, SessionProofFields,
-    SessionRefreshOptions,
+    AgentKeyProofLogin, DidProofLogin, GRANT_ROTATION_SKEW_SECS, HolderProofLogin, LoginKind,
+    OidcLogin, POLL_INTERVAL_SECS, REFRESH_SKEW_SECS, RefreshDecision, SessionEngine,
+    SessionGrantRefreshState, SessionGrantState, SessionGrantTransport, SessionHandle,
+    SessionProofFields, SessionRefreshOptions, grant_due_for_rotation, grant_is_dead,
+    refresh_decision,
 };
 #[cfg(feature = "native")]
 pub use store::FileStore;
