@@ -1,5 +1,5 @@
 mod crypto_store;
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod file;
 mod keystore;
 mod memory;
@@ -9,7 +9,7 @@ use std::future::Future;
 
 use cokret_core::{DeviceId, Did, EventId, Hash, RealmId, Result};
 pub use crypto_store::SecureCryptoStoreAdapter;
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use file::FileStore;
 pub use keystore::{
     MemorySecureKeyStore, PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter,

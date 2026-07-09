@@ -33,7 +33,7 @@ pub use session::{
     SessionProofFields, SessionRefreshOptions, grant_due_for_rotation, grant_is_dead,
     refresh_decision,
 };
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use store::FileStore;
 pub use store::{
     CursorScope, CursorStore, EventCacheStore, MemorySecureKeyStore, MemoryStore, OpaqueCursor,

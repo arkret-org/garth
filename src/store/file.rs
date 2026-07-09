@@ -26,6 +26,7 @@ const SEP: char = '\u{1f}';
 #[derive(Clone, Debug)]
 pub struct FileStore {
     inner: Arc<Mutex<FileStoreInner>>,
+    persist: Arc<Mutex<FileStorePersist>>,
 }
 
 #[derive(Debug)]
@@ -34,9 +35,22 @@ struct FileStoreInner {
     state: FileState,
     /// Runtime lookup index over `state.seen_events` (not persisted).
     seen_window: BoundedSeenWindow<String>,
+    generation: u64,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize)]
+#[derive(Debug, Default)]
+struct FileStorePersist {
+    generation: u64,
+}
+
+#[derive(Debug)]
+struct PersistSnapshot {
+    path: PathBuf,
+    state: FileState,
+    generation: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct FileState {
     #[serde(default)]
     cursors: BTreeMap<String, OpaqueCursor>,
@@ -66,18 +80,54 @@ impl FileStore {
                 path,
                 state,
                 seen_window,
+                generation: 0,
             })),
+            persist: Arc::new(Mutex::new(FileStorePersist::default())),
         })
     }
 
-    fn mutate<T>(&self, f: impl FnOnce(&mut FileStoreInner) -> T) -> Result<T> {
+    async fn mutate<T>(&self, f: impl FnOnce(&mut FileStoreInner) -> T) -> Result<T> {
+        let (out, snapshot) = self.stage_mutation(f)?;
+        self.persist_snapshot(snapshot).await?;
+        Ok(out)
+    }
+
+    fn stage_mutation<T>(
+        &self,
+        f: impl FnOnce(&mut FileStoreInner) -> T,
+    ) -> Result<(T, PersistSnapshot)> {
         let mut guard = self
             .inner
             .lock()
             .map_err(|err: PoisonError<_>| Error::Protocol(format!("file store lock: {err}")))?;
         let out = f(&mut guard);
-        persist(&guard.path, &guard.state)?;
-        Ok(out)
+        guard.generation = guard
+            .generation
+            .checked_add(1)
+            .ok_or_else(|| Error::Protocol("file store generation overflow".to_owned()))?;
+        let snapshot = PersistSnapshot {
+            path: guard.path.clone(),
+            state: guard.state.clone(),
+            generation: guard.generation,
+        };
+        Ok((out, snapshot))
+    }
+
+    async fn persist_snapshot(&self, snapshot: PersistSnapshot) -> Result<()> {
+        let persist_state = self.persist.clone();
+        tokio::task::spawn_blocking(move || {
+            let mut guard = persist_state.lock().map_err(|err: PoisonError<_>| {
+                Error::Protocol(format!("file store persist lock: {err}"))
+            })?;
+            if guard.generation >= snapshot.generation {
+                return Ok(());
+            }
+            persist(&snapshot.path, &snapshot.state)?;
+            guard.generation = snapshot.generation;
+            Ok(())
+        })
+        .await
+        .map_err(|err| Error::Protocol(format!("file store persist task: {err}")))?
     }
 
     fn read<T>(&self, f: impl FnOnce(&FileStoreInner) -> T) -> Result<T> {
@@ -188,6 +238,7 @@ impl CursorStore for FileStore {
             self.mutate(|inner| {
                 inner.state.cursors.insert(scope_key(&scope), cursor);
             })
+            .await
         }
     }
 
@@ -196,6 +247,7 @@ impl CursorStore for FileStore {
             self.mutate(|inner| {
                 inner.state.cursors.remove(&scope_key(&scope));
             })
+            .await
         }
     }
 }
@@ -213,6 +265,7 @@ impl EventCacheStore for FileStore {
                     inner.state.seen_events = inner.seen_window.entries().clone();
                 }
             })
+            .await
         }
     }
 }
@@ -292,6 +345,87 @@ mod tests {
         let reopened = FileStore::open(&path).unwrap();
         assert!(reopened.seen(event).await.unwrap());
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn concurrent_mutations_reopen_with_complete_state() {
+        let path = temp_path("concurrent-mutations");
+        let _ = std::fs::remove_file(&path);
+        let store = FileStore::open(&path).unwrap();
+
+        let account_save = store.save(account_scope(), "ck:cursor:account".to_owned());
+        let realm_save = store.save(realm_scope(), "ck:cursor:realm".to_owned());
+        let (account_result, realm_result) = tokio::join!(account_save, realm_save);
+        account_result.unwrap();
+        realm_result.unwrap();
+
+        let reopened = FileStore::open(&path).unwrap();
+        assert_eq!(
+            reopened.load(account_scope()).await.unwrap().as_deref(),
+            Some("ck:cursor:account")
+        );
+        assert_eq!(
+            reopened.load(realm_scope()).await.unwrap().as_deref(),
+            Some("ck:cursor:realm")
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn stale_snapshot_does_not_overwrite_newer_generation() {
+        let path = temp_path("stale-snapshot");
+        let _ = std::fs::remove_file(&path);
+        let store = FileStore::open(&path).unwrap();
+        let key = scope_key(&account_scope());
+
+        let mut older = FileState::default();
+        older
+            .cursors
+            .insert(key.clone(), "ck:cursor:older".to_owned());
+        let mut newer = older.clone();
+        newer.cursors.insert(key, "ck:cursor:newer".to_owned());
+
+        store
+            .persist_snapshot(PersistSnapshot {
+                path: path.clone(),
+                state: newer,
+                generation: 2,
+            })
+            .await
+            .unwrap();
+        store
+            .persist_snapshot(PersistSnapshot {
+                path: path.clone(),
+                state: older,
+                generation: 1,
+            })
+            .await
+            .unwrap();
+
+        let reopened = FileStore::open(&path).unwrap();
+        assert_eq!(
+            reopened.load(account_scope()).await.unwrap().as_deref(),
+            Some("ck:cursor:newer")
+        );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn save_propagates_blocking_persist_errors() {
+        let parent = std::env::temp_dir().join("garth-filestore-test-missing-parent");
+        let path = parent.join("store.json");
+        let _ = std::fs::remove_dir_all(&parent);
+        let store = FileStore::open(&path).unwrap();
+
+        let err = store
+            .save(account_scope(), "ck:cursor:account".to_owned())
+            .await
+            .unwrap_err();
+        assert!(
+            err.to_string().contains("create file store"),
+            "unexpected error: {err}"
+        );
+        let _ = std::fs::remove_dir_all(parent);
     }
 
     fn event_id(n: usize) -> EventId {
