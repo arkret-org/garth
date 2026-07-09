@@ -132,6 +132,33 @@ where
     where
         T: EventsScanTransport + ?Sized,
     {
+        self.scan_realm_catchup_inner(transport, realm_id, options, true)
+            .await
+    }
+
+    pub async fn scan_realm_catchup_uncheckpointed<T>(
+        &self,
+        transport: &T,
+        realm_id: RealmId,
+        options: ScanCatchupOptions,
+    ) -> Result<SyncBackfillOutcome>
+    where
+        T: EventsScanTransport + ?Sized,
+    {
+        self.scan_realm_catchup_inner(transport, realm_id, options, false)
+            .await
+    }
+
+    async fn scan_realm_catchup_inner<T>(
+        &self,
+        transport: &T,
+        realm_id: RealmId,
+        options: ScanCatchupOptions,
+        checkpoint: bool,
+    ) -> Result<SyncBackfillOutcome>
+    where
+        T: EventsScanTransport + ?Sized,
+    {
         let scope = self.scope(&realm_id);
         let mut after = self.after_cursor(scope.clone(), options.after).await?;
         let mut aggregate = SyncBackfillOutcome {
@@ -164,8 +191,10 @@ where
             aggregate.events.append(&mut outcome.events);
             aggregate.next_cursor = next_cursor.clone();
             aggregate.limited = limited;
-            self.save_next_cursor(scope.clone(), next_cursor.clone())
-                .await?;
+            if checkpoint {
+                self.save_next_cursor(scope.clone(), next_cursor.clone())
+                    .await?;
+            }
 
             match (limited, next_cursor) {
                 (true, Some(next)) => after = Some(next),
@@ -299,6 +328,33 @@ mod tests {
         assert_eq!(
             store.load(scope()).await.unwrap().as_deref(),
             Some("ck:cursor:p3")
+        );
+    }
+
+    #[tokio::test]
+    async fn scan_catchup_uncheckpointed_leaves_cursor_unchanged() {
+        let store = MemoryStore::new();
+        store
+            .save(scope(), "ck:cursor:stored".to_owned())
+            .await
+            .unwrap();
+        let transport =
+            move |_request: EventsScanRequest| async { Ok(outcome(Some("ck:cursor:next"), false)) };
+
+        let catchup = ScanCatchup::new(store.clone());
+        let response = catchup
+            .scan_realm_catchup_uncheckpointed(
+                &transport,
+                realm_id(),
+                ScanCatchupOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.next_cursor.as_deref(), Some("ck:cursor:next"));
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ck:cursor:stored")
         );
     }
 }

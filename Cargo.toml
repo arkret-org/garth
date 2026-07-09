@@ -26,9 +26,9 @@ wasm = ["dep:gloo-timers", "dep:wasm-bindgen-futures"]
 
 [dependencies]
 chrono = {version = "0.4.45",default-features = false,features = ["clock", "std", "serde"]}
-cokret = {path = "../cokret-rust-sdk/crates/sdk",default-features = false,features = ["client", "full-surface", "signer", "sync-runtime"]}
-cokret-core = {path = "../cokret-rust-sdk/crates/core",default-features = false}
-cokret-http-client = {path = "../cokret-rust-sdk/crates/http-client",default-features = false}
+cokret = {version = "0.3.0",path = "../cokret-rust-sdk/crates/sdk",default-features = false,features = ["client", "full-surface", "signer", "sync-runtime"]}
+cokret-core = {version = "0.3.0",path = "../cokret-rust-sdk/crates/core",default-features = false}
+cokret-http-client = {version = "0.3.0",path = "../cokret-rust-sdk/crates/http-client",default-features = false}
 ed25519-dalek = {version = "2.2.0",default-features = false,features = ["std", "rand_core"]}
 gloo-timers = {version = "0.3",default-features = false,features = ["futures"],optional = true}
 serde = {version = "1.0.228",default-features = false,features = ["std", "derive"]}

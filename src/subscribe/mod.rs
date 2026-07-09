@@ -241,7 +241,7 @@ where
                 reconnect_after_ms,
             } => {
                 let outcome = self
-                    .scan_realm_catchup(
+                    .scan_realm_catchup_uncheckpointed(
                         transport,
                         realm_id.clone(),
                         ScanCatchupOptions {
@@ -253,8 +253,14 @@ where
                         },
                     )
                     .await?;
+                let next_cursor = outcome.next_cursor.clone();
                 projector
-                    .project(vec![ClientEvent::Backfill { realm_id, outcome }])
+                    .project(vec![ClientEvent::Backfill {
+                        realm_id: realm_id.clone(),
+                        outcome,
+                    }])
+                    .await?;
+                self.save_realm_cursor_after_project(realm_id.clone(), next_cursor)
                     .await?;
                 if let Some(reconnect_after_ms) = reconnect_after_ms {
                     self.executor
@@ -296,6 +302,36 @@ where
             scan = scan.with_service_did(service_did);
         }
         scan.scan_realm_catchup(transport, realm_id, options).await
+    }
+
+    async fn scan_realm_catchup_uncheckpointed<T>(
+        &self,
+        transport: &T,
+        realm_id: RealmId,
+        options: ScanCatchupOptions,
+    ) -> Result<cokret_core::SyncBackfillOutcome>
+    where
+        T: EventsScanTransport + ?Sized,
+    {
+        let mut scan = ScanCatchup::new(self.cursor_store.clone());
+        if let Some(service_did) = self.service_did.clone() {
+            scan = scan.with_service_did(service_did);
+        }
+        scan.scan_realm_catchup_uncheckpointed(transport, realm_id, options)
+            .await
+    }
+
+    async fn save_realm_cursor_after_project(
+        &self,
+        realm_id: RealmId,
+        next_cursor: Option<OpaqueCursor>,
+    ) -> Result<()> {
+        if let Some(next_cursor) = next_cursor {
+            self.cursor_store
+                .save(self.realm_scope(realm_id), next_cursor)
+                .await?;
+        }
+        Ok(())
     }
 
     async fn restore_account_loop(&self, scope: CursorScope) -> Result<SyncLoop> {
@@ -536,6 +572,29 @@ mod tests {
         }
     }
 
+    struct RecordingProjector {
+        batches: Arc<Mutex<Vec<usize>>>,
+        fail: bool,
+    }
+
+    impl ClientProjector for RecordingProjector {
+        fn project(
+            &self,
+            batch: Vec<ClientEvent>,
+        ) -> impl std::future::Future<Output = Result<()>> + '_ {
+            let batches = Arc::clone(&self.batches);
+            let fail = self.fail;
+            async move {
+                batches.lock().unwrap().push(batch.len());
+                if fail {
+                    Err(Error::Protocol("projector failed".to_owned()))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
     #[tokio::test]
     async fn engine_recovers_dropped_realm_stream_with_scan_catchup() {
         let store = MemoryStore::new();
@@ -582,6 +641,77 @@ mod tests {
             emitted.lock().unwrap().as_slice(),
             [ClientEvent::Backfill { .. }]
         ));
+    }
+
+    #[tokio::test]
+    async fn engine_projected_backfill_checkpoints_after_project_ok() {
+        let store = MemoryStore::new();
+        store
+            .save(realm_scope(), "ck:cursor:stored".to_owned())
+            .await
+            .unwrap();
+        let mut dropped = realm_frame(EventsSubscribeFrameKind::Dropped);
+        dropped.cursor = Some(Cursor::new("ck:cursor:dropped").unwrap());
+        let transport = RealmRecoveryTransport::new(
+            vec![dropped],
+            vec![backfill_outcome(Some("ck:cursor:next"))],
+        );
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+        };
+        let engine =
+            SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store.clone());
+
+        let reason = engine
+            .run_realm_projected(&transport, realm_id(), &projector)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            reason,
+            RealmStreamStopReason::Dropped {
+                cursor: Some("ck:cursor:dropped".to_owned()),
+                reconnect_after_ms: None
+            }
+        );
+        assert_eq!(projector.batches.lock().unwrap().as_slice(), &[1]);
+        assert_eq!(
+            store.load(realm_scope()).await.unwrap().as_deref(),
+            Some("ck:cursor:next")
+        );
+    }
+
+    #[tokio::test]
+    async fn engine_projected_backfill_does_not_checkpoint_when_project_errs() {
+        let store = MemoryStore::new();
+        store
+            .save(realm_scope(), "ck:cursor:stored".to_owned())
+            .await
+            .unwrap();
+        let mut dropped = realm_frame(EventsSubscribeFrameKind::Dropped);
+        dropped.cursor = Some(Cursor::new("ck:cursor:dropped").unwrap());
+        let transport = RealmRecoveryTransport::new(
+            vec![dropped],
+            vec![backfill_outcome(Some("ck:cursor:next"))],
+        );
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: true,
+        };
+        let engine =
+            SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store.clone());
+
+        let result = engine
+            .run_realm_projected(&transport, realm_id(), &projector)
+            .await;
+
+        assert!(result.is_err());
+        assert_eq!(projector.batches.lock().unwrap().as_slice(), &[1]);
+        assert_eq!(
+            store.load(realm_scope()).await.unwrap().as_deref(),
+            Some("ck:cursor:stored")
+        );
     }
 
     #[tokio::test]

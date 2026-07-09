@@ -7,6 +7,7 @@
 
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
@@ -156,11 +157,18 @@ fn load_state(path: &Path) -> Result<FileState> {
 fn persist(path: &Path, state: &FileState) -> Result<()> {
     let bytes = serde_json::to_vec(state)
         .map_err(|err| Error::Protocol(format!("serialize file store: {err}")))?;
-    // Atomic replace: write a sibling temp then rename over the target so a
-    // crash mid-write never leaves a half-written store.
+    // Atomic replace: write and sync a sibling temp, then rename over the
+    // target so a crash mid-write never leaves a half-written store.
     let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, &bytes)
-        .map_err(|err| Error::Protocol(format!("write file store {}: {err}", tmp.display())))?;
+    {
+        let mut file = std::fs::File::create(&tmp).map_err(|err| {
+            Error::Protocol(format!("create file store {}: {err}", tmp.display()))
+        })?;
+        file.write_all(&bytes)
+            .map_err(|err| Error::Protocol(format!("write file store {}: {err}", tmp.display())))?;
+        file.sync_all()
+            .map_err(|err| Error::Protocol(format!("sync file store {}: {err}", tmp.display())))?;
+    }
     std::fs::rename(&tmp, path)
         .map_err(|err| Error::Protocol(format!("commit file store {}: {err}", path.display())))?;
     Ok(())
