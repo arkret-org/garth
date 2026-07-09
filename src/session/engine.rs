@@ -2,11 +2,11 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use chrono::{DateTime, Utc};
 use arkret_core::{
     DeviceId, Did, Error, GrantId, Result, SessionGrantOutcome, SessionGrantRefreshOutcome,
     SessionGrantRefreshProof, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
 };
+use chrono::{DateTime, Utc};
 
 use super::SessionHandle;
 use super::login::LoginKind;
@@ -55,7 +55,12 @@ pub struct SessionGrantState {
     pub expires_at: DateTime<Utc>,
     pub audience: String,
     pub granted_scope: Vec<String>,
-    pub session_public_key: String,
+    /// The session public key reported by the Account Authority when the grant
+    /// was issued/rotated. `None` for states reconstructed from a persisted
+    /// grant (the client persistence layer does not retain it) — this field is
+    /// never consumed by the refresh flow, only carried through from the wire
+    /// outcome on the issue/refresh paths.
+    pub session_public_key: Option<String>,
     pub dpop_jkt: Option<String>,
 }
 
@@ -319,7 +324,7 @@ fn state_from_issue_outcome(
         expires_at: outcome.expires_at,
         audience,
         granted_scope: outcome.granted_scope,
-        session_public_key,
+        session_public_key: Some(session_public_key),
         dpop_jkt: None,
     })
 }
@@ -371,7 +376,7 @@ fn state_from_refresh_outcome(
         expires_at: outcome.expires_at,
         audience: outcome.audience,
         granted_scope: outcome.scopes,
-        session_public_key: outcome.session_public_key,
+        session_public_key: Some(outcome.session_public_key),
         dpop_jkt: Some(outcome.dpop_jkt),
     })
 }
@@ -393,10 +398,10 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
-    use chrono::Duration;
     use arkret_core::{
         Hash, SessionGrantDpopBindingProof, SessionGrantProofKind, SessionGrantScopeDetails,
     };
+    use chrono::Duration;
     use serde_json::json;
 
     use super::*;
@@ -590,7 +595,7 @@ mod tests {
             expires_at: now() + Duration::minutes(20),
             audience: audience(),
             granted_scope: vec!["ck.self.events.stream.subscribe".to_owned()],
-            session_public_key: "session-public-key".to_owned(),
+            session_public_key: Some("session-public-key".to_owned()),
             dpop_jkt: Some("jkt-1".to_owned()),
         }
     }

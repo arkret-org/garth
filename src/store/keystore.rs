@@ -8,6 +8,8 @@ use arkret_core::{Error, KeyStore, KeyStoreError};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
+use crate::MaybeSendSync;
+
 pub type SecretBytes = Zeroizing<Vec<u8>>;
 
 /// Durability expectation a caller attaches to a secret write.
@@ -89,7 +91,7 @@ impl From<SecureKeyStoreError> for Error {
 
 pub type SecureKeyStoreResult<T> = Result<T, SecureKeyStoreError>;
 
-pub trait SecureKeyStore: Send + Sync + 'static {
+pub trait SecureKeyStore: MaybeSendSync + 'static {
     fn store_secret_bytes(&self, key: &str, value: &[u8]) -> SecureKeyStoreResult<()>;
 
     /// Persist a secret with crash durability.
@@ -174,6 +176,17 @@ impl MemorySecureKeyStore {
         Self::default()
     }
 
+    /// Total entries currently held — only useful for diagnostics / tests.
+    /// Production code should never iterate the store contents.
+    pub fn len(&self) -> usize {
+        self.inner.lock().map(|guard| guard.len()).unwrap_or(0)
+    }
+
+    /// True when no secrets are stored.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
     fn with_map<T>(
         &self,
         f: impl FnOnce(&mut BTreeMap<String, SecretBytes>) -> T,
@@ -236,9 +249,12 @@ impl<S> SdkKeyStoreAdapter<S> {
     }
 }
 
+// The SDK `KeyStore` trait is unconditionally `Send + Sync`, so this bridge must
+// require its wrapped `SecureKeyStore` to actually be `Send + Sync` (implied on
+// native; a real constraint on wasm where `SecureKeyStore` no longer forces it).
 impl<S> KeyStore for SdkKeyStoreAdapter<S>
 where
-    S: SecureKeyStore,
+    S: SecureKeyStore + Send + Sync,
 {
     fn load(&self, id: &str) -> arkret_core::Result<arkret_core::KeyBytes> {
         let bytes = self.inner.get_secret_bytes(id).map_err(|err| match err {

@@ -52,9 +52,13 @@ where
     }
 }
 
+// The SDK `CryptoStore` trait is unconditionally `Send + Sync`, so this bridge
+// must require its wrapped `SecureKeyStore` to actually be `Send + Sync` (on
+// native this is implied by `SecureKeyStore`; on wasm the relaxed store trait no
+// longer implies it, and a `!Send` store cannot back an SDK crypto store).
 impl<S> CryptoStore for SecureCryptoStoreAdapter<S>
 where
-    S: SecureKeyStore,
+    S: SecureKeyStore + Send + Sync,
 {
     fn put_mls_group_state(&mut self, record: MlsGroupStateRecord) -> Result<()> {
         self.inner.put_mls_group_state(record)?;

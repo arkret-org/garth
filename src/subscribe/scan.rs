@@ -4,9 +4,17 @@ use std::pin::Pin;
 use arkret_core::{Did, RealmId, Result, SyncBackfillOutcome};
 
 use super::{ProjectedRunError, ProjectedRunResult};
-use crate::{CursorScope, CursorStore, OpaqueCursor};
+use crate::{CursorScope, CursorStore, MaybeSend, MaybeSendSync, OpaqueCursor};
 
+// Native builds keep the boxed scan future `Send` so host runtimes can move it
+// across worker threads, matching `BoxSessionFuture` / `BoxRealmStreamFuture`.
+// Wasm builds drop `Send` because browser futures are commonly single-threaded
+// and JS-interop transports are `!Send`.
+#[cfg(not(target_arch = "wasm32"))]
 pub type BoxScanFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+
+#[cfg(target_arch = "wasm32")]
+pub type BoxScanFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + 'a>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventsScanRequest {
@@ -26,8 +34,8 @@ pub trait EventsScanTransport {
 
 impl<F, Fut> EventsScanTransport for F
 where
-    F: Fn(EventsScanRequest) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<SyncBackfillOutcome>> + Send + 'static,
+    F: Fn(EventsScanRequest) -> Fut + MaybeSendSync,
+    Fut: Future<Output = Result<SyncBackfillOutcome>> + MaybeSend + 'static,
 {
     fn scan_events<'a>(
         &'a self,

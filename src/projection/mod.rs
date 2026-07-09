@@ -1,7 +1,7 @@
 use arkret::RealmState;
 use arkret_core::{Event, RealmId, Result};
 
-pub trait DomainProjector {
+pub trait RealmStateReducer {
     fn apply_domain_events(&mut self, realm_id: &RealmId, events: &[Event]) -> Result<()>;
 }
 
@@ -31,14 +31,14 @@ impl ProjectionMount {
 
     pub fn apply_events_with_domain<P>(&mut self, events: &[Event], projector: &mut P) -> Result<()>
     where
-        P: DomainProjector,
+        P: RealmStateReducer,
     {
         self.apply_events(events)?;
         projector.apply_domain_events(&self.state.realm_id, events)
     }
 }
 
-impl DomainProjector for () {
+impl RealmStateReducer for () {
     fn apply_domain_events(&mut self, _realm_id: &RealmId, _events: &[Event]) -> Result<()> {
         Ok(())
     }
@@ -57,7 +57,7 @@ mod tests {
         last_len: usize,
     }
 
-    impl DomainProjector for CountingProjector {
+    impl RealmStateReducer for CountingProjector {
         fn apply_domain_events(&mut self, realm_id: &RealmId, events: &[Event]) -> Result<()> {
             self.calls += 1;
             self.last_realm = Some(realm_id.clone());

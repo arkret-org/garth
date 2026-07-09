@@ -8,6 +8,8 @@ mod seen_window;
 use std::future::Future;
 
 use arkret_core::{DeviceId, Did, EventId, RealmId, Result};
+
+use crate::MaybeSendSync;
 pub use crypto_store::SecureCryptoStoreAdapter;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use file::FileStore;
@@ -33,7 +35,7 @@ pub enum CursorScope {
     },
 }
 
-pub trait CursorStore: Clone + Send + Sync + 'static {
+pub trait CursorStore: Clone + MaybeSendSync + 'static {
     fn load(&self, scope: CursorScope) -> impl Future<Output = Result<Option<OpaqueCursor>>> + '_;
     fn save(
         &self,
@@ -43,7 +45,7 @@ pub trait CursorStore: Clone + Send + Sync + 'static {
     fn clear(&self, scope: CursorScope) -> impl Future<Output = Result<()>> + '_;
 }
 
-pub trait EventCacheStore: Clone + Send + Sync + 'static {
+pub trait EventCacheStore: Clone + MaybeSendSync + 'static {
     fn seen(&self, event_id: EventId) -> impl Future<Output = Result<bool>> + '_;
     fn remember(&self, event_id: EventId) -> impl Future<Output = Result<()>> + '_;
 }

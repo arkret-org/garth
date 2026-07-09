@@ -1,4 +1,3 @@
-use chrono::{DateTime, Utc};
 use arkret::session_grant::{
     SessionGrantProofFields, did_proof_session_grant_request, holder_proof_session_grant_request,
     oidc_session_grant_request,
@@ -7,6 +6,7 @@ use arkret::{
     DeviceId, Did, Hash, Result, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
     SessionGrantRequestBody,
 };
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 #[derive(Clone, Debug)]
