@@ -10,12 +10,34 @@ use zeroize::Zeroizing;
 
 pub type SecretBytes = Zeroizing<Vec<u8>>;
 
+/// Durability expectation a caller attaches to a secret write.
+///
+/// NOTE: this is an *advisory* value consumed by concrete [`SecureKeyStore`]
+/// implementations. The blanket default implementation of
+/// [`SecureKeyStore::store_secret_bytes_durable`] does NOT perform any
+/// flush/fsync/commit — it merely wraps the synchronous write — so
+/// [`SecretDurability::DurableBeforeReturn`] behaves identically to
+/// [`SecretDurability::CachedOk`] unless the host backend overrides
+/// `store_secret_bytes_durable` to provide real crash durability. Hosts that
+/// need "persisted before return" guarantees for critical keys MUST override it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SecretDurability {
     CachedOk,
     DurableBeforeReturn,
 }
 
+/// Sensitivity class a caller attaches to a secret so a capable host backend can
+/// route high-value material (seeds, MLS secrets) to stronger storage
+/// (hardware-backed / non-exportable).
+///
+/// NOTE: this is an *advisory hint* only. The blanket [`SecureKeyStore`]
+/// implementation of [`SecureKeyStore::put_secret`] branches solely on
+/// [`SecretDurability`] and IGNORES `class`; [`MemorySecureKeyStore`] and
+/// [`SdkKeyStoreSecureAdapter`] likewise store every class identically. A host
+/// that hands a [`SecretClass::Seed`]/[`SecretClass::MlsSecret`] to a store
+/// without a hardware backend gets NO extra protection from this crate — it is
+/// the host backend's responsibility to act on `class` (e.g. by implementing
+/// `put_secret`). Do not rely on `class` alone for tiered hardening.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SecretClass {
     General,
@@ -24,6 +46,9 @@ pub enum SecretClass {
     MlsSecret,
 }
 
+/// Options for a secret write. Both fields are advisory hints for the concrete
+/// [`SecureKeyStore`] backend — see [`SecretDurability`] and [`SecretClass`] for
+/// the exact (non-)guarantees provided by the blanket/default implementations.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PutSecretOptions {
     pub durability: SecretDurability,
@@ -67,6 +92,14 @@ pub type SecureKeyStoreResult<T> = Result<T, SecureKeyStoreError>;
 pub trait SecureKeyStore: Send + Sync + 'static {
     fn store_secret_bytes(&self, key: &str, value: &[u8]) -> SecureKeyStoreResult<()>;
 
+    /// Persist a secret with crash durability.
+    ///
+    /// The default implementation provides NO real durability: it simply wraps
+    /// the synchronous [`Self::store_secret_bytes`] result in a ready future
+    /// with no flush/fsync/commit. Hosts that genuinely need "persisted before
+    /// return" (e.g. for recovery seeds) MUST override this to talk to a durable
+    /// backend; otherwise `DurableBeforeReturn` is indistinguishable from
+    /// `CachedOk`.
     fn store_secret_bytes_durable<'a>(
         &'a self,
         key: &'a str,
@@ -76,6 +109,14 @@ pub trait SecureKeyStore: Send + Sync + 'static {
         Box::pin(async move { result })
     }
 
+    /// Write a secret honoring [`PutSecretOptions`].
+    ///
+    /// The default implementation branches only on
+    /// [`PutSecretOptions::durability`] and IGNORES
+    /// [`PutSecretOptions::class`] — the class is an advisory hint that only a
+    /// capability-aware host backend can act on. Override this method to apply
+    /// class-based hardening (e.g. route [`SecretClass::Seed`] to a hardware
+    /// backend). See [`SecretClass`] / [`SecretDurability`] for the full caveat.
     fn put_secret<'a>(
         &'a self,
         key: &'a str,
@@ -268,6 +309,12 @@ where
             .map_err(|err| SecureKeyStoreError::Backend(err.to_string()))
     }
 
+    // The wrapped `KeyStore` trait exposes no capability query, so these flags
+    // are a deliberately CONSERVATIVE placeholder rather than a reflection of the
+    // real backend: `hardware_backed: false` / `exportable: true` describe the
+    // worst case. A host that needs accurate capability routing (e.g. to detect
+    // a hardware backend behind the `KeyStore`) should implement `SecureKeyStore`
+    // directly instead of relying on this adapter's reported info.
     fn backend_info(&self) -> SecureKeyStoreBackendInfo {
         SecureKeyStoreBackendInfo {
             name: "sdk_key_store",

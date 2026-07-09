@@ -5,6 +5,15 @@ use crate::{
 };
 
 /// Root handle for shared client runtime components.
+///
+/// The facade deliberately binds the concrete default HTTP client
+/// ([`cokret_http_client::Client`]) rather than staying generic over the
+/// transport traits ([`crate::SessionGrantTransport`],
+/// [`crate::RealmEventsTransport`], [`crate::EventsScanTransport`]) that the
+/// underlying engines accept — this keeps the common wiring ergonomic. Callers
+/// that need to inject an alternate or mock transport should construct the
+/// engines directly (e.g. `SessionEngine::new(custom_transport)`) instead of
+/// going through the facade.
 #[derive(Clone, Debug)]
 pub struct CokretClient<E, C, D, K> {
     pub http: Client,

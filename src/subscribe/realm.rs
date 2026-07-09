@@ -9,13 +9,32 @@ use crate::{
     InboundDecoder, OpaqueCursor,
 };
 
+// Native builds require the boxed stream futures (and the frame source held
+// across awaits) to be `Send` so that `run_realm` can be handed to
+// `executor.spawn` — matching `BoxScanFuture`, `BoxSessionFuture` and the SDK
+// sync loop. Wasm builds drop `Send` because browser futures are commonly
+// single-threaded.
+#[cfg(not(target_arch = "wasm32"))]
+pub type BoxRealmStreamFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+
+#[cfg(target_arch = "wasm32")]
 pub type BoxRealmStreamFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + 'a>>;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub trait RealmEventsFrameSource: Send {
+    fn next_frame<'a>(&'a mut self) -> BoxRealmStreamFuture<'a, Option<EventsSubscribeFrame>>;
+}
+
+#[cfg(target_arch = "wasm32")]
 pub trait RealmEventsFrameSource {
     fn next_frame<'a>(&'a mut self) -> BoxRealmStreamFuture<'a, Option<EventsSubscribeFrame>>;
 }
 
 pub trait RealmEventsTransport {
+    #[cfg(not(target_arch = "wasm32"))]
+    type Source: RealmEventsFrameSource + Send;
+
+    #[cfg(target_arch = "wasm32")]
     type Source: RealmEventsFrameSource;
 
     fn open_realm_events<'a>(
@@ -156,9 +175,19 @@ where
     {
         match frame.kind {
             EventsSubscribeFrameKind::Event => {
-                let event: Event = serde_json::from_value(frame.payload)?;
-                if self.dedupe.remember_if_new(event.event_id.clone()).await? {
-                    self.emit_event(event, sink)?;
+                // A malformed Event frame must not poison the stream: if the
+                // payload cannot be parsed as an `Event` we skip it and let the
+                // cursor advance, otherwise every reconnect would replay the same
+                // frame and wedge realm sync permanently.
+                match serde_json::from_value::<Event>(frame.payload) {
+                    Ok(event) => {
+                        if self.dedupe.remember_if_new(event.event_id.clone()).await? {
+                            self.emit_event(event, sink);
+                        }
+                    }
+                    Err(_) => {
+                        // Unparseable frame; drop it and continue.
+                    }
                 }
                 Ok(None)
             }
@@ -187,18 +216,19 @@ where
         }
     }
 
-    fn emit_event<S>(&self, event: Event, sink: &S) -> Result<()>
+    fn emit_event<S>(&self, event: Event, sink: &S)
     where
         S: ClientEventSink + ?Sized,
     {
-        match self.decoder.try_decode_event(event)? {
+        // Use the fault-tolerant decoder: an event whose business payload is
+        // invalid falls back to a raw `Event` rather than aborting the stream.
+        match self.decoder.decode_event(event) {
             DecodedInbound::Message(message) => sink.emit(ClientEvent::Message(message)),
             DecodedInbound::Notification(notification) => {
                 sink.emit(ClientEvent::Event(notification.event));
             }
             DecodedInbound::Event(event) => sink.emit(ClientEvent::Event(event)),
         }
-        Ok(())
     }
 
     fn scope(&self, realm_id: &RealmId) -> CursorScope {

@@ -3,10 +3,12 @@ pub mod dedupe;
 pub mod driver;
 pub mod realm;
 pub mod scan;
+#[cfg(test)]
+mod test_support;
 
 pub use account::emit_account_updates;
 use cokret::{
-    AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot, SyncLoopStep,
+    AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot,
 };
 use cokret_core::{DeviceId, Did, RealmId, Result};
 pub use driver::{SubscriptionLoopDriver, SubscriptionStopReason};
@@ -71,30 +73,16 @@ where
         let scope = self.account_scope(actor_id, device_id);
         let mut sync_loop = self.restore_account_loop(scope.clone()).await?;
 
-        loop {
-            match sync_loop
-                .step_async_with_control(transport, &self.control)
-                .await
-            {
-                SyncLoopStep::Updates(updates) => {
-                    self.checkpoint_account_cursor(scope.clone(), sync_loop.token())
-                        .await?;
-                    emit_account_updates(sink, updates);
-                }
-                SyncLoopStep::Retry { retry_after, .. } => {
-                    self.checkpoint_account_cursor(scope.clone(), sync_loop.token())
-                        .await?;
-                    self.executor.sleep(retry_after).await;
-                }
-                SyncLoopStep::Backpressure { retry_after } => {
-                    self.executor.sleep(retry_after).await;
-                }
-                SyncLoopStep::Cancelled => return Ok(SubscriptionStopReason::Cancelled),
-                SyncLoopStep::Unauthorized { reason } => {
-                    return Ok(SubscriptionStopReason::Unauthorized { reason });
-                }
-            }
-        }
+        // Reuse the shared account loop from `SubscriptionLoopDriver`, injecting
+        // cursor checkpointing as the per-step hook so the `SyncLoopStep`
+        // dispatch is not duplicated across the two entry points.
+        let driver =
+            SubscriptionLoopDriver::with_control(self.executor.clone(), self.control.clone());
+        driver
+            .run_account_checkpointed(&mut sync_loop, transport, sink, |token| {
+                self.checkpoint_account_cursor(scope.clone(), token)
+            })
+            .await
     }
 
     pub async fn run_realm<T, S>(
@@ -186,13 +174,10 @@ where
     async fn checkpoint_account_cursor(
         &self,
         scope: CursorScope,
-        token: Option<&str>,
+        token: Option<OpaqueCursor>,
     ) -> Result<()> {
         match token {
-            Some(token) => {
-                let cursor: OpaqueCursor = token.to_owned();
-                self.cursor_store.save(scope, cursor).await
-            }
+            Some(cursor) => self.cursor_store.save(scope, cursor).await,
             None => self.cursor_store.clear(scope).await,
         }
     }
@@ -215,55 +200,20 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, VecDeque};
-    use std::future::Future;
+    use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use cokret::{AccountStreamInterrupt, Error, SyncOutcome, SyncRequestBody};
+    use cokret::{AccountStreamInterrupt, Error, SyncRequestBody};
     use cokret_core::identifiers::Cursor;
     use cokret_core::{EventsSubscribeFrame, EventsSubscribeFrameKind, SyncBackfillOutcome};
     use serde_json::Value;
 
     use super::realm::BoxRealmStreamFuture;
     use super::scan::BoxScanFuture;
+    use super::test_support::{RecordingExecutor, queued_transport, sync_response};
     use super::*;
     use crate::{ClientEvent, MemoryStore};
-
-    #[derive(Clone, Debug, Default)]
-    struct RecordingExecutor {
-        sleeps: Arc<Mutex<Vec<Duration>>>,
-    }
-
-    impl RecordingExecutor {
-        fn sleeps(&self) -> Vec<Duration> {
-            self.sleeps.lock().unwrap().clone()
-        }
-    }
-
-    impl Executor for RecordingExecutor {
-        type JoinHandle = ();
-
-        #[cfg(not(target_arch = "wasm32"))]
-        fn spawn<F>(&self, _fut: F) -> Self::JoinHandle
-        where
-            F: Future<Output = ()> + Send + 'static,
-        {
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        fn spawn<F>(&self, _fut: F) -> Self::JoinHandle
-        where
-            F: Future<Output = ()> + 'static,
-        {
-        }
-
-        fn sleep(&self, dur: Duration) -> impl Future<Output = ()> + '_ {
-            async move {
-                self.sleeps.lock().unwrap().push(dur);
-            }
-        }
-    }
 
     fn actor_id() -> Did {
         Did::new("did:webvh:z6mkfixture:alice.example").unwrap()
@@ -292,24 +242,6 @@ mod tests {
         }
     }
 
-    fn sync_response(cursor: &str) -> SyncOutcome {
-        SyncOutcome {
-            cursor: cursor.to_owned(),
-            realms: BTreeMap::new(),
-            left_realms: Vec::new(),
-            to_device: Vec::new(),
-            to_device_ack_token: None,
-            to_device_limited: false,
-            to_device_next_cursor: None,
-            to_device_lost: None,
-            device_lists: Value::Null,
-            account_data: Vec::new(),
-            presence: Vec::new(),
-            notifications: Value::Null,
-            partial: false,
-        }
-    }
-
     fn backfill_outcome(next_cursor: Option<&str>) -> SyncBackfillOutcome {
         SyncBackfillOutcome {
             events: Vec::new(),
@@ -327,22 +259,6 @@ mod tests {
             cursor: None,
             payload: Value::Null,
             reconnect_after_ms: None,
-        }
-    }
-
-    fn queued_transport(
-        responses: Arc<Mutex<VecDeque<Result<SyncOutcome>>>>,
-    ) -> impl Fn(SyncRequestBody) -> std::pin::Pin<Box<dyn Future<Output = Result<SyncOutcome>> + Send>>
-    {
-        move |_request| {
-            let responses = Arc::clone(&responses);
-            Box::pin(async move {
-                responses
-                    .lock()
-                    .unwrap()
-                    .pop_front()
-                    .unwrap_or_else(|| Ok(sync_response("fallback")))
-            })
         }
     }
 

@@ -31,7 +31,8 @@ pub use session::{
 pub use store::{
     CursorScope, CursorStore, EventCacheStore, MemorySecureKeyStore, MemoryStore, OpaqueCursor,
     PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter, SecretBytes, SecretClass,
-    SecretDurability, SecureKeyStore, SecureKeyStoreBackendInfo, SecureKeyStoreError,
+    SecretDurability, SecureCryptoStoreAdapter, SecureKeyStore, SecureKeyStoreBackendInfo,
+    SecureKeyStoreError,
 };
 pub use subscribe::{
     EventsScanRequest, EventsScanTransport, RealmEventsDriver, RealmEventsFrameSource,

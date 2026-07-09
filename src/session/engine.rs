@@ -1,6 +1,6 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use chrono::{DateTime, Utc};
 use cokret_core::{
@@ -105,8 +105,17 @@ where
         }
     }
 
+    // The state mutex only guards a plain `Option<SessionGrantState>` and every
+    // critical section is panic-free, so it can never actually be poisoned.
+    // Recover the guard rather than `unwrap()`-panicking, keeping the engine free
+    // of a panic surface (and consistent with the store layer, which also maps
+    // lock failures to a value rather than aborting).
+    fn state_lock(&self) -> MutexGuard<'_, Option<SessionGrantState>> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     pub fn current_state(&self) -> Option<SessionGrantState> {
-        self.state.lock().unwrap().clone()
+        self.state_lock().clone()
     }
 
     pub fn current_handle(&self) -> Option<SessionHandle> {
@@ -114,7 +123,7 @@ where
     }
 
     pub fn refresh_decision(&self, now: DateTime<Utc>) -> RefreshDecision {
-        let state = self.state.lock().unwrap();
+        let state = self.state_lock();
         let refresh_state = state.as_ref().map(SessionGrantState::refresh_state);
         refresh_decision(refresh_state.as_ref(), now)
     }
@@ -124,7 +133,7 @@ where
         let outcome = self.transport.issue_session_grant(request.clone()).await?;
         let state = state_from_issue_outcome(&request, outcome, now)?;
         let handle = state.handle();
-        *self.state.lock().unwrap() = Some(state);
+        *self.state_lock() = Some(state);
         Ok(handle)
     }
 
@@ -159,7 +168,7 @@ where
         let state =
             state_from_refresh_outcome(&current, &request, &expected_dpop_jkt, outcome, now)?;
         let handle = state.handle();
-        *self.state.lock().unwrap() = Some(state);
+        *self.state_lock() = Some(state);
         Ok(handle)
     }
 }

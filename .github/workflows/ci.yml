@@ -44,6 +44,9 @@ jobs:
       - name: Native check
         working-directory: garth
         run: cargo check --features native
+      - name: Native check (mls)
+        working-directory: garth
+        run: cargo check --features native,mls
       - name: Clippy
         working-directory: garth
         run: cargo clippy --features native --all-targets -- -D warnings

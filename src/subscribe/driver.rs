@@ -1,3 +1,6 @@
+use std::convert::Infallible;
+use std::future::Future;
+
 use cokret::{AsyncSyncTransport, SyncLoop, SyncLoopControl, SyncLoopStep};
 
 use super::emit_account_updates;
@@ -48,21 +51,57 @@ where
         T: AsyncSyncTransport + ?Sized,
         S: ClientEventSink + ?Sized,
     {
+        // No checkpoint hook: delegate to the shared loop with an infallible
+        // no-op so the state-machine handling lives in exactly one place.
+        match self
+            .run_account_checkpointed(sync_loop, transport, sink, |_token| async {
+                Ok::<(), Infallible>(())
+            })
+            .await
+        {
+            Ok(reason) => reason,
+            Err(never) => match never {},
+        }
+    }
+
+    /// Shared account sync loop. `checkpoint` is invoked with the current sync
+    /// token after each `Updates` and `Retry` step (before emitting/sleeping) so
+    /// callers that persist a cursor can hook in without duplicating the
+    /// `SyncLoopStep` dispatch; its error type is propagated to the caller. The
+    /// token is passed by value so the hook's future may own it (a borrowed
+    /// `&str` would run into closure-lending limits).
+    pub(crate) async fn run_account_checkpointed<T, S, F, Fut, Er>(
+        &self,
+        sync_loop: &mut SyncLoop,
+        transport: &T,
+        sink: &S,
+        mut checkpoint: F,
+    ) -> Result<SubscriptionStopReason, Er>
+    where
+        T: AsyncSyncTransport + ?Sized,
+        S: ClientEventSink + ?Sized,
+        F: FnMut(Option<String>) -> Fut,
+        Fut: Future<Output = Result<(), Er>>,
+    {
         loop {
             match sync_loop
                 .step_async_with_control(transport, &self.control)
                 .await
             {
                 SyncLoopStep::Updates(updates) => {
+                    checkpoint(sync_loop.token().map(str::to_owned)).await?;
                     emit_account_updates(sink, updates);
                 }
-                SyncLoopStep::Retry { retry_after, .. }
-                | SyncLoopStep::Backpressure { retry_after } => {
+                SyncLoopStep::Retry { retry_after, .. } => {
+                    checkpoint(sync_loop.token().map(str::to_owned)).await?;
                     self.executor.sleep(retry_after).await;
                 }
-                SyncLoopStep::Cancelled => return SubscriptionStopReason::Cancelled,
+                SyncLoopStep::Backpressure { retry_after } => {
+                    self.executor.sleep(retry_after).await;
+                }
+                SyncLoopStep::Cancelled => return Ok(SubscriptionStopReason::Cancelled),
                 SyncLoopStep::Unauthorized { reason } => {
-                    return SubscriptionStopReason::Unauthorized { reason };
+                    return Ok(SubscriptionStopReason::Unauthorized { reason });
                 }
             }
         }
@@ -71,85 +110,14 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::{BTreeMap, VecDeque};
-    use std::future::Future;
+    use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
-    use std::time::Duration;
 
-    use cokret::{Error, Result, SyncOutcome, SyncRequestBody};
-    use serde_json::Value;
+    use cokret::Error;
 
+    use super::super::test_support::{RecordingExecutor, queued_transport, sync_response};
     use super::*;
     use crate::ClientEvent;
-
-    #[derive(Clone, Debug, Default)]
-    struct RecordingExecutor {
-        sleeps: Arc<Mutex<Vec<Duration>>>,
-    }
-
-    impl RecordingExecutor {
-        fn sleeps(&self) -> Vec<Duration> {
-            self.sleeps.lock().unwrap().clone()
-        }
-    }
-
-    impl Executor for RecordingExecutor {
-        type JoinHandle = ();
-
-        #[cfg(not(target_arch = "wasm32"))]
-        fn spawn<F>(&self, _fut: F) -> Self::JoinHandle
-        where
-            F: Future<Output = ()> + Send + 'static,
-        {
-        }
-
-        #[cfg(target_arch = "wasm32")]
-        fn spawn<F>(&self, _fut: F) -> Self::JoinHandle
-        where
-            F: Future<Output = ()> + 'static,
-        {
-        }
-
-        fn sleep(&self, dur: Duration) -> impl Future<Output = ()> + '_ {
-            async move {
-                self.sleeps.lock().unwrap().push(dur);
-            }
-        }
-    }
-
-    fn sync_response(cursor: &str) -> SyncOutcome {
-        SyncOutcome {
-            cursor: cursor.to_owned(),
-            realms: BTreeMap::new(),
-            left_realms: Vec::new(),
-            to_device: Vec::new(),
-            to_device_ack_token: None,
-            to_device_limited: false,
-            to_device_next_cursor: None,
-            to_device_lost: None,
-            device_lists: Value::Null,
-            account_data: Vec::new(),
-            presence: Vec::new(),
-            notifications: Value::Null,
-            partial: false,
-        }
-    }
-
-    fn queued_transport(
-        responses: Arc<Mutex<VecDeque<Result<SyncOutcome>>>>,
-    ) -> impl Fn(SyncRequestBody) -> std::pin::Pin<Box<dyn Future<Output = Result<SyncOutcome>> + Send>>
-    {
-        move |_request| {
-            let responses = Arc::clone(&responses);
-            Box::pin(async move {
-                responses
-                    .lock()
-                    .unwrap()
-                    .pop_front()
-                    .unwrap_or_else(|| Ok(sync_response("fallback")))
-            })
-        }
-    }
 
     #[tokio::test]
     async fn account_driver_emits_updates_until_cancelled() {

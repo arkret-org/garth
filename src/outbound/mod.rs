@@ -133,10 +133,12 @@ impl OutboundBuilder {
         options: MessageCreateOptions,
         content: Value,
     ) -> Result<Operation> {
-        let operation_id = options
-            .operation_id
-            .clone()
-            .unwrap_or(OperationId::new(new_prefixed_uuid7("ck:operation:"))?);
+        // Generate the fallback id lazily: `unwrap_or` would eagerly mint (and
+        // `?`-propagate) a UUID on every call even when the caller supplied one.
+        let operation_id = match options.operation_id.clone() {
+            Some(id) => id,
+            None => OperationId::new(new_prefixed_uuid7("ck:operation:"))?,
+        };
         let payload = self.message_create_payload(options, content)?.to_value()?;
         Ok(Operation::create(
             operation_id,
@@ -212,9 +214,12 @@ impl OutboundBuilder {
         options: MessageCreateOptions,
         content: Value,
     ) -> Result<MessageCreatePayload> {
-        let strand_id = options
-            .strand_id
-            .unwrap_or(StrandId::new(new_prefixed_uuid7("ck:strand:"))?);
+        // Lazy fallback (see `message_create_operation_with`): avoid minting a
+        // strand id when the caller already provided one.
+        let strand_id = match options.strand_id {
+            Some(id) => id,
+            None => StrandId::new(new_prefixed_uuid7("ck:strand:"))?,
+        };
         let message_id = options
             .message_id
             .unwrap_or_else(|| new_prefixed_uuid7("ck:message:"));

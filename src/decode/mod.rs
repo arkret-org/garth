@@ -44,9 +44,11 @@ impl InboundDecoder {
                 let payload = event.as_message_event_payload()?;
                 Ok(DecodedInbound::Message(DecodedMessage { event, payload }))
             }
-            "ck.notification.create" | "ck.notification.dismiss" => {
-                Ok(DecodedInbound::Notification(DecodedNotification { event }))
-            }
+            // Notifications are delivered via `SyncUpdates.notifications`
+            // (`NotificationDelta`) on the account path, not through realm-event
+            // decoding. The protocol defines no `Event.kind` for notifications
+            // (only the `ck.notification.read`/`ck.notification.ack` operations),
+            // so this decoder does not synthesize non-spec notification kinds.
             _ => Ok(DecodedInbound::Event(event)),
         }
     }
