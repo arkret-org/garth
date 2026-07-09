@@ -22,7 +22,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 mls = ["cokret/mls"]
 native = ["dep:tokio"]
-wasm = ["dep:gloo-timers", "dep:wasm-bindgen-futures"]
+wasm = ["dep:gloo-timers"]
 
 [dependencies]
 chrono = {version = "0.4.45",default-features = false,features = ["clock", "std", "serde"]}
@@ -35,7 +35,6 @@ serde = {version = "1.0.228",default-features = false,features = ["std", "derive
 serde_json = {version = "1.0.150",default-features = false,features = ["std"]}
 thiserror = {version = "2.0.18",default-features = false}
 tokio = {version = "1.52.3",default-features = false,features = ["rt", "time"],optional = true}
-wasm-bindgen-futures = {version = "0.4",optional = true}
 zeroize = {version = "1.8.2",default-features = false,features = ["derive"]}
 
 [dev-dependencies]

@@ -27,22 +27,6 @@ impl RecordingExecutor {
 }
 
 impl Executor for RecordingExecutor {
-    type JoinHandle = ();
-
-    #[cfg(not(target_arch = "wasm32"))]
-    fn spawn<F>(&self, _fut: F) -> Self::JoinHandle
-    where
-        F: Future<Output = ()> + Send + 'static,
-    {
-    }
-
-    #[cfg(target_arch = "wasm32")]
-    fn spawn<F>(&self, _fut: F) -> Self::JoinHandle
-    where
-        F: Future<Output = ()> + 'static,
-    {
-    }
-
     fn sleep(&self, dur: Duration) -> impl Future<Output = ()> + '_ {
         async move {
             self.sleeps.lock().unwrap().push(dur);

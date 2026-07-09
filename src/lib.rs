@@ -24,7 +24,7 @@ pub use executor::NativeExecutor;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use executor::WasmExecutor;
 pub use facade::CokretClient;
-pub use orchestrator::{RunOptions, RunStop, TransportProvider};
+pub use orchestrator::{RunOptions, RunStopReason, TransportProvider};
 pub use outbound::{MessageCreateOptions, OutboundBuilder, OutboundCommandContext};
 pub use session::{
     AgentKeyProofLogin, DidProofLogin, GRANT_ROTATION_SKEW_SECS, HolderProofLogin, LoginKind,

@@ -161,33 +161,6 @@ fn scope_key(scope: &CursorScope) -> String {
             service_did,
             realm_id,
         } => format!("realm{SEP}{}{SEP}{}", did(service_did), realm_id.as_str()),
-        CursorScope::EventsQuery {
-            service_did,
-            realms,
-            actors,
-            order,
-            filter_digest,
-        } => {
-            let realms = realms
-                .iter()
-                .map(|r| r.as_str())
-                .collect::<Vec<_>>()
-                .join(",");
-            let actors = actors
-                .iter()
-                .map(|a| a.as_str())
-                .collect::<Vec<_>>()
-                .join(",");
-            let digest = filter_digest
-                .as_ref()
-                .map(|d| d.as_str().to_owned())
-                .unwrap_or_default();
-            format!(
-                "query{SEP}{}{SEP}{realms}{SEP}{actors}{SEP}{}{SEP}{digest}",
-                did(service_did),
-                order.clone().unwrap_or_default(),
-            )
-        }
     }
 }
 

@@ -49,7 +49,7 @@ impl ClientProjector for MyProjector {
                     ClientEvent::Message(message) => { /* decoded chat message */ }
                     ClientEvent::Backfill { realm_id, outcome } => { /* catch-up after a drop */ }
                     ClientEvent::Event(event) => { /* generic / encrypted / unknown kind */ }
-                    ClientEvent::Notification(_) | ClientEvent::ToDevice(_) | ClientEvent::Interrupt(_) => {}
+                    ClientEvent::Notification(_) | ClientEvent::ToDevice(_) => {}
                 }
             }
             // Persist durably BEFORE returning Ok. Contract: the cursor is
@@ -93,10 +93,10 @@ client.run_realm(&provider, realm_id, &projector, &control, RunOptions::default(
 client.run_account(actor_id, device_id, &provider, &projector, &control, RunOptions::default()).await?;
 ```
 
-Both return `RunStop`:
+Both return `RunStopReason`:
 
-- `RunStop::Cancelled` — `control.cancel()` was called.
-- `RunStop::Unauthorized { reason }` — the grant is no longer accepted. Refresh
+- `RunStopReason::Cancelled` — `control.cancel()` was called.
+- `RunStopReason::Unauthorized { reason }` — the grant is no longer accepted. Refresh
   (or require sign-in) and re-invoke; because the transport is re-acquired
   through your `TransportProvider` on each start, a provider that refreshes on
   `provide` recovers transparently. garth owns *when* to re-provide; your
@@ -113,7 +113,7 @@ Both return `RunStop`:
 
 ## Migration note (pre-orchestrator API)
 
-The synchronous `ClientEventSink` + `SubscriptionEngine::run_account`/`run_realm`
+The synchronous `ClientEventSink` + `SubscriptionEngine::run_account`/`run_realm_stream`
 are retained only for consumers that have not migrated yet and are removed once
 all consumers adopt the projector orchestrator. New code should use
 `ClientProjector` + `CokretClient::run_*`.

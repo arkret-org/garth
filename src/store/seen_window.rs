@@ -25,6 +25,7 @@ where
         }
     }
 
+    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     pub fn from_entries(entries: VecDeque<T>, capacity: usize) -> Self {
         let mut window = Self::new(capacity);
         for entry in entries {
@@ -55,6 +56,7 @@ where
         true
     }
 
+    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     pub fn entries(&self) -> &VecDeque<T> {
         &self.entries
     }

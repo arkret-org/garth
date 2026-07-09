@@ -11,11 +11,10 @@ use crate::{
     EventCacheStore, InboundDecoder, OpaqueCursor,
 };
 
-// Native builds require the boxed stream futures (and the frame source held
-// across awaits) to be `Send` so that `run_realm` can be handed to
-// `executor.spawn` — matching `BoxScanFuture`, `BoxSessionFuture` and the SDK
-// sync loop. Wasm builds drop `Send` because browser futures are commonly
-// single-threaded.
+// Native builds keep boxed stream futures (and the frame source held across
+// awaits) `Send` so host runtimes can move realm loops across worker threads,
+// matching `BoxScanFuture`, `BoxSessionFuture` and the SDK sync loop. Wasm
+// builds drop `Send` because browser futures are commonly single-threaded.
 #[cfg(not(target_arch = "wasm32"))]
 pub type BoxRealmStreamFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
 
@@ -115,7 +114,7 @@ where
         self
     }
 
-    pub async fn run_realm<T, S>(
+    pub async fn run_stream<T, S>(
         &self,
         transport: &T,
         realm_id: RealmId,
@@ -168,13 +167,13 @@ where
     }
 
     /// Projector-driven realm loop (orchestrator seam). Same frame handling as
-    /// [`Self::run_realm`], but each decoded event batch is handed to the async
+    /// [`Self::run_stream`], but each decoded event batch is handed to the async
     /// [`ClientProjector`] and the cursor is checkpointed ONLY after
     /// `project` returns `Ok` — the projector's durable write gates cursor
     /// advance. `Dropped` / `Unauthorized` are returned to the caller (the
     /// facade orchestrator handles scan-backfill / refresh); `ResyncRequired`
     /// clears the cursor here.
-    pub async fn run_realm_projected<T, P>(
+    pub async fn run_projected_stream<T, P>(
         &self,
         transport: &T,
         realm_id: RealmId,
@@ -184,12 +183,12 @@ where
         T: RealmEventsTransport + ?Sized,
         P: ClientProjector + ?Sized,
     {
-        self.run_realm_projected_classified(transport, realm_id, projector)
+        self.run_projected_stream_classified(transport, realm_id, projector)
             .await
             .map_err(ProjectedRunError::into_error)
     }
 
-    pub(crate) async fn run_realm_projected_classified<T, P>(
+    pub(crate) async fn run_projected_stream_classified<T, P>(
         &self,
         transport: &T,
         realm_id: RealmId,
@@ -517,7 +516,7 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store);
 
         let reason = driver
-            .run_realm(&transport, realm_id(), &sink)
+            .run_stream(&transport, realm_id(), &sink)
             .await
             .unwrap();
 
@@ -538,7 +537,7 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let reason = driver
-            .run_realm(&transport, realm_id(), &|_event: ClientEvent| {})
+            .run_stream(&transport, realm_id(), &|_event: ClientEvent| {})
             .await
             .unwrap();
 
@@ -566,7 +565,7 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let reason = driver
-            .run_realm(&transport, realm_id(), &|_event: ClientEvent| {})
+            .run_stream(&transport, realm_id(), &|_event: ClientEvent| {})
             .await
             .unwrap();
 
@@ -593,7 +592,7 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let reason = driver
-            .run_realm(&transport, realm_id(), &|_event: ClientEvent| {})
+            .run_stream(&transport, realm_id(), &|_event: ClientEvent| {})
             .await
             .unwrap();
 
@@ -625,7 +624,7 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let reason = driver
-            .run_realm(&transport, realm_id(), &|_event: ClientEvent| {})
+            .run_stream(&transport, realm_id(), &|_event: ClientEvent| {})
             .await
             .unwrap();
 
@@ -680,7 +679,7 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let reason = driver
-            .run_realm_projected(&transport, realm_id(), &projector)
+            .run_projected_stream(&transport, realm_id(), &projector)
             .await
             .unwrap();
 
@@ -711,7 +710,7 @@ mod tests {
         let transport = VecTransport::new(vec![event_frame.clone()]);
         assert!(
             driver
-                .run_realm_projected(&transport, realm_id(), &failing)
+                .run_projected_stream(&transport, realm_id(), &failing)
                 .await
                 .is_err()
         );
@@ -724,7 +723,7 @@ mod tests {
         };
         let transport = VecTransport::new(vec![event_frame]);
         let reason = driver
-            .run_realm_projected(&transport, realm_id(), &succeeding)
+            .run_projected_stream(&transport, realm_id(), &succeeding)
             .await
             .unwrap();
 
@@ -753,7 +752,7 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let reason = driver
-            .run_realm_projected(&transport, realm_id(), &projector)
+            .run_projected_stream(&transport, realm_id(), &projector)
             .await
             .unwrap();
 
@@ -790,7 +789,7 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let reason = driver
-            .run_realm_projected(&transport, realm_id(), &projector)
+            .run_projected_stream(&transport, realm_id(), &projector)
             .await
             .unwrap();
 
@@ -818,7 +817,7 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let result = driver
-            .run_realm_projected(&transport, realm_id(), &projector)
+            .run_projected_stream(&transport, realm_id(), &projector)
             .await;
 
         // The projector error aborts the loop...

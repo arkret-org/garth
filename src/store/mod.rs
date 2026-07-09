@@ -7,7 +7,7 @@ mod seen_window;
 
 use std::future::Future;
 
-use cokret_core::{DeviceId, Did, EventId, Hash, RealmId, Result};
+use cokret_core::{DeviceId, Did, EventId, RealmId, Result};
 pub use crypto_store::SecureCryptoStoreAdapter;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use file::FileStore;
@@ -30,13 +30,6 @@ pub enum CursorScope {
     RealmEvents {
         service_did: Option<Did>,
         realm_id: RealmId,
-    },
-    EventsQuery {
-        service_did: Option<Did>,
-        realms: Vec<RealmId>,
-        actors: Vec<Did>,
-        order: Option<String>,
-        filter_digest: Option<Hash>,
     },
 }
 

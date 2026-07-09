@@ -166,7 +166,7 @@ where
         }
     }
 
-    pub async fn run_realm<T, S>(
+    pub async fn run_realm_stream<T, S>(
         &self,
         transport: &T,
         realm_id: RealmId,
@@ -181,7 +181,7 @@ where
         if let Some(service_did) = self.service_did.clone() {
             driver = driver.with_service_did(service_did);
         }
-        let reason = driver.run_realm(transport, realm_id.clone(), sink).await?;
+        let reason = driver.run_stream(transport, realm_id.clone(), sink).await?;
         match reason {
             RealmStreamStopReason::Dropped {
                 cursor: Some(cursor),
@@ -228,12 +228,12 @@ where
     }
 
     /// Projector-driven realm loop (orchestrator seam). Mirrors
-    /// [`Self::run_realm`] — including the `Dropped` -> scan-catchup ->
+    /// [`Self::run_realm_stream`] — including the `Dropped` -> scan-catchup ->
     /// backfill recovery — but the recovered backfill and every decoded event
     /// go through the async [`ClientProjector`], and the cursor advances only
     /// after `project` returns `Ok` (see
-    /// [`RealmEventsDriver::run_realm_projected`]).
-    pub async fn run_realm_projected<T, P>(
+    /// [`RealmEventsDriver::run_projected_stream`]).
+    pub async fn run_realm_projected_stream<T, P>(
         &self,
         transport: &T,
         realm_id: RealmId,
@@ -243,12 +243,12 @@ where
         T: RealmEventsTransport + EventsScanTransport + ?Sized,
         P: ClientProjector + ?Sized,
     {
-        self.run_realm_projected_classified(transport, realm_id, projector)
+        self.run_realm_projected_stream_classified(transport, realm_id, projector)
             .await
             .map_err(ProjectedRunError::into_error)
     }
 
-    pub(crate) async fn run_realm_projected_classified<T, P>(
+    pub(crate) async fn run_realm_projected_stream_classified<T, P>(
         &self,
         transport: &T,
         realm_id: RealmId,
@@ -264,7 +264,7 @@ where
             driver = driver.with_service_did(service_did);
         }
         let reason = driver
-            .run_realm_projected_classified(transport, realm_id.clone(), projector)
+            .run_projected_stream_classified(transport, realm_id.clone(), projector)
             .await?;
         match reason {
             RealmStreamStopReason::Dropped {
@@ -651,7 +651,7 @@ mod tests {
         let engine = SubscriptionEngine::new(executor.clone(), store.clone(), store.clone());
 
         let reason = engine
-            .run_realm(&transport, realm_id(), &move |event: ClientEvent| {
+            .run_realm_stream(&transport, realm_id(), &move |event: ClientEvent| {
                 emitted_for_sink.lock().unwrap().push(event);
             })
             .await
@@ -700,7 +700,7 @@ mod tests {
             SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store.clone());
 
         let reason = engine
-            .run_realm_projected(&transport, realm_id(), &projector)
+            .run_realm_projected_stream(&transport, realm_id(), &projector)
             .await
             .unwrap();
 
@@ -739,7 +739,7 @@ mod tests {
             SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store.clone());
 
         let result = engine
-            .run_realm_projected(&transport, realm_id(), &projector)
+            .run_realm_projected_stream(&transport, realm_id(), &projector)
             .await;
 
         assert!(result.is_err());
@@ -764,7 +764,7 @@ mod tests {
         let engine = SubscriptionEngine::new(executor.clone(), store.clone(), store.clone());
 
         let reason = engine
-            .run_realm(&transport, realm_id(), &|_event: ClientEvent| {})
+            .run_realm_stream(&transport, realm_id(), &|_event: ClientEvent| {})
             .await
             .unwrap();
 

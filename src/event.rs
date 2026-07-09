@@ -1,6 +1,6 @@
 use cokret_core::{
-    AccountStreamInterrupt, Event, NotificationDelta, RealmId, RealmUpdate, SyncBackfillOutcome,
-    SyncUpdates, ToDeviceMessage,
+    Event, NotificationDelta, RealmId, RealmUpdate, SyncBackfillOutcome, SyncUpdates,
+    ToDeviceMessage,
 };
 
 use crate::DecodedMessage;
@@ -21,13 +21,12 @@ pub enum ClientEvent {
     Event(Event),
     Notification(NotificationDelta),
     ToDevice(ToDeviceMessage),
-    Interrupt(AccountStreamInterrupt),
 }
 
 /// Host adapter sink for engine output.
 ///
 /// Synchronous, fire-and-forget. Retained for the pre-orchestrator engines
-/// (`SubscriptionEngine::run_account` / `run_realm`). New clients should
+/// (`SubscriptionEngine::run_account` / `run_realm_stream`). New clients should
 /// implement [`ClientProjector`] and drive the loop through
 /// [`crate::CokretClient::run_account`] / [`crate::CokretClient::run_realm`]
 /// instead; this sink is removed once all consumers migrate.

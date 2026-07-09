@@ -8,7 +8,7 @@
 //! live in the engines; the projector is the only host seam.
 //!
 //! Refresh coordination: on `Unauthorized` the runner returns
-//! [`RunStop::Unauthorized`] so the host can refresh (or require sign-in) and
+//! [`RunStopReason::Unauthorized`] so the host can refresh (or require sign-in) and
 //! re-invoke. Because the transport is obtained through [`TransportProvider`]
 //! on every (re)start, a provider that refreshes credentials on `provide`
 //! transparently recovers across restarts without the runner owning SDK auth.
@@ -59,7 +59,7 @@ impl Default for RunOptions {
 
 /// Terminal reason a run loop returned to its host.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum RunStop {
+pub enum RunStopReason {
     /// The engine's cancellation control was tripped (`SubscriptionEngine::cancel`).
     Cancelled,
     /// The session grant is no longer accepted; host should refresh / sign in.
@@ -84,7 +84,7 @@ where
         projector: &P,
         control: &SyncLoopControl,
         options: RunOptions,
-    ) -> Result<RunStop>
+    ) -> Result<RunStopReason>
     where
         TP: TransportProvider,
         TP::Transport: RealmEventsTransport + EventsScanTransport,
@@ -94,7 +94,7 @@ where
         let mut backoff = options.min_backoff;
         loop {
             if control.is_cancelled() {
-                return Ok(RunStop::Cancelled);
+                return Ok(RunStopReason::Cancelled);
             }
             let transport = match provider.provide().await {
                 Ok(transport) => transport,
@@ -105,7 +105,7 @@ where
                 }
             };
             match engine
-                .run_realm_projected_classified(&transport, realm_id.clone(), projector)
+                .run_realm_projected_stream_classified(&transport, realm_id.clone(), projector)
                 .await
             {
                 Ok(RealmStreamStopReason::StreamEnded) => {
@@ -127,7 +127,7 @@ where
                     backoff = backoff.saturating_mul(2).min(options.max_backoff);
                 }
                 Ok(RealmStreamStopReason::Unauthorized { reason }) => {
-                    return Ok(RunStop::Unauthorized { reason });
+                    return Ok(RunStopReason::Unauthorized { reason });
                 }
                 Err(ProjectedRunError::Transport(_)) => {
                     self.executor.sleep(backoff).await;
@@ -150,7 +150,7 @@ where
         projector: &P,
         control: &SyncLoopControl,
         options: RunOptions,
-    ) -> Result<RunStop>
+    ) -> Result<RunStopReason>
     where
         TP: TransportProvider,
         TP::Transport: AsyncSyncTransport,
@@ -162,7 +162,7 @@ where
         let mut provide_backoff = options.min_backoff;
         loop {
             if control.is_cancelled() {
-                return Ok(RunStop::Cancelled);
+                return Ok(RunStopReason::Cancelled);
             }
             let transport = match provider.provide().await {
                 Ok(transport) => {
@@ -200,9 +200,9 @@ where
                 SyncLoopStep::Backpressure { retry_after } => {
                     self.executor.sleep(retry_after).await;
                 }
-                SyncLoopStep::Cancelled => return Ok(RunStop::Cancelled),
+                SyncLoopStep::Cancelled => return Ok(RunStopReason::Cancelled),
                 SyncLoopStep::Unauthorized { reason } => {
-                    return Ok(RunStop::Unauthorized { reason });
+                    return Ok(RunStopReason::Unauthorized { reason });
                 }
             }
         }
@@ -497,7 +497,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(stop, RunStop::Cancelled);
+        assert_eq!(stop, RunStopReason::Cancelled);
         // Pre-cancel short-circuits before any transport/projection work.
         assert_eq!(*calls.lock().unwrap(), 0);
         assert_eq!(provider.calls(), 0);
@@ -523,7 +523,7 @@ mod tests {
 
         assert_eq!(
             stop,
-            RunStop::Unauthorized {
+            RunStopReason::Unauthorized {
                 reason: Some("revoked".to_owned())
             }
         );
@@ -554,7 +554,7 @@ mod tests {
 
         assert_eq!(
             stop,
-            RunStop::Unauthorized {
+            RunStopReason::Unauthorized {
                 reason: Some("revoked".to_owned())
             }
         );
@@ -585,7 +585,7 @@ mod tests {
 
         assert_eq!(
             stop,
-            RunStop::Unauthorized {
+            RunStopReason::Unauthorized {
                 reason: Some("revoked".to_owned())
             }
         );
@@ -644,7 +644,7 @@ mod tests {
 
         assert_eq!(
             stop,
-            RunStop::Unauthorized {
+            RunStopReason::Unauthorized {
                 reason: Some("revoked".to_owned())
             }
         );
@@ -679,7 +679,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(stop, RunStop::Cancelled);
+        assert_eq!(stop, RunStopReason::Cancelled);
         assert_eq!(provider.calls(), 2);
         assert_eq!(*calls.lock().unwrap(), 1);
         assert_eq!(
