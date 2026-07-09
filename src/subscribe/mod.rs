@@ -8,7 +8,7 @@ mod test_support;
 
 pub use account::emit_account_updates;
 use cokret::{
-    AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot,
+    AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot, SyncLoopStep,
 };
 use cokret_core::{DeviceId, Did, RealmId, Result};
 pub use driver::{SubscriptionLoopDriver, SubscriptionStopReason};
@@ -124,12 +124,18 @@ where
                         // Gate: project must persist before the cursor moves.
                         projector.project(batch).await?;
                     }
-                    self.checkpoint_account_cursor(scope.clone(), sync_loop.token())
-                        .await?;
+                    self.checkpoint_account_cursor(
+                        scope.clone(),
+                        sync_loop.token().map(str::to_owned),
+                    )
+                    .await?;
                 }
                 SyncLoopStep::Retry { retry_after, .. } => {
-                    self.checkpoint_account_cursor(scope.clone(), sync_loop.token())
-                        .await?;
+                    self.checkpoint_account_cursor(
+                        scope.clone(),
+                        sync_loop.token().map(str::to_owned),
+                    )
+                    .await?;
                     self.executor.sleep(retry_after).await;
                 }
                 SyncLoopStep::Backpressure { retry_after } => {
