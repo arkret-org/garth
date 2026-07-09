@@ -1,7 +1,11 @@
 use chrono::{DateTime, Utc};
+use cokret::session_grant::{
+    SessionGrantProofFields, did_proof_session_grant_request, holder_proof_session_grant_request,
+    oidc_session_grant_request,
+};
 use cokret::{
     DeviceId, Did, Hash, Result, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
-    SessionGrantProofKind, SessionGrantRequestBody, SessionGrantRequestProof,
+    SessionGrantRequestBody,
 };
 use serde_json::Value;
 
@@ -16,22 +20,16 @@ pub struct SessionProofFields {
 }
 
 impl SessionProofFields {
-    pub fn into_request_proof(self, proof_kind: SessionGrantProofKind) -> SessionGrantRequestProof {
-        SessionGrantRequestProof {
-            proof_kind,
+    /// Lower these into the SDK's signature-carrying proof fields consumed by the
+    /// `session_grant` request builders.
+    fn into_sdk(self) -> SessionGrantProofFields {
+        SessionGrantProofFields {
             challenge: self.challenge,
             request_canonical_digest: self.request_canonical_digest,
             audience: self.audience,
             expires_at: self.expires_at,
             signature: self.signature,
             verification_method: self.verification_method,
-            issuer: None,
-            client_id: None,
-            redirect_uri: None,
-            state: None,
-            nonce: None,
-            authorization_code: None,
-            code_verifier: None,
         }
     }
 }
@@ -81,18 +79,14 @@ pub struct HolderProofLogin {
 
 impl HolderProofLogin {
     pub fn into_session_grant_request(self) -> SessionGrantRequestBody {
-        SessionGrantRequestBody {
-            principal_id: Some(self.principal_id),
-            device_id: self.device_id,
-            requested_scope: self.requested_scope,
-            agent_key_authorization_ref: None,
-            agent_scope_request: Value::Null,
-            dpop_binding_proof: self.dpop_binding_proof,
-            applet_delegation: self.applet_delegation,
-            proof: self
-                .proof
-                .into_request_proof(SessionGrantProofKind::PairedDeviceProof),
-        }
+        holder_proof_session_grant_request(
+            self.principal_id,
+            self.device_id,
+            self.requested_scope,
+            self.dpop_binding_proof,
+            self.applet_delegation,
+            self.proof.into_sdk(),
+        )
     }
 }
 
@@ -108,18 +102,14 @@ pub struct DidProofLogin {
 
 impl DidProofLogin {
     pub fn into_session_grant_request(self) -> SessionGrantRequestBody {
-        SessionGrantRequestBody {
-            principal_id: Some(self.principal_id),
-            device_id: Some(self.device_id),
-            requested_scope: self.requested_scope,
-            agent_key_authorization_ref: None,
-            agent_scope_request: Value::Null,
-            dpop_binding_proof: self.dpop_binding_proof,
-            applet_delegation: self.applet_delegation,
-            proof: self
-                .proof
-                .into_request_proof(SessionGrantProofKind::DidBoundSignature),
-        }
+        did_proof_session_grant_request(
+            self.principal_id,
+            self.device_id,
+            self.requested_scope,
+            self.dpop_binding_proof,
+            self.applet_delegation,
+            self.proof.into_sdk(),
+        )
     }
 }
 
@@ -142,31 +132,21 @@ pub struct OidcLogin {
 
 impl OidcLogin {
     pub fn into_session_grant_request(self) -> SessionGrantRequestBody {
-        SessionGrantRequestBody {
-            principal_id: self.principal_id,
-            device_id: self.device_id,
-            requested_scope: self.requested_scope,
-            agent_key_authorization_ref: None,
-            agent_scope_request: Value::Null,
-            dpop_binding_proof: None,
-            applet_delegation: None,
-            proof: SessionGrantRequestProof {
-                proof_kind: SessionGrantProofKind::OidcCodeExchange,
-                challenge: self.challenge,
-                request_canonical_digest: self.request_canonical_digest,
-                audience: self.audience,
-                expires_at: None,
-                signature: String::new(),
-                verification_method: None,
-                issuer: Some(self.issuer),
-                client_id: Some(self.client_id),
-                redirect_uri: Some(self.redirect_uri),
-                state: Some(self.state),
-                nonce: Some(self.nonce),
-                authorization_code: Some(self.authorization_code),
-                code_verifier: Some(self.code_verifier),
-            },
-        }
+        oidc_session_grant_request(
+            self.principal_id,
+            self.device_id,
+            self.requested_scope,
+            self.challenge,
+            self.request_canonical_digest,
+            self.audience,
+            self.issuer,
+            self.client_id,
+            self.redirect_uri,
+            self.state,
+            self.nonce,
+            self.authorization_code,
+            self.code_verifier,
+        )
     }
 }
 
@@ -191,6 +171,7 @@ impl LoginKind {
 
 #[cfg(test)]
 mod tests {
+    use cokret::SessionGrantProofKind;
     use serde_json::json;
 
     use super::*;
