@@ -31,6 +31,8 @@ pub use session::{
     SessionGrantState, SessionGrantTransport, SessionHandle, SessionProofFields,
     SessionRefreshOptions,
 };
+#[cfg(feature = "native")]
+pub use store::FileStore;
 pub use store::{
     CursorScope, CursorStore, EventCacheStore, MemorySecureKeyStore, MemoryStore, OpaqueCursor,
     PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter, SecretBytes, SecretClass,
