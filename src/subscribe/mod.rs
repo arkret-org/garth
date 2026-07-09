@@ -5,10 +5,8 @@ pub mod scan;
 #[cfg(test)]
 pub(crate) mod test_support;
 
-pub use account::emit_account_updates;
-use cokret::{
-    AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot, SyncLoopStep,
-};
+pub use account::account_updates_to_events;
+use cokret::{AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot};
 use cokret_core::{DeviceId, Did, Error, RealmId, Result};
 pub use driver::{SubscriptionLoopDriver, SubscriptionStopReason};
 pub use realm::{
@@ -17,10 +15,8 @@ pub use realm::{
 };
 pub use scan::{EventsScanRequest, EventsScanTransport, ScanCatchup, ScanCatchupOptions};
 
-use crate::event::SinkProjector;
 use crate::{
-    ClientEvent, ClientEventSink, ClientProjector, CursorScope, CursorStore, EventCacheStore,
-    Executor, OpaqueCursor,
+    ClientEvent, ClientProjector, CursorScope, CursorStore, EventCacheStore, Executor, OpaqueCursor,
 };
 
 pub(crate) type ProjectedRunResult<T> = std::result::Result<T, ProjectedRunError>;
@@ -86,28 +82,7 @@ where
         self.control.cancel();
     }
 
-    pub async fn run_account<T, S>(
-        &self,
-        actor_id: Did,
-        device_id: DeviceId,
-        transport: &T,
-        sink: &S,
-    ) -> Result<SubscriptionStopReason>
-    where
-        T: AsyncSyncTransport + ?Sized,
-        S: ClientEventSink + ?Sized,
-    {
-        let projector = SinkProjector::new(sink);
-        self.run_account_projected(actor_id, device_id, transport, &projector)
-            .await
-    }
-
-    /// Projector-driven account loop (orchestrator seam). This awaits the async
-    /// [`ClientProjector`] and checkpoints the cursor ONLY after `project`
-    /// returns `Ok`, so the projector's durable write gates cursor advance
-    /// (uniform with the realm loop, crash-safe). The synchronous sink entry
-    /// point adapts to this same path.
-    pub async fn run_account_projected<T, P>(
+    pub async fn run_account<T, P>(
         &self,
         actor_id: Did,
         device_id: DeviceId,
@@ -120,65 +95,23 @@ where
     {
         let scope = self.account_scope(actor_id, device_id);
         let mut sync_loop = self.restore_account_loop(scope.clone()).await?;
-
-        loop {
-            match sync_loop
-                .step_async_with_control(transport, &self.control)
-                .await
-            {
-                SyncLoopStep::Updates(updates) => {
-                    let batch = account::account_updates_to_events(updates);
-                    if !batch.is_empty() {
-                        // Gate: project must persist before the cursor moves.
-                        projector.project(batch).await?;
+        let cursor_store = self.cursor_store.clone();
+        SubscriptionLoopDriver::with_control(self.executor.clone(), self.control.clone())
+            .run_account_checkpointed(&mut sync_loop, transport, projector, move |token| {
+                let cursor_store = cursor_store.clone();
+                let scope = scope.clone();
+                async move {
+                    match token {
+                        Some(cursor) => cursor_store.save(scope, cursor).await,
+                        None => cursor_store.clear(scope).await,
                     }
-                    self.checkpoint_account_cursor(
-                        scope.clone(),
-                        sync_loop.token().map(str::to_owned),
-                    )
-                    .await?;
                 }
-                SyncLoopStep::Retry { retry_after, .. } => {
-                    self.checkpoint_account_cursor(
-                        scope.clone(),
-                        sync_loop.token().map(str::to_owned),
-                    )
-                    .await?;
-                    self.executor.sleep(retry_after).await;
-                }
-                SyncLoopStep::Backpressure { retry_after } => {
-                    self.executor.sleep(retry_after).await;
-                }
-                SyncLoopStep::Cancelled => return Ok(SubscriptionStopReason::Cancelled),
-                SyncLoopStep::Unauthorized { reason } => {
-                    return Ok(SubscriptionStopReason::Unauthorized { reason });
-                }
-            }
-        }
-    }
-
-    pub async fn run_realm_stream<T, S>(
-        &self,
-        transport: &T,
-        realm_id: RealmId,
-        sink: &S,
-    ) -> Result<RealmStreamStopReason>
-    where
-        T: RealmEventsTransport + EventsScanTransport + ?Sized,
-        S: ClientEventSink + ?Sized,
-    {
-        let projector = SinkProjector::new(sink);
-        self.run_realm_projected_stream(transport, realm_id, &projector)
+            })
             .await
+            .map_err(ProjectedRunError::into_error)
     }
 
-    /// Projector-driven realm loop (orchestrator seam). Mirrors
-    /// [`Self::run_realm_stream`] — including the `Dropped` -> scan-catchup ->
-    /// backfill recovery — but the recovered backfill and every decoded event
-    /// go through the async [`ClientProjector`], and the cursor advances only
-    /// after `project` returns `Ok` (see
-    /// [`RealmEventsDriver::run_projected_stream`]).
-    pub async fn run_realm_projected_stream<T, P>(
+    pub async fn run_realm_stream<T, P>(
         &self,
         transport: &T,
         realm_id: RealmId,
@@ -188,12 +121,12 @@ where
         T: RealmEventsTransport + EventsScanTransport + ?Sized,
         P: ClientProjector + ?Sized,
     {
-        self.run_realm_projected_stream_classified(transport, realm_id, projector)
+        self.run_realm_stream_classified(transport, realm_id, projector)
             .await
             .map_err(ProjectedRunError::into_error)
     }
 
-    pub(crate) async fn run_realm_projected_stream_classified<T, P>(
+    pub(crate) async fn run_realm_stream_classified<T, P>(
         &self,
         transport: &T,
         realm_id: RealmId,
@@ -209,7 +142,7 @@ where
             driver = driver.with_service_did(service_did);
         }
         let reason = driver
-            .run_projected_stream_classified(transport, realm_id.clone(), projector)
+            .run_stream_classified(transport, realm_id.clone(), projector)
             .await?;
         match reason {
             RealmStreamStopReason::Dropped {
@@ -431,14 +364,14 @@ mod tests {
         let engine =
             SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store.clone());
         let control = engine.control();
-        let sink = move |event: ClientEvent| {
-            if matches!(event, ClientEvent::AccountUpdates(_)) {
-                control.cancel();
-            }
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+            control: Some(control),
         };
 
         let reason = engine
-            .run_account(actor_id(), device_id(), &transport, &sink)
+            .run_account(actor_id(), device_id(), &transport, &projector)
             .await
             .unwrap();
 
@@ -475,14 +408,14 @@ mod tests {
         ])));
         let transport = queued_transport(responses);
         let engine = SubscriptionEngine::new(executor.clone(), store.clone(), store.clone());
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+            control: None,
+        };
 
         let reason = engine
-            .run_account(
-                actor_id(),
-                device_id(),
-                &transport,
-                &|_event: ClientEvent| {},
-            )
+            .run_account(actor_id(), device_id(), &transport, &projector)
             .await
             .unwrap();
 
@@ -554,8 +487,9 @@ mod tests {
     }
 
     struct RecordingProjector {
-        batches: Arc<Mutex<Vec<usize>>>,
+        batches: Arc<Mutex<Vec<Vec<ClientEvent>>>>,
         fail: bool,
+        control: Option<SyncLoopControl>,
     }
 
     impl ClientProjector for RecordingProjector {
@@ -565,8 +499,12 @@ mod tests {
         ) -> impl std::future::Future<Output = Result<()>> + '_ {
             let batches = Arc::clone(&self.batches);
             let fail = self.fail;
+            let control = self.control.clone();
             async move {
-                batches.lock().unwrap().push(batch.len());
+                batches.lock().unwrap().push(batch);
+                if let Some(control) = control {
+                    control.cancel();
+                }
                 if fail {
                     Err(Error::Protocol("projector failed".to_owned()))
                 } else {
@@ -591,14 +529,15 @@ mod tests {
             vec![dropped],
             vec![backfill_outcome(Some("ck:cursor:next"))],
         );
-        let emitted = Arc::new(Mutex::new(Vec::new()));
-        let emitted_for_sink = Arc::clone(&emitted);
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+            control: None,
+        };
         let engine = SubscriptionEngine::new(executor.clone(), store.clone(), store.clone());
 
         let reason = engine
-            .run_realm_stream(&transport, realm_id(), &move |event: ClientEvent| {
-                emitted_for_sink.lock().unwrap().push(event);
-            })
+            .run_realm_stream(&transport, realm_id(), &projector)
             .await
             .unwrap();
 
@@ -618,8 +557,10 @@ mod tests {
             Some("ck:cursor:next")
         );
         assert_eq!(executor.sleeps(), vec![Duration::from_millis(25)]);
+        let batches = projector.batches.lock().unwrap();
+        assert_eq!(batches.len(), 1);
         assert!(matches!(
-            emitted.lock().unwrap().as_slice(),
+            batches[0].as_slice(),
             [ClientEvent::Backfill { .. }]
         ));
     }
@@ -640,12 +581,13 @@ mod tests {
         let projector = RecordingProjector {
             batches: Arc::new(Mutex::new(Vec::new())),
             fail: false,
+            control: None,
         };
         let engine =
             SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store.clone());
 
         let reason = engine
-            .run_realm_projected_stream(&transport, realm_id(), &projector)
+            .run_realm_stream(&transport, realm_id(), &projector)
             .await
             .unwrap();
 
@@ -656,7 +598,7 @@ mod tests {
                 reconnect_after_ms: None
             }
         );
-        assert_eq!(projector.batches.lock().unwrap().as_slice(), &[1]);
+        assert_eq!(projector.batches.lock().unwrap()[0].len(), 1);
         assert_eq!(
             store.load(realm_scope()).await.unwrap().as_deref(),
             Some("ck:cursor:next")
@@ -679,16 +621,17 @@ mod tests {
         let projector = RecordingProjector {
             batches: Arc::new(Mutex::new(Vec::new())),
             fail: true,
+            control: None,
         };
         let engine =
             SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store.clone());
 
         let result = engine
-            .run_realm_projected_stream(&transport, realm_id(), &projector)
+            .run_realm_stream(&transport, realm_id(), &projector)
             .await;
 
         assert!(result.is_err());
-        assert_eq!(projector.batches.lock().unwrap().as_slice(), &[1]);
+        assert_eq!(projector.batches.lock().unwrap()[0].len(), 1);
         assert_eq!(
             store.load(realm_scope()).await.unwrap().as_deref(),
             Some("ck:cursor:stored")
@@ -707,9 +650,14 @@ mod tests {
         dropped.reconnect_after_ms = Some(40);
         let transport = RealmRecoveryTransport::new(vec![dropped], Vec::new());
         let engine = SubscriptionEngine::new(executor.clone(), store.clone(), store.clone());
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+            control: None,
+        };
 
         let reason = engine
-            .run_realm_stream(&transport, realm_id(), &|_event: ClientEvent| {})
+            .run_realm_stream(&transport, realm_id(), &projector)
             .await
             .unwrap();
 

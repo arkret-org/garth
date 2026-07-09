@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::str;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use cokret_core::{Error, KeyStore};
+use cokret_core::{Error, KeyStore, KeyStoreError};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -241,9 +241,11 @@ where
     S: SecureKeyStore,
 {
     fn load(&self, id: &str) -> cokret_core::Result<cokret_core::KeyBytes> {
-        self.inner
-            .get_secret_bytes(id)?
-            .ok_or_else(|| SecureKeyStoreError::NotFound.into())
+        let bytes = self.inner.get_secret_bytes(id).map_err(|err| match err {
+            SecureKeyStoreError::NotFound => Error::from(KeyStoreError::not_found(id)),
+            other => Error::from(other),
+        })?;
+        bytes.ok_or_else(|| KeyStoreError::not_found(id).into())
     }
 
     fn store(&self, id: &str, key: &[u8]) -> cokret_core::Result<()> {
@@ -287,7 +289,7 @@ where
     fn get_secret_bytes(&self, key: &str) -> SecureKeyStoreResult<Option<SecretBytes>> {
         match self.inner.load(key) {
             Ok(bytes) => Ok(Some(bytes)),
-            Err(err) if err.to_string().contains("key not found") => Ok(None),
+            Err(err) if err.is_key_store_not_found() => Ok(None),
             Err(err) => Err(SecureKeyStoreError::Backend(err.to_string())),
         }
     }
@@ -321,5 +323,75 @@ where
             hardware_backed: false,
             exportable: true,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[derive(Clone, Debug)]
+    struct MissingKeyStore;
+
+    impl KeyStore for MissingKeyStore {
+        fn load(&self, id: &str) -> cokret_core::Result<cokret_core::KeyBytes> {
+            Err(KeyStoreError::not_found(id).into())
+        }
+
+        fn store(&self, _id: &str, _key: &[u8]) -> cokret_core::Result<()> {
+            Ok(())
+        }
+
+        fn list(&self) -> cokret_core::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn delete(&self, _id: &str) -> cokret_core::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[derive(Clone, Debug)]
+    struct BackendTextKeyStore;
+
+    impl KeyStore for BackendTextKeyStore {
+        fn load(&self, _id: &str) -> cokret_core::Result<cokret_core::KeyBytes> {
+            Err(Error::Protocol(
+                "backend text mentions key not found but is not typed".to_owned(),
+            ))
+        }
+
+        fn store(&self, _id: &str, _key: &[u8]) -> cokret_core::Result<()> {
+            Ok(())
+        }
+
+        fn list(&self) -> cokret_core::Result<Vec<String>> {
+            Ok(Vec::new())
+        }
+
+        fn delete(&self, _id: &str) -> cokret_core::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn secure_adapter_maps_typed_key_store_not_found_to_none() {
+        let adapter = SdkKeyStoreSecureAdapter::new(MissingKeyStore);
+        let value = adapter.get_secret_bytes("missing").unwrap();
+        assert!(value.is_none());
+    }
+
+    #[test]
+    fn secure_adapter_does_not_classify_backend_text_as_not_found() {
+        let adapter = SdkKeyStoreSecureAdapter::new(BackendTextKeyStore);
+        let err = adapter.get_secret_bytes("missing").unwrap_err();
+        assert!(matches!(err, SecureKeyStoreError::Backend(_)));
+    }
+
+    #[test]
+    fn key_store_adapter_preserves_secure_store_not_found_as_typed_sdk_error() {
+        let adapter = SdkKeyStoreAdapter::new(MemorySecureKeyStore::new());
+        let err = adapter.load("missing").unwrap_err();
+        assert!(err.is_key_store_not_found());
     }
 }

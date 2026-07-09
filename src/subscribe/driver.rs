@@ -1,10 +1,10 @@
-use std::convert::Infallible;
 use std::future::Future;
 
 use cokret::{AsyncSyncTransport, SyncLoop, SyncLoopControl, SyncLoopStep};
+use cokret_core::Result;
 
-use super::emit_account_updates;
-use crate::{ClientEventSink, Executor};
+use super::{ProjectedRunError, ProjectedRunResult, account_updates_to_events};
+use crate::{ClientProjector, Executor};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubscriptionStopReason {
@@ -41,47 +41,39 @@ where
         self.control.cancel();
     }
 
-    pub async fn run_account<T, S>(
+    pub async fn run_account<T, P>(
         &self,
         sync_loop: &mut SyncLoop,
         transport: &T,
-        sink: &S,
-    ) -> SubscriptionStopReason
+        projector: &P,
+    ) -> Result<SubscriptionStopReason>
     where
         T: AsyncSyncTransport + ?Sized,
-        S: ClientEventSink + ?Sized,
+        P: ClientProjector + ?Sized,
     {
-        // No checkpoint hook: delegate to the shared loop with an infallible
-        // no-op so the state-machine handling lives in exactly one place.
-        match self
-            .run_account_checkpointed(sync_loop, transport, sink, |_token| async {
-                Ok::<(), Infallible>(())
-            })
+        self.run_account_checkpointed(sync_loop, transport, projector, |_token| async { Ok(()) })
             .await
-        {
-            Ok(reason) => reason,
-            Err(never) => match never {},
-        }
+            .map_err(ProjectedRunError::into_error)
     }
 
     /// Shared account sync loop. `checkpoint` is invoked with the current sync
-    /// token after each `Updates` and `Retry` step (before emitting/sleeping) so
-    /// callers that persist a cursor can hook in without duplicating the
-    /// `SyncLoopStep` dispatch; its error type is propagated to the caller. The
-    /// token is passed by value so the hook's future may own it (a borrowed
-    /// `&str` would run into closure-lending limits).
-    pub(crate) async fn run_account_checkpointed<T, S, F, Fut, Er>(
+    /// token after each projected `Updates` batch and after each `Retry` step,
+    /// so callers that persist a cursor can hook in without duplicating the
+    /// `SyncLoopStep` dispatch. The token is passed by value so the hook's
+    /// future may own it (a borrowed `&str` would run into closure-lending
+    /// limits).
+    pub(crate) async fn run_account_checkpointed<T, P, F, Fut>(
         &self,
         sync_loop: &mut SyncLoop,
         transport: &T,
-        sink: &S,
+        projector: &P,
         mut checkpoint: F,
-    ) -> Result<SubscriptionStopReason, Er>
+    ) -> ProjectedRunResult<SubscriptionStopReason>
     where
         T: AsyncSyncTransport + ?Sized,
-        S: ClientEventSink + ?Sized,
+        P: ClientProjector + ?Sized,
         F: FnMut(Option<String>) -> Fut,
-        Fut: Future<Output = Result<(), Er>>,
+        Fut: Future<Output = Result<()>>,
     {
         loop {
             match sync_loop
@@ -89,11 +81,21 @@ where
                 .await
             {
                 SyncLoopStep::Updates(updates) => {
-                    checkpoint(sync_loop.token().map(str::to_owned)).await?;
-                    emit_account_updates(sink, updates);
+                    let batch = account_updates_to_events(updates);
+                    if !batch.is_empty() {
+                        projector
+                            .project(batch)
+                            .await
+                            .map_err(ProjectedRunError::Projector)?;
+                    }
+                    checkpoint(sync_loop.token().map(str::to_owned))
+                        .await
+                        .map_err(ProjectedRunError::Store)?;
                 }
                 SyncLoopStep::Retry { retry_after, .. } => {
-                    checkpoint(sync_loop.token().map(str::to_owned)).await?;
+                    checkpoint(sync_loop.token().map(str::to_owned))
+                        .await
+                        .map_err(ProjectedRunError::Store)?;
                     self.executor.sleep(retry_after).await;
                 }
                 SyncLoopStep::Backpressure { retry_after } => {
@@ -119,24 +121,48 @@ mod tests {
     use super::*;
     use crate::ClientEvent;
 
+    struct CountingProjector {
+        events: Arc<Mutex<usize>>,
+        control: SyncLoopControl,
+    }
+
+    impl ClientProjector for CountingProjector {
+        fn project(
+            &self,
+            batch: Vec<ClientEvent>,
+        ) -> impl Future<Output = cokret_core::Result<()>> + '_ {
+            let events = Arc::clone(&self.events);
+            let control = self.control.clone();
+            async move {
+                for event in batch {
+                    if matches!(event, ClientEvent::AccountUpdates(_)) {
+                        *events.lock().unwrap() += 1;
+                        control.cancel();
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
     #[tokio::test]
     async fn account_driver_emits_updates_until_cancelled() {
         let executor = RecordingExecutor::default();
         let driver = SubscriptionLoopDriver::new(executor);
         let control = driver.control();
         let events = Arc::new(Mutex::new(0usize));
-        let sink_events = Arc::clone(&events);
-        let sink = move |event: ClientEvent| {
-            if matches!(event, ClientEvent::AccountUpdates(_)) {
-                *sink_events.lock().unwrap() += 1;
-                control.cancel();
-            }
+        let projector = CountingProjector {
+            events: Arc::clone(&events),
+            control,
         };
         let responses = Arc::new(Mutex::new(VecDeque::from([Ok(sync_response("s1"))])));
         let transport = queued_transport(responses);
         let mut sync_loop = SyncLoop::new();
 
-        let reason = driver.run_account(&mut sync_loop, &transport, &sink).await;
+        let reason = driver
+            .run_account(&mut sync_loop, &transport, &projector)
+            .await
+            .unwrap();
 
         assert_eq!(reason, SubscriptionStopReason::Cancelled);
         assert_eq!(*events.lock().unwrap(), 1);
@@ -148,10 +174,9 @@ mod tests {
         let executor = RecordingExecutor::default();
         let driver = SubscriptionLoopDriver::new(executor.clone());
         let control = driver.control();
-        let sink = move |event: ClientEvent| {
-            if matches!(event, ClientEvent::AccountUpdates(_)) {
-                control.cancel();
-            }
+        let projector = CountingProjector {
+            events: Arc::new(Mutex::new(0)),
+            control,
         };
         let responses = Arc::new(Mutex::new(VecDeque::from([
             Err(Error::Protocol("network down".to_owned())),
@@ -160,7 +185,10 @@ mod tests {
         let transport = queued_transport(responses);
         let mut sync_loop = SyncLoop::new();
 
-        let reason = driver.run_account(&mut sync_loop, &transport, &sink).await;
+        let reason = driver
+            .run_account(&mut sync_loop, &transport, &projector)
+            .await
+            .unwrap();
 
         assert_eq!(reason, SubscriptionStopReason::Cancelled);
         assert_eq!(sync_loop.token(), Some("s1"));

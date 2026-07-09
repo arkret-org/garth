@@ -22,7 +22,7 @@ use crate::subscribe::{
     EventsScanTransport, ProjectedRunError, RealmEventsTransport, RealmStreamStopReason,
 };
 use crate::{
-    ClientProjector, CokretClient, CursorStore, EventCacheStore, Executor, SecureKeyStore,
+    ClientProjector, CokretClient, CursorStore, EventCacheStore, Executor,
     subscribe::account::account_updates_to_events,
 };
 
@@ -66,12 +66,11 @@ pub enum RunStopReason {
     Unauthorized { reason: Option<String> },
 }
 
-impl<E, C, D, K> CokretClient<E, C, D, K>
+impl<E, C, D> CokretClient<E, C, D>
 where
     E: Executor + Clone,
     C: CursorStore,
     D: EventCacheStore,
-    K: SecureKeyStore,
 {
     /// Resilient realm run loop: subscribe -> project -> checkpoint, auto-resume
     /// with backoff on `StreamEnded` / `Dropped` / `ResyncRequired`, stop on
@@ -105,7 +104,7 @@ where
                 }
             };
             match engine
-                .run_realm_projected_stream_classified(&transport, realm_id.clone(), projector)
+                .run_realm_stream_classified(&transport, realm_id.clone(), projector)
                 .await
             {
                 Ok(RealmStreamStopReason::StreamEnded) => {
@@ -227,25 +226,15 @@ mod tests {
     use crate::subscribe::scan::BoxScanFuture;
     use crate::subscribe::test_support::{RecordingExecutor, sync_response};
     use crate::{
-        BoxRealmStreamFuture, ClientEvent, CursorScope, EventsScanRequest, MemorySecureKeyStore,
-        MemoryStore, RealmEventsFrameSource,
+        BoxRealmStreamFuture, ClientEvent, CursorScope, EventsScanRequest, MemoryStore,
+        RealmEventsFrameSource,
     };
 
     fn test_client(
         executor: RecordingExecutor,
         store: MemoryStore,
-    ) -> CokretClient<RecordingExecutor, MemoryStore, MemoryStore, MemorySecureKeyStore> {
-        // The http client is only used by `session_engine()`, which the realm
-        // run loop never calls; a placeholder base URL is fine.
-        let http = cokret_http_client::Client::new(url::Url::parse("https://localhost/").unwrap())
-            .unwrap();
-        CokretClient::new(
-            http,
-            executor,
-            store.clone(),
-            store,
-            MemorySecureKeyStore::new(),
-        )
+    ) -> CokretClient<RecordingExecutor, MemoryStore, MemoryStore> {
+        CokretClient::new(executor, store.clone(), store)
     }
 
     struct QueueProvider<T> {

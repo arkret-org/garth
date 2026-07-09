@@ -4,10 +4,9 @@ use std::pin::Pin;
 use cokret_core::{Did, Event, EventsSubscribeFrame, EventsSubscribeFrameKind, RealmId, Result};
 
 use super::{ProjectedRunError, ProjectedRunResult};
-use crate::event::SinkProjector;
 use crate::{
-    ClientEvent, ClientEventSink, ClientProjector, CursorScope, CursorStore, DecodedInbound,
-    EventCacheStore, InboundDecoder, OpaqueCursor,
+    ClientEvent, ClientProjector, CursorScope, CursorStore, DecodedInbound, EventCacheStore,
+    InboundDecoder, OpaqueCursor,
 };
 
 // Native builds keep boxed stream futures (and the frame source held across
@@ -113,29 +112,7 @@ where
         self
     }
 
-    pub async fn run_stream<T, S>(
-        &self,
-        transport: &T,
-        realm_id: RealmId,
-        sink: &S,
-    ) -> Result<RealmStreamStopReason>
-    where
-        T: RealmEventsTransport + ?Sized,
-        S: ClientEventSink + ?Sized,
-    {
-        let projector = SinkProjector::new(sink);
-        self.run_projected_stream(transport, realm_id, &projector)
-            .await
-    }
-
-    /// Projector-driven realm loop (orchestrator seam). Same frame handling as
-    /// [`Self::run_stream`], but each decoded event batch is handed to the async
-    /// [`ClientProjector`] and the cursor is checkpointed ONLY after
-    /// `project` returns `Ok` — the projector's durable write gates cursor
-    /// advance. `Dropped` / `Unauthorized` are returned to the caller (the
-    /// facade orchestrator handles scan-backfill / refresh); `ResyncRequired`
-    /// clears the cursor here.
-    pub async fn run_projected_stream<T, P>(
+    pub async fn run_stream<T, P>(
         &self,
         transport: &T,
         realm_id: RealmId,
@@ -145,12 +122,18 @@ where
         T: RealmEventsTransport + ?Sized,
         P: ClientProjector + ?Sized,
     {
-        self.run_projected_stream_classified(transport, realm_id, projector)
+        self.run_stream_classified(transport, realm_id, projector)
             .await
             .map_err(ProjectedRunError::into_error)
     }
 
-    pub(crate) async fn run_projected_stream_classified<T, P>(
+    /// Projector-driven realm loop (orchestrator seam). Each decoded event
+    /// batch is handed to the async [`ClientProjector`] and the cursor is
+    /// checkpointed ONLY after `project` returns `Ok` — the projector's durable
+    /// write gates cursor advance. `Dropped` / `Unauthorized` are returned to
+    /// the caller (the facade orchestrator handles scan-backfill / refresh);
+    /// `ResyncRequired` clears the cursor here.
+    pub(crate) async fn run_stream_classified<T, P>(
         &self,
         transport: &T,
         realm_id: RealmId,
@@ -192,9 +175,9 @@ where
             match frame.kind {
                 EventsSubscribeFrameKind::Event => {
                     // A malformed Event frame must not poison the stream
-                    // (mirrors the sink path): skip it and let the cursor
-                    // advance, otherwise every reconnect would replay the same
-                    // frame and wedge realm sync permanently.
+                    // Skip it and let the cursor advance, otherwise every
+                    // reconnect would replay the same frame and wedge realm
+                    // sync permanently.
                     if let Ok(event) = serde_json::from_value::<Event>(frame.payload) {
                         let event_id = event.event_id.clone();
                         if !self
@@ -394,22 +377,19 @@ mod tests {
             frame(EventsSubscribeFrameKind::Event, payload.clone()),
             frame(EventsSubscribeFrameKind::Event, payload),
         ]);
-        let emitted = Arc::new(Mutex::new(0usize));
-        let emitted_for_sink = Arc::clone(&emitted);
-        let sink = move |event: ClientEvent| {
-            if matches!(event, ClientEvent::Message(_)) {
-                *emitted_for_sink.lock().unwrap() += 1;
-            }
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
         };
         let driver = RealmEventsDriver::new(store.clone(), store);
 
         let reason = driver
-            .run_stream(&transport, realm_id(), &sink)
+            .run_stream(&transport, realm_id(), &projector)
             .await
             .unwrap();
 
         assert_eq!(reason, RealmStreamStopReason::StreamEnded);
-        assert_eq!(*emitted.lock().unwrap(), 1);
+        assert_eq!(projector.batches.lock().unwrap().as_slice(), &[1]);
     }
 
     #[tokio::test]
@@ -423,9 +403,13 @@ mod tests {
         heartbeat.cursor = Some(Cursor::new("ck:cursor:frame1").unwrap());
         let transport = VecTransport::new(vec![heartbeat]);
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+        };
 
         let reason = driver
-            .run_stream(&transport, realm_id(), &|_event: ClientEvent| {})
+            .run_stream(&transport, realm_id(), &projector)
             .await
             .unwrap();
 
@@ -451,9 +435,13 @@ mod tests {
         resync.reconnect_after_ms = Some(25);
         let transport = VecTransport::new(vec![resync]);
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+        };
 
         let reason = driver
-            .run_stream(&transport, realm_id(), &|_event: ClientEvent| {})
+            .run_stream(&transport, realm_id(), &projector)
             .await
             .unwrap();
 
@@ -478,9 +466,13 @@ mod tests {
         dropped.reconnect_after_ms = Some(50);
         let transport = VecTransport::new(vec![dropped]);
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+        };
 
         let reason = driver
-            .run_stream(&transport, realm_id(), &|_event: ClientEvent| {})
+            .run_stream(&transport, realm_id(), &projector)
             .await
             .unwrap();
 
@@ -510,9 +502,13 @@ mod tests {
         );
         let transport = VecTransport::new(vec![unauthorized]);
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+        };
 
         let reason = driver
-            .run_stream(&transport, realm_id(), &|_event: ClientEvent| {})
+            .run_stream(&transport, realm_id(), &projector)
             .await
             .unwrap();
 
@@ -567,7 +563,7 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let reason = driver
-            .run_projected_stream(&transport, realm_id(), &projector)
+            .run_stream(&transport, realm_id(), &projector)
             .await
             .unwrap();
 
@@ -598,7 +594,7 @@ mod tests {
         let transport = VecTransport::new(vec![event_frame.clone()]);
         assert!(
             driver
-                .run_projected_stream(&transport, realm_id(), &failing)
+                .run_stream(&transport, realm_id(), &failing)
                 .await
                 .is_err()
         );
@@ -611,7 +607,7 @@ mod tests {
         };
         let transport = VecTransport::new(vec![event_frame]);
         let reason = driver
-            .run_projected_stream(&transport, realm_id(), &succeeding)
+            .run_stream(&transport, realm_id(), &succeeding)
             .await
             .unwrap();
 
@@ -628,7 +624,7 @@ mod tests {
     #[tokio::test]
     async fn realm_projected_skips_malformed_event_frame() {
         // An unparseable Event frame must not wedge the stream: skip it and
-        // let the cursor advance past it (mirrors the sink path).
+        // let the cursor advance past it.
         let store = MemoryStore::new();
         let mut bad_frame = frame(EventsSubscribeFrameKind::Event, json!({"not": "an event"}));
         bad_frame.cursor = Some(Cursor::new("ck:cursor:frame1").unwrap());
@@ -640,7 +636,7 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let reason = driver
-            .run_projected_stream(&transport, realm_id(), &projector)
+            .run_stream(&transport, realm_id(), &projector)
             .await
             .unwrap();
 
@@ -677,7 +673,7 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let reason = driver
-            .run_projected_stream(&transport, realm_id(), &projector)
+            .run_stream(&transport, realm_id(), &projector)
             .await
             .unwrap();
 
@@ -704,9 +700,7 @@ mod tests {
         };
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
-        let result = driver
-            .run_projected_stream(&transport, realm_id(), &projector)
-            .await;
+        let result = driver.run_stream(&transport, realm_id(), &projector).await;
 
         // The projector error aborts the loop...
         assert!(result.is_err());

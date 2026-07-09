@@ -39,4 +39,3 @@ zeroize = {version = "1.8.2",default-features = false,features = ["derive"]}
 
 [dev-dependencies]
 tokio = {version = "1.52.3",default-features = false,features = ["macros", "rt", "sync", "time"]}
-url = "2"

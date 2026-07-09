@@ -63,7 +63,7 @@ impl ClientProjector for MyProjector {
 
 `project` is `async`, so it may do real work in the loop (key prefetch,
 directory resolve, IndexedDB / Signal writes) — that is the whole reason it
-replaced the old synchronous `ClientEventSink`.
+is the only event projection seam.
 
 ## 3. Run it
 
@@ -81,7 +81,7 @@ impl TransportProvider for MyTransport {
     }
 }
 
-let client = CokretClient::new(http, executor, cursor_store, event_cache_store, secure_key_store);
+let client = CokretClient::new(executor, cursor_store, event_cache_store);
 let control = SyncLoopControl::new();       // keep a clone; `control.cancel()` stops the loop
 let projector = MyProjector { /* ... */ };
 let provider = MyTransport { /* ... */ };
@@ -102,6 +102,12 @@ Both return `RunStopReason`:
   `provide` recovers transparently. garth owns *when* to re-provide; your
   provider owns *how* to refresh SDK auth.
 
+Session grant refresh is intentionally outside `CokretClient`: construct
+`garth::SessionEngine::new(http)` beside the transport/session state that owns
+credentials. Likewise, keep your `SecureKeyStore` in host state or in a crypto
+store adapter; the runtime facade does not hold secrets that its loops do not
+consume.
+
 ## What garth does for you (don't re-implement)
 
 - Long-poll / subscribe loop and retry/backpressure.
@@ -111,9 +117,9 @@ Both return `RunStopReason`:
 - Resync (clear cursor + rebuild) and reconnect backoff.
 - Cancellation via `SyncLoopControl`.
 
-## Migration note (pre-orchestrator API)
+## Engine-level API
 
-The synchronous `ClientEventSink` + `SubscriptionEngine::run_account`/`run_realm_stream`
-are retained only for consumers that have not migrated yet and are removed once
-all consumers adopt the projector orchestrator. New code should use
-`ClientProjector` + `CokretClient::run_*`.
+`CokretClient::run_*` is the preferred host entry point. Lower-level
+`SubscriptionEngine` and `RealmEventsDriver` methods also take
+`ClientProjector`, so account and realm frames share the same
+project-then-checkpoint contract at every layer.

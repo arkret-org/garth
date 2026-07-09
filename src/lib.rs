@@ -17,7 +17,7 @@ pub mod subscribe;
 
 pub use cokret::SyncLoopControl;
 pub use decode::{DecodedInbound, DecodedMessage, DecodedNotification, InboundDecoder};
-pub use event::{ClientEvent, ClientEventSink, ClientProjector};
+pub use event::{ClientEvent, ClientProjector};
 pub use executor::Executor;
 #[cfg(feature = "native")]
 pub use executor::NativeExecutor;
@@ -45,5 +45,5 @@ pub use subscribe::{
     BoxRealmStreamFuture, EventsScanRequest, EventsScanTransport, RealmEventsDriver,
     RealmEventsFrameSource, RealmEventsTransport, RealmStreamStopReason, ScanCatchup,
     ScanCatchupOptions, SubscriptionEngine, SubscriptionLoopDriver, SubscriptionStopReason,
-    emit_account_updates,
+    account_updates_to_events,
 };

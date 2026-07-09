@@ -1,56 +1,31 @@
-use cokret_http_client::Client;
-
-use crate::{
-    CursorStore, EventCacheStore, Executor, SecureKeyStore, SessionEngine, SubscriptionEngine,
-};
+use crate::{CursorStore, EventCacheStore, Executor, SubscriptionEngine};
 
 /// Root handle for shared client runtime components.
 ///
-/// The facade deliberately binds the concrete default HTTP client
-/// ([`cokret_http_client::Client`]) rather than staying generic over the
-/// transport traits ([`crate::SessionGrantTransport`],
-/// [`crate::RealmEventsTransport`], [`crate::EventsScanTransport`]) that the
-/// underlying engines accept — this keeps the common wiring ergonomic. Callers
-/// that need to inject an alternate or mock transport should construct the
-/// engines directly (e.g. `SessionEngine::new(custom_transport)`) instead of
-/// going through the facade.
+/// The facade only owns the shared runtime loop wiring. Session grant and
+/// secure-key storage are separate concerns: hosts that need session refresh
+/// should construct [`crate::SessionEngine`] directly with the transport they
+/// use, and hosts should keep their secure-key store beside their durable
+/// client state.
 #[derive(Clone, Debug)]
-pub struct CokretClient<E, C, D, K> {
-    pub http: Client,
-    pub session_engine: SessionEngine<Client>,
+pub struct CokretClient<E, C, D> {
     pub executor: E,
     pub cursor_store: C,
     pub event_cache_store: D,
-    pub secure_key_store: K,
 }
 
-impl<E, C, D, K> CokretClient<E, C, D, K>
+impl<E, C, D> CokretClient<E, C, D>
 where
     E: Executor,
     C: CursorStore,
     D: EventCacheStore,
-    K: SecureKeyStore,
 {
-    pub fn new(
-        http: Client,
-        executor: E,
-        cursor_store: C,
-        event_cache_store: D,
-        secure_key_store: K,
-    ) -> Self {
-        let session_engine = SessionEngine::new(http.clone());
+    pub fn new(executor: E, cursor_store: C, event_cache_store: D) -> Self {
         Self {
-            http,
-            session_engine,
             executor,
             cursor_store,
             event_cache_store,
-            secure_key_store,
         }
-    }
-
-    pub fn session_engine(&self) -> SessionEngine<Client> {
-        self.session_engine.clone()
     }
 
     pub fn subscription_engine(&self) -> SubscriptionEngine<E, C, D>

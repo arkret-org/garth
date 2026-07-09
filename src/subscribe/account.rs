@@ -1,21 +1,11 @@
 use cokret_core::SyncUpdates;
 
-use crate::{ClientEvent, ClientEventSink};
-
-pub fn emit_account_updates<S>(sink: &S, updates: SyncUpdates)
-where
-    S: ClientEventSink + ?Sized,
-{
-    for event in account_updates_to_events(updates) {
-        sink.emit(event);
-    }
-}
+use crate::ClientEvent;
 
 /// Fan an account-subscribe step's [`SyncUpdates`] into the ordered
 /// [`ClientEvent`] batch a host consumes: the whole `AccountUpdates` first
 /// (carries batch context — to-device ack token, `partial`, presence, account
-/// data), then the granular realm / to-device / notification deltas. Shared by
-/// the sink path ([`emit_account_updates`]) and the projector orchestrator.
+/// data), then the granular realm / to-device / notification deltas.
 pub fn account_updates_to_events(updates: SyncUpdates) -> Vec<ClientEvent> {
     let mut batch = Vec::new();
     batch.push(ClientEvent::AccountUpdates(updates.clone()));
@@ -74,18 +64,15 @@ mod tests {
     #[test]
     fn account_update_fanout_emits_raw_and_granular_events() {
         let kinds = Arc::new(Mutex::new(Vec::new()));
-        let kinds_for_sink = Arc::clone(&kinds);
-        let sink = move |event: ClientEvent| {
+        for event in account_updates_to_events(updates()) {
             let kind = match event {
                 ClientEvent::AccountUpdates(_) => "account",
                 ClientEvent::RealmDelta { .. } => "realm",
                 ClientEvent::Notification(_) => "notification",
                 _ => "other",
             };
-            kinds_for_sink.lock().unwrap().push(kind);
-        };
-
-        emit_account_updates(&sink, updates());
+            kinds.lock().unwrap().push(kind);
+        }
 
         assert_eq!(
             kinds.lock().unwrap().as_slice(),

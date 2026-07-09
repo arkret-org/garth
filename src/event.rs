@@ -23,26 +23,6 @@ pub enum ClientEvent {
     ToDevice(ToDeviceMessage),
 }
 
-/// Host adapter sink for engine output.
-///
-/// Synchronous, fire-and-forget. Retained for the pre-orchestrator engines
-/// (`SubscriptionEngine::run_account` / `run_realm_stream`). New clients should
-/// implement [`ClientProjector`] and drive the loop through
-/// [`crate::CokretClient::run_account`] / [`crate::CokretClient::run_realm`]
-/// instead; this sink is removed once all consumers migrate.
-pub trait ClientEventSink {
-    fn emit(&self, event: ClientEvent);
-}
-
-impl<F> ClientEventSink for F
-where
-    F: Fn(ClientEvent),
-{
-    fn emit(&self, event: ClientEvent) {
-        self(event);
-    }
-}
-
 /// Async host seam: turns a batch of engine-emitted [`ClientEvent`]s into
 /// durable client state.
 ///
@@ -60,26 +40,4 @@ pub trait ClientProjector {
         &self,
         batch: Vec<ClientEvent>,
     ) -> impl std::future::Future<Output = cokret_core::Result<()>> + '_;
-}
-
-pub(crate) struct SinkProjector<'a, S: ?Sized> {
-    sink: &'a S,
-}
-
-impl<'a, S: ?Sized> SinkProjector<'a, S> {
-    pub(crate) fn new(sink: &'a S) -> Self {
-        Self { sink }
-    }
-}
-
-impl<S> ClientProjector for SinkProjector<'_, S>
-where
-    S: ClientEventSink + ?Sized,
-{
-    async fn project(&self, batch: Vec<ClientEvent>) -> cokret_core::Result<()> {
-        for event in batch {
-            self.sink.emit(event);
-        }
-        Ok(())
-    }
 }
