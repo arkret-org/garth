@@ -15,6 +15,7 @@ pub mod session;
 pub mod store;
 pub mod subscribe;
 
+pub use cokret::SyncLoopControl;
 pub use decode::{DecodedInbound, DecodedMessage, DecodedNotification, InboundDecoder};
 pub use event::{ClientEvent, ClientEventSink, ClientProjector};
 pub use executor::Executor;
@@ -22,7 +23,6 @@ pub use executor::Executor;
 pub use executor::NativeExecutor;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use executor::WasmExecutor;
-pub use cokret::SyncLoopControl;
 pub use facade::CokretClient;
 pub use orchestrator::{RunOptions, RunStop, TransportProvider};
 pub use outbound::{MessageCreateOptions, OutboundBuilder, OutboundCommandContext};
@@ -42,7 +42,8 @@ pub use store::{
     SecureKeyStoreError,
 };
 pub use subscribe::{
-    EventsScanRequest, EventsScanTransport, RealmEventsDriver, RealmEventsFrameSource,
-    RealmEventsTransport, RealmStreamStopReason, ScanCatchup, ScanCatchupOptions,
-    SubscriptionEngine, SubscriptionLoopDriver, SubscriptionStopReason, emit_account_updates,
+    BoxRealmStreamFuture, EventsScanRequest, EventsScanTransport, RealmEventsDriver,
+    RealmEventsFrameSource, RealmEventsTransport, RealmStreamStopReason, ScanCatchup,
+    ScanCatchupOptions, SubscriptionEngine, SubscriptionLoopDriver, SubscriptionStopReason,
+    emit_account_updates,
 };

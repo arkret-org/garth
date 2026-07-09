@@ -5,7 +5,7 @@
 //! into garth). State is a single JSON file, written atomically (temp + rename)
 //! after each mutation. Web clients provide an IndexedDB-backed store instead.
 
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -13,17 +13,12 @@ use std::sync::{Arc, Mutex, PoisonError};
 use cokret_core::{Error, EventId, Result};
 use serde::{Deserialize, Serialize};
 
+use super::seen_window::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
 use super::{CursorScope, CursorStore, EventCacheStore, OpaqueCursor};
 
 /// Unit separator used to build a flat, deterministic string key from a
 /// structured [`CursorScope`] for the on-disk map.
 const SEP: char = '\u{1f}';
-
-/// Default bound on the dedupe window. The cursor already guarantees old
-/// events are not replayed, so `seen_events` only needs to cover the recent
-/// redelivery window — an unbounded set would grow (and be rewritten to disk)
-/// forever on a long-running client. Matches savfox's hand-tuned cache cap.
-pub const DEFAULT_SEEN_EVENTS_CAPACITY: usize = 4096;
 
 /// File-backed durable store. Cheap to clone (shared handle); every mutation
 /// persists the whole state to the backing file.
@@ -37,8 +32,7 @@ struct FileStoreInner {
     path: PathBuf,
     state: FileState,
     /// Runtime lookup index over `state.seen_events` (not persisted).
-    seen_index: BTreeSet<String>,
-    seen_capacity: usize,
+    seen_window: BoundedSeenWindow<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -63,17 +57,14 @@ impl FileStore {
     pub fn open_with_seen_capacity(path: impl Into<PathBuf>, capacity: usize) -> Result<Self> {
         let path = path.into();
         let mut state = load_state(&path)?;
-        let capacity = capacity.max(1);
-        while state.seen_events.len() > capacity {
-            state.seen_events.pop_front();
-        }
-        let seen_index = state.seen_events.iter().cloned().collect();
+        let seen_events = std::mem::take(&mut state.seen_events);
+        let seen_window = BoundedSeenWindow::from_entries(seen_events, capacity);
+        state.seen_events = seen_window.entries().clone();
         Ok(Self {
             inner: Arc::new(Mutex::new(FileStoreInner {
                 path,
                 state,
-                seen_index,
-                seen_capacity: capacity,
+                seen_window,
             })),
         })
     }
@@ -99,7 +90,10 @@ impl FileStore {
 
 fn scope_key(scope: &CursorScope) -> String {
     fn did(value: &Option<cokret_core::Did>) -> String {
-        value.as_ref().map(|d| d.as_str().to_owned()).unwrap_or_default()
+        value
+            .as_ref()
+            .map(|d| d.as_str().to_owned())
+            .unwrap_or_default()
     }
     match scope {
         CursorScope::Account {
@@ -200,20 +194,15 @@ impl CursorStore for FileStore {
 
 impl EventCacheStore for FileStore {
     fn seen(&self, event_id: EventId) -> impl Future<Output = Result<bool>> + '_ {
-        async move { self.read(|inner| inner.seen_index.contains(event_id.as_str())) }
+        async move { self.read(|inner| inner.seen_window.contains(event_id.as_str())) }
     }
 
     fn remember(&self, event_id: EventId) -> impl Future<Output = Result<()>> + '_ {
         async move {
             self.mutate(|inner| {
                 let id = event_id.as_str().to_owned();
-                if inner.seen_index.insert(id.clone()) {
-                    inner.state.seen_events.push_back(id);
-                    while inner.state.seen_events.len() > inner.seen_capacity {
-                        if let Some(evicted) = inner.state.seen_events.pop_front() {
-                            inner.seen_index.remove(&evicted);
-                        }
-                    }
+                if inner.seen_window.remember(id) {
+                    inner.state.seen_events = inner.seen_window.entries().clone();
                 }
             })
         }

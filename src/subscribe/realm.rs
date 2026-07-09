@@ -270,7 +270,9 @@ where
     fn decode_event_batch(&self, event: Event) -> Vec<ClientEvent> {
         match self.decoder.decode_event(event) {
             DecodedInbound::Message(message) => vec![ClientEvent::Message(message)],
-            DecodedInbound::Notification(notification) => vec![ClientEvent::Event(notification.event)],
+            DecodedInbound::Notification(notification) => {
+                vec![ClientEvent::Event(notification.event)]
+            }
             DecodedInbound::Event(event) => vec![ClientEvent::Event(event)],
         }
     }
@@ -614,8 +616,10 @@ mod tests {
     #[tokio::test]
     async fn realm_projected_checkpoints_only_after_project_ok() {
         let store = MemoryStore::new();
-        let mut event_frame =
-            frame(EventsSubscribeFrameKind::Event, serde_json::to_value(message_event()).unwrap());
+        let mut event_frame = frame(
+            EventsSubscribeFrameKind::Event,
+            serde_json::to_value(message_event()).unwrap(),
+        );
         event_frame.cursor = Some(Cursor::new("ck:cursor:frame1").unwrap());
         let transport = VecTransport::new(vec![event_frame]);
         let projector = RecordingProjector {
@@ -750,8 +754,10 @@ mod tests {
             .save(scope(), "ck:cursor:stored".to_owned())
             .await
             .unwrap();
-        let mut event_frame =
-            frame(EventsSubscribeFrameKind::Event, serde_json::to_value(message_event()).unwrap());
+        let mut event_frame = frame(
+            EventsSubscribeFrameKind::Event,
+            serde_json::to_value(message_event()).unwrap(),
+        );
         event_frame.cursor = Some(Cursor::new("ck:cursor:frame1").unwrap());
         let transport = VecTransport::new(vec![event_frame]);
         let projector = RecordingProjector {

@@ -1,9 +1,10 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use cokret_core::{Error, EventId, Result};
 
+use super::seen_window::BoundedSeenWindow;
 use super::{CursorScope, CursorStore, EventCacheStore, OpaqueCursor};
 
 #[derive(Clone, Debug, Default)]
@@ -14,12 +15,21 @@ pub struct MemoryStore {
 #[derive(Debug, Default)]
 struct MemoryState {
     cursors: BTreeMap<CursorScope, OpaqueCursor>,
-    seen_events: BTreeSet<EventId>,
+    seen_events: BoundedSeenWindow<EventId>,
 }
 
 impl MemoryStore {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    pub fn with_seen_capacity(capacity: usize) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(MemoryState {
+                cursors: BTreeMap::new(),
+                seen_events: BoundedSeenWindow::new(capacity),
+            })),
+        }
     }
 
     fn with_state<T>(&self, f: impl FnOnce(&mut MemoryState) -> T) -> Result<T> {
@@ -65,7 +75,7 @@ impl EventCacheStore for MemoryStore {
     fn remember(&self, event_id: EventId) -> impl Future<Output = Result<()>> + '_ {
         async move {
             self.with_state(|state| {
-                state.seen_events.insert(event_id);
+                state.seen_events.remember(event_id);
             })
         }
     }
@@ -73,7 +83,7 @@ impl EventCacheStore for MemoryStore {
 
 #[cfg(test)]
 mod tests {
-    use cokret_core::{DeviceId, Did};
+    use cokret_core::{DeviceId, Did, EventId};
 
     use super::*;
 
@@ -96,5 +106,22 @@ mod tests {
             store.load(account_scope()).await.unwrap().as_deref(),
             Some("ck:cursor:account")
         );
+    }
+
+    fn event_id(n: usize) -> EventId {
+        EventId::new(format!("ck:event:01904100-0000-7000-8000-{n:012}")).unwrap()
+    }
+
+    #[tokio::test]
+    async fn dedupe_window_evicts_oldest_beyond_capacity() {
+        let store = MemoryStore::with_seen_capacity(3);
+        for n in 0..4 {
+            store.remember(event_id(n)).await.unwrap();
+        }
+
+        assert!(!store.seen(event_id(0)).await.unwrap());
+        for n in 1..4 {
+            assert!(store.seen(event_id(n)).await.unwrap());
+        }
     }
 }

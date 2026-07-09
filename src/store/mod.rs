@@ -3,6 +3,7 @@ mod crypto_store;
 mod file;
 mod keystore;
 mod memory;
+mod seen_window;
 
 use std::future::Future;
 

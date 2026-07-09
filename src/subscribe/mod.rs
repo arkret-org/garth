@@ -13,7 +13,8 @@ use cokret::{
 use cokret_core::{DeviceId, Did, RealmId, Result};
 pub use driver::{SubscriptionLoopDriver, SubscriptionStopReason};
 pub use realm::{
-    RealmEventsDriver, RealmEventsFrameSource, RealmEventsTransport, RealmStreamStopReason,
+    BoxRealmStreamFuture, RealmEventsDriver, RealmEventsFrameSource, RealmEventsTransport,
+    RealmStreamStopReason,
 };
 pub use scan::{EventsScanRequest, EventsScanTransport, ScanCatchup, ScanCatchupOptions};
 

@@ -155,9 +155,7 @@ where
 
     fn within_refresh_cooldown(&self, now: DateTime<Utc>) -> bool {
         match self.gate_lock().last_success_at {
-            Some(at) => {
-                now.signed_duration_since(at).num_seconds() < REFRESH_SUCCESS_COOLDOWN_SECS
-            }
+            Some(at) => now.signed_duration_since(at).num_seconds() < REFRESH_SUCCESS_COOLDOWN_SECS,
             None => false,
         }
     }
@@ -908,14 +906,15 @@ mod tests {
         let mut after_cooldown = refresh_outcome("grant-3", grant_id(3));
         after_cooldown.previous_grant_id = grant_id(2);
         after_cooldown.expires_at = now() + Duration::minutes(10);
-        let transport = MockSessionTransport::with_refresh_responses(vec![
-            Ok(short_lived),
-            Ok(after_cooldown),
-        ]);
+        let transport =
+            MockSessionTransport::with_refresh_responses(vec![Ok(short_lived), Ok(after_cooldown)]);
         let engine = SessionEngine::with_state(transport.clone(), active_state());
 
         // First call rotates.
-        let handle = engine.refresh_if_due(refresh_options(), now()).await.unwrap();
+        let handle = engine
+            .refresh_if_due(refresh_options(), now())
+            .await
+            .unwrap();
         assert_eq!(handle.access_token, "grant-2");
         assert_eq!(transport.refresh_requests().len(), 1);
 

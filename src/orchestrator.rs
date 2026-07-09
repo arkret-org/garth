@@ -151,9 +151,7 @@ where
             .await?
         {
             SubscriptionStopReason::Cancelled => Ok(RunStop::Cancelled),
-            SubscriptionStopReason::Unauthorized { reason } => {
-                Ok(RunStop::Unauthorized { reason })
-            }
+            SubscriptionStopReason::Unauthorized { reason } => Ok(RunStop::Unauthorized { reason }),
         }
     }
 }
@@ -171,10 +169,8 @@ mod tests {
     {
         // The http client is only used by `session_engine()`, which the realm
         // run loop never calls; a placeholder base URL is fine.
-        let http = cokret_http_client::Client::new(
-            url::Url::parse("https://localhost/").unwrap(),
-        )
-        .unwrap();
+        let http = cokret_http_client::Client::new(url::Url::parse("https://localhost/").unwrap())
+            .unwrap();
         let store = MemoryStore::new();
         CokretClient::new(
             http,
@@ -221,7 +217,8 @@ mod tests {
     async fn run_realm_stops_immediately_when_control_pre_cancelled() {
         let client = test_client();
         let provider = ClientProvider(
-            cokret_http_client::Client::new(url::Url::parse("https://localhost/").unwrap()).unwrap(),
+            cokret_http_client::Client::new(url::Url::parse("https://localhost/").unwrap())
+                .unwrap(),
         );
         let calls = Arc::new(Mutex::new(0usize));
         let projector = CountingProjector {
@@ -231,7 +228,13 @@ mod tests {
         control.cancel();
 
         let stop = client
-            .run_realm(&provider, realm_id(), &projector, &control, RunOptions::default())
+            .run_realm(
+                &provider,
+                realm_id(),
+                &projector,
+                &control,
+                RunOptions::default(),
+            )
             .await
             .unwrap();
 

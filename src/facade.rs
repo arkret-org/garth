@@ -17,6 +17,7 @@ use crate::{
 #[derive(Clone, Debug)]
 pub struct CokretClient<E, C, D, K> {
     pub http: Client,
+    pub session_engine: SessionEngine<Client>,
     pub executor: E,
     pub cursor_store: C,
     pub event_cache_store: D,
@@ -37,8 +38,10 @@ where
         event_cache_store: D,
         secure_key_store: K,
     ) -> Self {
+        let session_engine = SessionEngine::new(http.clone());
         Self {
             http,
+            session_engine,
             executor,
             cursor_store,
             event_cache_store,
@@ -47,7 +50,7 @@ where
     }
 
     pub fn session_engine(&self) -> SessionEngine<Client> {
-        SessionEngine::new(self.http.clone())
+        self.session_engine.clone()
     }
 
     pub fn subscription_engine(&self) -> SubscriptionEngine<E, C, D>
