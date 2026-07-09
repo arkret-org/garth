@@ -5,8 +5,8 @@ use cokret_core::{Did, Event, EventsSubscribeFrame, EventsSubscribeFrameKind, Re
 
 use super::dedupe::EventDedupe;
 use crate::{
-    ClientEvent, ClientEventSink, CursorScope, CursorStore, DecodedInbound, EventCacheStore,
-    InboundDecoder, OpaqueCursor,
+    ClientEvent, ClientEventSink, ClientProjector, CursorScope, CursorStore, DecodedInbound,
+    EventCacheStore, InboundDecoder, OpaqueCursor,
 };
 
 pub type BoxRealmStreamFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + 'a>>;
@@ -144,6 +144,102 @@ where
         }
 
         Ok(RealmStreamStopReason::StreamEnded)
+    }
+
+    /// Projector-driven realm loop (orchestrator seam). Same frame handling as
+    /// [`Self::run_realm`], but each decoded event batch is handed to the async
+    /// [`ClientProjector`] and the cursor is checkpointed ONLY after
+    /// `project` returns `Ok` — the projector's durable write gates cursor
+    /// advance. `Dropped` / `Unauthorized` are returned to the caller (the
+    /// facade orchestrator handles scan-backfill / refresh); `ResyncRequired`
+    /// clears the cursor here.
+    pub async fn run_realm_projected<T, P>(
+        &self,
+        transport: &T,
+        realm_id: RealmId,
+        projector: &P,
+    ) -> Result<RealmStreamStopReason>
+    where
+        T: RealmEventsTransport + ?Sized,
+        P: ClientProjector + ?Sized,
+    {
+        let scope = self.scope(&realm_id);
+        let after = self.cursor_store.load(scope.clone()).await?;
+        let mut source = transport
+            .open_realm_events(&realm_id, after.as_deref())
+            .await?;
+
+        while let Some(frame) = source.next_frame().await? {
+            let cursor = frame
+                .cursor
+                .as_ref()
+                .map(|cursor| cursor.as_str().to_owned());
+            let should_checkpoint = matches!(
+                frame.kind,
+                EventsSubscribeFrameKind::Event
+                    | EventsSubscribeFrameKind::Heartbeat
+                    | EventsSubscribeFrameKind::Frontier
+                    | EventsSubscribeFrameKind::CatchupComplete
+                    | EventsSubscribeFrameKind::EpochRotation
+            );
+
+            match frame.kind {
+                EventsSubscribeFrameKind::Event => {
+                    let event: Event = serde_json::from_value(frame.payload)?;
+                    if self.dedupe.remember_if_new(event.event_id.clone()).await? {
+                        let batch = self.decode_event_batch(event)?;
+                        if !batch.is_empty() {
+                            // Gate: project must persist before the cursor moves.
+                            projector.project(batch).await?;
+                        }
+                    }
+                }
+                EventsSubscribeFrameKind::Heartbeat
+                | EventsSubscribeFrameKind::Frontier
+                | EventsSubscribeFrameKind::CatchupComplete
+                | EventsSubscribeFrameKind::EpochRotation => {}
+                EventsSubscribeFrameKind::Dropped => {
+                    return Ok(RealmStreamStopReason::Dropped {
+                        cursor: frame.cursor.map(|cursor| cursor.as_str().to_owned()),
+                        reconnect_after_ms: frame.reconnect_after_ms,
+                    });
+                }
+                EventsSubscribeFrameKind::ResyncRequired => {
+                    self.cursor_store.clear(scope.clone()).await?;
+                    return Ok(RealmStreamStopReason::ResyncRequired {
+                        reconnect_after_ms: frame.reconnect_after_ms,
+                    });
+                }
+                EventsSubscribeFrameKind::Unauthorized => {
+                    let reason = frame
+                        .payload
+                        .get("reason")
+                        .and_then(|reason| reason.as_str())
+                        .map(str::to_owned);
+                    return Ok(RealmStreamStopReason::Unauthorized { reason });
+                }
+                _ => {}
+            }
+
+            if should_checkpoint {
+                if let Some(cursor) = cursor {
+                    self.cursor_store.save(scope.clone(), cursor).await?;
+                }
+            }
+        }
+
+        Ok(RealmStreamStopReason::StreamEnded)
+    }
+
+    /// Decode a wire event into the `ClientEvent`(s) a host projector consumes.
+    /// Mirrors [`Self::emit_event`] but returns the batch instead of pushing to
+    /// a sink.
+    fn decode_event_batch(&self, event: Event) -> Result<Vec<ClientEvent>> {
+        Ok(match self.decoder.try_decode_event(event)? {
+            DecodedInbound::Message(message) => vec![ClientEvent::Message(message)],
+            DecodedInbound::Notification(notification) => vec![ClientEvent::Event(notification.event)],
+            DecodedInbound::Event(event) => vec![ClientEvent::Event(event)],
+        })
     }
 
     async fn handle_frame<S>(
@@ -442,6 +538,88 @@ mod tests {
                 reason: Some("revoked".to_owned())
             }
         );
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ck:cursor:stored")
+        );
+    }
+
+    struct RecordingProjector {
+        batches: Arc<Mutex<Vec<usize>>>,
+        fail: bool,
+    }
+
+    impl crate::ClientProjector for RecordingProjector {
+        fn project(
+            &self,
+            batch: Vec<ClientEvent>,
+        ) -> impl std::future::Future<Output = Result<()>> + '_ {
+            let batches = Arc::clone(&self.batches);
+            let fail = self.fail;
+            async move {
+                batches.lock().unwrap().push(batch.len());
+                if fail {
+                    Err(cokret_core::Error::Protocol("projector failed".to_owned()))
+                } else {
+                    Ok(())
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn realm_projected_checkpoints_only_after_project_ok() {
+        let store = MemoryStore::new();
+        let mut event_frame =
+            frame(EventsSubscribeFrameKind::Event, serde_json::to_value(message_event()).unwrap());
+        event_frame.cursor = Some(Cursor::new("ck:cursor:frame1").unwrap());
+        let transport = VecTransport::new(vec![event_frame]);
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+        };
+        let driver = RealmEventsDriver::new(store.clone(), store.clone());
+
+        let reason = driver
+            .run_realm_projected(&transport, realm_id(), &projector)
+            .await
+            .unwrap();
+
+        assert_eq!(reason, RealmStreamStopReason::StreamEnded);
+        // The decoded message reached the projector as a one-event batch...
+        assert_eq!(projector.batches.lock().unwrap().as_slice(), &[1]);
+        // ...and only then did the cursor advance.
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ck:cursor:frame1")
+        );
+    }
+
+    #[tokio::test]
+    async fn realm_projected_does_not_checkpoint_when_project_errs() {
+        let store = MemoryStore::new();
+        store
+            .save(scope(), "ck:cursor:stored".to_owned())
+            .await
+            .unwrap();
+        let mut event_frame =
+            frame(EventsSubscribeFrameKind::Event, serde_json::to_value(message_event()).unwrap());
+        event_frame.cursor = Some(Cursor::new("ck:cursor:frame1").unwrap());
+        let transport = VecTransport::new(vec![event_frame]);
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: true,
+        };
+        let driver = RealmEventsDriver::new(store.clone(), store.clone());
+
+        let result = driver
+            .run_realm_projected(&transport, realm_id(), &projector)
+            .await;
+
+        // The projector error aborts the loop...
+        assert!(result.is_err());
+        // ...and the cursor stayed at its pre-frame value (the event will be
+        // redelivered on the next subscribe).
         assert_eq!(
             store.load(scope()).await.unwrap().as_deref(),
             Some("ck:cursor:stored")

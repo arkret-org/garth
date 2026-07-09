@@ -6,20 +6,33 @@ pub fn emit_account_updates<S>(sink: &S, updates: SyncUpdates)
 where
     S: ClientEventSink + ?Sized,
 {
-    sink.emit(ClientEvent::AccountUpdates(updates.clone()));
+    for event in account_updates_to_events(updates) {
+        sink.emit(event);
+    }
+}
+
+/// Fan an account-subscribe step's [`SyncUpdates`] into the ordered
+/// [`ClientEvent`] batch a host consumes: the whole `AccountUpdates` first
+/// (carries batch context — to-device ack token, `partial`, presence, account
+/// data), then the granular realm / to-device / notification deltas. Shared by
+/// the sink path ([`emit_account_updates`]) and the projector orchestrator.
+pub fn account_updates_to_events(updates: SyncUpdates) -> Vec<ClientEvent> {
+    let mut batch = Vec::new();
+    batch.push(ClientEvent::AccountUpdates(updates.clone()));
 
     for update in updates.realm_updates {
-        sink.emit(ClientEvent::RealmDelta {
+        batch.push(ClientEvent::RealmDelta {
             realm_id: update.realm_id.clone(),
             update,
         });
     }
     for message in updates.to_device {
-        sink.emit(ClientEvent::ToDevice(message));
+        batch.push(ClientEvent::ToDevice(message));
     }
     for notification in updates.notifications {
-        sink.emit(ClientEvent::Notification(notification));
+        batch.push(ClientEvent::Notification(notification));
     }
+    batch
 }
 
 #[cfg(test)]
