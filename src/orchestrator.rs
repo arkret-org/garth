@@ -1,4 +1,4 @@
-//! Batteries-included run loops on [`CokretClient`].
+//! Batteries-included run loops on [`ArkretClient`].
 //!
 //! These own the OUTER resilience loop that consumers previously hand-rolled:
 //! (re)acquire a transport, run the projector-driven engine, auto-resume with
@@ -22,7 +22,7 @@ use crate::subscribe::{
     EventsScanTransport, ProjectedRunError, RealmEventsTransport, RealmStreamStopReason,
 };
 use crate::{
-    ClientProjector, CokretClient, CursorStore, EventCacheStore, Executor,
+    ArkretClient, ClientProjector, CursorStore, EventCacheStore, Executor,
     subscribe::account::account_updates_to_events,
 };
 
@@ -66,7 +66,7 @@ pub enum RunStopReason {
     Unauthorized { reason: Option<String> },
 }
 
-impl<E, C, D> CokretClient<E, C, D>
+impl<E, C, D> ArkretClient<E, C, D>
 where
     E: Executor + Clone,
     C: CursorStore,
@@ -233,8 +233,8 @@ mod tests {
     fn test_client(
         executor: RecordingExecutor,
         store: MemoryStore,
-    ) -> CokretClient<RecordingExecutor, MemoryStore, MemoryStore> {
-        CokretClient::new(executor, store.clone(), store)
+    ) -> ArkretClient<RecordingExecutor, MemoryStore, MemoryStore> {
+        ArkretClient::new(executor, store.clone(), store)
     }
 
     struct QueueProvider<T> {

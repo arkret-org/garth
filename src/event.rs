@@ -1,9 +1,7 @@
 use arkret_core::{
-    Event, NotificationDelta, RealmId, RealmUpdate, SyncBackfillOutcome, SyncUpdates,
-    ToDeviceMessage,
+    DecodedMessage, Event, NotificationDelta, RealmId, RealmUpdate, SyncBackfillOutcome,
+    SyncUpdates, ToDeviceMessage,
 };
-
-use crate::DecodedMessage;
 
 /// Typed events emitted by the shared client engines toward a host adapter.
 #[derive(Clone, Debug)]
@@ -34,7 +32,7 @@ pub enum ClientEvent {
 ///
 /// This is the batteries-included seam a client (`inkson` / `applet`)
 /// implements instead of hand-rolling its own poll loop; the loop itself lives
-/// in [`crate::CokretClient::run_account`] / [`crate::CokretClient::run_realm`].
+/// in [`crate::ArkretClient::run_account`] / [`crate::ArkretClient::run_realm`].
 pub trait ClientProjector {
     fn project(
         &self,

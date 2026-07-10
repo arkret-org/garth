@@ -173,6 +173,14 @@ where
         self.current_state().map(|state| state.handle())
     }
 
+    pub fn replace_state(&self, state: Option<SessionGrantState>) {
+        *self.state_lock() = state;
+    }
+
+    pub fn clear_state(&self) {
+        self.replace_state(None);
+    }
+
     pub fn refresh_decision(&self, now: DateTime<Utc>) -> RefreshDecision {
         let state = self.state_lock();
         let refresh_state = state.as_ref().map(SessionGrantState::refresh_state);
@@ -206,6 +214,20 @@ where
             RefreshDecision::NoGrant => Err(no_active_grant()),
             RefreshDecision::GrantExpired => Err(protocol("session grant is expired")),
         }
+    }
+
+    /// Refresh after a server has rejected the current credential. Unlike
+    /// [`Self::refresh_if_due`], this does not trust local expiry metadata, but
+    /// it still honors the shared success cooldown and single-flight gate.
+    pub async fn refresh_after_unauthorized(
+        &self,
+        options: SessionRefreshOptions,
+        now: DateTime<Utc>,
+    ) -> Result<SessionHandle> {
+        if self.within_refresh_cooldown(now) {
+            return self.current_handle().ok_or_else(no_active_grant);
+        }
+        self.refresh_once(options, now).await
     }
 
     pub async fn refresh_once(

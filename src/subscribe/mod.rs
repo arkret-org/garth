@@ -68,7 +68,7 @@ where
 
     /// Use a caller-owned cancellation control instead of the engine's own, so
     /// a host that holds a clone can `cancel()` a running loop (used by the
-    /// [`crate::CokretClient`] orchestrator).
+    /// [`crate::ArkretClient`] orchestrator).
     pub fn with_control(mut self, control: SyncLoopControl) -> Self {
         self.control = control;
         self

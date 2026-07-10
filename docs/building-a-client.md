@@ -68,7 +68,7 @@ is the only event projection seam.
 ## 3. Run it
 
 ```rust
-use garth::{CokretClient, RunOptions, SyncLoopControl, TransportProvider};
+use garth::{ArkretClient, RunOptions, SyncLoopControl, TransportProvider};
 
 // A provider yields a ready-to-use SDK http-client with current credentials.
 // Refreshing credentials inside `provide` makes the loop recover across
@@ -81,7 +81,7 @@ impl TransportProvider for MyTransport {
     }
 }
 
-let client = CokretClient::new(executor, cursor_store, event_cache_store);
+let client = ArkretClient::new(executor, cursor_store, event_cache_store);
 let control = SyncLoopControl::new();       // keep a clone; `control.cancel()` stops the loop
 let projector = MyProjector { /* ... */ };
 let provider = MyTransport { /* ... */ };
@@ -102,7 +102,7 @@ Both return `RunStopReason`:
   `provide` recovers transparently. garth owns *when* to re-provide; your
   provider owns *how* to refresh SDK auth.
 
-Session grant refresh is intentionally outside `CokretClient`: construct
+Session grant refresh is intentionally outside `ArkretClient`: construct
 `garth::SessionEngine::new(http)` beside the transport/session state that owns
 credentials. Likewise, keep your `SecureKeyStore` in host state or in a crypto
 store adapter; the runtime facade does not hold secrets that its loops do not
@@ -119,7 +119,7 @@ consume.
 
 ## Engine-level API
 
-`CokretClient::run_*` is the preferred host entry point. Lower-level
+`ArkretClient::run_*` is the preferred host entry point. Lower-level
 `SubscriptionEngine` and `RealmEventsDriver` methods also take
 `ClientProjector`, so account and realm frames share the same
 project-then-checkpoint contract at every layer.

@@ -45,7 +45,6 @@ where
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl EventsScanTransport for arkret_http_client::Client {
     fn scan_events<'a>(
         &'a self,

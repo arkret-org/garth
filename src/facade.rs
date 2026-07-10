@@ -8,13 +8,13 @@ use crate::{CursorStore, EventCacheStore, Executor, SubscriptionEngine};
 /// use, and hosts should keep their secure-key store beside their durable
 /// client state.
 #[derive(Clone, Debug)]
-pub struct CokretClient<E, C, D> {
+pub struct ArkretClient<E, C, D> {
     pub executor: E,
     pub cursor_store: C,
     pub event_cache_store: D,
 }
 
-impl<E, C, D> CokretClient<E, C, D>
+impl<E, C, D> ArkretClient<E, C, D>
 where
     E: Executor,
     C: CursorStore,

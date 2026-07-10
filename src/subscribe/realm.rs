@@ -1,12 +1,14 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use arkret_core::{Did, Event, EventsSubscribeFrame, EventsSubscribeFrameKind, RealmId, Result};
+use arkret_core::{
+    DecodedInbound, Did, Event, EventsSubscribeFrame, EventsSubscribeFrameKind, InboundDecoder,
+    RealmId, Result,
+};
 
 use super::{ProjectedRunError, ProjectedRunResult};
 use crate::{
-    ClientEvent, ClientProjector, CursorScope, CursorStore, DecodedInbound, EventCacheStore,
-    InboundDecoder, OpaqueCursor,
+    ClientEvent, ClientProjector, CursorScope, CursorStore, EventCacheStore, OpaqueCursor,
 };
 
 // Native builds keep boxed stream futures (and the frame source held across
@@ -43,14 +45,12 @@ pub trait RealmEventsTransport {
     ) -> BoxRealmStreamFuture<'a, Self::Source>;
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl RealmEventsFrameSource for arkret_http_client::EventsSubscribeFrameStream {
     fn next_frame<'a>(&'a mut self) -> BoxRealmStreamFuture<'a, Option<EventsSubscribeFrame>> {
         Box::pin(async move { self.next_frame().await })
     }
 }
 
-#[cfg(not(target_arch = "wasm32"))]
 impl RealmEventsTransport for arkret_http_client::Client {
     type Source = arkret_http_client::EventsSubscribeFrameStream;
 
@@ -257,9 +257,6 @@ where
     fn decode_event_batch(&self, event: Event) -> Vec<ClientEvent> {
         match self.decoder.decode_event(event) {
             DecodedInbound::Message(message) => vec![ClientEvent::Message(message)],
-            DecodedInbound::Notification(notification) => {
-                vec![ClientEvent::Event(notification.event)]
-            }
             DecodedInbound::Event(event) => vec![ClientEvent::Event(event)],
         }
     }

@@ -1,7 +1,7 @@
 //! Default native file-backed [`CursorStore`] + [`EventCacheStore`].
 //!
 //! A batteries-included durable store for native clients so a consumer does not
-//! re-implement one (this converges savfox's hand-written `FileCokretAccountStore`
+//! re-implement one (this converges savfox's hand-written `FileArkretAccountStore`
 //! into garth). State is a single JSON file, written atomically (temp + rename)
 //! after each mutation. Web clients provide an IndexedDB-backed store instead.
 
