@@ -1,0 +1,9 @@
+[default.extend-words]
+# accepted variant spelling
+unparseable = "unparseable"
+
+[files]
+extend-exclude = [
+    "Cargo.lock",
+    "target",
+]
