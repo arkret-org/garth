@@ -3,7 +3,7 @@ use std::pin::Pin;
 
 use arkret_core::{
     DecodedInbound, Did, Event, EventsSubscribeFrame, EventsSubscribeFrameKind, InboundDecoder,
-    RealmId, Result,
+    RealmId, Result, StreamTraceValidator,
 };
 
 use super::{ProjectedRunError, ProjectedRunResult};
@@ -60,8 +60,12 @@ impl RealmEventsTransport for arkret_http_client::Client {
         after: Option<&'a str>,
     ) -> BoxRealmStreamFuture<'a, Self::Source> {
         Box::pin(async move {
+            // Request-aware trace context: a fresh subscribe (no resume
+            // cursor) is a catch-up request. This keeps the http-client's
+            // internal StreamTraceValidator in agreement with the driver's.
             let mut options = arkret_http_client::EventsSubscribeOptions::new()
-                .realm(realm_id.as_str().to_owned());
+                .realm(realm_id.as_str().to_owned())
+                .catchup(after.is_none());
             if let Some(after) = after {
                 options = options.after(after.to_owned());
             }
@@ -73,8 +77,11 @@ impl RealmEventsTransport for arkret_http_client::Client {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RealmStreamStopReason {
     StreamEnded,
+    /// The server dropped the stream but supplied a resume position. A
+    /// cursorless `dropped` frame is a trace violation (the server MUST send
+    /// `resync_required` instead), so the cursor here is always present.
     Dropped {
-        cursor: Option<OpaqueCursor>,
+        cursor: OpaqueCursor,
         reconnect_after_ms: Option<u64>,
     },
     ResyncRequired {
@@ -149,6 +156,11 @@ where
             .load(scope.clone())
             .await
             .map_err(ProjectedRunError::Store)?;
+        // Request-aware trace context (transport-bindings.md §1.1): a
+        // subscribe without a resume cursor is a catch-up request, so the
+        // server MUST deliver at least one data frame before
+        // `catchup_complete`; with a cursor, `catchup_complete` is forbidden.
+        let mut trace = StreamTraceValidator::new(after.is_none(), after.clone());
         let mut source = transport
             .open_realm_events(&realm_id, after.as_deref())
             .await
@@ -159,18 +171,17 @@ where
             .await
             .map_err(ProjectedRunError::Transport)?
         {
+            // The full trace state machine runs BEFORE any frame effect: a
+            // violating frame (cursorless dropped, completion-before-delta,
+            // non-catch-up completion, frame-after-terminal, …) is a protocol
+            // error — never silently projected or checkpointed.
+            let update = trace
+                .push(&frame)
+                .map_err(|error| ProjectedRunError::Transport(error.into()))?;
             let cursor = frame
                 .cursor
                 .as_ref()
                 .map(|cursor| cursor.as_str().to_owned());
-            let should_checkpoint = matches!(
-                frame.kind,
-                EventsSubscribeFrameKind::Event
-                    | EventsSubscribeFrameKind::Heartbeat
-                    | EventsSubscribeFrameKind::Frontier
-                    | EventsSubscribeFrameKind::CatchupComplete
-                    | EventsSubscribeFrameKind::EpochRotation
-            );
 
             match frame.kind {
                 EventsSubscribeFrameKind::Event => {
@@ -211,8 +222,16 @@ where
                 | EventsSubscribeFrameKind::CatchupComplete
                 | EventsSubscribeFrameKind::EpochRotation => {}
                 EventsSubscribeFrameKind::Dropped => {
+                    // The validator already rejected a cursorless dropped
+                    // frame (the server MUST use `resync_required` instead),
+                    // so the cursor is guaranteed here.
+                    let Some(cursor) = cursor else {
+                        return Err(ProjectedRunError::Transport(arkret_core::Error::Protocol(
+                            "dropped frame passed trace validation without a cursor".to_owned(),
+                        )));
+                    };
                     return Ok(RealmStreamStopReason::Dropped {
-                        cursor: frame.cursor.map(|cursor| cursor.as_str().to_owned()),
+                        cursor,
                         reconnect_after_ms: frame.reconnect_after_ms,
                     });
                 }
@@ -236,7 +255,13 @@ where
                 _ => {}
             }
 
-            if should_checkpoint {
+            // Durable checkpoint: only frames the validator acknowledged as
+            // cursor-advancing AND non-terminal (data / frontier /
+            // catchup_complete) move the stored cursor. Heartbeat and
+            // epoch_rotation cursors never advance the reconnect position;
+            // the Dropped cursor travels in the stop reason for the
+            // orchestrator's backfill decision, not into the durable store.
+            if update.cursor_advanced && !update.terminal {
                 if let Some(cursor) = cursor {
                     self.cursor_store
                         .save(scope.clone(), cursor)
@@ -246,6 +271,11 @@ where
             }
         }
 
+        // End-of-stream trace obligations: a catch-up subscribe that ends
+        // without `catchup_complete` is an incomplete trace, not a clean end.
+        trace
+            .finish()
+            .map_err(|error| ProjectedRunError::Transport(error.into()))?;
         Ok(RealmStreamStopReason::StreamEnded)
     }
 
@@ -365,14 +395,35 @@ mod tests {
         }
     }
 
+    fn cursor_frame(
+        kind: EventsSubscribeFrameKind,
+        payload: Value,
+        cursor: &str,
+    ) -> EventsSubscribeFrame {
+        let mut framed = frame(kind, payload);
+        framed.cursor = Some(Cursor::new(cursor).unwrap());
+        framed
+    }
+
     #[tokio::test]
     async fn realm_driver_emits_event_frames_and_dedupes() {
         let store = MemoryStore::new();
         let event = message_event();
         let payload = serde_json::to_value(event).unwrap();
+        // Empty store → catch-up subscribe: the trace must end with a
+        // cursor-bearing catchup_complete.
         let transport = VecTransport::new(vec![
-            frame(EventsSubscribeFrameKind::Event, payload.clone()),
-            frame(EventsSubscribeFrameKind::Event, payload),
+            cursor_frame(
+                EventsSubscribeFrameKind::Event,
+                payload.clone(),
+                "ak:cursor:frame1",
+            ),
+            cursor_frame(EventsSubscribeFrameKind::Event, payload, "ak:cursor:frame2"),
+            cursor_frame(
+                EventsSubscribeFrameKind::CatchupComplete,
+                Value::Null,
+                "ak:cursor:frame2",
+            ),
         ]);
         let projector = RecordingProjector {
             batches: Arc::new(Mutex::new(Vec::new())),
@@ -390,15 +441,23 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn realm_driver_uses_and_saves_cursor() {
+    async fn realm_driver_saves_data_cursor_but_never_heartbeat_cursor() {
         let store = MemoryStore::new();
         store
             .save(scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
+        // transport-bindings.md §1.1 rule 3: heartbeat MUST NOT advance the
+        // reconnect position even when it (illegally) carries a cursor;
+        // frontier is cursor-bearing and does advance.
         let mut heartbeat = frame(EventsSubscribeFrameKind::Heartbeat, Value::Null);
-        heartbeat.cursor = Some(Cursor::new("ak:cursor:frame1").unwrap());
-        let transport = VecTransport::new(vec![heartbeat]);
+        heartbeat.cursor = Some(Cursor::new("ak:cursor:heartbeat").unwrap());
+        let frontier = cursor_frame(
+            EventsSubscribeFrameKind::Frontier,
+            Value::Null,
+            "ak:cursor:frontier",
+        );
+        let transport = VecTransport::new(vec![heartbeat, frontier]);
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
         let projector = RecordingProjector {
             batches: Arc::new(Mutex::new(Vec::new())),
@@ -417,7 +476,7 @@ mod tests {
         );
         assert_eq!(
             store.load(scope()).await.unwrap().as_deref(),
-            Some("ak:cursor:frame1")
+            Some("ak:cursor:frontier")
         );
     }
 
@@ -476,7 +535,7 @@ mod tests {
         assert_eq!(
             reason,
             RealmStreamStopReason::Dropped {
-                cursor: Some("ak:cursor:dropped".to_owned()),
+                cursor: "ak:cursor:dropped".to_owned(),
                 reconnect_after_ms: Some(50)
             }
         );
@@ -484,6 +543,116 @@ mod tests {
             store.load(scope()).await.unwrap().as_deref(),
             Some("ak:cursor:stored")
         );
+    }
+
+    #[tokio::test]
+    async fn realm_driver_rejects_cursorless_dropped_as_protocol_error() {
+        // transport-bindings.md §1.1 rule 2: a `dropped` frame MUST carry a
+        // cursor; the server signals a lost position with `resync_required`.
+        let store = MemoryStore::new();
+        store
+            .save(scope(), "ak:cursor:stored".to_owned())
+            .await
+            .unwrap();
+        let mut dropped = frame(EventsSubscribeFrameKind::Dropped, Value::Null);
+        dropped.reconnect_after_ms = Some(50);
+        let transport = VecTransport::new(vec![dropped]);
+        let driver = RealmEventsDriver::new(store.clone(), store.clone());
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+        };
+
+        let error = driver
+            .run_stream(&transport, realm_id(), &projector)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("dropped_missing_cursor"));
+        // The stored reconnect position is untouched by the rejected trace.
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ak:cursor:stored")
+        );
+    }
+
+    #[tokio::test]
+    async fn realm_driver_rejects_completion_before_baseline_delta() {
+        // Catch-up subscribe (empty store): `catchup_complete` before the
+        // first data frame is a trace violation.
+        let store = MemoryStore::new();
+        let transport = VecTransport::new(vec![cursor_frame(
+            EventsSubscribeFrameKind::CatchupComplete,
+            Value::Null,
+            "ak:cursor:frame1",
+        )]);
+        let driver = RealmEventsDriver::new(store.clone(), store.clone());
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+        };
+
+        let error = driver
+            .run_stream(&transport, realm_id(), &projector)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("catchup_complete_before_delta"));
+        assert!(store.load(scope()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn realm_driver_rejects_completion_on_non_catchup_subscribe() {
+        // With a stored cursor the request is not a catch-up, so
+        // `catchup_complete` is forbidden.
+        let store = MemoryStore::new();
+        store
+            .save(scope(), "ak:cursor:stored".to_owned())
+            .await
+            .unwrap();
+        let transport = VecTransport::new(vec![cursor_frame(
+            EventsSubscribeFrameKind::CatchupComplete,
+            Value::Null,
+            "ak:cursor:frame1",
+        )]);
+        let driver = RealmEventsDriver::new(store.clone(), store.clone());
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+        };
+
+        let error = driver
+            .run_stream(&transport, realm_id(), &projector)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("unexpected_catchup_complete"));
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ak:cursor:stored")
+        );
+    }
+
+    #[tokio::test]
+    async fn realm_driver_rejects_catchup_stream_that_ends_without_completion() {
+        let store = MemoryStore::new();
+        let transport = VecTransport::new(vec![cursor_frame(
+            EventsSubscribeFrameKind::Event,
+            serde_json::to_value(message_event()).unwrap(),
+            "ak:cursor:frame1",
+        )]);
+        let driver = RealmEventsDriver::new(store.clone(), store.clone());
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+        };
+
+        let error = driver
+            .run_stream(&transport, realm_id(), &projector)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("catchup_incomplete"));
     }
 
     #[tokio::test]
@@ -547,6 +716,10 @@ mod tests {
     #[tokio::test]
     async fn realm_projected_checkpoints_only_after_project_ok() {
         let store = MemoryStore::new();
+        store
+            .save(scope(), "ak:cursor:stored".to_owned())
+            .await
+            .unwrap();
         let mut event_frame = frame(
             EventsSubscribeFrameKind::Event,
             serde_json::to_value(message_event()).unwrap(),
@@ -584,11 +757,16 @@ mod tests {
         event_frame.cursor = Some(Cursor::new("ak:cursor:frame1").unwrap());
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
+        let completion = cursor_frame(
+            EventsSubscribeFrameKind::CatchupComplete,
+            Value::Null,
+            "ak:cursor:frame1",
+        );
         let failing = RecordingProjector {
             batches: Arc::new(Mutex::new(Vec::new())),
             fail: true,
         };
-        let transport = VecTransport::new(vec![event_frame.clone()]);
+        let transport = VecTransport::new(vec![event_frame.clone(), completion.clone()]);
         assert!(
             driver
                 .run_stream(&transport, realm_id(), &failing)
@@ -602,7 +780,7 @@ mod tests {
             batches: Arc::new(Mutex::new(Vec::new())),
             fail: false,
         };
-        let transport = VecTransport::new(vec![event_frame]);
+        let transport = VecTransport::new(vec![event_frame, completion]);
         let reason = driver
             .run_stream(&transport, realm_id(), &succeeding)
             .await
@@ -625,7 +803,14 @@ mod tests {
         let store = MemoryStore::new();
         let mut bad_frame = frame(EventsSubscribeFrameKind::Event, json!({"not": "an event"}));
         bad_frame.cursor = Some(Cursor::new("ak:cursor:frame1").unwrap());
-        let transport = VecTransport::new(vec![bad_frame]);
+        let transport = VecTransport::new(vec![
+            bad_frame,
+            cursor_frame(
+                EventsSubscribeFrameKind::CatchupComplete,
+                Value::Null,
+                "ak:cursor:frame1",
+            ),
+        ]);
         let projector = RecordingProjector {
             batches: Arc::new(Mutex::new(Vec::new())),
             fail: false,
@@ -659,9 +844,14 @@ mod tests {
             json!({"content": {"kind": "ak.content.text", "body": "missing strand"}}),
         )
         .unwrap();
-        let transport = VecTransport::new(vec![frame(
+        store
+            .save(scope(), "ak:cursor:stored".to_owned())
+            .await
+            .unwrap();
+        let transport = VecTransport::new(vec![cursor_frame(
             EventsSubscribeFrameKind::Event,
             serde_json::to_value(event).unwrap(),
+            "ak:cursor:frame1",
         )]);
         let projector = RecordingProjector {
             batches: Arc::new(Mutex::new(Vec::new())),

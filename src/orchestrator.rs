@@ -446,10 +446,14 @@ mod tests {
             }),
         )
         .unwrap();
-        frame(
+        let mut framed = frame(
             EventsSubscribeFrameKind::Event,
             serde_json::to_value(event).unwrap(),
-        )
+        );
+        // Data frames are cursor-bearing under the §1.1 trace rules.
+        framed.cursor =
+            Some(arkret_core::identifiers::Cursor::new("ak:cursor:event-frame").unwrap());
+        framed
     }
 
     fn projector(
@@ -556,7 +560,11 @@ mod tests {
     async fn run_realm_server_hint_suppresses_local_backoff() {
         let executor = RecordingExecutor::default();
         let client = test_client(executor.clone(), MemoryStore::new());
+        // A `dropped` frame MUST carry a cursor (transport-bindings.md §1.1);
+        // the engine backfills from it, honours the server's 25ms hint, and
+        // the orchestrator then skips its local backoff sleep.
         let mut dropped = frame(EventsSubscribeFrameKind::Dropped, Value::Null);
+        dropped.cursor = Some(arkret_core::identifiers::Cursor::new("ak:cursor:dropped").unwrap());
         dropped.reconnect_after_ms = Some(25);
         let provider = QueueProvider::new(vec![
             Ok(TestRealmTransport::frames(vec![Ok(dropped)])),
@@ -580,7 +588,8 @@ mod tests {
         );
         assert_eq!(provider.calls(), 2);
         assert_eq!(executor.sleeps(), vec![Duration::from_millis(25)]);
-        assert_eq!(*calls.lock().unwrap(), 0);
+        // The dropped-cursor recovery projected exactly one Backfill batch.
+        assert_eq!(*calls.lock().unwrap(), 1);
     }
 
     #[tokio::test]

@@ -145,8 +145,11 @@ where
             .run_stream_classified(transport, realm_id.clone(), projector)
             .await?;
         match reason {
+            // A cursorless dropped frame is rejected as a trace violation
+            // inside the driver (the server MUST send `resync_required`), so
+            // the dropped cursor is always available for scan backfill.
             RealmStreamStopReason::Dropped {
-                cursor: Some(cursor),
+                cursor,
                 reconnect_after_ms,
             } => {
                 let outcome = self
@@ -179,24 +182,9 @@ where
                         .await;
                 }
                 Ok(RealmStreamStopReason::Dropped {
-                    cursor: Some(cursor),
+                    cursor,
                     reconnect_after_ms,
                 })
-            }
-            RealmStreamStopReason::Dropped {
-                cursor: None,
-                reconnect_after_ms,
-            } => {
-                self.cursor_store
-                    .clear(self.realm_scope(realm_id))
-                    .await
-                    .map_err(ProjectedRunError::Store)?;
-                if let Some(reconnect_after_ms) = reconnect_after_ms {
-                    self.executor
-                        .sleep(std::time::Duration::from_millis(reconnect_after_ms))
-                        .await;
-                }
-                Ok(RealmStreamStopReason::ResyncRequired { reconnect_after_ms })
             }
             other => Ok(other),
         }
@@ -544,7 +532,7 @@ mod tests {
         assert_eq!(
             reason,
             RealmStreamStopReason::Dropped {
-                cursor: Some("ak:cursor:dropped".to_owned()),
+                cursor: "ak:cursor:dropped".to_owned(),
                 reconnect_after_ms: Some(25)
             }
         );
@@ -594,7 +582,7 @@ mod tests {
         assert_eq!(
             reason,
             RealmStreamStopReason::Dropped {
-                cursor: Some("ak:cursor:dropped".to_owned()),
+                cursor: "ak:cursor:dropped".to_owned(),
                 reconnect_after_ms: None
             }
         );
@@ -639,7 +627,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn engine_treats_dropped_without_cursor_as_realm_resync() {
+    async fn engine_rejects_dropped_without_cursor_as_trace_violation() {
+        // transport-bindings.md §1.1 rule 2: a server with no resume cursor
+        // MUST send `resync_required`; a cursorless `dropped` is a protocol
+        // error, not a silent resync.
         let store = MemoryStore::new();
         store
             .save(realm_scope(), "ak:cursor:stored".to_owned())
@@ -656,19 +647,18 @@ mod tests {
             control: None,
         };
 
-        let reason = engine
+        let error = engine
             .run_realm_stream(&transport, realm_id(), &projector)
             .await
-            .unwrap();
+            .unwrap_err();
 
-        assert_eq!(
-            reason,
-            RealmStreamStopReason::ResyncRequired {
-                reconnect_after_ms: Some(40)
-            }
-        );
+        assert!(error.to_string().contains("dropped_missing_cursor"));
         assert!(transport.scans().is_empty());
-        assert!(store.load(realm_scope()).await.unwrap().is_none());
-        assert_eq!(executor.sleeps(), vec![Duration::from_millis(40)]);
+        // The rejected trace leaves the stored reconnect position untouched.
+        assert_eq!(
+            store.load(realm_scope()).await.unwrap().as_deref(),
+            Some("ak:cursor:stored")
+        );
+        assert!(executor.sleeps().is_empty());
     }
 }
