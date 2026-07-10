@@ -113,7 +113,7 @@ consume.
 - Long-poll / subscribe loop and retry/backpressure.
 - Durable cursor checkpointing — **after** your projector persists.
 - Event dedupe via `EventCacheStore`.
-- Realm drop → `ck.self.events.query.scan` catch-up → `Backfill` projection.
+- Realm drop → `ak.self.events.query.scan` catch-up → `Backfill` projection.
 - Resync (clear cursor + rebuild) and reconnect backoff.
 - Cancellation via `SyncLoopControl`.
 

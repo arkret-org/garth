@@ -47,7 +47,7 @@ impl InboundDecoder {
             // Notifications are delivered via `SyncUpdates.notifications`
             // (`NotificationDelta`) on the account path, not through realm-event
             // decoding. The protocol defines no `Event.kind` for notifications
-            // (only the `ck.notification.read`/`ck.notification.ack` operations),
+            // (only the `ak.notification.read`/`ak.notification.ack` operations),
             // so this decoder does not synthesize non-spec notification kinds.
             _ => Ok(DecodedInbound::Event(event)),
         }
