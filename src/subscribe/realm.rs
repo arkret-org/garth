@@ -61,12 +61,12 @@ impl RealmEventsTransport for arkret_http_client::Client {
         after: Option<&'a str>,
     ) -> BoxRealmStreamFuture<'a, Self::Source> {
         Box::pin(async move {
-            // Request-aware trace context: a fresh subscribe (no resume
-            // cursor) is a catch-up request. This keeps the http-client's
-            // internal StreamTraceValidator in agreement with the driver's.
+            // A cursorless subscribe starts at the live tail. Supplying a
+            // durable cursor requests bounded catch-up from that position.
+            // Keep the HTTP client's validator in agreement with the driver.
             let mut options = arkret_http_client::EventsSubscribeOptions::new()
                 .realm(realm_id.as_str().to_owned())
-                .catchup(after.is_none());
+                .catchup(after.is_some());
             if let Some(after) = after {
                 options = options.after(after.to_owned());
             }
@@ -147,7 +147,7 @@ where
     {
         let scope = self.scope(&realm_id);
         let after = self.cursor_store.load(scope.clone()).await?;
-        let mut trace = StreamTraceValidator::new(after.is_none(), after.clone());
+        let mut trace = StreamTraceValidator::new(after.is_some(), after.clone());
         let mut source = transport
             .open_realm_events(&realm_id, after.as_deref())
             .await?;
@@ -242,11 +242,11 @@ where
             .load(scope.clone())
             .await
             .map_err(ProjectedRunError::Store)?;
-        // Request-aware trace context (transport-bindings.md §1.1): a
-        // subscribe without a resume cursor is a catch-up request, so the
-        // server MUST deliver at least one data frame before
-        // `catchup_complete`; with a cursor, `catchup_complete` is forbidden.
-        let mut trace = StreamTraceValidator::new(after.is_none(), after.clone());
+        // Request-aware trace context: a cursorless Realm subscribe starts at
+        // the live tail. Supplying `after` requests bounded catch-up from that
+        // durable position, so only the resumed form may emit
+        // `catchup_complete` after replay data.
+        let mut trace = StreamTraceValidator::new(after.is_some(), after.clone());
         let mut source = transport
             .open_realm_events(&realm_id, after.as_deref())
             .await
@@ -495,9 +495,13 @@ mod tests {
     #[tokio::test]
     async fn realm_driver_emits_event_frames_and_dedupes() {
         let store = MemoryStore::new();
+        store
+            .save(scope(), "ak:cursor:stored".to_owned())
+            .await
+            .unwrap();
         let event = message_event();
         let payload = serde_json::to_value(event).unwrap();
-        // Empty store → catch-up subscribe: the trace must end with a
+        // A resumed subscribe is a bounded catch-up and must end with a
         // cursor-bearing catchup_complete.
         let transport = VecTransport::new(vec![
             cursor_frame(
@@ -530,18 +534,11 @@ mod tests {
     #[tokio::test]
     async fn realm_driver_commits_event_and_cursor_to_inbox() {
         let store = MemoryStore::new();
-        let transport = VecTransport::new(vec![
-            cursor_frame(
-                EventsSubscribeFrameKind::Event,
-                serde_json::to_value(message_event()).unwrap(),
-                "ak:cursor:frame1",
-            ),
-            cursor_frame(
-                EventsSubscribeFrameKind::CatchupComplete,
-                Value::Null,
-                "ak:cursor:frame1",
-            ),
-        ]);
+        let transport = VecTransport::new(vec![cursor_frame(
+            EventsSubscribeFrameKind::Event,
+            serde_json::to_value(message_event()).unwrap(),
+            "ak:cursor:frame1",
+        )]);
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let reason = driver
@@ -563,10 +560,6 @@ mod tests {
     #[tokio::test]
     async fn realm_driver_saves_data_cursor_but_never_heartbeat_cursor() {
         let store = MemoryStore::new();
-        store
-            .save(scope(), "ak:cursor:stored".to_owned())
-            .await
-            .unwrap();
         // transport-bindings.md §1.1 rule 3: heartbeat MUST NOT advance the
         // reconnect position even when it (illegally) carries a cursor;
         // frontier is cursor-bearing and does advance.
@@ -590,10 +583,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(reason, RealmStreamStopReason::StreamEnded);
-        assert_eq!(
-            transport.afters(),
-            vec![Some("ak:cursor:stored".to_owned())]
-        );
+        assert_eq!(transport.afters(), vec![None]);
         assert_eq!(
             store.load(scope()).await.unwrap().as_deref(),
             Some("ak:cursor:frontier")
@@ -698,33 +688,8 @@ mod tests {
 
     #[tokio::test]
     async fn realm_driver_rejects_completion_before_baseline_delta() {
-        // Catch-up subscribe (empty store): `catchup_complete` before the
+        // A resumed catch-up subscribe: `catchup_complete` before the
         // first data frame is a trace violation.
-        let store = MemoryStore::new();
-        let transport = VecTransport::new(vec![cursor_frame(
-            EventsSubscribeFrameKind::CatchupComplete,
-            Value::Null,
-            "ak:cursor:frame1",
-        )]);
-        let driver = RealmEventsDriver::new(store.clone(), store.clone());
-        let projector = RecordingProjector {
-            batches: Arc::new(Mutex::new(Vec::new())),
-            fail: false,
-        };
-
-        let error = driver
-            .run_stream(&transport, realm_id(), &projector)
-            .await
-            .unwrap_err();
-
-        assert!(error.to_string().contains("catchup_complete_before_delta"));
-        assert!(store.load(scope()).await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn realm_driver_rejects_completion_on_non_catchup_subscribe() {
-        // With a stored cursor the request is not a catch-up, so
-        // `catchup_complete` is forbidden.
         let store = MemoryStore::new();
         store
             .save(scope(), "ak:cursor:stored".to_owned())
@@ -746,7 +711,7 @@ mod tests {
             .await
             .unwrap_err();
 
-        assert!(error.to_string().contains("unexpected_catchup_complete"));
+        assert!(error.to_string().contains("catchup_complete_before_delta"));
         assert_eq!(
             store.load(scope()).await.unwrap().as_deref(),
             Some("ak:cursor:stored")
@@ -754,8 +719,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn realm_driver_rejects_completion_on_non_catchup_subscribe() {
+        // A cursorless request starts at the live tail, so `catchup_complete`
+        // is forbidden.
+        let store = MemoryStore::new();
+        let transport = VecTransport::new(vec![cursor_frame(
+            EventsSubscribeFrameKind::CatchupComplete,
+            Value::Null,
+            "ak:cursor:frame1",
+        )]);
+        let driver = RealmEventsDriver::new(store.clone(), store.clone());
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+        };
+
+        let error = driver
+            .run_stream(&transport, realm_id(), &projector)
+            .await
+            .unwrap_err();
+
+        assert!(error.to_string().contains("unexpected_catchup_complete"));
+        assert!(store.load(scope()).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
     async fn realm_driver_rejects_catchup_stream_that_ends_without_completion() {
         let store = MemoryStore::new();
+        store
+            .save(scope(), "ak:cursor:stored".to_owned())
+            .await
+            .unwrap();
         let transport = VecTransport::new(vec![cursor_frame(
             EventsSubscribeFrameKind::Event,
             serde_json::to_value(message_event()).unwrap(),
@@ -845,7 +839,12 @@ mod tests {
             serde_json::to_value(message_event()).unwrap(),
         );
         event_frame.cursor = Some(Cursor::new("ak:cursor:frame1").unwrap());
-        let transport = VecTransport::new(vec![event_frame]);
+        let completion = cursor_frame(
+            EventsSubscribeFrameKind::CatchupComplete,
+            Value::Null,
+            "ak:cursor:frame1",
+        );
+        let transport = VecTransport::new(vec![event_frame, completion]);
         let projector = RecordingProjector {
             batches: Arc::new(Mutex::new(Vec::new())),
             fail: false,
@@ -872,6 +871,10 @@ mod tests {
         // A transient projector failure must NOT poison dedupe: the redelivered
         // frame (cursor did not advance) must reach the projector again.
         let store = MemoryStore::new();
+        store
+            .save(scope(), "ak:cursor:stored".to_owned())
+            .await
+            .unwrap();
         let payload = serde_json::to_value(message_event()).unwrap();
         let mut event_frame = frame(EventsSubscribeFrameKind::Event, payload.clone());
         event_frame.cursor = Some(Cursor::new("ak:cursor:frame1").unwrap());
@@ -893,7 +896,10 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(store.load(scope()).await.unwrap().is_none());
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ak:cursor:stored")
+        );
 
         // Server redelivers the same frame on the next subscribe.
         let succeeding = RecordingProjector {
@@ -921,6 +927,10 @@ mod tests {
         // An unparseable Event frame must not wedge the stream: skip it and
         // let the cursor advance past it.
         let store = MemoryStore::new();
+        store
+            .save(scope(), "ak:cursor:stored".to_owned())
+            .await
+            .unwrap();
         let mut bad_frame = frame(EventsSubscribeFrameKind::Event, json!({"not": "an event"}));
         bad_frame.cursor = Some(Cursor::new("ak:cursor:frame1").unwrap());
         let transport = VecTransport::new(vec![
@@ -968,11 +978,18 @@ mod tests {
             .save(scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
-        let transport = VecTransport::new(vec![cursor_frame(
-            EventsSubscribeFrameKind::Event,
-            serde_json::to_value(event).unwrap(),
-            "ak:cursor:frame1",
-        )]);
+        let transport = VecTransport::new(vec![
+            cursor_frame(
+                EventsSubscribeFrameKind::Event,
+                serde_json::to_value(event).unwrap(),
+                "ak:cursor:frame1",
+            ),
+            cursor_frame(
+                EventsSubscribeFrameKind::CatchupComplete,
+                Value::Null,
+                "ak:cursor:frame1",
+            ),
+        ]);
         let projector = RecordingProjector {
             batches: Arc::new(Mutex::new(Vec::new())),
             fail: false,

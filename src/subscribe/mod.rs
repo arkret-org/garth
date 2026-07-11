@@ -240,10 +240,10 @@ where
         scan.scan_realm_catchup(transport, realm_id, options).await
     }
 
-    /// Scan durable Realm history, project it, and only then checkpoint the
-    /// returned cursor. This is the crash-safe bootstrap path for a client
-    /// that has no Realm stream cursor yet; `events/subscribe` without an
-    /// `after` cursor is a live tail, not an implicit full-history replay.
+    /// Scan durable Realm history and project it without writing the scan
+    /// cursor into the Realm subscription cursor slot. Scan and subscribe
+    /// cursors carry different filter digests and are not interchangeable;
+    /// the subsequent stream establishes and checkpoints its own cursor.
     pub async fn bootstrap_realm_history<T, P>(
         &self,
         transport: &T,
@@ -284,8 +284,6 @@ where
                 self.event_cache_store.remember(event_id).await?;
             }
         }
-        self.save_realm_cursor_after_project(realm_id, outcome.next_cursor.clone())
-            .await?;
         Ok(outcome)
     }
 
@@ -738,6 +736,41 @@ mod tests {
         assert_eq!(
             store.load(realm_scope()).await.unwrap().as_deref(),
             Some("ak:cursor:stored")
+        );
+    }
+
+    #[tokio::test]
+    async fn realm_history_bootstrap_does_not_reuse_scan_cursor_for_subscribe() {
+        let store = MemoryStore::new();
+        let transport = RealmRecoveryTransport::new(
+            Vec::new(),
+            vec![backfill_outcome(Some("ak:cursor:scan-filter"))],
+        );
+        let projector = RecordingProjector {
+            batches: Arc::new(Mutex::new(Vec::new())),
+            fail: false,
+            control: None,
+        };
+        let engine =
+            SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store.clone());
+
+        let outcome = engine
+            .bootstrap_realm_history(
+                &transport,
+                realm_id(),
+                &projector,
+                ScanCatchupOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outcome.next_cursor.as_deref(),
+            Some("ak:cursor:scan-filter")
+        );
+        assert!(
+            store.load(realm_scope()).await.unwrap().is_none(),
+            "scan cursor must not enter the events/subscribe cursor slot"
         );
     }
 
