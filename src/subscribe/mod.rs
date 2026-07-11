@@ -240,6 +240,55 @@ where
         scan.scan_realm_catchup(transport, realm_id, options).await
     }
 
+    /// Scan durable Realm history, project it, and only then checkpoint the
+    /// returned cursor. This is the crash-safe bootstrap path for a client
+    /// that has no Realm stream cursor yet; `events/subscribe` without an
+    /// `after` cursor is a live tail, not an implicit full-history replay.
+    pub async fn bootstrap_realm_history<T, P>(
+        &self,
+        transport: &T,
+        realm_id: RealmId,
+        projector: &P,
+        options: ScanCatchupOptions,
+    ) -> Result<arkret_core::SyncBackfillOutcome>
+    where
+        T: EventsScanTransport + ?Sized,
+        P: ClientProjector + ?Sized,
+    {
+        let outcome = self
+            .scan_realm_catchup_uncheckpointed_classified(transport, realm_id.clone(), options)
+            .await
+            .map_err(ProjectedRunError::into_error)?;
+
+        let decoder = arkret_core::InboundDecoder::new();
+        let mut batch = Vec::new();
+        let mut accepted_ids = Vec::new();
+        for event in outcome.events.iter().cloned() {
+            let event_id = event.event_id.clone();
+            if self.event_cache_store.seen(event_id.clone()).await? {
+                continue;
+            }
+            match decoder.decode_event(event) {
+                arkret_core::DecodedInbound::Message(message) => {
+                    batch.push(ClientEvent::Message(message));
+                }
+                arkret_core::DecodedInbound::Event(event) => {
+                    batch.push(ClientEvent::Event(event));
+                }
+            }
+            accepted_ids.push(event_id);
+        }
+        if !batch.is_empty() {
+            projector.project(batch).await?;
+            for event_id in accepted_ids {
+                self.event_cache_store.remember(event_id).await?;
+            }
+        }
+        self.save_realm_cursor_after_project(realm_id, outcome.next_cursor.clone())
+            .await?;
+        Ok(outcome)
+    }
+
     async fn scan_realm_catchup_uncheckpointed_classified<T>(
         &self,
         transport: &T,
