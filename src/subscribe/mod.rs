@@ -42,7 +42,7 @@ pub struct SubscriptionEngine<E, C, D> {
     cursor_store: C,
     event_cache_store: D,
     control: SyncLoopControl,
-    service_did: Option<Did>,
+    service_id: Option<Did>,
 }
 
 impl<E, C, D> SubscriptionEngine<E, C, D>
@@ -57,12 +57,12 @@ where
             cursor_store,
             event_cache_store,
             control: SyncLoopControl::new(),
-            service_did: None,
+            service_id: None,
         }
     }
 
-    pub fn with_service_did(mut self, service_did: Did) -> Self {
-        self.service_did = Some(service_did);
+    pub fn with_service_id(mut self, service_id: Did) -> Self {
+        self.service_id = Some(service_id);
         self
     }
 
@@ -138,8 +138,8 @@ where
     {
         let mut driver =
             RealmEventsDriver::new(self.cursor_store.clone(), self.event_cache_store.clone());
-        if let Some(service_did) = self.service_did.clone() {
-            driver = driver.with_service_did(service_did);
+        if let Some(service_id) = self.service_id.clone() {
+            driver = driver.with_service_id(service_id);
         }
         let reason = driver
             .run_stream_classified(transport, realm_id.clone(), projector)
@@ -200,8 +200,8 @@ where
         T: EventsScanTransport + ?Sized,
     {
         let mut scan = ScanCatchup::new(self.cursor_store.clone());
-        if let Some(service_did) = self.service_did.clone() {
-            scan = scan.with_service_did(service_did);
+        if let Some(service_id) = self.service_id.clone() {
+            scan = scan.with_service_id(service_id);
         }
         scan.scan_realm_catchup(transport, realm_id, options).await
     }
@@ -216,8 +216,8 @@ where
         T: EventsScanTransport + ?Sized,
     {
         let mut scan = ScanCatchup::new(self.cursor_store.clone());
-        if let Some(service_did) = self.service_did.clone() {
-            scan = scan.with_service_did(service_did);
+        if let Some(service_id) = self.service_id.clone() {
+            scan = scan.with_service_id(service_id);
         }
         scan.scan_realm_catchup_uncheckpointed_classified(transport, realm_id, options)
             .await
@@ -258,7 +258,7 @@ where
 
     pub(crate) fn account_scope(&self, actor_id: Did, device_id: DeviceId) -> CursorScope {
         CursorScope::Account {
-            service_did: self.service_did.clone(),
+            service_id: self.service_id.clone(),
             actor_id,
             device_id,
         }
@@ -266,7 +266,7 @@ where
 
     fn realm_scope(&self, realm_id: RealmId) -> CursorScope {
         CursorScope::RealmEvents {
-            service_did: self.service_did.clone(),
+            service_id: self.service_id.clone(),
             realm_id,
         }
     }
@@ -303,7 +303,7 @@ mod tests {
 
     fn account_scope() -> CursorScope {
         CursorScope::Account {
-            service_did: None,
+            service_id: None,
             actor_id: actor_id(),
             device_id: device_id(),
         }
@@ -311,7 +311,7 @@ mod tests {
 
     fn realm_scope() -> CursorScope {
         CursorScope::RealmEvents {
-            service_did: None,
+            service_id: None,
             realm_id: realm_id(),
         }
     }

@@ -401,7 +401,7 @@ mod tests {
 
     fn account_scope() -> CursorScope {
         CursorScope::Account {
-            service_did: None,
+            service_id: None,
             actor_id: actor_id(),
             device_id: device_id(),
         }

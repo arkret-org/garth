@@ -87,7 +87,7 @@ impl Default for ScanCatchupOptions {
 #[derive(Clone, Debug)]
 pub struct ScanCatchup<S> {
     store: S,
-    service_did: Option<Did>,
+    service_id: Option<Did>,
 }
 
 impl<S> ScanCatchup<S>
@@ -97,12 +97,12 @@ where
     pub fn new(store: S) -> Self {
         Self {
             store,
-            service_did: None,
+            service_id: None,
         }
     }
 
-    pub fn with_service_did(mut self, service_did: Did) -> Self {
-        self.service_did = Some(service_did);
+    pub fn with_service_id(mut self, service_id: Did) -> Self {
+        self.service_id = Some(service_id);
         self
     }
 
@@ -236,7 +236,7 @@ where
 
     fn scope(&self, realm_id: &RealmId) -> CursorScope {
         CursorScope::RealmEvents {
-            service_did: self.service_did.clone(),
+            service_id: self.service_id.clone(),
             realm_id: realm_id.clone(),
         }
     }
@@ -279,7 +279,7 @@ mod tests {
 
     fn scope() -> CursorScope {
         CursorScope::RealmEvents {
-            service_did: None,
+            service_id: None,
             realm_id: realm_id(),
         }
     }

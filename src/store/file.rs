@@ -148,19 +148,19 @@ fn scope_key(scope: &CursorScope) -> String {
     }
     match scope {
         CursorScope::Account {
-            service_did,
+            service_id,
             actor_id,
             device_id,
         } => format!(
             "account{SEP}{}{SEP}{}{SEP}{}",
-            did(service_did),
+            did(service_id),
             actor_id.as_str(),
             device_id.as_str()
         ),
         CursorScope::RealmEvents {
-            service_did,
+            service_id,
             realm_id,
-        } => format!("realm{SEP}{}{SEP}{}", did(service_did), realm_id.as_str()),
+        } => format!("realm{SEP}{}{SEP}{}", did(service_id), realm_id.as_str()),
     }
 }
 
@@ -256,7 +256,7 @@ mod tests {
 
     fn account_scope() -> CursorScope {
         CursorScope::Account {
-            service_did: None,
+            service_id: None,
             actor_id: Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
             device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
         }
@@ -264,7 +264,7 @@ mod tests {
 
     fn realm_scope() -> CursorScope {
         CursorScope::RealmEvents {
-            service_did: None,
+            service_id: None,
             realm_id: RealmId::new("ak:realm:01904100-0000-7000-8000-000000000009").unwrap(),
         }
     }

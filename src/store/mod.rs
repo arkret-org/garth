@@ -25,12 +25,12 @@ pub type OpaqueCursor = String;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CursorScope {
     Account {
-        service_did: Option<Did>,
+        service_id: Option<Did>,
         actor_id: Did,
         device_id: DeviceId,
     },
     RealmEvents {
-        service_did: Option<Did>,
+        service_id: Option<Did>,
         realm_id: RealmId,
     },
 }
