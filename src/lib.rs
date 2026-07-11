@@ -31,7 +31,9 @@ pub use executor::NativeExecutor;
 pub use executor::WasmExecutor;
 pub use facade::ArkretClient;
 pub use maybe_send::{MaybeSend, MaybeSendSync};
-pub use orchestrator::{RunErrorClass, RunEvent, RunOptions, RunStopReason, TransportProvider};
+pub use orchestrator::{
+    RunError, RunErrorClass, RunEvent, RunOptions, RunResult, RunStopReason, TransportProvider,
+};
 pub use outbound::{
     OutboundEngine, OutboundEngineOutcome, OutboundQueueStore, OutboundSubmitOutcome,
     OutboundSubmitter,

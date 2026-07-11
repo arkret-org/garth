@@ -215,11 +215,6 @@ where
                 self.save_realm_cursor_after_project(realm_id.clone(), next_cursor)
                     .await
                     .map_err(ProjectedRunError::Store)?;
-                if let Some(reconnect_after_ms) = reconnect_after_ms {
-                    self.executor
-                        .sleep(std::time::Duration::from_millis(reconnect_after_ms))
-                        .await;
-                }
                 Ok(RealmStreamStopReason::Dropped {
                     cursor,
                     reconnect_after_ms,
@@ -621,7 +616,9 @@ mod tests {
             store.load(realm_scope()).await.unwrap().as_deref(),
             Some("ak:cursor:next")
         );
-        assert_eq!(executor.sleeps(), vec![Duration::from_millis(25)]);
+        // Reconnect policy belongs to the high-level runner so the wait can be
+        // interrupted by cancellation or a host lifecycle transition.
+        assert!(executor.sleeps().is_empty());
         let batches = projector.batches.lock().unwrap();
         assert_eq!(batches.len(), 1);
         assert!(matches!(
