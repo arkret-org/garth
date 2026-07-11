@@ -22,8 +22,8 @@ use crate::subscribe::{
     EventsScanTransport, ProjectedRunError, RealmEventsTransport, RealmStreamStopReason,
 };
 use crate::{
-    ArkretClient, ClientProjector, CursorStore, EventCacheStore, Executor,
-    subscribe::account::account_updates_to_events,
+    ArkretClient, Backoff, ClientProjector, CursorStore, DurableInboxStore, EventCacheStore,
+    Executor, subscribe::account::account_updates_to_events,
 };
 
 /// Host seam that yields a ready-to-use transport (SDK http-client) with
@@ -33,6 +33,29 @@ pub trait TransportProvider {
     type Transport;
 
     fn provide(&self) -> impl std::future::Future<Output = Result<Self::Transport>> + '_;
+
+    fn recover_unauthorized(&self) -> impl std::future::Future<Output = Result<bool>> + '_ {
+        async { Ok(false) }
+    }
+
+    fn observe(&self, _event: RunEvent) {}
+
+    /// Host lifecycle guard (route/profile/channel generation). It is polled
+    /// during network restarts and every backoff quantum.
+    fn is_active(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RunEvent {
+    Connecting,
+    Online,
+    Backoff { delay: Duration },
+    Refreshing,
+    CursorReset,
+    DeliveryPending,
+    Stopped { reason: RunStopReason },
 }
 
 /// Backoff / heartbeat knobs for the resilient run loops.
@@ -45,6 +68,8 @@ pub struct RunOptions {
     pub min_backoff: Duration,
     /// Backoff ceiling.
     pub max_backoff: Duration,
+    /// Fraction of reconnect delay randomized away to avoid fleet lockstep.
+    pub jitter_ratio: f64,
 }
 
 impl Default for RunOptions {
@@ -53,6 +78,7 @@ impl Default for RunOptions {
             beat: Duration::from_millis(250),
             min_backoff: Duration::from_millis(500),
             max_backoff: Duration::from_secs(30),
+            jitter_ratio: 0.2,
         }
     }
 }
@@ -62,8 +88,48 @@ impl Default for RunOptions {
 pub enum RunStopReason {
     /// The engine's cancellation control was tripped (`SubscriptionEngine::cancel`).
     Cancelled,
+    LifecycleEnded,
     /// The session grant is no longer accepted; host should refresh / sign in.
-    Unauthorized { reason: Option<String> },
+    Unauthorized {
+        reason: Option<String>,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunErrorClass {
+    RetryableTransport,
+    RateLimited,
+    Unauthorized,
+    InvalidConfiguration,
+    StoreFailure,
+    ProjectorFailure,
+    ProtocolViolation,
+}
+
+fn classify_error(error: &arkret_core::Error) -> RunErrorClass {
+    use arkret_core::Error;
+    match error {
+        Error::Http(_) => RunErrorClass::RetryableTransport,
+        Error::Api { status: 429, .. } => RunErrorClass::RateLimited,
+        Error::Api { status: 401, .. } => RunErrorClass::Unauthorized,
+        Error::Api { status, .. } if *status == 408 || *status >= 500 => {
+            RunErrorClass::RetryableTransport
+        }
+        Error::InvalidId(_) | Error::Url(_) | Error::InsecureUrl(_) => {
+            RunErrorClass::InvalidConfiguration
+        }
+        Error::Protocol(_) | Error::Api { .. } | Error::AccountStreamInterrupt(_) => {
+            RunErrorClass::ProtocolViolation
+        }
+        _ => RunErrorClass::InvalidConfiguration,
+    }
+}
+
+fn retryable(class: RunErrorClass) -> bool {
+    matches!(
+        class,
+        RunErrorClass::RetryableTransport | RunErrorClass::RateLimited
+    )
 }
 
 impl<E, C, D> ArkretClient<E, C, D>
@@ -90,26 +156,43 @@ where
         P: ClientProjector + ?Sized,
     {
         let engine = self.subscription_engine().with_control(control.clone());
-        let mut backoff = options.min_backoff;
+        let mut backoff = Backoff::new(options.min_backoff, options.max_backoff)
+            .with_jitter(options.jitter_ratio, 0xA11C_E001);
         loop {
+            if !provider.is_active() {
+                return Ok(RunStopReason::LifecycleEnded);
+            }
             if control.is_cancelled() {
+                provider.observe(RunEvent::Stopped {
+                    reason: RunStopReason::Cancelled,
+                });
                 return Ok(RunStopReason::Cancelled);
             }
+            provider.observe(RunEvent::Connecting);
             let transport = match provider.provide().await {
-                Ok(transport) => transport,
-                Err(_) => {
-                    self.executor.sleep(backoff).await;
-                    backoff = backoff.saturating_mul(2).min(options.max_backoff);
+                Ok(transport) => {
+                    provider.observe(RunEvent::Online);
+                    transport
+                }
+                Err(error) if retryable(classify_error(&error)) => {
+                    let delay = backoff.next_delay();
+                    provider.observe(RunEvent::Backoff { delay });
+                    if self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::guarded_stop_reason(control, provider));
+                    }
                     continue;
                 }
+                Err(error) => return Err(error),
             };
             match engine
                 .run_realm_stream_classified(&transport, realm_id.clone(), projector)
                 .await
             {
                 Ok(RealmStreamStopReason::StreamEnded) => {
-                    backoff = options.min_backoff;
-                    self.executor.sleep(options.beat).await;
+                    backoff.reset();
+                    if self.wait_guarded(options.beat, control, provider).await {
+                        return Ok(Self::guarded_stop_reason(control, provider));
+                    }
                 }
                 Ok(
                     RealmStreamStopReason::Dropped {
@@ -121,17 +204,35 @@ where
                     // `reconnect_after_ms` before returning; only apply the
                     // local backoff when the server gave no hint.
                     if reconnect_after_ms.is_none() {
-                        self.executor.sleep(backoff).await;
+                        let delay = backoff.next_delay();
+                        provider.observe(RunEvent::Backoff { delay });
+                        if self.wait_guarded(delay, control, provider).await {
+                            return Ok(Self::guarded_stop_reason(control, provider));
+                        }
+                    } else {
+                        backoff.next_delay();
                     }
-                    backoff = backoff.saturating_mul(2).min(options.max_backoff);
                 }
                 Ok(RealmStreamStopReason::Unauthorized { reason }) => {
-                    return Ok(RunStopReason::Unauthorized { reason });
+                    provider.observe(RunEvent::Refreshing);
+                    if provider.recover_unauthorized().await? {
+                        backoff.reset();
+                        continue;
+                    }
+                    let stop = RunStopReason::Unauthorized { reason };
+                    provider.observe(RunEvent::Stopped {
+                        reason: stop.clone(),
+                    });
+                    return Ok(stop);
                 }
-                Err(ProjectedRunError::Transport(_)) => {
-                    self.executor.sleep(backoff).await;
-                    backoff = backoff.saturating_mul(2).min(options.max_backoff);
+                Err(ProjectedRunError::Transport(error)) if retryable(classify_error(&error)) => {
+                    let delay = backoff.next_delay();
+                    provider.observe(RunEvent::Backoff { delay });
+                    if self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::guarded_stop_reason(control, provider));
+                    }
                 }
+                Err(ProjectedRunError::Transport(error)) => return Err(error),
                 Err(error) => return Err(error.into_error()),
             }
         }
@@ -158,21 +259,34 @@ where
         let engine = self.subscription_engine().with_control(control.clone());
         let scope = engine.account_scope(actor_id, device_id);
         let mut sync_loop = engine.restore_account_loop(scope.clone()).await?;
-        let mut provide_backoff = options.min_backoff;
+        let mut provide_backoff = Backoff::new(options.min_backoff, options.max_backoff)
+            .with_jitter(options.jitter_ratio, 0xACC0_0011);
         loop {
+            if !provider.is_active() {
+                return Ok(RunStopReason::LifecycleEnded);
+            }
             if control.is_cancelled() {
+                provider.observe(RunEvent::Stopped {
+                    reason: RunStopReason::Cancelled,
+                });
                 return Ok(RunStopReason::Cancelled);
             }
+            provider.observe(RunEvent::Connecting);
             let transport = match provider.provide().await {
                 Ok(transport) => {
-                    provide_backoff = options.min_backoff;
+                    provide_backoff.reset();
+                    provider.observe(RunEvent::Online);
                     transport
                 }
-                Err(_) => {
-                    self.executor.sleep(provide_backoff).await;
-                    provide_backoff = provide_backoff.saturating_mul(2).min(options.max_backoff);
+                Err(error) if retryable(classify_error(&error)) => {
+                    let delay = provide_backoff.next_delay();
+                    provider.observe(RunEvent::Backoff { delay });
+                    if self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::guarded_stop_reason(control, provider));
+                    }
                     continue;
                 }
+                Err(error) => return Err(error),
             };
             match sync_loop.step_async_with_control(&transport, control).await {
                 SyncLoopStep::Updates(updates) => {
@@ -194,16 +308,170 @@ where
                             sync_loop.token().map(str::to_owned),
                         )
                         .await?;
-                    self.executor.sleep(retry_after).await;
+                    if self.wait_guarded(retry_after, control, provider).await {
+                        return Ok(Self::guarded_stop_reason(control, provider));
+                    }
                 }
                 SyncLoopStep::Backpressure { retry_after } => {
-                    self.executor.sleep(retry_after).await;
+                    if self.wait_guarded(retry_after, control, provider).await {
+                        return Ok(Self::guarded_stop_reason(control, provider));
+                    }
+                }
+                SyncLoopStep::Cancelled => {
+                    provider.observe(RunEvent::Stopped {
+                        reason: RunStopReason::Cancelled,
+                    });
+                    return Ok(RunStopReason::Cancelled);
+                }
+                SyncLoopStep::Unauthorized { reason } => {
+                    provider.observe(RunEvent::Refreshing);
+                    if provider.recover_unauthorized().await? {
+                        provide_backoff.reset();
+                        continue;
+                    }
+                    let stop = RunStopReason::Unauthorized { reason };
+                    provider.observe(RunEvent::Stopped {
+                        reason: stop.clone(),
+                    });
+                    return Ok(stop);
+                }
+            }
+        }
+    }
+
+    /// Resilient account runner whose successful checkpoint unit is an atomic
+    /// durable-inbox commit instead of a synchronous host projection.
+    pub async fn run_account_to_inbox<TP>(
+        &self,
+        actor_id: Did,
+        device_id: DeviceId,
+        service_id: Option<Did>,
+        provider: &TP,
+        control: &SyncLoopControl,
+        options: RunOptions,
+    ) -> Result<RunStopReason>
+    where
+        TP: TransportProvider,
+        TP::Transport: AsyncSyncTransport,
+        C: DurableInboxStore,
+    {
+        let mut engine = self.subscription_engine().with_control(control.clone());
+        if let Some(service_id) = service_id {
+            engine = engine.with_service_id(service_id);
+        }
+        let scope = engine.account_scope(actor_id, device_id);
+        let mut sync_loop = engine.restore_account_loop(scope.clone()).await?;
+        let mut backoff = Backoff::new(options.min_backoff, options.max_backoff)
+            .with_jitter(options.jitter_ratio, 0x1AB0_0001);
+        loop {
+            if !provider.is_active() {
+                return Ok(RunStopReason::LifecycleEnded);
+            }
+            if control.is_cancelled() {
+                return Ok(RunStopReason::Cancelled);
+            }
+            provider.observe(RunEvent::Connecting);
+            let transport = match provider.provide().await {
+                Ok(transport) => {
+                    backoff.reset();
+                    provider.observe(RunEvent::Online);
+                    transport
+                }
+                Err(error) if retryable(classify_error(&error)) => {
+                    let delay = backoff.next_delay();
+                    provider.observe(RunEvent::Backoff { delay });
+                    if self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::guarded_stop_reason(control, provider));
+                    }
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+            match sync_loop.step_async_with_control(&transport, control).await {
+                SyncLoopStep::Updates(updates) => {
+                    self.cursor_store
+                        .commit(
+                            scope.clone(),
+                            sync_loop.token().map(str::to_owned),
+                            account_updates_to_events(updates),
+                        )
+                        .await?;
+                    provider.observe(RunEvent::DeliveryPending);
+                }
+                SyncLoopStep::Retry { retry_after, .. } => {
+                    self.cursor_store
+                        .commit(
+                            scope.clone(),
+                            sync_loop.token().map(str::to_owned),
+                            Vec::new(),
+                        )
+                        .await?;
+                    if self.wait_guarded(retry_after, control, provider).await {
+                        return Ok(Self::guarded_stop_reason(control, provider));
+                    }
+                }
+                SyncLoopStep::Backpressure { retry_after } => {
+                    if self.wait_guarded(retry_after, control, provider).await {
+                        return Ok(Self::guarded_stop_reason(control, provider));
+                    }
                 }
                 SyncLoopStep::Cancelled => return Ok(RunStopReason::Cancelled),
                 SyncLoopStep::Unauthorized { reason } => {
+                    provider.observe(RunEvent::Refreshing);
+                    if provider.recover_unauthorized().await? {
+                        backoff.reset();
+                        continue;
+                    }
                     return Ok(RunStopReason::Unauthorized { reason });
                 }
             }
+        }
+    }
+
+    #[cfg(test)]
+    async fn wait_cancellable(&self, duration: Duration, control: &SyncLoopControl) -> bool {
+        const QUANTUM: Duration = Duration::from_millis(50);
+        let mut remaining = duration;
+        while !remaining.is_zero() {
+            if control.is_cancelled() {
+                return true;
+            }
+            let step = remaining.min(QUANTUM);
+            self.executor.sleep(step).await;
+            remaining = remaining.saturating_sub(step);
+        }
+        control.is_cancelled()
+    }
+
+    async fn wait_guarded<TP: TransportProvider + ?Sized>(
+        &self,
+        duration: Duration,
+        control: &SyncLoopControl,
+        provider: &TP,
+    ) -> bool {
+        const QUANTUM: Duration = Duration::from_millis(50);
+        let mut remaining = duration;
+        while !remaining.is_zero() {
+            if control.is_cancelled() || !provider.is_active() {
+                return true;
+            }
+            let step = remaining.min(QUANTUM);
+            self.executor.sleep(step).await;
+            remaining = remaining.saturating_sub(step);
+        }
+        control.is_cancelled() || !provider.is_active()
+    }
+
+    fn guarded_stop_reason<TP: TransportProvider + ?Sized>(
+        control: &SyncLoopControl,
+        provider: &TP,
+    ) -> RunStopReason {
+        if control.is_cancelled() {
+            RunStopReason::Cancelled
+        } else if !provider.is_active() {
+            RunStopReason::LifecycleEnded
+        } else {
+            RunStopReason::Cancelled
         }
     }
 }
@@ -412,6 +680,7 @@ mod tests {
             beat: Duration::ZERO,
             min_backoff: Duration::from_millis(10),
             max_backoff: Duration::from_millis(30),
+            jitter_ratio: 0.0,
         }
     }
 
@@ -501,7 +770,7 @@ mod tests {
         let executor = RecordingExecutor::default();
         let client = test_client(executor.clone(), MemoryStore::new());
         let provider = QueueProvider::new(vec![
-            Err(Error::Protocol("provider offline".to_owned())),
+            Err(Error::Http("provider offline".to_owned())),
             Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
                 "revoked",
             ))])),
@@ -530,7 +799,7 @@ mod tests {
         let executor = RecordingExecutor::default();
         let client = test_client(executor.clone(), MemoryStore::new());
         let provider = QueueProvider::new(vec![
-            Ok(TestRealmTransport::frames(vec![Err(Error::Protocol(
+            Ok(TestRealmTransport::frames(vec![Err(Error::Http(
                 "stream reset".to_owned(),
             ))])),
             Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
@@ -618,7 +887,7 @@ mod tests {
         let executor = RecordingExecutor::default();
         let client = test_client(executor.clone(), MemoryStore::new());
         let provider = QueueProvider::new(vec![
-            Err(Error::Protocol("provider offline".to_owned())),
+            Err(Error::Http("provider offline".to_owned())),
             Ok(AccountTransport::new(Err(Error::AccountStreamInterrupt(
                 AccountStreamInterrupt::Unauthorized {
                     reason: Some("revoked".to_owned()),
@@ -684,6 +953,31 @@ mod tests {
             store.load(account_scope()).await.unwrap().as_deref(),
             Some("ak:cursor:next")
         );
-        assert_eq!(executor.sleeps().len(), 1);
+        let waited = executor.sleeps().into_iter().sum::<Duration>();
+        assert!(waited >= Duration::from_secs(1));
+        assert!(waited <= Duration::from_millis(1200));
+    }
+
+    #[tokio::test]
+    async fn thirty_second_wait_is_interrupted_by_cancellation() {
+        let client = ArkretClient::new(
+            crate::NativeExecutor,
+            MemoryStore::new(),
+            MemoryStore::new(),
+        );
+        let control = SyncLoopControl::new();
+        let canceller = control.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            canceller.cancel();
+        });
+
+        let cancelled = tokio::time::timeout(
+            Duration::from_millis(250),
+            client.wait_cancellable(Duration::from_secs(30), &control),
+        )
+        .await
+        .expect("cancellation must interrupt the long wait");
+        assert!(cancelled);
     }
 }

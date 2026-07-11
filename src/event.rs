@@ -2,9 +2,11 @@ use arkret_core::{
     DecodedMessage, Event, NotificationDelta, RealmId, RealmUpdate, SyncBackfillOutcome,
     SyncUpdates, ToDeviceMessage,
 };
+use serde::{Deserialize, Serialize};
 
 /// Typed events emitted by the shared client engines toward a host adapter.
-#[derive(Clone, Debug)]
+#[allow(clippy::large_enum_variant)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ClientEvent {
     AccountUpdates(SyncUpdates),
     RealmDelta {

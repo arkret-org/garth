@@ -4,7 +4,7 @@ use arkret::{AsyncSyncTransport, SyncLoop, SyncLoopControl, SyncLoopStep};
 use arkret_core::Result;
 
 use super::{ProjectedRunError, ProjectedRunResult, account_updates_to_events};
-use crate::{ClientProjector, Executor};
+use crate::{ClientProjector, CursorScope, DurableInboxStore, Executor};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SubscriptionStopReason {
@@ -54,6 +54,56 @@ where
         self.run_account_checkpointed(sync_loop, transport, projector, |_token| async { Ok(()) })
             .await
             .map_err(ProjectedRunError::into_error)
+    }
+
+    /// Run account sync with crash-safe non-blocking delivery. Each update
+    /// batch and its cursor are committed atomically to `inbox`; a separate
+    /// worker may process and acknowledge pending deliveries without blocking
+    /// the subscription loop.
+    pub async fn run_account_to_inbox<T, S>(
+        &self,
+        sync_loop: &mut SyncLoop,
+        transport: &T,
+        scope: CursorScope,
+        inbox: &S,
+    ) -> Result<SubscriptionStopReason>
+    where
+        T: AsyncSyncTransport + ?Sized,
+        S: DurableInboxStore,
+    {
+        loop {
+            match sync_loop
+                .step_async_with_control(transport, &self.control)
+                .await
+            {
+                SyncLoopStep::Updates(updates) => {
+                    inbox
+                        .commit(
+                            scope.clone(),
+                            sync_loop.token().map(str::to_owned),
+                            account_updates_to_events(updates),
+                        )
+                        .await?;
+                }
+                SyncLoopStep::Retry { retry_after, .. } => {
+                    inbox
+                        .commit(
+                            scope.clone(),
+                            sync_loop.token().map(str::to_owned),
+                            Vec::new(),
+                        )
+                        .await?;
+                    self.executor.sleep(retry_after).await;
+                }
+                SyncLoopStep::Backpressure { retry_after } => {
+                    self.executor.sleep(retry_after).await;
+                }
+                SyncLoopStep::Cancelled => return Ok(SubscriptionStopReason::Cancelled),
+                SyncLoopStep::Unauthorized { reason } => {
+                    return Ok(SubscriptionStopReason::Unauthorized { reason });
+                }
+            }
+        }
     }
 
     /// Shared account sync loop. `checkpoint` is invoked with the current sync

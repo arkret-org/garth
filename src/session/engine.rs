@@ -289,10 +289,10 @@ fn refresh_request(
     if current.device_id.as_ref() != Some(&device_id) {
         return Err(protocol("session refresh device changed"));
     }
-    if let Some(current_dpop_jkt) = current.dpop_jkt.as_deref() {
-        if current_dpop_jkt != expected_dpop_jkt {
-            return Err(protocol("session refresh DPoP key changed"));
-        }
+    if let Some(current_dpop_jkt) = current.dpop_jkt.as_deref()
+        && current_dpop_jkt != expected_dpop_jkt
+    {
+        return Err(protocol("session refresh DPoP key changed"));
     }
 
     Ok((
@@ -317,10 +317,10 @@ fn state_from_issue_outcome(
     if outcome.expires_at <= now {
         return Err(protocol("issued session grant is expired"));
     }
-    if let Some(expected_principal) = request.principal_id.as_ref() {
-        if &outcome.principal_id != expected_principal {
-            return Err(protocol("issued session grant principal changed"));
-        }
+    if let Some(expected_principal) = request.principal_id.as_ref()
+        && &outcome.principal_id != expected_principal
+    {
+        return Err(protocol("issued session grant principal changed"));
     }
     if request.device_id.as_ref() != outcome.device_id.as_ref() {
         return Err(protocol("issued session grant device changed"));

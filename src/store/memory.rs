@@ -1,11 +1,16 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
 
 use arkret_core::{Error, EventId, Result};
 
+use super::inbox::{bounded_delivery_error, bounded_pending_limit};
 use super::seen_window::BoundedSeenWindow;
-use super::{CursorScope, CursorStore, EventCacheStore, OpaqueCursor};
+use super::{
+    CursorScope, CursorStore, DeliveryErrorClass, DeliveryId, DurableInboxStore, EventCacheStore,
+    OpaqueCursor, PendingDelivery,
+};
+use crate::{ClientEvent, OutboundQueueStore};
 
 #[derive(Clone, Debug, Default)]
 pub struct MemoryStore {
@@ -16,6 +21,9 @@ pub struct MemoryStore {
 struct MemoryState {
     cursors: BTreeMap<CursorScope, OpaqueCursor>,
     seen_events: BoundedSeenWindow<EventId>,
+    next_delivery_id: u64,
+    deliveries: VecDeque<PendingDelivery>,
+    outbound: arkret::sync_client::SendQueueSnapshot,
 }
 
 impl MemoryStore {
@@ -28,6 +36,9 @@ impl MemoryStore {
             inner: Arc::new(Mutex::new(MemoryState {
                 cursors: BTreeMap::new(),
                 seen_events: BoundedSeenWindow::new(capacity),
+                next_delivery_id: 0,
+                deliveries: VecDeque::new(),
+                outbound: arkret::sync_client::SendQueueSnapshot::default(),
             })),
         }
     }
@@ -38,6 +49,23 @@ impl MemoryStore {
             .lock()
             .map_err(|err: PoisonError<_>| Error::Protocol(format!("memory store lock: {err}")))?;
         Ok(f(&mut guard))
+    }
+}
+
+impl OutboundQueueStore for MemoryStore {
+    fn mutate_outbound<'a, R>(
+        &'a self,
+        mutation: impl FnOnce(&mut arkret::sync_client::SendQueue) -> Result<R> + 'a,
+    ) -> impl Future<Output = Result<R>> + 'a {
+        async move {
+            self.with_state(|state| {
+                let mut queue =
+                    arkret::sync_client::SendQueue::from_snapshot(state.outbound.clone())?;
+                let output = mutation(&mut queue)?;
+                state.outbound = queue.snapshot();
+                Ok(output)
+            })?
+        }
     }
 }
 
@@ -77,6 +105,98 @@ impl EventCacheStore for MemoryStore {
             self.with_state(|state| {
                 state.seen_events.remember(event_id);
             })
+        }
+    }
+}
+
+impl DurableInboxStore for MemoryStore {
+    fn commit(
+        &self,
+        scope: CursorScope,
+        cursor: Option<OpaqueCursor>,
+        events: Vec<ClientEvent>,
+    ) -> impl Future<Output = Result<Option<DeliveryId>>> + '_ {
+        async move {
+            self.with_state(|state| {
+                match cursor.clone() {
+                    Some(cursor) => {
+                        state.cursors.insert(scope.clone(), cursor);
+                    }
+                    None => {
+                        state.cursors.remove(&scope);
+                    }
+                }
+                if events.is_empty() {
+                    return Ok(None);
+                }
+                state.next_delivery_id = state
+                    .next_delivery_id
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Protocol("delivery id overflow".to_owned()))?;
+                let id = DeliveryId::new(state.next_delivery_id);
+                state.deliveries.push_back(PendingDelivery {
+                    id,
+                    scope,
+                    cursor,
+                    events,
+                    attempts: 0,
+                    next_attempt_at_ms: None,
+                    error_class: None,
+                    last_error: None,
+                });
+                Ok(Some(id))
+            })?
+        }
+    }
+
+    fn pending(&self, limit: usize) -> impl Future<Output = Result<Vec<PendingDelivery>>> + '_ {
+        async move {
+            self.with_state(|state| {
+                state
+                    .deliveries
+                    .iter()
+                    .take(bounded_pending_limit(limit))
+                    .cloned()
+                    .collect()
+            })
+        }
+    }
+
+    fn ack(&self, id: DeliveryId) -> impl Future<Output = Result<bool>> + '_ {
+        async move {
+            self.with_state(|state| {
+                let before = state.deliveries.len();
+                state.deliveries.retain(|delivery| delivery.id != id);
+                state.deliveries.len() != before
+            })
+        }
+    }
+
+    fn retry(
+        &self,
+        id: DeliveryId,
+        next_attempt_at_ms: Option<i64>,
+        error_class: DeliveryErrorClass,
+        error: String,
+    ) -> impl Future<Output = Result<bool>> + '_ {
+        async move {
+            self.with_state(|state| {
+                let Some(delivery) = state
+                    .deliveries
+                    .iter_mut()
+                    .find(|delivery| delivery.id == id)
+                else {
+                    return Ok(false);
+                };
+                delivery.attempts = delivery
+                    .attempts
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Protocol("delivery attempts overflow".to_owned()))?;
+                delivery.next_attempt_at_ms = next_attempt_at_ms;
+                delivery.error_class = Some(error_class);
+                delivery.last_error = Some(bounded_delivery_error(error));
+                Ok(true)
+            })?
         }
     }
 }

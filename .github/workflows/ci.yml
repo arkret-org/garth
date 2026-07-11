@@ -15,7 +15,10 @@ env:
 jobs:
   native:
     name: native check + test
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout garth
         uses: actions/checkout@v4
@@ -53,6 +56,46 @@ jobs:
       - name: Tests
         working-directory: garth
         run: cargo test --features native
+
+  ios:
+    name: iOS compile gate
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: garth
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/arkret-rust-sdk
+          path: arkret-rust-sdk
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
+          targets: aarch64-apple-ios
+      - name: Check iOS library surface
+        working-directory: garth
+        run: cargo check --lib --target aarch64-apple-ios
+
+  android:
+    name: Android compile gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: garth
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/arkret-rust-sdk
+          path: arkret-rust-sdk
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.96"
+          targets: aarch64-linux-android
+      - name: Check Android library surface
+        working-directory: garth
+        run: cargo check --lib --target aarch64-linux-android
 
   wasm:
     name: wasm32 check

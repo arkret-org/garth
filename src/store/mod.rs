@@ -1,6 +1,7 @@
 mod crypto_store;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod file;
+mod inbox;
 mod keystore;
 mod memory;
 mod seen_window;
@@ -8,11 +9,16 @@ mod seen_window;
 use std::future::Future;
 
 use arkret_core::{DeviceId, Did, EventId, RealmId, Result};
+use serde::{Deserialize, Serialize};
 
 use crate::MaybeSendSync;
 pub use crypto_store::SecureCryptoStoreAdapter;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use file::FileStore;
+pub use inbox::{
+    DeliveryBatch, DeliveryErrorClass, DeliveryId, DurableInboxStore, MAX_DELIVERY_ERROR_BYTES,
+    MAX_PENDING_READ, PendingDelivery,
+};
 pub use keystore::{
     MemorySecureKeyStore, PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter,
     SecretBytes, SecretClass, SecretDurability, SecureKeyStore, SecureKeyStoreBackendInfo,
@@ -22,7 +28,7 @@ pub use memory::MemoryStore;
 
 pub type OpaqueCursor = String;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum CursorScope {
     Account {
         service_id: Option<Did>,
@@ -32,6 +38,11 @@ pub enum CursorScope {
     RealmEvents {
         service_id: Option<Did>,
         realm_id: RealmId,
+    },
+    DeviceMessages {
+        service_id: Option<Did>,
+        actor_id: Did,
+        device_id: DeviceId,
     },
 }
 

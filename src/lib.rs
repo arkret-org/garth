@@ -4,12 +4,18 @@
 //! clients: executor binding, durable cursor/event caches, secure secret
 //! storage, event emission, decoding and the facade root.
 
+// RPITIT keeps these public traits usable on native and wasm without boxing;
+// spelling implementations as `async fn` would obscure their explicit future
+// bounds and is not supported by all downstream toolchains we gate.
+#![allow(clippy::manual_async_fn)]
+
 pub mod backoff;
 pub mod event;
 pub mod executor;
 pub mod facade;
 pub mod maybe_send;
 pub mod orchestrator;
+pub mod outbound;
 pub mod projection;
 pub mod session;
 pub mod store;
@@ -25,21 +31,26 @@ pub use executor::NativeExecutor;
 pub use executor::WasmExecutor;
 pub use facade::ArkretClient;
 pub use maybe_send::{MaybeSend, MaybeSendSync};
-pub use orchestrator::{RunOptions, RunStopReason, TransportProvider};
+pub use orchestrator::{RunErrorClass, RunEvent, RunOptions, RunStopReason, TransportProvider};
+pub use outbound::{
+    OutboundEngine, OutboundEngineOutcome, OutboundQueueStore, OutboundSubmitOutcome,
+    OutboundSubmitter,
+};
 pub use session::{
-    AgentKeyProofLogin, DidProofLogin, GRANT_ROTATION_SKEW_SECS, HolderProofLogin, LoginKind,
-    OidcLogin, POLL_INTERVAL_SECS, REFRESH_SKEW_SECS, RefreshDecision, SessionEngine,
-    SessionGrantRefreshState, SessionGrantState, SessionGrantTransport, SessionHandle,
-    SessionProofFields, SessionRefreshOptions, grant_due_for_rotation, grant_is_dead,
-    refresh_decision,
+    AgentKeyProofLogin, AuthenticatedTransportFactory, DidProofLogin, GRANT_ROTATION_SKEW_SECS,
+    HolderProofLogin, LoginKind, OidcLogin, POLL_INTERVAL_SECS, REFRESH_SKEW_SECS, RefreshDecision,
+    SessionEngine, SessionGrantRefreshState, SessionGrantState, SessionGrantTransport,
+    SessionHandle, SessionProofFields, SessionRefreshOptions, SessionTransportProvider,
+    grant_due_for_rotation, grant_is_dead, refresh_decision,
 };
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use store::FileStore;
 pub use store::{
-    CursorScope, CursorStore, EventCacheStore, MemorySecureKeyStore, MemoryStore, OpaqueCursor,
-    PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter, SecretBytes, SecretClass,
-    SecretDurability, SecureCryptoStoreAdapter, SecureKeyStore, SecureKeyStoreBackendInfo,
-    SecureKeyStoreError,
+    CursorScope, CursorStore, DeliveryBatch, DeliveryErrorClass, DeliveryId, DurableInboxStore,
+    EventCacheStore, MAX_DELIVERY_ERROR_BYTES, MAX_PENDING_READ, MemorySecureKeyStore, MemoryStore,
+    OpaqueCursor, PendingDelivery, PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter,
+    SecretBytes, SecretClass, SecretDurability, SecureCryptoStoreAdapter, SecureKeyStore,
+    SecureKeyStoreBackendInfo, SecureKeyStoreError,
 };
 pub use subscribe::{
     BoxRealmStreamFuture, EventsScanRequest, EventsScanTransport, RealmEventsDriver,

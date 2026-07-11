@@ -1,17 +1,24 @@
 # Building a client on garth
 
 garth is the runtime-neutral engine that Arkret clients (`inkson`, `savfox`, a
-future `applet`) build on. It owns the whole runtime loop — refresh, event
-polling, cursor checkpointing, dedupe, drop/resync recovery, backoff,
-cancellation. A client provides only two things:
+future `applet`) build on. It currently owns event polling, cursor
+checkpointing, dedupe, drop/resync recovery, reconnect backoff and
+cancellation, durable inbox delivery, session-backed authenticated transport,
+and the generic outbound queue lifecycle.
+
+A projection-driven client provides at least three integration pieces:
 
 1. **Storage** — implement the store traits, or use a default.
 2. **A projector** — one async hook that turns engine output into your durable
    client state.
+3. **A transport provider** — supplies an authenticated SDK transport and owns
+   the current session credentials.
 
-Then call one facade method. You should not hand-roll a poll loop, a
-refresh↔subscribe coordinator, or cursor/dedupe/backoff mechanics; those are
-garth's job (decision 0006).
+Then call one facade method. You should not hand-roll a poll loop or
+cursor/dedupe/reconnect mechanics; those are garth's job (decision 0006).
+For grant-backed clients, compose `SessionEngine` with
+`SessionTransportProvider`; the host factory supplies the platform HTTP client,
+secure signer and a freshly minted refresh proof for each rotation.
 
 ## 1. Storage
 
@@ -96,17 +103,15 @@ client.run_account(actor_id, device_id, &provider, &projector, &control, RunOpti
 Both return `RunStopReason`:
 
 - `RunStopReason::Cancelled` — `control.cancel()` was called.
-- `RunStopReason::Unauthorized { reason }` — the grant is no longer accepted. Refresh
-  (or require sign-in) and re-invoke; because the transport is re-acquired
-  through your `TransportProvider` on each start, a provider that refreshes on
-  `provide` recovers transparently. garth owns *when* to re-provide; your
-  provider owns *how* to refresh SDK auth.
+- `RunStopReason::LifecycleEnded` — the provider's route/profile/channel guard
+  became false.
+- `RunStopReason::Unauthorized { reason }` — refresh was unavailable or the
+  refreshed credential was still rejected.
 
-Session grant refresh is intentionally outside `ArkretClient`: construct
-`garth::SessionEngine::new(http)` beside the transport/session state that owns
-credentials. Likewise, keep your `SecureKeyStore` in host state or in a crypto
-store adapter; the runtime facade does not hold secrets that its loops do not
-consume.
+The runtime facade does not store secrets. Compose it with
+`SessionTransportProvider`, whose factory receives current grant state and
+builds the authenticated SDK transport from host-owned signer/secure-store
+handles.
 
 ## What garth does for you (don't re-implement)
 
@@ -116,6 +121,8 @@ consume.
 - Realm drop → `ak.self.events.query.scan` catch-up → `Backfill` projection.
 - Resync (clear cursor + rebuild) and reconnect backoff.
 - Cancellation via `SyncLoopControl`.
+- Lifecycle invalidation via `TransportProvider::is_active`.
+- Durable inbox delivery and persisted outbound queue state.
 
 ## Engine-level API
 
@@ -123,3 +130,22 @@ consume.
 `SubscriptionEngine` and `RealmEventsDriver` methods also take
 `ClientProjector`, so account and realm frames share the same
 project-then-checkpoint contract at every layer.
+
+## Durable workers, session transport and outbound
+
+Agent/gateway consumers call `run_account_to_inbox` (or the realm inbox
+driver). Cursor and delivery enter `DurableInboxStore` in one commit; the
+worker calls `ack` only after business dispatch succeeds and persists `retry`
+otherwise.
+
+`SessionTransportProvider` performs due/401 refresh, shares the
+`SessionEngine` single-flight gate and rebuilds its cached authenticated
+transport when the grant rotates. `AuthenticatedTransportFactory::refresh_options`
+must mint short-lived proofs at call time; never cache a signed refresh proof.
+Secrets remain behind the host's `SecureKeyStore`/signer adapter.
+
+For writes, `OutboundEngine` persists the SDK `SendQueue` state machine. Enqueue
+the already stable transaction/prepared-event payload, then implement
+`OutboundSubmitter`; accepted and duplicate outcomes both finalize the same
+queue item, while retry deadlines survive restart. MLS encryption and
+post-accept snapshot commit remain explicit host hooks.

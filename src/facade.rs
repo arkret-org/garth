@@ -2,11 +2,9 @@ use crate::{CursorStore, EventCacheStore, Executor, SubscriptionEngine};
 
 /// Root handle for shared client runtime components.
 ///
-/// The facade only owns the shared runtime loop wiring. Session grant and
-/// secure-key storage are separate concerns: hosts that need session refresh
-/// should construct [`crate::SessionEngine`] directly with the transport they
-/// use, and hosts should keep their secure-key store beside their durable
-/// client state.
+/// The facade owns shared runtime loop wiring. Compose it with
+/// [`crate::SessionTransportProvider`] when grant refresh and authenticated
+/// transport rebuild are required; secret storage remains a host adapter.
 #[derive(Clone, Debug)]
 pub struct ArkretClient<E, C, D> {
     pub executor: E,

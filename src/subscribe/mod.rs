@@ -16,7 +16,8 @@ pub use realm::{
 pub use scan::{EventsScanRequest, EventsScanTransport, ScanCatchup, ScanCatchupOptions};
 
 use crate::{
-    ClientEvent, ClientProjector, CursorScope, CursorStore, EventCacheStore, Executor, OpaqueCursor,
+    ClientEvent, ClientProjector, CursorScope, CursorStore, DurableInboxStore, EventCacheStore,
+    Executor, OpaqueCursor,
 };
 
 pub(crate) type ProjectedRunResult<T> = std::result::Result<T, ProjectedRunError>;
@@ -111,6 +112,26 @@ where
             .map_err(ProjectedRunError::into_error)
     }
 
+    /// Account subscription with atomic cursor + durable-inbox delivery.
+    /// Available when the engine's cursor store is also the inbox store, which
+    /// prevents a process crash from advancing beyond undispatched work.
+    pub async fn run_account_to_inbox<T>(
+        &self,
+        actor_id: Did,
+        device_id: DeviceId,
+        transport: &T,
+    ) -> Result<SubscriptionStopReason>
+    where
+        T: AsyncSyncTransport + ?Sized,
+        C: DurableInboxStore,
+    {
+        let scope = self.account_scope(actor_id, device_id);
+        let mut sync_loop = self.restore_account_loop(scope.clone()).await?;
+        SubscriptionLoopDriver::with_control(self.executor.clone(), self.control.clone())
+            .run_account_to_inbox(&mut sync_loop, transport, scope, &self.cursor_store)
+            .await
+    }
+
     pub async fn run_realm_stream<T, P>(
         &self,
         transport: &T,
@@ -124,6 +145,24 @@ where
         self.run_realm_stream_classified(transport, realm_id, projector)
             .await
             .map_err(ProjectedRunError::into_error)
+    }
+
+    /// Realm subscription with atomic cursor + durable-inbox delivery.
+    pub async fn run_realm_stream_to_inbox<T>(
+        &self,
+        transport: &T,
+        realm_id: RealmId,
+    ) -> Result<RealmStreamStopReason>
+    where
+        T: RealmEventsTransport + ?Sized,
+        C: DurableInboxStore,
+    {
+        let mut driver =
+            RealmEventsDriver::new(self.cursor_store.clone(), self.event_cache_store.clone());
+        if let Some(service_id) = self.service_id.clone() {
+            driver = driver.with_service_id(service_id);
+        }
+        driver.run_stream_to_inbox(transport, realm_id).await
     }
 
     pub(crate) async fn run_realm_stream_classified<T, P>(
@@ -372,6 +411,44 @@ mod tests {
             store.load(account_scope()).await.unwrap().as_deref(),
             Some("ak:cursor:next")
         );
+    }
+
+    #[tokio::test]
+    async fn engine_commits_account_cursor_and_delivery_to_inbox() {
+        let store = MemoryStore::new();
+        let responses = Arc::new(Mutex::new(VecDeque::from([
+            Ok(sync_response("ak:cursor:inbox")),
+            Err(Error::AccountStreamInterrupt(
+                AccountStreamInterrupt::Unauthorized {
+                    reason: Some("stop-after-delivery".to_owned()),
+                },
+            )),
+        ])));
+        let transport = queued_transport(responses);
+        let engine =
+            SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store.clone());
+
+        let reason = engine
+            .run_account_to_inbox(actor_id(), device_id(), &transport)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            reason,
+            SubscriptionStopReason::Unauthorized {
+                reason: Some("stop-after-delivery".to_owned())
+            }
+        );
+        assert_eq!(
+            store.load(account_scope()).await.unwrap().as_deref(),
+            Some("ak:cursor:inbox")
+        );
+        let pending = store.pending(10).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert!(matches!(
+            pending[0].events.as_slice(),
+            [ClientEvent::AccountUpdates(_), ..]
+        ));
     }
 
     #[tokio::test]

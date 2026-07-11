@@ -14,8 +14,13 @@ use std::sync::{Arc, Mutex, PoisonError};
 use arkret_core::{Error, EventId, Result};
 use serde::{Deserialize, Serialize};
 
+use super::inbox::{bounded_delivery_error, bounded_pending_limit};
 use super::seen_window::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
-use super::{CursorScope, CursorStore, EventCacheStore, OpaqueCursor};
+use super::{
+    CursorScope, CursorStore, DeliveryErrorClass, DeliveryId, DurableInboxStore, EventCacheStore,
+    OpaqueCursor, PendingDelivery,
+};
+use crate::{ClientEvent, OutboundQueueStore};
 
 /// Unit separator used to build a flat, deterministic string key from a
 /// structured [`CursorScope`] for the on-disk map.
@@ -27,9 +32,10 @@ const SEP: char = '\u{1f}';
 pub struct FileStore {
     inner: Arc<Mutex<FileStoreInner>>,
     persist: Arc<Mutex<FileStorePersist>>,
+    mutation: Arc<tokio::sync::Mutex<()>>,
 }
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 struct FileStoreInner {
     path: PathBuf,
     state: FileState,
@@ -58,6 +64,12 @@ struct FileState {
     /// persisted a sorted set (any JSON array of strings deserializes here).
     #[serde(default)]
     seen_events: VecDeque<String>,
+    #[serde(default)]
+    next_delivery_id: u64,
+    #[serde(default)]
+    deliveries: VecDeque<PendingDelivery>,
+    #[serde(default)]
+    outbound: arkret::sync_client::SendQueueSnapshot,
 }
 
 impl FileStore {
@@ -83,34 +95,53 @@ impl FileStore {
                 generation: 0,
             })),
             persist: Arc::new(Mutex::new(FileStorePersist::default())),
+            mutation: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
+    pub fn path(&self) -> Result<PathBuf> {
+        self.read(|inner| inner.path.clone())
+    }
+
+    pub async fn ensure_created(&self) -> Result<()> {
+        self.mutate(|_| ()).await
+    }
+
     async fn mutate<T>(&self, f: impl FnOnce(&mut FileStoreInner) -> T) -> Result<T> {
-        let (out, snapshot) = self.stage_mutation(f)?;
+        // Serialize the complete transaction and do not publish candidate
+        // state to readers until its durable snapshot has succeeded.
+        let _mutation = self.mutation.lock().await;
+        let (out, candidate, snapshot) = self.stage_mutation(f)?;
         self.persist_snapshot(snapshot).await?;
+        let mut guard = self
+            .inner
+            .lock()
+            .map_err(|err: PoisonError<_>| Error::Protocol(format!("file store lock: {err}")))?;
+        *guard = candidate;
         Ok(out)
     }
 
     fn stage_mutation<T>(
         &self,
         f: impl FnOnce(&mut FileStoreInner) -> T,
-    ) -> Result<(T, PersistSnapshot)> {
-        let mut guard = self
+    ) -> Result<(T, FileStoreInner, PersistSnapshot)> {
+        let guard = self
             .inner
             .lock()
             .map_err(|err: PoisonError<_>| Error::Protocol(format!("file store lock: {err}")))?;
-        let out = f(&mut guard);
-        guard.generation = guard
+        let mut candidate = guard.clone();
+        drop(guard);
+        let out = f(&mut candidate);
+        candidate.generation = candidate
             .generation
             .checked_add(1)
             .ok_or_else(|| Error::Protocol("file store generation overflow".to_owned()))?;
         let snapshot = PersistSnapshot {
-            path: guard.path.clone(),
-            state: guard.state.clone(),
-            generation: guard.generation,
+            path: candidate.path.clone(),
+            state: candidate.state.clone(),
+            generation: candidate.generation,
         };
-        Ok((out, snapshot))
+        Ok((out, candidate, snapshot))
     }
 
     async fn persist_snapshot(&self, snapshot: PersistSnapshot) -> Result<()> {
@@ -161,6 +192,16 @@ fn scope_key(scope: &CursorScope) -> String {
             service_id,
             realm_id,
         } => format!("realm{SEP}{}{SEP}{}", did(service_id), realm_id.as_str()),
+        CursorScope::DeviceMessages {
+            service_id,
+            actor_id,
+            device_id,
+        } => format!(
+            "device_messages{SEP}{}{SEP}{}{SEP}{}",
+            did(service_id),
+            actor_id.as_str(),
+            device_id.as_str()
+        ),
     }
 }
 
@@ -180,6 +221,16 @@ fn load_state(path: &Path) -> Result<FileState> {
 fn persist(path: &Path, state: &FileState) -> Result<()> {
     let bytes = serde_json::to_vec(state)
         .map_err(|err| Error::Protocol(format!("serialize file store: {err}")))?;
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            Error::Protocol(format!(
+                "create file store parent {}: {err}",
+                parent.display()
+            ))
+        })?;
+    }
     // Atomic replace: write and sync a sibling temp, then rename over the
     // target so a crash mid-write never leaves a half-written store.
     let tmp = path.with_extension("tmp");
@@ -243,9 +294,125 @@ impl EventCacheStore for FileStore {
     }
 }
 
+impl OutboundQueueStore for FileStore {
+    fn mutate_outbound<'a, R>(
+        &'a self,
+        mutation: impl FnOnce(&mut arkret::sync_client::SendQueue) -> Result<R> + 'a,
+    ) -> impl Future<Output = Result<R>> + 'a {
+        async move {
+            self.mutate(|inner| {
+                let mut queue =
+                    arkret::sync_client::SendQueue::from_snapshot(inner.state.outbound.clone())?;
+                let output = mutation(&mut queue)?;
+                inner.state.outbound = queue.snapshot();
+                Ok(output)
+            })
+            .await?
+        }
+    }
+}
+
+impl DurableInboxStore for FileStore {
+    fn commit(
+        &self,
+        scope: CursorScope,
+        cursor: Option<OpaqueCursor>,
+        events: Vec<ClientEvent>,
+    ) -> impl Future<Output = Result<Option<DeliveryId>>> + '_ {
+        async move {
+            self.mutate(|inner| {
+                match cursor.clone() {
+                    Some(cursor) => {
+                        inner.state.cursors.insert(scope_key(&scope), cursor);
+                    }
+                    None => {
+                        inner.state.cursors.remove(&scope_key(&scope));
+                    }
+                }
+                if events.is_empty() {
+                    return Ok(None);
+                }
+                inner.state.next_delivery_id = inner
+                    .state
+                    .next_delivery_id
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Protocol("delivery id overflow".to_owned()))?;
+                let id = DeliveryId::new(inner.state.next_delivery_id);
+                inner.state.deliveries.push_back(PendingDelivery {
+                    id,
+                    scope,
+                    cursor,
+                    events,
+                    attempts: 0,
+                    next_attempt_at_ms: None,
+                    error_class: None,
+                    last_error: None,
+                });
+                Ok(Some(id))
+            })
+            .await?
+        }
+    }
+
+    fn pending(&self, limit: usize) -> impl Future<Output = Result<Vec<PendingDelivery>>> + '_ {
+        async move {
+            self.read(|inner| {
+                inner
+                    .state
+                    .deliveries
+                    .iter()
+                    .take(bounded_pending_limit(limit))
+                    .cloned()
+                    .collect()
+            })
+        }
+    }
+
+    fn ack(&self, id: DeliveryId) -> impl Future<Output = Result<bool>> + '_ {
+        async move {
+            self.mutate(|inner| {
+                let before = inner.state.deliveries.len();
+                inner.state.deliveries.retain(|delivery| delivery.id != id);
+                inner.state.deliveries.len() != before
+            })
+            .await
+        }
+    }
+
+    fn retry(
+        &self,
+        id: DeliveryId,
+        next_attempt_at_ms: Option<i64>,
+        error_class: DeliveryErrorClass,
+        error: String,
+    ) -> impl Future<Output = Result<bool>> + '_ {
+        async move {
+            self.mutate(|inner| {
+                let Some(delivery) = inner
+                    .state
+                    .deliveries
+                    .iter_mut()
+                    .find(|delivery| delivery.id == id)
+                else {
+                    return Ok(false);
+                };
+                delivery.attempts = delivery
+                    .attempts
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Protocol("delivery attempts overflow".to_owned()))?;
+                delivery.next_attempt_at_ms = next_attempt_at_ms;
+                delivery.error_class = Some(error_class);
+                delivery.last_error = Some(bounded_delivery_error(error));
+                Ok(true)
+            })
+            .await?
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use arkret_core::{DeviceId, Did, RealmId};
+    use arkret_core::{DeviceId, Did, NotificationDelta, RealmId};
 
     use super::*;
 
@@ -385,9 +552,11 @@ mod tests {
 
     #[tokio::test]
     async fn save_propagates_blocking_persist_errors() {
-        let parent = std::env::temp_dir().join("garth-filestore-test-missing-parent");
+        let parent = std::env::temp_dir().join("garth-filestore-test-invalid-parent");
         let path = parent.join("store.json");
+        let _ = std::fs::remove_file(&parent);
         let _ = std::fs::remove_dir_all(&parent);
+        std::fs::write(&parent, b"not a directory").unwrap();
         let store = FileStore::open(&path).unwrap();
 
         let err = store
@@ -395,10 +564,11 @@ mod tests {
             .await
             .unwrap_err();
         assert!(
-            err.to_string().contains("create file store"),
+            err.to_string().contains("file store"),
             "unexpected error: {err}"
         );
-        let _ = std::fs::remove_dir_all(parent);
+        assert_eq!(store.load(account_scope()).await.unwrap(), None);
+        let _ = std::fs::remove_file(parent);
     }
 
     fn event_id(n: usize) -> EventId {
@@ -440,6 +610,61 @@ mod tests {
         assert!(!reopened.seen(event_id(1)).await.unwrap());
         assert!(reopened.seen(event_id(2)).await.unwrap());
         assert!(reopened.seen(event_id(3)).await.unwrap());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn inbox_commit_reopens_with_cursor_and_pending_delivery() {
+        let path = temp_path("inbox-crash-reopen");
+        let _ = std::fs::remove_file(&path);
+        let scope = account_scope();
+        let event = ClientEvent::Notification(NotificationDelta {
+            id: "notification-1".to_owned(),
+            notification_type: "mention".to_owned(),
+            action: "add".to_owned(),
+            data: None,
+        });
+
+        let delivery_id = {
+            let store = FileStore::open(&path).unwrap();
+            store
+                .commit(
+                    scope.clone(),
+                    Some("ak:cursor:committed".to_owned()),
+                    vec![event],
+                )
+                .await
+                .unwrap()
+                .unwrap()
+        };
+
+        let reopened = FileStore::open(&path).unwrap();
+        assert_eq!(
+            reopened.load(scope).await.unwrap().as_deref(),
+            Some("ak:cursor:committed")
+        );
+        let pending = reopened.pending(10).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, delivery_id);
+        assert_eq!(pending[0].events.len(), 1);
+
+        assert!(
+            reopened
+                .retry(
+                    delivery_id,
+                    Some(1234),
+                    DeliveryErrorClass::Processing,
+                    "temporary failure".to_owned(),
+                )
+                .await
+                .unwrap()
+        );
+        let retried = reopened.pending(10).await.unwrap();
+        assert_eq!(retried[0].attempts, 1);
+        assert_eq!(retried[0].next_attempt_at_ms, Some(1234));
+        assert!(reopened.ack(delivery_id).await.unwrap());
+        assert!(reopened.pending(10).await.unwrap().is_empty());
+        assert!(!reopened.ack(delivery_id).await.unwrap());
         let _ = std::fs::remove_file(&path);
     }
 }

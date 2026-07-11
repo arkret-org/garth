@@ -8,7 +8,8 @@ use arkret_core::{
 
 use super::{ProjectedRunError, ProjectedRunResult};
 use crate::{
-    ClientEvent, ClientProjector, CursorScope, CursorStore, EventCacheStore, OpaqueCursor,
+    ClientEvent, ClientProjector, CursorScope, CursorStore, DurableInboxStore, EventCacheStore,
+    OpaqueCursor,
 };
 
 // Native builds keep boxed stream futures (and the frame source held across
@@ -132,6 +133,91 @@ where
         self.run_stream_classified(transport, realm_id, projector)
             .await
             .map_err(ProjectedRunError::into_error)
+    }
+
+    /// Realm subscription with atomic cursor + durable-inbox delivery.
+    pub async fn run_stream_to_inbox<T>(
+        &self,
+        transport: &T,
+        realm_id: RealmId,
+    ) -> Result<RealmStreamStopReason>
+    where
+        T: RealmEventsTransport + ?Sized,
+        C: DurableInboxStore,
+    {
+        let scope = self.scope(&realm_id);
+        let after = self.cursor_store.load(scope.clone()).await?;
+        let mut trace = StreamTraceValidator::new(after.is_none(), after.clone());
+        let mut source = transport
+            .open_realm_events(&realm_id, after.as_deref())
+            .await?;
+
+        while let Some(frame) = source.next_frame().await? {
+            let update = trace.push(&frame).map_err(arkret_core::Error::from)?;
+            let cursor = frame
+                .cursor
+                .as_ref()
+                .map(|cursor| cursor.as_str().to_owned());
+            let mut batch = Vec::new();
+            let mut remember_after_commit = None;
+
+            match frame.kind {
+                EventsSubscribeFrameKind::Event => {
+                    if let Ok(event) = serde_json::from_value::<Event>(frame.payload) {
+                        let event_id = event.event_id.clone();
+                        if !self.event_cache_store.seen(event_id.clone()).await? {
+                            batch = self.decode_event_batch(event);
+                            remember_after_commit = Some(event_id);
+                        }
+                    }
+                }
+                EventsSubscribeFrameKind::Heartbeat
+                | EventsSubscribeFrameKind::Frontier
+                | EventsSubscribeFrameKind::CatchupComplete
+                | EventsSubscribeFrameKind::EpochRotation => {}
+                EventsSubscribeFrameKind::Dropped => {
+                    let Some(cursor) = cursor else {
+                        return Err(arkret_core::Error::Protocol(
+                            "dropped frame passed trace validation without a cursor".to_owned(),
+                        ));
+                    };
+                    return Ok(RealmStreamStopReason::Dropped {
+                        cursor,
+                        reconnect_after_ms: frame.reconnect_after_ms,
+                    });
+                }
+                EventsSubscribeFrameKind::ResyncRequired => {
+                    self.cursor_store.clear(scope.clone()).await?;
+                    return Ok(RealmStreamStopReason::ResyncRequired {
+                        reconnect_after_ms: frame.reconnect_after_ms,
+                    });
+                }
+                EventsSubscribeFrameKind::Unauthorized => {
+                    let reason = frame
+                        .payload
+                        .get("reason")
+                        .and_then(|reason| reason.as_str())
+                        .map(str::to_owned);
+                    return Ok(RealmStreamStopReason::Unauthorized { reason });
+                }
+                _ => {}
+            }
+
+            if update.cursor_advanced
+                && !update.terminal
+                && let Some(cursor) = cursor
+            {
+                self.cursor_store
+                    .commit(scope.clone(), Some(cursor), batch)
+                    .await?;
+                if let Some(event_id) = remember_after_commit {
+                    self.event_cache_store.remember(event_id).await?;
+                }
+            }
+        }
+
+        trace.finish().map_err(arkret_core::Error::from)?;
+        Ok(RealmStreamStopReason::StreamEnded)
     }
 
     /// Projector-driven realm loop (orchestrator seam). Each decoded event
@@ -261,13 +347,14 @@ where
             // epoch_rotation cursors never advance the reconnect position;
             // the Dropped cursor travels in the stop reason for the
             // orchestrator's backfill decision, not into the durable store.
-            if update.cursor_advanced && !update.terminal {
-                if let Some(cursor) = cursor {
-                    self.cursor_store
-                        .save(scope.clone(), cursor)
-                        .await
-                        .map_err(ProjectedRunError::Store)?;
-                }
+            if update.cursor_advanced
+                && !update.terminal
+                && let Some(cursor) = cursor
+            {
+                self.cursor_store
+                    .save(scope.clone(), cursor)
+                    .await
+                    .map_err(ProjectedRunError::Store)?;
             }
         }
 
@@ -311,7 +398,7 @@ mod tests {
 
     use super::*;
     use crate::MemoryStore;
-    use crate::store::CursorStore;
+    use crate::store::{CursorStore, DurableInboxStore};
 
     struct VecFrameSource {
         frames: VecDeque<EventsSubscribeFrame>,
@@ -438,6 +525,39 @@ mod tests {
 
         assert_eq!(reason, RealmStreamStopReason::StreamEnded);
         assert_eq!(projector.batches.lock().unwrap().as_slice(), &[1]);
+    }
+
+    #[tokio::test]
+    async fn realm_driver_commits_event_and_cursor_to_inbox() {
+        let store = MemoryStore::new();
+        let transport = VecTransport::new(vec![
+            cursor_frame(
+                EventsSubscribeFrameKind::Event,
+                serde_json::to_value(message_event()).unwrap(),
+                "ak:cursor:frame1",
+            ),
+            cursor_frame(
+                EventsSubscribeFrameKind::CatchupComplete,
+                Value::Null,
+                "ak:cursor:frame1",
+            ),
+        ]);
+        let driver = RealmEventsDriver::new(store.clone(), store.clone());
+
+        let reason = driver
+            .run_stream_to_inbox(&transport, realm_id())
+            .await
+            .unwrap();
+
+        assert_eq!(reason, RealmStreamStopReason::StreamEnded);
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ak:cursor:frame1")
+        );
+        let pending = store.pending(10).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].cursor.as_deref(), Some("ak:cursor:frame1"));
+        assert_eq!(pending[0].events.len(), 1);
     }
 
     #[tokio::test]
