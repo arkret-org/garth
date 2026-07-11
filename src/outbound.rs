@@ -10,15 +10,17 @@ use crate::MaybeSendSync;
 pub trait OutboundQueueStore: Clone + MaybeSendSync + 'static {
     fn mutate_outbound<'a, R>(
         &'a self,
-        mutation: impl FnOnce(&mut SendQueue) -> Result<R> + 'a,
-    ) -> impl Future<Output = Result<R>> + 'a;
+        mutation: impl FnOnce(&mut SendQueue) -> Result<R> + crate::MaybeSend + 'a,
+    ) -> impl Future<Output = Result<R>> + crate::MaybeSend + 'a
+    where
+        R: crate::MaybeSend + 'a;
 }
 
-pub trait OutboundSubmitter {
+pub trait OutboundSubmitter: crate::MaybeSendSync {
     fn submit(
         &self,
         item: SendQueueItem,
-    ) -> impl Future<Output = Result<OutboundSubmitOutcome>> + '_;
+    ) -> impl Future<Output = Result<OutboundSubmitOutcome>> + crate::MaybeSend + '_;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -55,8 +55,11 @@ impl MemoryStore {
 impl OutboundQueueStore for MemoryStore {
     fn mutate_outbound<'a, R>(
         &'a self,
-        mutation: impl FnOnce(&mut arkret::sync_client::SendQueue) -> Result<R> + 'a,
-    ) -> impl Future<Output = Result<R>> + 'a {
+        mutation: impl FnOnce(&mut arkret::sync_client::SendQueue) -> Result<R> + crate::MaybeSend + 'a,
+    ) -> impl Future<Output = Result<R>> + crate::MaybeSend + 'a
+    where
+        R: crate::MaybeSend + 'a,
+    {
         async move {
             self.with_state(|state| {
                 let mut queue =

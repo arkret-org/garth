@@ -3,7 +3,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use arkret_core::{GrantId, Result};
 use chrono::Utc;
 
-use super::{SessionEngine, SessionGrantState, SessionGrantTransport, SessionRefreshOptions};
+use super::{
+    NoopSessionGrantStore, SessionEngine, SessionGrantState, SessionGrantStore,
+    SessionGrantTransport, SessionRefreshOptions,
+};
 use crate::TransportProvider;
 
 type TransportCache<T> = Arc<Mutex<Option<(GrantId, T)>>>;
@@ -25,17 +28,20 @@ pub trait AuthenticatedTransportFactory: Clone + 'static {
 }
 
 #[derive(Clone, Debug)]
-pub struct SessionTransportProvider<T, F>
+pub struct SessionTransportProvider<T, F, S = NoopSessionGrantStore>
 where
     F: AuthenticatedTransportFactory,
+    S: SessionGrantStore,
 {
     session: SessionEngine<T>,
     factory: F,
     refresh_options: SessionRefreshOptions,
+    state_store: S,
+    persisted_grant_id: Arc<Mutex<Option<GrantId>>>,
     cached: TransportCache<F::Transport>,
 }
 
-impl<T, F> SessionTransportProvider<T, F>
+impl<T, F> SessionTransportProvider<T, F, NoopSessionGrantStore>
 where
     T: SessionGrantTransport,
     F: AuthenticatedTransportFactory,
@@ -46,11 +52,62 @@ where
         refresh_options: SessionRefreshOptions,
     ) -> Self {
         Self {
+            persisted_grant_id: Arc::new(Mutex::new(
+                session.current_state().map(|state| state.grant_id),
+            )),
             session,
             factory,
             refresh_options,
+            state_store: NoopSessionGrantStore,
             cached: Arc::new(Mutex::new(None)),
         }
+    }
+}
+
+impl<T, F, S> SessionTransportProvider<T, F, S>
+where
+    T: SessionGrantTransport,
+    F: AuthenticatedTransportFactory,
+    S: SessionGrantStore,
+{
+    pub async fn with_store(
+        session: SessionEngine<T>,
+        factory: F,
+        refresh_options: SessionRefreshOptions,
+        state_store: S,
+    ) -> Result<Self> {
+        let provider = Self {
+            session,
+            factory,
+            refresh_options,
+            state_store,
+            persisted_grant_id: Arc::new(Mutex::new(None)),
+            cached: Arc::new(Mutex::new(None)),
+        };
+        provider.persist_current_state().await?;
+        Ok(provider)
+    }
+
+    pub fn restore(
+        transport: T,
+        factory: F,
+        refresh_options: SessionRefreshOptions,
+        state_store: S,
+    ) -> Result<Self> {
+        let restored = state_store.load()?;
+        let persisted_grant_id = restored.as_ref().map(|state| state.grant_id.clone());
+        let session = match restored {
+            Some(state) => SessionEngine::with_state(transport, state),
+            None => SessionEngine::new(transport),
+        };
+        Ok(Self {
+            session,
+            factory,
+            refresh_options,
+            state_store,
+            persisted_grant_id: Arc::new(Mutex::new(persisted_grant_id)),
+            cached: Arc::new(Mutex::new(None)),
+        })
     }
 
     pub fn session(&self) -> &SessionEngine<T> {
@@ -80,6 +137,7 @@ where
             // the same credential after the server has rejected it.
             return Ok(false);
         }
+        self.persist_current_state().await?;
         self.clear_cached_transport();
         Ok(true)
     }
@@ -99,6 +157,7 @@ where
             .session
             .current_state()
             .ok_or_else(|| arkret_core::Error::Protocol("no active session grant".to_owned()))?;
+        self.persist_state_if_needed(&state).await?;
         if let Some((grant_id, transport)) = self.cache_lock().as_ref()
             && grant_id == &state.grant_id
         {
@@ -112,12 +171,39 @@ where
     fn cache_lock(&self) -> std::sync::MutexGuard<'_, Option<(GrantId, F::Transport)>> {
         self.cached.lock().unwrap_or_else(PoisonError::into_inner)
     }
+
+    async fn persist_current_state(&self) -> Result<()> {
+        let state = self
+            .session
+            .current_state()
+            .ok_or_else(|| arkret_core::Error::Protocol("no active session grant".to_owned()))?;
+        self.persist_state_if_needed(&state).await
+    }
+
+    async fn persist_state_if_needed(&self, state: &SessionGrantState) -> Result<()> {
+        if self
+            .persisted_grant_id
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            == Some(&state.grant_id)
+        {
+            return Ok(());
+        }
+        self.state_store.save(state).await?;
+        *self
+            .persisted_grant_id
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(state.grant_id.clone());
+        Ok(())
+    }
 }
 
-impl<T, F> TransportProvider for SessionTransportProvider<T, F>
+impl<T, F, S> TransportProvider for SessionTransportProvider<T, F, S>
 where
     T: SessionGrantTransport,
     F: AuthenticatedTransportFactory,
+    S: SessionGrantStore,
 {
     type Transport = F::Transport;
 
@@ -281,5 +367,74 @@ mod tests {
         assert_eq!(provider.provide().await.unwrap(), "grant-2");
         assert_eq!(*refresh_calls.lock().unwrap(), 1);
         assert_eq!(*factory_calls.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn secure_store_restores_and_tracks_rotated_grant() {
+        use crate::{MemorySecureKeyStore, SecureSessionGrantStore};
+
+        let secure = MemorySecureKeyStore::new();
+        let store = SecureSessionGrantStore::new(secure, "session/account-1");
+        let refresh_calls = Arc::new(Mutex::new(0));
+        let transport = RefreshTransport {
+            outcomes: Arc::new(Mutex::new(VecDeque::from([Ok(refresh_outcome())]))),
+            calls: refresh_calls.clone(),
+        };
+        let factory = TokenFactory {
+            calls: Arc::new(Mutex::new(0)),
+        };
+        let options = SessionRefreshOptions {
+            audience: Some("did:webvh:z6mkfixture:service.example".to_owned()),
+            device_id: state().device_id,
+            proof: Some(SessionGrantRefreshProof {
+                proof_kind: Some(SessionGrantProofKind::DidBoundSignature),
+                challenge: Some("refresh-challenge".to_owned()),
+                request_canonical_digest: Some(
+                    Hash::new(
+                        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                    )
+                    .unwrap(),
+                ),
+                audience: Some("did:webvh:z6mkfixture:service.example".to_owned()),
+                issued_at: Some(Utc::now()),
+                expires_at: Some(Utc::now() + chrono::Duration::minutes(5)),
+                signature: Some("refresh-proof-signature".to_owned()),
+                verification_method: Some(
+                    "did:webvh:z6mkfixture:alice.example#device-1".to_owned(),
+                ),
+            }),
+            expected_dpop_jkt: Some("jkt-1".to_owned()),
+        };
+        let provider = SessionTransportProvider::with_store(
+            SessionEngine::with_state(transport.clone(), state()),
+            factory.clone(),
+            options.clone(),
+            store.clone(),
+        )
+        .await
+        .unwrap();
+
+        let restored = SessionTransportProvider::restore(
+            transport,
+            factory.clone(),
+            options.clone(),
+            store.clone(),
+        )
+        .unwrap();
+        assert_eq!(restored.provide().await.unwrap(), "grant-1");
+        assert!(provider.refresh_after_unauthorized().await.unwrap());
+        assert_eq!(*refresh_calls.lock().unwrap(), 1);
+
+        let after_rotation = SessionTransportProvider::restore(
+            RefreshTransport {
+                outcomes: Arc::new(Mutex::new(VecDeque::new())),
+                calls: Arc::new(Mutex::new(0)),
+            },
+            factory,
+            options,
+            store,
+        )
+        .unwrap();
+        assert_eq!(after_rotation.provide().await.unwrap(), "grant-2");
     }
 }

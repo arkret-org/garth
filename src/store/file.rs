@@ -297,8 +297,11 @@ impl EventCacheStore for FileStore {
 impl OutboundQueueStore for FileStore {
     fn mutate_outbound<'a, R>(
         &'a self,
-        mutation: impl FnOnce(&mut arkret::sync_client::SendQueue) -> Result<R> + 'a,
-    ) -> impl Future<Output = Result<R>> + 'a {
+        mutation: impl FnOnce(&mut arkret::sync_client::SendQueue) -> Result<R> + crate::MaybeSend + 'a,
+    ) -> impl Future<Output = Result<R>> + crate::MaybeSend + 'a
+    where
+        R: crate::MaybeSend + 'a,
+    {
         async move {
             self.mutate(|inner| {
                 let mut queue =

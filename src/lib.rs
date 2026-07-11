@@ -40,8 +40,9 @@ pub use outbound::{
 };
 pub use session::{
     AgentKeyProofLogin, AuthenticatedTransportFactory, DidProofLogin, GRANT_ROTATION_SKEW_SECS,
-    HolderProofLogin, LoginKind, OidcLogin, POLL_INTERVAL_SECS, REFRESH_SKEW_SECS, RefreshDecision,
-    SessionEngine, SessionGrantRefreshState, SessionGrantState, SessionGrantTransport,
+    HolderProofLogin, LoginKind, NoopSessionGrantStore, OidcLogin, POLL_INTERVAL_SECS,
+    REFRESH_SKEW_SECS, RefreshDecision, SecureSessionGrantStore, SessionEngine,
+    SessionGrantRefreshState, SessionGrantState, SessionGrantStore, SessionGrantTransport,
     SessionHandle, SessionProofFields, SessionRefreshOptions, SessionTransportProvider,
     grant_due_for_rotation, grant_is_dead, refresh_decision,
 };

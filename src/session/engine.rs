@@ -7,6 +7,7 @@ use arkret_core::{
     SessionGrantRefreshProof, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
 };
 use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 
 use super::SessionHandle;
 use super::login::LoginKind;
@@ -46,7 +47,7 @@ impl SessionGrantTransport for arkret_http_client::Client {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionGrantState {
     pub principal_id: Did,
     pub device_id: Option<DeviceId>,

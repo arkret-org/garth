@@ -3,6 +3,7 @@ pub mod engine;
 pub mod login;
 mod provider;
 pub mod refresh;
+mod store;
 
 pub use engine::{
     BoxSessionFuture, REFRESH_SUCCESS_COOLDOWN_SECS, SessionEngine, SessionGrantState,
@@ -16,6 +17,7 @@ pub use refresh::{
     GRANT_ROTATION_SKEW_SECS, POLL_INTERVAL_SECS, REFRESH_SKEW_SECS, RefreshDecision,
     SessionGrantRefreshState, grant_due_for_rotation, grant_is_dead, refresh_decision,
 };
+pub use store::{NoopSessionGrantStore, SecureSessionGrantStore, SessionGrantStore};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SessionHandle {
