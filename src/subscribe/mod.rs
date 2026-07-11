@@ -463,9 +463,7 @@ mod tests {
         let responses = Arc::new(Mutex::new(VecDeque::from([
             Ok(sync_response("ak:cursor:inbox")),
             Err(Error::AccountStreamInterrupt(
-                AccountStreamInterrupt::Unauthorized {
-                    reason: Some("stop-after-delivery".to_owned()),
-                },
+                AccountStreamInterrupt::Unauthorized,
             )),
         ])));
         let transport = queued_transport(responses);
@@ -479,9 +477,7 @@ mod tests {
 
         assert_eq!(
             reason,
-            SubscriptionStopReason::Unauthorized {
-                reason: Some("stop-after-delivery".to_owned())
-            }
+            SubscriptionStopReason::Unauthorized { reason: None }
         );
         assert_eq!(
             store.load(account_scope()).await.unwrap().as_deref(),
@@ -510,9 +506,7 @@ mod tests {
                 },
             )),
             Err(Error::AccountStreamInterrupt(
-                AccountStreamInterrupt::Unauthorized {
-                    reason: Some("revoked".to_owned()),
-                },
+                AccountStreamInterrupt::Unauthorized,
             )),
         ])));
         let transport = queued_transport(responses);
@@ -530,9 +524,7 @@ mod tests {
 
         assert_eq!(
             reason,
-            SubscriptionStopReason::Unauthorized {
-                reason: Some("revoked".to_owned())
-            }
+            SubscriptionStopReason::Unauthorized { reason: None }
         );
         assert!(store.load(account_scope()).await.unwrap().is_none());
         assert_eq!(executor.sleeps(), vec![Duration::from_millis(15)]);

@@ -298,11 +298,11 @@ impl OutboundQueueStore for FileStore {
     fn mutate_outbound<'a, R>(
         &'a self,
         mutation: impl FnOnce(&mut arkret::sync_client::SendQueue) -> Result<R> + crate::MaybeSend + 'a,
-    ) -> impl Future<Output = Result<R>> + crate::MaybeSend + 'a
+    ) -> crate::outbound::BoxOutboundFuture<'a, R>
     where
         R: crate::MaybeSend + 'a,
     {
-        async move {
+        Box::pin(async move {
             self.mutate(|inner| {
                 let mut queue =
                     arkret::sync_client::SendQueue::from_snapshot(inner.state.outbound.clone())?;
@@ -311,7 +311,7 @@ impl OutboundQueueStore for FileStore {
                 Ok(output)
             })
             .await?
-        }
+        })
     }
 }
 

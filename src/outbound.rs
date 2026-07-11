@@ -1,4 +1,4 @@
-use std::{future::Future, time::Duration};
+use std::{future::Future, pin::Pin, time::Duration};
 
 use arkret::sync_client::{SendQueue, SendQueueItem, SendQueueItemKind, SendQueueSnapshot};
 use arkret_core::{Error, EventId, RealmId, Result};
@@ -7,20 +7,22 @@ use serde_json::Value;
 
 use crate::MaybeSendSync;
 
+#[cfg(not(target_arch = "wasm32"))]
+pub type BoxOutboundFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
+#[cfg(target_arch = "wasm32")]
+pub type BoxOutboundFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + 'a>>;
+
 pub trait OutboundQueueStore: Clone + MaybeSendSync + 'static {
     fn mutate_outbound<'a, R>(
         &'a self,
         mutation: impl FnOnce(&mut SendQueue) -> Result<R> + crate::MaybeSend + 'a,
-    ) -> impl Future<Output = Result<R>> + crate::MaybeSend + 'a
+    ) -> BoxOutboundFuture<'a, R>
     where
         R: crate::MaybeSend + 'a;
 }
 
 pub trait OutboundSubmitter: crate::MaybeSendSync {
-    fn submit(
-        &self,
-        item: SendQueueItem,
-    ) -> impl Future<Output = Result<OutboundSubmitOutcome>> + crate::MaybeSend + '_;
+    fn submit<'a>(&'a self, item: SendQueueItem) -> BoxOutboundFuture<'a, OutboundSubmitOutcome>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -95,7 +97,15 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
             return Ok(OutboundEngineOutcome::Idle);
         };
         let transaction_id = item.transaction_id.clone();
-        match submitter.submit(item).await? {
+        let submit_outcome = match submitter.submit(item).await {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.mark_retry(transaction_id, Duration::from_secs(1))
+                    .await?;
+                return Err(error);
+            }
+        };
+        match submit_outcome {
             OutboundSubmitOutcome::Accepted { event_id } => Ok(OutboundEngineOutcome::Accepted(
                 self.mark_sent(transaction_id, event_id).await?,
             )),
@@ -103,13 +113,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
                 self.mark_sent(transaction_id, event_id).await?,
             )),
             OutboundSubmitOutcome::RetryAfter { delay, .. } => {
-                let item = self
-                    .store
-                    .mutate_outbound(move |queue| {
-                        queue.mark_failed(&transaction_id, delay)?;
-                        owned_item(queue, &transaction_id)
-                    })
-                    .await?;
+                let item = self.mark_retry(transaction_id, delay).await?;
                 Ok(OutboundEngineOutcome::RetryAt {
                     at: item.next_retry_at.unwrap_or(now),
                     item,
@@ -141,6 +145,15 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
             })
             .await
     }
+
+    async fn mark_retry(&self, id: String, delay: Duration) -> Result<SendQueueItem> {
+        self.store
+            .mutate_outbound(move |queue| {
+                queue.mark_failed(&id, delay)?;
+                owned_item(queue, &id)
+            })
+            .await
+    }
 }
 
 fn owned_item(queue: &SendQueue, id: &str) -> Result<SendQueueItem> {
@@ -162,13 +175,24 @@ mod tests {
         outcomes: Arc<Mutex<VecDeque<OutboundSubmitOutcome>>>,
     }
 
-    impl OutboundSubmitter for QueueSubmitter {
-        fn submit(
-            &self,
+    struct FailingSubmitter;
+
+    impl OutboundSubmitter for FailingSubmitter {
+        fn submit<'a>(
+            &'a self,
             _item: SendQueueItem,
-        ) -> impl Future<Output = Result<OutboundSubmitOutcome>> + '_ {
+        ) -> BoxOutboundFuture<'a, OutboundSubmitOutcome> {
+            Box::pin(async { Err(Error::Http("offline".to_owned())) })
+        }
+    }
+
+    impl OutboundSubmitter for QueueSubmitter {
+        fn submit<'a>(
+            &'a self,
+            _item: SendQueueItem,
+        ) -> BoxOutboundFuture<'a, OutboundSubmitOutcome> {
             let outcome = self.outcomes.lock().unwrap().pop_front().unwrap();
-            async move { Ok(outcome) }
+            Box::pin(async move { Ok(outcome) })
         }
     }
 
@@ -221,6 +245,31 @@ mod tests {
             engine.snapshot().await.unwrap().items[0].remote_event_id,
             Some(event_id())
         );
+    }
+
+    #[tokio::test]
+    async fn submitter_error_persists_retry_state_before_returning() {
+        let engine = OutboundEngine::new(MemoryStore::new());
+        engine
+            .enqueue(
+                Some("txn-offline".to_owned()),
+                realm_id(),
+                SendQueueItemKind::Message,
+                serde_json::json!({"body": "hello"}),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+
+        let error = engine
+            .submit_next(&FailingSubmitter, Utc::now())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Http(_)));
+        let item = engine.snapshot().await.unwrap().items.remove(0);
+        assert_eq!(item.status, arkret::sync_client::SendQueueStatus::Failed);
+        assert_eq!(item.attempts, 1);
+        assert!(item.next_retry_at.is_some());
     }
 
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]

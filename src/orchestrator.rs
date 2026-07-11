@@ -979,9 +979,7 @@ mod tests {
         let provider = QueueProvider::new(vec![
             Err(Error::Http("provider offline".to_owned())),
             Ok(AccountTransport::new(Err(Error::AccountStreamInterrupt(
-                AccountStreamInterrupt::Unauthorized {
-                    reason: Some("revoked".to_owned()),
-                },
+                AccountStreamInterrupt::Unauthorized,
             )))),
         ]);
         let control = SyncLoopControl::new();
@@ -999,12 +997,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            stop,
-            RunStopReason::Unauthorized {
-                reason: Some("revoked".to_owned())
-            }
-        );
+        assert_eq!(stop, RunStopReason::Unauthorized { reason: None });
         assert_eq!(provider.calls(), 2);
         assert_eq!(executor.sleeps(), vec![Duration::from_millis(10)]);
         assert_eq!(*calls.lock().unwrap(), 0);
