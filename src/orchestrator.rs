@@ -145,6 +145,13 @@ fn retryable(class: RunErrorClass) -> bool {
     )
 }
 
+enum UnauthorizedRecovery {
+    Recovered,
+    Retry,
+    Unavailable,
+    GuardedStop(RunStopReason),
+}
+
 impl<E, C, D> ArkretClient<E, C, D>
 where
     E: Executor + Clone,
@@ -226,14 +233,13 @@ where
                     }
                 }
                 Ok(RealmStreamStopReason::Unauthorized { reason }) => {
-                    provider.observe(RunEvent::Refreshing);
-                    if provider
-                        .recover_unauthorized()
-                        .await
-                        .map_err(|error| Self::fail(provider, classify_error(&error), error))?
+                    match self
+                        .recover_unauthorized(provider, control, &mut backoff)
+                        .await?
                     {
-                        backoff.reset();
-                        continue;
+                        UnauthorizedRecovery::Recovered | UnauthorizedRecovery::Retry => continue,
+                        UnauthorizedRecovery::GuardedStop(reason) => return Ok(reason),
+                        UnauthorizedRecovery::Unavailable => {}
                     }
                     return Ok(Self::stop(provider, RunStopReason::Unauthorized { reason }));
                 }
@@ -350,14 +356,13 @@ where
                     return Ok(Self::stop(provider, RunStopReason::Cancelled));
                 }
                 SyncLoopStep::Unauthorized { reason } => {
-                    provider.observe(RunEvent::Refreshing);
-                    if provider
-                        .recover_unauthorized()
-                        .await
-                        .map_err(|error| Self::fail(provider, classify_error(&error), error))?
+                    match self
+                        .recover_unauthorized(provider, control, &mut provide_backoff)
+                        .await?
                     {
-                        provide_backoff.reset();
-                        continue;
+                        UnauthorizedRecovery::Recovered | UnauthorizedRecovery::Retry => continue,
+                        UnauthorizedRecovery::GuardedStop(reason) => return Ok(reason),
+                        UnauthorizedRecovery::Unavailable => {}
                     }
                     return Ok(Self::stop(provider, RunStopReason::Unauthorized { reason }));
                 }
@@ -459,14 +464,13 @@ where
                     return Ok(Self::stop(provider, RunStopReason::Cancelled));
                 }
                 SyncLoopStep::Unauthorized { reason } => {
-                    provider.observe(RunEvent::Refreshing);
-                    if provider
-                        .recover_unauthorized()
-                        .await
-                        .map_err(|error| Self::fail(provider, classify_error(&error), error))?
+                    match self
+                        .recover_unauthorized(provider, control, &mut backoff)
+                        .await?
                     {
-                        backoff.reset();
-                        continue;
+                        UnauthorizedRecovery::Recovered | UnauthorizedRecovery::Retry => continue,
+                        UnauthorizedRecovery::GuardedStop(reason) => return Ok(reason),
+                        UnauthorizedRecovery::Unavailable => {}
                     }
                     return Ok(Self::stop(provider, RunStopReason::Unauthorized { reason }));
                 }
@@ -506,6 +510,34 @@ where
             remaining = remaining.saturating_sub(step);
         }
         control.is_cancelled() || !provider.is_active()
+    }
+
+    async fn recover_unauthorized<TP: TransportProvider + ?Sized>(
+        &self,
+        provider: &TP,
+        control: &SyncLoopControl,
+        backoff: &mut Backoff,
+    ) -> RunResult<UnauthorizedRecovery> {
+        provider.observe(RunEvent::Refreshing);
+        match provider.recover_unauthorized().await {
+            Ok(true) => {
+                backoff.reset();
+                Ok(UnauthorizedRecovery::Recovered)
+            }
+            Ok(false) => Ok(UnauthorizedRecovery::Unavailable),
+            Err(error) if retryable(classify_error(&error)) => {
+                let delay = backoff.next_delay();
+                provider.observe(RunEvent::Backoff { delay });
+                if self.wait_guarded(delay, control, provider).await {
+                    Ok(UnauthorizedRecovery::GuardedStop(
+                        Self::guarded_stop_reason(control, provider),
+                    ))
+                } else {
+                    Ok(UnauthorizedRecovery::Retry)
+                }
+            }
+            Err(error) => Err(Self::fail(provider, classify_error(&error), error)),
+        }
     }
 
     fn guarded_stop_reason<TP: TransportProvider + ?Sized>(
@@ -574,6 +606,7 @@ mod tests {
         outcomes: Arc<Mutex<VecDeque<Result<T>>>>,
         calls: Arc<Mutex<usize>>,
         events: Arc<Mutex<Vec<RunEvent>>>,
+        recoveries: Arc<Mutex<VecDeque<Result<bool>>>>,
     }
 
     impl<T> QueueProvider<T> {
@@ -582,6 +615,7 @@ mod tests {
                 outcomes: Arc::new(Mutex::new(VecDeque::from(outcomes))),
                 calls: Arc::new(Mutex::new(0)),
                 events: Arc::new(Mutex::new(Vec::new())),
+                recoveries: Arc::new(Mutex::new(VecDeque::new())),
             }
         }
 
@@ -591,6 +625,11 @@ mod tests {
 
         fn events(&self) -> Vec<RunEvent> {
             self.events.lock().unwrap().clone()
+        }
+
+        fn with_recoveries(self, recoveries: Vec<Result<bool>>) -> Self {
+            *self.recoveries.lock().unwrap() = VecDeque::from(recoveries);
+            self
         }
     }
 
@@ -610,6 +649,11 @@ mod tests {
 
         fn observe(&self, event: RunEvent) {
             self.events.lock().unwrap().push(event);
+        }
+
+        fn recover_unauthorized(&self) -> impl std::future::Future<Output = Result<bool>> + '_ {
+            let outcome = self.recoveries.lock().unwrap().pop_front();
+            async move { outcome.unwrap_or(Ok(false)) }
         }
     }
 
@@ -904,6 +948,40 @@ mod tests {
         assert_eq!(provider.calls(), 2);
         assert_eq!(executor.sleeps(), vec![Duration::from_millis(10)]);
         assert_eq!(*calls.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn run_realm_retries_transient_session_recovery_error() {
+        let executor = RecordingExecutor::default();
+        let client = test_client(executor.clone(), MemoryStore::new());
+        let provider = QueueProvider::new(vec![
+            Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
+                "expired",
+            ))])),
+            Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
+                "revoked",
+            ))])),
+        ])
+        .with_recoveries(vec![
+            Err(Error::Http("refresh offline".to_owned())),
+            Ok(false),
+        ]);
+        let control = SyncLoopControl::new();
+        let (projector, _) = projector(None, false);
+
+        let stop = client
+            .run_realm(&provider, realm_id(), &projector, &control, options())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            stop,
+            RunStopReason::Unauthorized {
+                reason: Some("revoked".to_owned())
+            }
+        );
+        assert_eq!(provider.calls(), 2);
+        assert_eq!(executor.sleeps(), vec![Duration::from_millis(10)]);
     }
 
     #[tokio::test]
