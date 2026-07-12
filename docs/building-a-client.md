@@ -147,5 +147,52 @@ Secrets remain behind the host's `SecureKeyStore`/signer adapter.
 For writes, `OutboundEngine` persists the SDK `SendQueue` state machine. Enqueue
 the already stable transaction/prepared-event payload, then implement
 `OutboundSubmitter`; accepted and duplicate outcomes both finalize the same
-queue item, while retry deadlines survive restart. MLS encryption and
-post-accept snapshot commit remain explicit host hooks.
+queue item, while retry deadlines survive restart. If acceptance must commit a
+host-owned durable side effect, implement `OutboundPostAcceptHook` and call
+`submit_next_with_hook`: Garth invokes it after accepted/duplicate but before
+marking the item sent. Hook failure leaves the item retryable, so a duplicate
+response after restart can idempotently finish the host commit. MLS encryption
+and snapshot semantics remain host-owned; Garth owns only this ordering gate.
+
+## Host wiring checklists
+
+### Rust native host
+
+1. Use `NativeExecutor` and one shared `FileStore` per account/client scope.
+2. Implement a platform `SecureKeyStore` adapter backed by Keychain, Keystore,
+   Credential Manager or another OS vault; never put grants or signing keys in
+   `FileStore`.
+3. Compose `SessionEngine` + `SessionTransportProvider` with a factory that
+   rebuilds the authenticated SDK client from the current grant.
+4. Provide a durable `ClientProjector` or `DurableInboxStore` worker, then run
+   `ArkretClient::run_account` / `run_realm` under lifecycle control.
+5. Queue ordinary writes through `OutboundEngine`; use
+   `OutboundPostAcceptHook` for idempotent domain commits.
+
+### Web host
+
+1. Use `WasmExecutor`; implement cursor, dedupe, inbox and outbound store
+   contracts with IndexedDB for production. Synchronous localStorage is not a
+   secret store and is not a multi-tab transaction boundary.
+2. Keep grants and signing material behind a non-extractable WebCrypto/
+   IndexedDB-backed `SecureKeyStore`; never serialize them into cursor or queue
+   JSON.
+3. Supply a `ClientProjector` whose IndexedDB transaction commits before it
+   returns `Ok`, and cancel runners when route/profile generation changes.
+4. Coordinate multiple tabs with one writer/lease or transactional IndexedDB
+   compare-and-swap so two queue workers cannot overwrite each other.
+
+### Swift / Kotlin host
+
+1. Keep Garth's async traits inside a Rust library boundary. Swift/Kotlin
+   should call a C/UniFFI-style command facade and receive serialized/typed
+   events; do not attempt to implement RPITIT Rust traits directly.
+2. The Rust wrapper owns the executor, `ArkretClient`, session provider and
+   queue workers. The platform supplies Keychain/Android Keystore callbacks,
+   lifecycle commands, and projection/event callbacks.
+3. Copy buffers at the FFI boundary, use opaque handles, provide explicit
+   cancel/free operations, and never expose an SDK HTTP client, Rust future,
+   trait object, grant JWT or private key across the boundary.
+4. Until the object-safe companion facade in Phase 7.4/7.5 is implemented,
+   mobile shells must provide a small Rust-owned wrapper; the RPITIT API is not
+   itself claimed as a Swift/Kotlin ABI.

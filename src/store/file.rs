@@ -617,7 +617,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn inbox_commit_reopens_with_cursor_and_pending_delivery() {
+    async fn inbox_crash_points_preserve_at_least_once_delivery() {
         let path = temp_path("inbox-crash-reopen");
         let _ = std::fs::remove_file(&path);
         let scope = account_scope();
@@ -627,6 +627,12 @@ mod tests {
             action: "add".to_owned(),
             data: None,
         });
+
+        // Crash before commit: neither cursor nor delivery may appear.
+        let before_commit = FileStore::open(&path).unwrap();
+        assert!(before_commit.load(scope.clone()).await.unwrap().is_none());
+        assert!(before_commit.pending(10).await.unwrap().is_empty());
+        drop(before_commit);
 
         let delivery_id = {
             let store = FileStore::open(&path).unwrap();
@@ -643,7 +649,7 @@ mod tests {
 
         let reopened = FileStore::open(&path).unwrap();
         assert_eq!(
-            reopened.load(scope).await.unwrap().as_deref(),
+            reopened.load(scope.clone()).await.unwrap().as_deref(),
             Some("ak:cursor:committed")
         );
         let pending = reopened.pending(10).await.unwrap();
@@ -665,9 +671,24 @@ mod tests {
         let retried = reopened.pending(10).await.unwrap();
         assert_eq!(retried[0].attempts, 1);
         assert_eq!(retried[0].next_attempt_at_ms, Some(1234));
-        assert!(reopened.ack(delivery_id).await.unwrap());
-        assert!(reopened.pending(10).await.unwrap().is_empty());
-        assert!(!reopened.ack(delivery_id).await.unwrap());
+        drop(reopened);
+
+        // Crash during worker retry: attempt/deadline and the delivery survive.
+        let after_retry = FileStore::open(&path).unwrap();
+        let retried = after_retry.pending(10).await.unwrap();
+        assert_eq!(retried[0].id, delivery_id);
+        assert_eq!(retried[0].attempts, 1);
+        assert!(after_retry.ack(delivery_id).await.unwrap());
+        drop(after_retry);
+
+        // Crash after ack: completion is durable and ack remains idempotent.
+        let after_ack = FileStore::open(&path).unwrap();
+        assert!(after_ack.pending(10).await.unwrap().is_empty());
+        assert!(!after_ack.ack(delivery_id).await.unwrap());
+        assert_eq!(
+            after_ack.load(scope).await.unwrap().as_deref(),
+            Some("ak:cursor:committed")
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

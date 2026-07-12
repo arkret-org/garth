@@ -25,6 +25,33 @@ pub trait OutboundSubmitter: crate::MaybeSendSync {
     fn submit<'a>(&'a self, item: SendQueueItem) -> BoxOutboundFuture<'a, OutboundSubmitOutcome>;
 }
 
+/// Host-owned durable side effect that must commit after server acceptance but
+/// before the queue item becomes `Sent` (for example an MLS post-commit
+/// snapshot). Implementations must be idempotent: a crash or hook error causes
+/// the event to be submitted again, normally producing `Duplicate`, and the
+/// hook is invoked again before completion.
+pub trait OutboundPostAcceptHook: crate::MaybeSendSync {
+    fn post_accept<'a>(
+        &'a self,
+        item: &'a SendQueueItem,
+        event_id: &'a EventId,
+        duplicate: bool,
+    ) -> BoxOutboundFuture<'a, ()>;
+}
+
+struct NoopPostAcceptHook;
+
+impl OutboundPostAcceptHook for NoopPostAcceptHook {
+    fn post_accept<'a>(
+        &'a self,
+        _item: &'a SendQueueItem,
+        _event_id: &'a EventId,
+        _duplicate: bool,
+    ) -> BoxOutboundFuture<'a, ()> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OutboundSubmitOutcome {
     Accepted { event_id: EventId },
@@ -83,6 +110,19 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         submitter: &T,
         now: DateTime<Utc>,
     ) -> Result<OutboundEngineOutcome> {
+        self.submit_next_with_hook(submitter, &NoopPostAcceptHook, now)
+            .await
+    }
+
+    pub async fn submit_next_with_hook<
+        T: OutboundSubmitter + ?Sized,
+        H: OutboundPostAcceptHook + ?Sized,
+    >(
+        &self,
+        submitter: &T,
+        hook: &H,
+        now: DateTime<Utc>,
+    ) -> Result<OutboundEngineOutcome> {
         let item = self
             .store
             .mutate_outbound(move |queue| {
@@ -97,6 +137,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
             return Ok(OutboundEngineOutcome::Idle);
         };
         let transaction_id = item.transaction_id.clone();
+        let hook_item = item.clone();
         let submit_outcome = match submitter.submit(item).await {
             Ok(outcome) => outcome,
             Err(error) => {
@@ -106,12 +147,26 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
             }
         };
         match submit_outcome {
-            OutboundSubmitOutcome::Accepted { event_id } => Ok(OutboundEngineOutcome::Accepted(
-                self.mark_sent(transaction_id, event_id).await?,
-            )),
-            OutboundSubmitOutcome::Duplicate { event_id } => Ok(OutboundEngineOutcome::Duplicate(
-                self.mark_sent(transaction_id, event_id).await?,
-            )),
+            OutboundSubmitOutcome::Accepted { event_id } => {
+                if let Err(error) = hook.post_accept(&hook_item, &event_id, false).await {
+                    self.mark_retry(transaction_id, Duration::from_secs(1))
+                        .await?;
+                    return Err(error);
+                }
+                Ok(OutboundEngineOutcome::Accepted(
+                    self.mark_sent(transaction_id, event_id).await?,
+                ))
+            }
+            OutboundSubmitOutcome::Duplicate { event_id } => {
+                if let Err(error) = hook.post_accept(&hook_item, &event_id, true).await {
+                    self.mark_retry(transaction_id, Duration::from_secs(1))
+                        .await?;
+                    return Err(error);
+                }
+                Ok(OutboundEngineOutcome::Duplicate(
+                    self.mark_sent(transaction_id, event_id).await?,
+                ))
+            }
             OutboundSubmitOutcome::RetryAfter { delay, .. } => {
                 let item = self.mark_retry(transaction_id, delay).await?;
                 Ok(OutboundEngineOutcome::RetryAt {
@@ -176,6 +231,31 @@ mod tests {
     }
 
     struct FailingSubmitter;
+
+    #[derive(Clone, Default)]
+    struct FailingOncePostAcceptHook {
+        calls: Arc<Mutex<usize>>,
+    }
+
+    impl OutboundPostAcceptHook for FailingOncePostAcceptHook {
+        fn post_accept<'a>(
+            &'a self,
+            _item: &'a SendQueueItem,
+            _event_id: &'a EventId,
+            _duplicate: bool,
+        ) -> BoxOutboundFuture<'a, ()> {
+            let mut calls = self.calls.lock().unwrap();
+            *calls += 1;
+            let call = *calls;
+            Box::pin(async move {
+                if call == 1 {
+                    Err(Error::Protocol("post-accept persist failed".to_owned()))
+                } else {
+                    Ok(())
+                }
+            })
+        }
+    }
 
     impl OutboundSubmitter for FailingSubmitter {
         fn submit<'a>(
@@ -270,6 +350,52 @@ mod tests {
         assert_eq!(item.status, arkret::sync_client::SendQueueStatus::Failed);
         assert_eq!(item.attempts, 1);
         assert!(item.next_retry_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn post_accept_failure_retries_before_marking_sent() {
+        let engine = OutboundEngine::new(MemoryStore::new());
+        engine
+            .enqueue(
+                Some("txn-post-accept".to_owned()),
+                realm_id(),
+                SendQueueItemKind::Message,
+                serde_json::json!({"body": "hello"}),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let submitter = QueueSubmitter {
+            outcomes: Arc::new(Mutex::new(VecDeque::from([
+                OutboundSubmitOutcome::Accepted {
+                    event_id: event_id(),
+                },
+                OutboundSubmitOutcome::Duplicate {
+                    event_id: event_id(),
+                },
+            ]))),
+        };
+        let hook = FailingOncePostAcceptHook::default();
+
+        let error = engine
+            .submit_next_with_hook(&submitter, &hook, Utc::now())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, Error::Protocol(_)));
+        let failed = engine.snapshot().await.unwrap().items.remove(0);
+        assert_eq!(failed.status, arkret::sync_client::SendQueueStatus::Failed);
+        assert!(failed.remote_event_id.is_none());
+
+        let outcome = engine
+            .submit_next_with_hook(&submitter, &hook, Utc::now() + chrono::Duration::seconds(2))
+            .await
+            .unwrap();
+        assert!(matches!(outcome, OutboundEngineOutcome::Duplicate(_)));
+        assert_eq!(*hook.calls.lock().unwrap(), 2);
+        assert_eq!(
+            engine.snapshot().await.unwrap().items[0].remote_event_id,
+            Some(event_id())
+        );
     }
 
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]

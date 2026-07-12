@@ -25,6 +25,7 @@ pub use keystore::{
     SecureKeyStoreError,
 };
 pub use memory::MemoryStore;
+pub use seen_window::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
 
 pub type OpaqueCursor = String;
 

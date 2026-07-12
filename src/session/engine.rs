@@ -926,6 +926,38 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_refresh_releases_single_flight_without_replacing_state() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        let refresh_calls = Arc::new(Mutex::new(0usize));
+        let transport = GatedRefreshTransport {
+            started: Arc::clone(&started),
+            release: Arc::clone(&release),
+            refresh_calls: Arc::clone(&refresh_calls),
+            outcome: refresh_outcome("grant-2", grant_id(2)),
+        };
+        let engine = Arc::new(SessionEngine::with_state(transport, active_state()));
+
+        let cancelled = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move { engine.refresh_once(refresh_options(), now()).await })
+        };
+        started.notified().await;
+        cancelled.abort();
+        assert!(cancelled.await.unwrap_err().is_cancelled());
+        assert_eq!(engine.current_state().unwrap().grant_jwt, "grant-1");
+
+        let retry = {
+            let engine = Arc::clone(&engine);
+            tokio::spawn(async move { engine.refresh_once(refresh_options(), now()).await })
+        };
+        started.notified().await;
+        release.notify_one();
+        assert_eq!(retry.await.unwrap().unwrap().access_token, "grant-2");
+        assert_eq!(*refresh_calls.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
     async fn refresh_if_due_honors_success_cooldown() {
         // A rotated grant that is still short-lived enough to be immediately
         // `Due` again (the refresh-treadmill shape).

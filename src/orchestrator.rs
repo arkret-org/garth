@@ -591,8 +591,8 @@ mod tests {
     use crate::subscribe::scan::BoxScanFuture;
     use crate::subscribe::test_support::{RecordingExecutor, sync_response};
     use crate::{
-        BoxRealmStreamFuture, ClientEvent, CursorScope, EventsScanRequest, MemoryStore,
-        RealmEventsFrameSource,
+        BoxRealmStreamFuture, ClientEvent, CursorScope, DurableInboxStore, EventsScanRequest,
+        MemoryStore, RealmEventsFrameSource,
     };
 
     fn test_client(
@@ -887,6 +887,52 @@ mod tests {
             vec![RunEvent::Stopped {
                 reason: RunStopReason::Cancelled
             }]
+        );
+    }
+
+    #[tokio::test]
+    async fn account_engine_cancel_preserves_preexisting_pending_delivery() {
+        let store = MemoryStore::new();
+        let scope = account_scope();
+        let delivery_id = store
+            .commit(
+                scope.clone(),
+                Some("ak:cursor:pending-before-cancel".to_owned()),
+                vec![ClientEvent::Notification(arkret::NotificationDelta {
+                    id: "notification-before-cancel".to_owned(),
+                    notification_type: "mention".to_owned(),
+                    action: "add".to_owned(),
+                    data: None,
+                })],
+            )
+            .await
+            .unwrap()
+            .unwrap();
+        let client = test_client(RecordingExecutor::default(), store.clone());
+        let provider = QueueProvider::<AccountTransport>::new(Vec::new());
+        let control = SyncLoopControl::new();
+        control.cancel();
+
+        let stop = client
+            .run_account_to_inbox(
+                actor_id(),
+                device_id(),
+                None,
+                &provider,
+                &control,
+                RunOptions::default(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(stop, RunStopReason::Cancelled);
+        assert_eq!(provider.calls(), 0);
+        let pending = store.pending(10).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].id, delivery_id);
+        assert_eq!(
+            store.load(scope).await.unwrap().as_deref(),
+            Some("ak:cursor:pending-before-cancel")
         );
     }
 

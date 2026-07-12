@@ -35,8 +35,8 @@ pub use orchestrator::{
     RunError, RunErrorClass, RunEvent, RunOptions, RunResult, RunStopReason, TransportProvider,
 };
 pub use outbound::{
-    OutboundEngine, OutboundEngineOutcome, OutboundQueueStore, OutboundSubmitOutcome,
-    OutboundSubmitter,
+    OutboundEngine, OutboundEngineOutcome, OutboundPostAcceptHook, OutboundQueueStore,
+    OutboundSubmitOutcome, OutboundSubmitter,
 };
 pub use session::{
     AgentKeyProofLogin, AuthenticatedTransportFactory, DidProofLogin, GRANT_ROTATION_SKEW_SECS,
@@ -49,11 +49,12 @@ pub use session::{
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use store::FileStore;
 pub use store::{
-    CursorScope, CursorStore, DeliveryBatch, DeliveryErrorClass, DeliveryId, DurableInboxStore,
-    EventCacheStore, MAX_DELIVERY_ERROR_BYTES, MAX_PENDING_READ, MemorySecureKeyStore, MemoryStore,
-    OpaqueCursor, PendingDelivery, PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter,
-    SecretBytes, SecretClass, SecretDurability, SecureCryptoStoreAdapter, SecureKeyStore,
-    SecureKeyStoreBackendInfo, SecureKeyStoreError,
+    BoundedSeenWindow, CursorScope, CursorStore, DEFAULT_SEEN_EVENTS_CAPACITY, DeliveryBatch,
+    DeliveryErrorClass, DeliveryId, DurableInboxStore, EventCacheStore, MAX_DELIVERY_ERROR_BYTES,
+    MAX_PENDING_READ, MemorySecureKeyStore, MemoryStore, OpaqueCursor, PendingDelivery,
+    PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter, SecretBytes, SecretClass,
+    SecretDurability, SecureCryptoStoreAdapter, SecureKeyStore, SecureKeyStoreBackendInfo,
+    SecureKeyStoreError,
 };
 pub use subscribe::{
     BoxRealmStreamFuture, EventsScanRequest, EventsScanTransport, RealmEventsDriver,

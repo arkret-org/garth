@@ -437,4 +437,26 @@ mod tests {
         .unwrap();
         assert_eq!(after_rotation.provide().await.unwrap(), "grant-2");
     }
+
+    #[tokio::test]
+    async fn two_provider_instances_share_one_forced_refresh_exchange() {
+        let (first, refresh_calls, _) = provider();
+        let second = first.clone();
+
+        let (first_result, second_result) = tokio::join!(
+            first.refresh_after_unauthorized(),
+            second.refresh_after_unauthorized()
+        );
+
+        assert!(first_result.unwrap() || second_result.unwrap());
+        assert_eq!(*refresh_calls.lock().unwrap(), 1);
+        assert_eq!(
+            first.session().current_state().unwrap().grant_id,
+            grant_id(2)
+        );
+        assert_eq!(
+            second.session().current_state().unwrap().grant_id,
+            grant_id(2)
+        );
+    }
 }

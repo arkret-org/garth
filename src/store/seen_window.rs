@@ -4,10 +4,10 @@ use std::collections::{BTreeSet, VecDeque};
 /// Default bound on the dedupe window. The cursor already guarantees old
 /// events are not replayed, so `seen_events` only needs to cover the recent
 /// redelivery window.
-pub(super) const DEFAULT_SEEN_EVENTS_CAPACITY: usize = 4096;
+pub const DEFAULT_SEEN_EVENTS_CAPACITY: usize = 4096;
 
 #[derive(Clone, Debug)]
-pub(super) struct BoundedSeenWindow<T> {
+pub struct BoundedSeenWindow<T> {
     entries: VecDeque<T>,
     index: BTreeSet<T>,
     capacity: usize,
@@ -25,7 +25,6 @@ where
         }
     }
 
-    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     pub fn from_entries(entries: VecDeque<T>, capacity: usize) -> Self {
         let mut window = Self::new(capacity);
         for entry in entries {
@@ -56,9 +55,12 @@ where
         true
     }
 
-    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     pub fn entries(&self) -> &VecDeque<T> {
         &self.entries
+    }
+
+    pub fn into_entries(self) -> VecDeque<T> {
+        self.entries
     }
 }
 
