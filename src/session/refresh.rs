@@ -2,7 +2,7 @@ use chrono::{DateTime, Utc};
 
 pub const REFRESH_SKEW_SECS: i64 = 60;
 pub const POLL_INTERVAL_SECS: u64 = 30;
-pub const GRANT_ROTATION_SKEW_SECS: i64 = 30 * 60;
+pub const GRANT_ROTATION_SKEW_SECS: i64 = REFRESH_SKEW_SECS;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RefreshDecision {
@@ -78,7 +78,7 @@ mod tests {
 
     #[test]
     fn decision_due_when_grant_within_rotation_skew() {
-        let grant = grant_with_expiry(600);
+        let grant = grant_with_expiry(30);
         assert_eq!(refresh_decision(Some(&grant), now()), RefreshDecision::Due);
     }
 
@@ -105,7 +105,8 @@ mod tests {
     #[test]
     fn grant_due_for_rotation_fires_only_inside_skew() {
         assert!(!grant_due_for_rotation(&grant_with_expiry(7200), now()));
-        assert!(grant_due_for_rotation(&grant_with_expiry(600), now()));
+        assert!(!grant_due_for_rotation(&grant_with_expiry(600), now()));
+        assert!(grant_due_for_rotation(&grant_with_expiry(30), now()));
 
         let unknown = SessionGrantRefreshState {
             grant_expires_at: None,
