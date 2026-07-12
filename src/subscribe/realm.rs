@@ -65,10 +65,9 @@ impl RealmEventsTransport for arkret_http_client::Client {
             // durable cursor requests bounded catch-up from that position.
             // Keep the HTTP client's validator in agreement with the driver.
             let mut options = arkret_http_client::EventsSubscribeOptions::new()
-                .realm(realm_id.as_str().to_owned())
-                .catchup(after.is_some());
+                .realm(realm_id.as_str().to_owned());
             if let Some(after) = after {
-                options = options.after(after.to_owned());
+                options = options.after(after.to_owned()).catchup(true);
             }
             self.events_subscribe_frames(&options).await
         })
