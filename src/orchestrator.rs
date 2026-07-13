@@ -905,12 +905,14 @@ mod tests {
             .commit(
                 scope.clone(),
                 Some("ak:cursor:pending-before-cancel".to_owned()),
-                vec![ClientEvent::Notification(arkret::NotificationDelta {
-                    id: "notification-before-cancel".to_owned(),
-                    notification_type: "mention".to_owned(),
-                    action: "add".to_owned(),
-                    data: None,
-                })],
+                vec![ClientEvent::Notification(
+                    serde_json::from_value(serde_json::json!({
+                        "id": "ak:notification:01964137-0000-7000-8000-000000000011",
+                        "type": "agent",
+                        "action": "remove"
+                    }))
+                    .unwrap(),
+                )],
             )
             .await
             .unwrap()

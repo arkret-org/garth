@@ -47,7 +47,7 @@ pub(crate) fn sync_response(cursor: &str) -> SyncOutcome {
         device_lists: Value::Null,
         account_data: Vec::new(),
         presence: Vec::new(),
-        notifications: Value::Null,
+        notifications: Default::default(),
         partial: false,
     }
 }
