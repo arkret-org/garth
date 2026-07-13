@@ -25,7 +25,7 @@ native = ["dep:tokio"]
 wasm = ["dep:gloo-timers"]
 
 [dependencies]
-chrono = {version = "0.4.45",default-features = false,features = ["clock", "std", "serde"]}
+chrono = {version = "0.4.45",default-features = false,features = ["clock", "std", "serde", "wasmbind"]}
 arkret = {version = "0.3.0",path = "../arkret-rust-sdk/crates/sdk",default-features = false,features = ["client", "full-surface", "signer", "sync-runtime"]}
 arkret-core = {version = "0.3.0",path = "../arkret-rust-sdk/crates/core",default-features = false}
 arkret-http-client = {version = "0.3.0",path = "../arkret-rust-sdk/crates/http-client",default-features = false}

@@ -1,6 +1,5 @@
 use arkret::session_grant::{
-    SessionGrantProofFields, did_proof_session_grant_request, holder_proof_session_grant_request,
-    oidc_session_grant_request,
+    did_proof_session_grant_request, holder_proof_session_grant_request, oidc_session_grant_request,
 };
 use arkret::{
     DeviceId, Did, Hash, Result, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
@@ -9,30 +8,7 @@ use arkret::{
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
-#[derive(Clone, Debug)]
-pub struct SessionProofFields {
-    pub challenge: String,
-    pub request_canonical_digest: Hash,
-    pub audience: String,
-    pub expires_at: Option<DateTime<Utc>>,
-    pub signature: String,
-    pub verification_method: Option<String>,
-}
-
-impl SessionProofFields {
-    /// Lower these into the SDK's signature-carrying proof fields consumed by the
-    /// `session_grant` request builders.
-    fn into_sdk(self) -> SessionGrantProofFields {
-        SessionGrantProofFields {
-            challenge: self.challenge,
-            request_canonical_digest: self.request_canonical_digest,
-            audience: self.audience,
-            expires_at: self.expires_at,
-            signature: self.signature,
-            verification_method: self.verification_method,
-        }
-    }
-}
+pub use arkret::session_grant::SessionGrantProofFields as SessionProofFields;
 
 #[derive(Clone, Debug)]
 pub struct AgentKeyProofLogin {
@@ -85,7 +61,7 @@ impl HolderProofLogin {
             self.requested_scope,
             self.dpop_binding_proof,
             self.applet_delegation,
-            self.proof.into_sdk(),
+            self.proof,
         )
     }
 }
@@ -108,7 +84,7 @@ impl DidProofLogin {
             self.requested_scope,
             self.dpop_binding_proof,
             self.applet_delegation,
-            self.proof.into_sdk(),
+            self.proof,
         )
     }
 }

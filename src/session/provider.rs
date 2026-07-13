@@ -1,13 +1,12 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
 use arkret_core::{GrantId, Result};
-use chrono::Utc;
 
 use super::{
     NoopSessionGrantStore, SessionEngine, SessionGrantState, SessionGrantStore,
     SessionGrantTransport, SessionRefreshOptions,
 };
-use crate::TransportProvider;
+use crate::{HostClock, TransportProvider};
 
 type TransportCache<T> = Arc<Mutex<Option<(GrantId, T)>>>;
 
@@ -28,10 +27,11 @@ pub trait AuthenticatedTransportFactory: Clone + 'static {
 }
 
 #[derive(Clone, Debug)]
-pub struct SessionTransportProvider<T, F, S = NoopSessionGrantStore>
+pub struct SessionTransportProvider<T, F, S = NoopSessionGrantStore, E = crate::SystemClock>
 where
     F: AuthenticatedTransportFactory,
     S: SessionGrantStore,
+    E: HostClock,
 {
     session: SessionEngine<T>,
     factory: F,
@@ -39,9 +39,10 @@ where
     state_store: S,
     persisted_grant_id: Arc<Mutex<Option<GrantId>>>,
     cached: TransportCache<F::Transport>,
+    clock: E,
 }
 
-impl<T, F> SessionTransportProvider<T, F, NoopSessionGrantStore>
+impl<T, F> SessionTransportProvider<T, F, NoopSessionGrantStore, crate::SystemClock>
 where
     T: SessionGrantTransport,
     F: AuthenticatedTransportFactory,
@@ -53,18 +54,19 @@ where
     ) -> Self {
         Self {
             persisted_grant_id: Arc::new(Mutex::new(
-                session.current_state().map(|state| state.grant_id),
+                session.current_state().map(|state| state.grant_id.clone()),
             )),
             session,
             factory,
             refresh_options,
             state_store: NoopSessionGrantStore,
             cached: Arc::new(Mutex::new(None)),
+            clock: crate::SystemClock,
         }
     }
 }
 
-impl<T, F, S> SessionTransportProvider<T, F, S>
+impl<T, F, S> SessionTransportProvider<T, F, S, crate::SystemClock>
 where
     T: SessionGrantTransport,
     F: AuthenticatedTransportFactory,
@@ -83,6 +85,7 @@ where
             state_store,
             persisted_grant_id: Arc::new(Mutex::new(None)),
             cached: Arc::new(Mutex::new(None)),
+            clock: crate::SystemClock,
         };
         provider.persist_current_state().await?;
         Ok(provider)
@@ -107,7 +110,28 @@ where
             state_store,
             persisted_grant_id: Arc::new(Mutex::new(persisted_grant_id)),
             cached: Arc::new(Mutex::new(None)),
+            clock: crate::SystemClock,
         })
+    }
+}
+
+impl<T, F, S, E> SessionTransportProvider<T, F, S, E>
+where
+    T: SessionGrantTransport,
+    F: AuthenticatedTransportFactory,
+    S: SessionGrantStore,
+    E: HostClock,
+{
+    pub fn with_clock<E2: HostClock>(self, clock: E2) -> SessionTransportProvider<T, F, S, E2> {
+        SessionTransportProvider {
+            session: self.session,
+            factory: self.factory,
+            refresh_options: self.refresh_options,
+            state_store: self.state_store,
+            persisted_grant_id: self.persisted_grant_id,
+            cached: self.cached,
+            clock,
+        }
     }
 
     pub fn session(&self) -> &SessionEngine<T> {
@@ -128,13 +152,20 @@ where
             .factory
             .refresh_options(&previous_state, &self.refresh_options)?;
         self.session
-            .refresh_after_unauthorized(refresh_options, Utc::now())
+            .refresh_after_unauthorized(refresh_options, self.clock.now())
             .await?;
-        let refreshed_grant_id = self.session.current_state().map(|state| state.grant_id);
+        let refreshed_grant_id = self
+            .session
+            .current_state()
+            .map(|state| state.grant_id.clone());
         if refreshed_grant_id == previous_grant_id {
             // The shared refresh cooldown can legitimately return the current
             // grant. Do not tell the orchestrator to reconnect forever with
             // the same credential after the server has rejected it.
+            if self.session.refresh_in_flight() {
+                self.clear_cached_transport();
+                return Ok(true);
+            }
             return Ok(false);
         }
         self.persist_current_state().await?;
@@ -151,7 +182,7 @@ where
             .factory
             .refresh_options(&current, &self.refresh_options)?;
         self.session
-            .refresh_if_due(refresh_options, Utc::now())
+            .refresh_if_due(refresh_options, self.clock.now())
             .await?;
         let state = self
             .session
@@ -164,7 +195,7 @@ where
             return Ok(transport.clone());
         }
         let transport = self.factory.build(&state)?;
-        *self.cache_lock() = Some((state.grant_id, transport.clone()));
+        *self.cache_lock() = Some((state.grant_id.clone(), transport.clone()));
         Ok(transport)
     }
 
@@ -199,11 +230,12 @@ where
     }
 }
 
-impl<T, F, S> TransportProvider for SessionTransportProvider<T, F, S>
+impl<T, F, S, E> TransportProvider for SessionTransportProvider<T, F, S, E>
 where
     T: SessionGrantTransport,
     F: AuthenticatedTransportFactory,
     S: SessionGrantStore,
+    E: HostClock,
 {
     type Transport = F::Transport;
 
@@ -226,7 +258,7 @@ mod tests {
         SessionGrantRefreshOutcome, SessionGrantRefreshProof, SessionGrantRefreshRequestBody,
         SessionGrantRequestBody,
     };
-    use chrono::Duration;
+    use chrono::{Duration, Utc};
 
     use super::*;
     use crate::session::BoxSessionFuture;
@@ -385,7 +417,7 @@ mod tests {
         };
         let options = SessionRefreshOptions {
             audience: Some("did:webvh:z6mkfixture:service.example".to_owned()),
-            device_id: state().device_id,
+            device_id: state().device_id.clone(),
             proof: Some(SessionGrantRefreshProof {
                 proof_kind: Some(SessionGrantProofKind::DidBoundSignature),
                 challenge: Some("refresh-challenge".to_owned()),

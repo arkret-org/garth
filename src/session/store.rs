@@ -1,7 +1,6 @@
 use arkret_core::{Error, Result};
 
 use super::SessionGrantState;
-#[cfg(target_arch = "wasm32")]
 use crate::{PutSecretOptions, SecretClass, SecretDurability};
 use crate::{SecureKeyStore, SecureKeyStoreError};
 
@@ -80,18 +79,6 @@ where
     ) -> impl std::future::Future<Output = Result<()>> + crate::MaybeSend + 'a {
         let encoded = serde_json::to_vec(state)
             .map_err(|error| Error::Protocol(format!("encode secure session grant: {error}")));
-        #[cfg(not(target_arch = "wasm32"))]
-        let result = encoded.and_then(|encoded| {
-            // Native credential-vault APIs commit synchronously. Keeping the
-            // native future Send also lets providers run inside host tasks.
-            self.secure_store
-                .store_secret_bytes(&self.storage_key, &encoded)
-                .map_err(Error::from)
-        });
-        #[cfg(not(target_arch = "wasm32"))]
-        return async move { result };
-
-        #[cfg(target_arch = "wasm32")]
         async move {
             let encoded = encoded?;
             self.secure_store

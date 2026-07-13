@@ -19,7 +19,16 @@ pub use refresh::{
 };
 pub use store::{NoopSessionGrantStore, SecureSessionGrantStore, SessionGrantStore};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, zeroize::Zeroize, zeroize::ZeroizeOnDrop)]
 pub struct SessionHandle {
     pub access_token: String,
+}
+
+impl std::fmt::Debug for SessionHandle {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("SessionHandle")
+            .field("access_token", &"[REDACTED]")
+            .finish()
+    }
 }

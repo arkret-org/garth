@@ -27,6 +27,12 @@ pub use keystore::{
 pub use memory::MemoryStore;
 pub use seen_window::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
 
+/// Client-side continuation token.
+///
+/// This deliberately remains an opaque string instead of the SDK's
+/// service-side `Cursor` structure. Arkret v1 forbids clients from decoding or
+/// depending on cursor internals; stores and transports must preserve the
+/// exact token issued by the service.
 pub type OpaqueCursor = String;
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]

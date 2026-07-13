@@ -125,6 +125,18 @@ fn classify_error(error: &arkret_core::Error) -> RunErrorClass {
         Error::Http(_) => RunErrorClass::RetryableTransport,
         Error::Api { status: 429, .. } => RunErrorClass::RateLimited,
         Error::Api { status: 401, .. } => RunErrorClass::Unauthorized,
+        Error::Api { error, .. }
+            if matches!(
+                error.error.code.as_str(),
+                "grant_already_consumed"
+                    | "session_logged_out"
+                    | "auth_expired"
+                    | "unauthenticated"
+                    | "audience_mismatch"
+            ) =>
+        {
+            RunErrorClass::Unauthorized
+        }
         Error::Api { status, .. } if *status == 408 || *status >= 500 => {
             RunErrorClass::RetryableTransport
         }
@@ -194,8 +206,8 @@ where
                 Err(error) if retryable(classify_error(&error)) => {
                     let delay = backoff.next_delay();
                     provider.observe(RunEvent::Backoff { delay });
-                    if self.wait_guarded(delay, control, provider).await {
-                        return Ok(Self::guarded_stop_reason(control, provider));
+                    if let Some(reason) = self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
                     }
                     continue;
                 }
@@ -209,8 +221,8 @@ where
             {
                 Ok(RealmStreamStopReason::StreamEnded) => {
                     backoff.reset();
-                    if self.wait_guarded(options.beat, control, provider).await {
-                        return Ok(Self::guarded_stop_reason(control, provider));
+                    if let Some(reason) = self.wait_guarded(options.beat, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
                     }
                 }
                 Ok(RealmStreamStopReason::Dropped {
@@ -219,8 +231,8 @@ where
                     let delay =
                         backoff.next_delay_with_hint(reconnect_after_ms.map(Duration::from_millis));
                     provider.observe(RunEvent::Backoff { delay });
-                    if self.wait_guarded(delay, control, provider).await {
-                        return Ok(Self::guarded_stop_reason(control, provider));
+                    if let Some(reason) = self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
                     }
                 }
                 Ok(RealmStreamStopReason::ResyncRequired { reconnect_after_ms }) => {
@@ -228,8 +240,8 @@ where
                     let delay =
                         backoff.next_delay_with_hint(reconnect_after_ms.map(Duration::from_millis));
                     provider.observe(RunEvent::Backoff { delay });
-                    if self.wait_guarded(delay, control, provider).await {
-                        return Ok(Self::guarded_stop_reason(control, provider));
+                    if let Some(reason) = self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
                     }
                 }
                 Ok(RealmStreamStopReason::Unauthorized { reason }) => {
@@ -246,8 +258,8 @@ where
                 Err(ProjectedRunError::Transport(error)) if retryable(classify_error(&error)) => {
                     let delay = backoff.next_delay();
                     provider.observe(RunEvent::Backoff { delay });
-                    if self.wait_guarded(delay, control, provider).await {
-                        return Ok(Self::guarded_stop_reason(control, provider));
+                    if let Some(reason) = self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
                     }
                 }
                 Err(ProjectedRunError::Transport(error)) => {
@@ -306,8 +318,8 @@ where
                 Err(error) if retryable(classify_error(&error)) => {
                     let delay = provide_backoff.next_delay();
                     provider.observe(RunEvent::Backoff { delay });
-                    if self.wait_guarded(delay, control, provider).await {
-                        return Ok(Self::guarded_stop_reason(control, provider));
+                    if let Some(reason) = self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
                     }
                     continue;
                 }
@@ -343,13 +355,13 @@ where
                         .map_err(|error| {
                             Self::fail(provider, RunErrorClass::StoreFailure, error)
                         })?;
-                    if self.wait_guarded(retry_after, control, provider).await {
-                        return Ok(Self::guarded_stop_reason(control, provider));
+                    if let Some(reason) = self.wait_guarded(retry_after, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
                     }
                 }
                 SyncLoopStep::Backpressure { retry_after } => {
-                    if self.wait_guarded(retry_after, control, provider).await {
-                        return Ok(Self::guarded_stop_reason(control, provider));
+                    if let Some(reason) = self.wait_guarded(retry_after, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
                     }
                 }
                 SyncLoopStep::Cancelled => {
@@ -414,8 +426,8 @@ where
                 Err(error) if retryable(classify_error(&error)) => {
                     let delay = backoff.next_delay();
                     provider.observe(RunEvent::Backoff { delay });
-                    if self.wait_guarded(delay, control, provider).await {
-                        return Ok(Self::guarded_stop_reason(control, provider));
+                    if let Some(reason) = self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
                     }
                     continue;
                 }
@@ -451,13 +463,13 @@ where
                         .map_err(|error| {
                             Self::fail(provider, RunErrorClass::StoreFailure, error)
                         })?;
-                    if self.wait_guarded(retry_after, control, provider).await {
-                        return Ok(Self::guarded_stop_reason(control, provider));
+                    if let Some(reason) = self.wait_guarded(retry_after, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
                     }
                 }
                 SyncLoopStep::Backpressure { retry_after } => {
-                    if self.wait_guarded(retry_after, control, provider).await {
-                        return Ok(Self::guarded_stop_reason(control, provider));
+                    if let Some(reason) = self.wait_guarded(retry_after, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
                     }
                 }
                 SyncLoopStep::Cancelled => {
@@ -498,18 +510,27 @@ where
         duration: Duration,
         control: &SyncLoopControl,
         provider: &TP,
-    ) -> bool {
+    ) -> Option<RunStopReason> {
         const QUANTUM: Duration = Duration::from_millis(50);
         let mut remaining = duration;
         while !remaining.is_zero() {
-            if control.is_cancelled() || !provider.is_active() {
-                return true;
+            if control.is_cancelled() {
+                return Some(RunStopReason::Cancelled);
+            }
+            if !provider.is_active() {
+                return Some(RunStopReason::LifecycleEnded);
             }
             let step = remaining.min(QUANTUM);
             self.executor.sleep(step).await;
             remaining = remaining.saturating_sub(step);
         }
-        control.is_cancelled() || !provider.is_active()
+        if control.is_cancelled() {
+            Some(RunStopReason::Cancelled)
+        } else if !provider.is_active() {
+            Some(RunStopReason::LifecycleEnded)
+        } else {
+            None
+        }
     }
 
     async fn recover_unauthorized<TP: TransportProvider + ?Sized>(
@@ -528,30 +549,16 @@ where
             Err(error) if retryable(classify_error(&error)) => {
                 let delay = backoff.next_delay();
                 provider.observe(RunEvent::Backoff { delay });
-                if self.wait_guarded(delay, control, provider).await {
-                    Ok(UnauthorizedRecovery::GuardedStop(
-                        Self::guarded_stop_reason(control, provider),
-                    ))
+                if let Some(reason) = self.wait_guarded(delay, control, provider).await {
+                    Ok(UnauthorizedRecovery::GuardedStop(Self::stop(
+                        provider, reason,
+                    )))
                 } else {
                     Ok(UnauthorizedRecovery::Retry)
                 }
             }
             Err(error) => Err(Self::fail(provider, classify_error(&error), error)),
         }
-    }
-
-    fn guarded_stop_reason<TP: TransportProvider + ?Sized>(
-        control: &SyncLoopControl,
-        provider: &TP,
-    ) -> RunStopReason {
-        let reason = if control.is_cancelled() {
-            RunStopReason::Cancelled
-        } else if !provider.is_active() {
-            RunStopReason::LifecycleEnded
-        } else {
-            RunStopReason::Cancelled
-        };
-        Self::stop(provider, reason)
     }
 
     fn stop<TP: TransportProvider + ?Sized>(provider: &TP, reason: RunStopReason) -> RunStopReason {

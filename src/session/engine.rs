@@ -1,3 +1,4 @@
+use std::fmt;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
@@ -8,6 +9,7 @@ use arkret_core::{
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use super::SessionHandle;
 use super::login::LoginKind;
@@ -47,22 +49,45 @@ impl SessionGrantTransport for arkret_http_client::Client {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct SessionGrantState {
+    #[zeroize(skip)]
     pub principal_id: Did,
+    #[zeroize(skip)]
     pub device_id: Option<DeviceId>,
+    #[zeroize(skip)]
     pub grant_id: GrantId,
     pub grant_jwt: String,
+    #[zeroize(skip)]
     pub expires_at: DateTime<Utc>,
+    #[zeroize(skip)]
     pub audience: String,
+    #[zeroize(skip)]
     pub granted_scope: Vec<String>,
     /// The session public key reported by the Account Authority when the grant
-    /// was issued/rotated. `None` for states reconstructed from a persisted
-    /// grant (the client persistence layer does not retain it) — this field is
-    /// never consumed by the refresh flow, only carried through from the wire
-    /// outcome on the issue/refresh paths.
+    /// was issued/rotated. It is retained by secure persistence and restored
+    /// with the grant, but is not consumed by the refresh decision itself.
+    #[zeroize(skip)]
     pub session_public_key: Option<String>,
+    #[zeroize(skip)]
     pub dpop_jkt: Option<String>,
+}
+
+impl fmt::Debug for SessionGrantState {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SessionGrantState")
+            .field("principal_id", &self.principal_id)
+            .field("device_id", &self.device_id)
+            .field("grant_id", &self.grant_id)
+            .field("grant_jwt", &"[REDACTED]")
+            .field("expires_at", &self.expires_at)
+            .field("audience", &self.audience)
+            .field("granted_scope", &self.granted_scope)
+            .field("session_public_key", &self.session_public_key)
+            .field("dpop_jkt", &self.dpop_jkt)
+            .finish()
+    }
 }
 
 impl SessionGrantState {
@@ -164,6 +189,10 @@ where
             Some(at) => now.signed_duration_since(at).num_seconds() < REFRESH_SUCCESS_COOLDOWN_SECS,
             None => false,
         }
+    }
+
+    pub fn refresh_in_flight(&self) -> bool {
+        self.gate_lock().in_flight
     }
 
     pub fn current_state(&self) -> Option<SessionGrantState> {
@@ -623,6 +652,19 @@ mod tests {
         }
     }
 
+    #[test]
+    fn session_credentials_are_redacted_from_debug_output() {
+        let state = active_state();
+        let state_debug = format!("{state:?}");
+        assert!(state_debug.contains("[REDACTED]"));
+        assert!(!state_debug.contains(&state.grant_jwt));
+
+        let handle = state.handle();
+        let handle_debug = format!("{handle:?}");
+        assert!(handle_debug.contains("[REDACTED]"));
+        assert!(!handle_debug.contains(&handle.access_token));
+    }
+
     fn refresh_proof() -> SessionGrantRefreshProof {
         SessionGrantRefreshProof {
             proof_kind: Some(SessionGrantProofKind::DidBoundSignature),
@@ -962,13 +1004,15 @@ mod tests {
         // A rotated grant that is still short-lived enough to be immediately
         // `Due` again (the refresh-treadmill shape).
         let mut short_lived = refresh_outcome("grant-2", grant_id(2));
-        short_lived.expires_at = now() + Duration::minutes(10);
+        short_lived.expires_at = now() + Duration::seconds(30);
         let mut after_cooldown = refresh_outcome("grant-3", grant_id(3));
         after_cooldown.previous_grant_id = grant_id(2);
-        after_cooldown.expires_at = now() + Duration::minutes(10);
+        after_cooldown.expires_at = now() + Duration::seconds(30);
         let transport =
             MockSessionTransport::with_refresh_responses(vec![Ok(short_lived), Ok(after_cooldown)]);
-        let engine = SessionEngine::with_state(transport.clone(), active_state());
+        let mut due_state = active_state();
+        due_state.expires_at = now() + Duration::seconds(30);
+        let engine = SessionEngine::with_state(transport.clone(), due_state);
 
         // First call rotates.
         let handle = engine

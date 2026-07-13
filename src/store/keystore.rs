@@ -10,6 +10,11 @@ use zeroize::Zeroizing;
 
 use crate::MaybeSendSync;
 
+#[cfg(not(target_arch = "wasm32"))]
+type BoxSecureStoreFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
+#[cfg(target_arch = "wasm32")]
+type BoxSecureStoreFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
+
 pub type SecretBytes = Zeroizing<Vec<u8>>;
 
 /// Durability expectation a caller attaches to a secret write.
@@ -106,7 +111,7 @@ pub trait SecureKeyStore: MaybeSendSync + 'static {
         &'a self,
         key: &'a str,
         value: &'a [u8],
-    ) -> Pin<Box<dyn Future<Output = SecureKeyStoreResult<()>> + 'a>> {
+    ) -> BoxSecureStoreFuture<'a, SecureKeyStoreResult<()>> {
         let result = self.store_secret_bytes(key, value);
         Box::pin(async move { result })
     }
@@ -124,7 +129,7 @@ pub trait SecureKeyStore: MaybeSendSync + 'static {
         key: &'a str,
         value: &'a [u8],
         options: PutSecretOptions,
-    ) -> Pin<Box<dyn Future<Output = SecureKeyStoreResult<()>> + 'a>> {
+    ) -> BoxSecureStoreFuture<'a, SecureKeyStoreResult<()>> {
         match options.durability {
             SecretDurability::CachedOk => {
                 let result = self.store_secret_bytes(key, value);
@@ -147,7 +152,7 @@ pub trait SecureKeyStore: MaybeSendSync + 'static {
         &'a self,
         key: &'a str,
         value: &'a str,
-    ) -> Pin<Box<dyn Future<Output = SecureKeyStoreResult<()>> + 'a>> {
+    ) -> BoxSecureStoreFuture<'a, SecureKeyStoreResult<()>> {
         self.store_secret_bytes_durable(key, value.as_bytes())
     }
 

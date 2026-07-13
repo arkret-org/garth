@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use arkret_core::{Did, RealmId, Result, SyncBackfillOutcome};
+use arkret_core::{Did, EventsQueryOrder, RealmId, Result, SyncBackfillOutcome};
 
 use super::{ProjectedRunError, ProjectedRunResult};
 use crate::{CursorScope, CursorStore, MaybeSend, MaybeSendSync, OpaqueCursor};
@@ -16,12 +16,17 @@ pub type BoxScanFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 
 #[cfg(target_arch = "wasm32")]
 pub type BoxScanFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + 'a>>;
 
+/// Runtime-neutral host request for one realm scan.
+///
+/// This is intentionally a transport seam rather than an alias of the HTTP
+/// parameter object: hosts may not use HTTP, and client cursor tokens must stay
+/// opaque. Closed protocol choices such as `order` still reuse SDK types.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EventsScanRequest {
     pub realm_id: RealmId,
     pub before: Option<OpaqueCursor>,
     pub after: Option<OpaqueCursor>,
-    pub order: Option<String>,
+    pub order: Option<EventsQueryOrder>,
     pub limit: Option<u32>,
 }
 
@@ -55,7 +60,7 @@ impl EventsScanTransport for arkret_http_client::Client {
                 request.realm_id.as_str(),
                 request.before.as_deref(),
                 request.after.as_deref(),
-                request.order.as_deref(),
+                request.order.map(EventsQueryOrder::as_str),
                 request.limit,
             )
             .await
@@ -67,7 +72,7 @@ impl EventsScanTransport for arkret_http_client::Client {
 pub struct ScanCatchupOptions {
     pub before: Option<OpaqueCursor>,
     pub after: Option<OpaqueCursor>,
-    pub order: Option<String>,
+    pub order: Option<EventsQueryOrder>,
     pub limit: Option<u32>,
     pub max_pages: usize,
 }
@@ -202,7 +207,7 @@ where
                     realm_id: realm_id.clone(),
                     before: options.before.clone(),
                     after,
-                    order: options.order.clone(),
+                    order: options.order,
                     limit: options.limit,
                 })
                 .await

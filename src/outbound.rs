@@ -353,6 +353,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retry_after_counts_only_the_attempt_that_reached_the_server() {
+        let engine = OutboundEngine::new(MemoryStore::new());
+        engine
+            .enqueue(
+                Some("txn-throttled".to_owned()),
+                realm_id(),
+                SendQueueItemKind::Message,
+                serde_json::json!({"body": "hello"}),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let submitter = QueueSubmitter {
+            outcomes: Arc::new(Mutex::new(VecDeque::from([
+                OutboundSubmitOutcome::RetryAfter {
+                    delay: Duration::from_secs(30),
+                    reason: "rate_limited".to_owned(),
+                },
+            ]))),
+        };
+
+        let outcome = engine.submit_next(&submitter, Utc::now()).await.unwrap();
+        assert!(matches!(outcome, OutboundEngineOutcome::RetryAt { .. }));
+        let item = engine.snapshot().await.unwrap().items.remove(0);
+        assert_eq!(item.attempts, 1);
+        assert!(item.next_retry_at.is_some());
+    }
+
+    #[tokio::test]
     async fn post_accept_failure_retries_before_marking_sent() {
         let engine = OutboundEngine::new(MemoryStore::new());
         engine
