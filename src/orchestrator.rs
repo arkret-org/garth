@@ -589,7 +589,8 @@ mod tests {
     use arkret::{AccountStreamInterrupt, BoxSyncFuture, Error, SyncOutcome, SyncRequestBody};
     use arkret_core::events::kinds;
     use arkret_core::{
-        EventsSubscribeFrame, EventsSubscribeFrameKind, Hlc, RealmId, SyncBackfillOutcome,
+        EventsSubscribeFrame, EventsSubscribeFrameKind, Hlc, NotificationDelta,
+        NotificationDeltaAction, NotificationId, NotificationType, RealmId, SyncBackfillOutcome,
     };
     use serde_json::{Value, json};
 
@@ -905,14 +906,13 @@ mod tests {
             .commit(
                 scope.clone(),
                 Some("ak:cursor:pending-before-cancel".to_owned()),
-                vec![ClientEvent::Notification(
-                    serde_json::from_value(serde_json::json!({
-                        "id": "ak:notification:01964137-0000-7000-8000-000000000011",
-                        "type": "agent",
-                        "action": "remove"
-                    }))
-                    .unwrap(),
-                )],
+                vec![ClientEvent::Notification(NotificationDelta {
+                    id: NotificationId::new("ak:notification:01964137-0000-7000-8000-000000000011")
+                        .unwrap(),
+                    notification_type: NotificationType::Agent,
+                    action: NotificationDeltaAction::Remove,
+                    data: None,
+                })],
             )
             .await
             .unwrap()

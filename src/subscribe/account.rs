@@ -29,7 +29,10 @@ pub fn account_updates_to_events(updates: SyncUpdates) -> Vec<ClientEvent> {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use arkret_core::{DeviceListChanges, RealmId, RealmUpdate, SyncUpdates};
+    use arkret_core::{
+        DeviceListChanges, NotificationDelta, NotificationDeltaAction, NotificationId,
+        NotificationType, RealmId, RealmUpdate, SyncUpdates,
+    };
     use serde_json::Value;
 
     use super::*;
@@ -51,14 +54,13 @@ mod tests {
             device_lists: DeviceListChanges::default(),
             presence: Vec::new(),
             account_data: Vec::new(),
-            notifications: vec![
-                serde_json::from_value(serde_json::json!({
-                    "id": "ak:notification:01964137-0000-7000-8000-000000000010",
-                    "type": "agent",
-                    "action": "remove"
-                }))
-                .unwrap(),
-            ],
+            notifications: vec![NotificationDelta {
+                id: NotificationId::new("ak:notification:01964137-0000-7000-8000-000000000010")
+                    .unwrap(),
+                notification_type: NotificationType::Agent,
+                action: NotificationDeltaAction::Remove,
+                data: None,
+            }],
             partial: false,
         }
     }

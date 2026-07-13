@@ -415,7 +415,10 @@ impl DurableInboxStore for FileStore {
 
 #[cfg(test)]
 mod tests {
-    use arkret_core::{DeviceId, Did, RealmId};
+    use arkret_core::{
+        DeviceId, Did, NotificationDelta, NotificationDeltaAction, NotificationId,
+        NotificationType, RealmId,
+    };
 
     use super::*;
 
@@ -621,14 +624,13 @@ mod tests {
         let path = temp_path("inbox-crash-reopen");
         let _ = std::fs::remove_file(&path);
         let scope = account_scope();
-        let event = ClientEvent::Notification(
-            serde_json::from_value(serde_json::json!({
-                "id": "ak:notification:01964137-0000-7000-8000-000000000012",
-                "type": "agent",
-                "action": "remove"
-            }))
-            .unwrap(),
-        );
+        let event = ClientEvent::Notification(NotificationDelta {
+            id: NotificationId::new("ak:notification:01964137-0000-7000-8000-000000000012")
+                .unwrap(),
+            notification_type: NotificationType::Agent,
+            action: NotificationDeltaAction::Remove,
+            data: None,
+        });
 
         // Crash before commit: neither cursor nor delivery may appear.
         let before_commit = FileStore::open(&path).unwrap();
