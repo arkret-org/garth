@@ -18,6 +18,7 @@ pub mod orchestrator;
 pub mod outbound;
 pub mod projection;
 pub mod session;
+pub mod stamp;
 pub mod store;
 pub mod subscribe;
 
@@ -45,6 +46,9 @@ pub use session::{
     SessionGrantRefreshState, SessionGrantState, SessionGrantStore, SessionGrantTransport,
     SessionHandle, SessionProofFields, SessionRefreshOptions, SessionTransportProvider,
     grant_due_for_rotation, grant_is_dead, refresh_decision,
+};
+pub use stamp::{
+    MonotonicStampStore, RemoteStamp, SigningStamp, SigningStampAllocator, StampFloor, StampScope,
 };
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use store::FileStore;

@@ -10,6 +10,7 @@ use super::{
     CursorScope, CursorStore, DeliveryErrorClass, DeliveryId, DurableInboxStore, EventCacheStore,
     OpaqueCursor, PendingDelivery,
 };
+use crate::stamp::{MonotonicStampStore, StampFloor, StampScope};
 use crate::{ClientEvent, OutboundQueueStore};
 
 #[derive(Clone, Debug, Default)]
@@ -24,6 +25,7 @@ struct MemoryState {
     next_delivery_id: u64,
     deliveries: VecDeque<PendingDelivery>,
     outbound: arkret::sync_client::SendQueueSnapshot,
+    stamp_floors: BTreeMap<StampScope, StampFloor>,
 }
 
 impl MemoryStore {
@@ -39,6 +41,7 @@ impl MemoryStore {
                 next_delivery_id: 0,
                 deliveries: VecDeque::new(),
                 outbound: arkret::sync_client::SendQueueSnapshot::default(),
+                stamp_floors: BTreeMap::new(),
             })),
         }
     }
@@ -200,6 +203,27 @@ impl DurableInboxStore for MemoryStore {
                 delivery.last_error = Some(bounded_delivery_error(error));
                 Ok(true)
             })?
+        }
+    }
+}
+
+impl MonotonicStampStore for MemoryStore {
+    fn load_floor(
+        &self,
+        scope: StampScope,
+    ) -> impl Future<Output = Result<Option<StampFloor>>> + '_ {
+        async move { self.with_state(|state| state.stamp_floors.get(&scope).copied()) }
+    }
+
+    fn save_floor(
+        &self,
+        scope: StampScope,
+        floor: StampFloor,
+    ) -> impl Future<Output = Result<()>> + '_ {
+        async move {
+            self.with_state(|state| {
+                state.stamp_floors.insert(scope, floor);
+            })
         }
     }
 }

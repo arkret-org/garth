@@ -20,6 +20,7 @@ use super::{
     CursorScope, CursorStore, DeliveryErrorClass, DeliveryId, DurableInboxStore, EventCacheStore,
     OpaqueCursor, PendingDelivery,
 };
+use crate::stamp::{MonotonicStampStore, StampFloor, StampScope};
 use crate::{ClientEvent, OutboundQueueStore};
 
 /// Unit separator used to build a flat, deterministic string key from a
@@ -70,6 +71,8 @@ struct FileState {
     deliveries: VecDeque<PendingDelivery>,
     #[serde(default)]
     outbound: arkret::sync_client::SendQueueSnapshot,
+    #[serde(default)]
+    stamp_floors: BTreeMap<String, StampFloor>,
 }
 
 impl FileStore {
@@ -203,6 +206,21 @@ fn scope_key(scope: &CursorScope) -> String {
             device_id.as_str()
         ),
     }
+}
+
+fn stamp_scope_key(scope: &StampScope) -> String {
+    let service = scope
+        .service_id
+        .as_ref()
+        .map(|d| d.as_str().to_owned())
+        .unwrap_or_default();
+    format!(
+        "stamp{SEP}{}{SEP}{}{SEP}{}{SEP}{}",
+        service,
+        scope.actor_id.as_str(),
+        scope.device_id.as_str(),
+        scope.realm_id.as_str()
+    )
 }
 
 fn load_state(path: &Path) -> Result<FileState> {
@@ -413,6 +431,39 @@ impl DurableInboxStore for FileStore {
     }
 }
 
+impl MonotonicStampStore for FileStore {
+    fn load_floor(
+        &self,
+        scope: StampScope,
+    ) -> impl Future<Output = Result<Option<StampFloor>>> + '_ {
+        async move {
+            self.read(|inner| {
+                inner
+                    .state
+                    .stamp_floors
+                    .get(&stamp_scope_key(&scope))
+                    .copied()
+            })
+        }
+    }
+
+    fn save_floor(
+        &self,
+        scope: StampScope,
+        floor: StampFloor,
+    ) -> impl Future<Output = Result<()>> + '_ {
+        async move {
+            self.mutate(|inner| {
+                inner
+                    .state
+                    .stamp_floors
+                    .insert(stamp_scope_key(&scope), floor);
+            })
+            .await
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use arkret_core::{
@@ -440,6 +491,36 @@ mod tests {
             service_id: None,
             realm_id: RealmId::new("ak:realm:01904100-0000-7000-8000-000000000009").unwrap(),
         }
+    }
+
+    fn stamp_scope() -> StampScope {
+        StampScope {
+            service_id: None,
+            actor_id: Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
+            realm_id: RealmId::new("ak:realm:01904100-0000-7000-8000-000000000009").unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn stamp_floor_persists_across_reopen() {
+        let path = temp_path("stamp-floor-roundtrip");
+        let _ = std::fs::remove_file(&path);
+        let floor = StampFloor {
+            actor_seq: 42,
+            hlc_physical_ms: 0x01970e589d21,
+            hlc_logical: 7,
+        };
+        {
+            let store = FileStore::open(&path).unwrap();
+            store.save_floor(stamp_scope(), floor).await.unwrap();
+        }
+        let reopened = FileStore::open(&path).unwrap();
+        assert_eq!(
+            reopened.load_floor(stamp_scope()).await.unwrap(),
+            Some(floor)
+        );
+        let _ = std::fs::remove_file(&path);
     }
 
     #[tokio::test]
