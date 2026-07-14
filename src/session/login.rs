@@ -2,8 +2,8 @@ use arkret::session_grant::{
     did_proof_session_grant_request, holder_proof_session_grant_request, oidc_session_grant_request,
 };
 use arkret::{
-    DeviceId, Did, Hash, Result, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
-    SessionGrantAgentScopeRequest, SessionGrantRequestBody,
+    DeviceId, Did, Hash, Result, SessionGrantAgentScopeRequest, SessionGrantAppletDelegation,
+    SessionGrantDpopBindingProof, SessionGrantRequestBody,
 };
 use chrono::{DateTime, Utc};
 
@@ -146,8 +146,7 @@ impl LoginKind {
 
 #[cfg(test)]
 mod tests {
-    use arkret::SessionGrantProofKind;
-    use serde_json::json;
+    use arkret::{RealmId, SessionGrantProofKind};
 
     use super::*;
 
@@ -267,7 +266,13 @@ mod tests {
             principal_id: did(),
             requested_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
             agent_key_authorization_ref: "ak:event:01904100-0000-7000-8000-000000000002".to_owned(),
-            agent_scope_request: json!({"kind": "realm"}),
+            agent_scope_request: SessionGrantAgentScopeRequest {
+                realm_ids: vec![
+                    RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap(),
+                ],
+                strand_ids: Vec::new(),
+                track_names: Vec::new(),
+            },
             dpop_binding_proof: SessionGrantDpopBindingProof {
                 proof_jwt: "dpop-proof".to_owned(),
             },
