@@ -5,12 +5,12 @@ authors = ["Chris Young <chris@sonc.ai>"]
 categories = ["api-bindings", "network-programming", "cryptography"]
 description = "Runtime-neutral shared client engine for Arkret v1 applications."
 edition = "2024"
-homepage = "https://github.com/arkret/garth"
+homepage = "https://github.com/arkret-org/garth"
 keywords = ["arkret", "client", "garth"]
 license = "Apache-2.0"
 name = "garth"
 readme = "README.md"
-repository = "https://github.com/arkret/garth"
+repository = "https://github.com/arkret-org/garth"
 rust-version = "1.96"
 version = "0.3.0"
 
