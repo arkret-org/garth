@@ -3,10 +3,9 @@ use arkret::session_grant::{
 };
 use arkret::{
     DeviceId, Did, Hash, Result, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
-    SessionGrantRequestBody,
+    SessionGrantAgentScopeRequest, SessionGrantRequestBody,
 };
 use chrono::{DateTime, Utc};
-use serde_json::Value;
 
 pub use arkret::session_grant::SessionGrantProofFields as SessionProofFields;
 
@@ -15,7 +14,7 @@ pub struct AgentKeyProofLogin {
     pub principal_id: Did,
     pub requested_scope: Vec<String>,
     pub agent_key_authorization_ref: String,
-    pub agent_scope_request: Value,
+    pub agent_scope_request: SessionGrantAgentScopeRequest,
     pub dpop_binding_proof: SessionGrantDpopBindingProof,
     pub verification_method: String,
     pub challenge: String,
