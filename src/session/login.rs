@@ -90,7 +90,7 @@ impl DidProofLogin {
 
 #[derive(Clone, Debug)]
 pub struct OidcLogin {
-    pub principal_id: Option<Did>,
+    pub principal_id: Did,
     pub device_id: Option<DeviceId>,
     pub requested_scope: Vec<String>,
     pub challenge: String,
@@ -191,7 +191,7 @@ mod tests {
         .into_session_grant_request()
         .unwrap();
 
-        assert_eq!(request.principal_id, Some(did()));
+        assert_eq!(request.principal_id, did());
         assert_eq!(request.device_id, Some(device_id()));
         assert_eq!(
             request.proof.proof_kind,
@@ -220,7 +220,7 @@ mod tests {
             request.proof.proof_kind,
             SessionGrantProofKind::PairedDeviceProof
         );
-        assert_eq!(request.principal_id, Some(did()));
+        assert_eq!(request.principal_id, did());
         assert_eq!(request.device_id, Some(device_id()));
         assert_eq!(
             request.dpop_binding_proof.as_ref().unwrap().proof_jwt,
@@ -231,7 +231,7 @@ mod tests {
     #[test]
     fn oidc_login_builds_code_exchange_request() {
         let request = LoginKind::Oidc(OidcLogin {
-            principal_id: None,
+            principal_id: did(),
             device_id: Some(device_id()),
             requested_scope: Vec::new(),
             challenge: "oidc-challenge".to_owned(),

@@ -36,7 +36,8 @@ pub use orchestrator::{
     RunError, RunErrorClass, RunEvent, RunOptions, RunResult, RunStopReason, TransportProvider,
 };
 pub use outbound::{
-    OutboundEngine, OutboundEngineOutcome, OutboundPostAcceptHook, OutboundQueueStore,
+    OutboundEngine, OutboundEngineOutcome, OutboundGenerationFence,
+    OutboundGenerationFenceDecision, OutboundPostAcceptHook, OutboundQueueStore,
     OutboundSubmitOutcome, OutboundSubmitter,
 };
 pub use session::{

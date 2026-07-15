@@ -362,7 +362,6 @@ mod tests {
     use arkret::{AccountStreamInterrupt, Error, SyncRequestBody};
     use arkret_core::identifiers::Cursor;
     use arkret_core::{EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind};
-    use serde_json::Value;
 
     use super::realm::BoxRealmStreamFuture;
     use super::scan::BoxScanFuture;
@@ -413,7 +412,7 @@ mod tests {
             kind,
             realm_id: Some(realm_id()),
             cursor: None,
-            payload: Value::Null,
+            payload: None,
             reconnect_after_ms: None,
         }
     }

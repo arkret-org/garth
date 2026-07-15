@@ -347,9 +347,7 @@ fn state_from_issue_outcome(
     if outcome.expires_at <= now {
         return Err(protocol("issued session grant is expired"));
     }
-    if let Some(expected_principal) = request.principal_id.as_ref()
-        && &outcome.principal_id != expected_principal
-    {
+    if outcome.principal_id != request.principal_id {
         return Err(protocol("issued session grant principal changed"));
     }
     if request.device_id.as_ref() != outcome.device_id.as_ref() {
@@ -585,7 +583,7 @@ mod tests {
 
     fn oidc_login() -> LoginKind {
         LoginKind::Oidc(OidcLogin {
-            principal_id: None,
+            principal_id: did(),
             device_id: Some(device_id()),
             requested_scope: Vec::new(),
             challenge: "oidc-challenge".to_owned(),

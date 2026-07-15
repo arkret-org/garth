@@ -25,6 +25,31 @@ pub trait OutboundSubmitter: crate::MaybeSendSync {
     fn submit<'a>(&'a self, item: SendQueueItem) -> BoxOutboundFuture<'a, OutboundSubmitOutcome>;
 }
 
+/// Host-owned authoring-generation fence for durable outbound work.
+///
+/// The fence is evaluated again immediately before an item is marked
+/// `Sending`. This closes the restart/recovery gap where a queued event was
+/// authored by a device generation that is no longer active. Implementations
+/// must derive their decision from authoritative, already-verified local
+/// projection state; an unknown or conflicted generation must fail closed.
+pub trait OutboundGenerationFence: crate::MaybeSendSync {
+    fn evaluate(&self, item: &SendQueueItem) -> Result<OutboundGenerationFenceDecision>;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OutboundGenerationFenceDecision {
+    Current,
+    Quarantine { reason: String },
+}
+
+struct NoopGenerationFence;
+
+impl OutboundGenerationFence for NoopGenerationFence {
+    fn evaluate(&self, _item: &SendQueueItem) -> Result<OutboundGenerationFenceDecision> {
+        Ok(OutboundGenerationFenceDecision::Current)
+    }
+}
+
 /// Host-owned durable side effect that must commit after server acceptance but
 /// before the queue item becomes `Sent` (for example an MLS post-commit
 /// snapshot). Implementations must be idempotent: a crash or hook error causes
@@ -72,6 +97,10 @@ pub enum OutboundEngineOutcome {
         at: DateTime<Utc>,
     },
     Terminal(SendQueueItem),
+    Quarantined {
+        item: SendQueueItem,
+        reason: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -110,8 +139,13 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         submitter: &T,
         now: DateTime<Utc>,
     ) -> Result<OutboundEngineOutcome> {
-        self.submit_next_with_hook(submitter, &NoopPostAcceptHook, now)
-            .await
+        self.submit_next_with_fence_and_hook(
+            submitter,
+            &NoopGenerationFence,
+            &NoopPostAcceptHook,
+            now,
+        )
+        .await
     }
 
     pub async fn submit_next_with_hook<
@@ -123,18 +157,72 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         hook: &H,
         now: DateTime<Utc>,
     ) -> Result<OutboundEngineOutcome> {
+        self.submit_next_with_fence_and_hook(submitter, &NoopGenerationFence, hook, now)
+            .await
+    }
+
+    pub async fn submit_next_with_fence<
+        T: OutboundSubmitter + ?Sized,
+        F: OutboundGenerationFence + ?Sized,
+    >(
+        &self,
+        submitter: &T,
+        fence: &F,
+        now: DateTime<Utc>,
+    ) -> Result<OutboundEngineOutcome> {
+        self.submit_next_with_fence_and_hook(submitter, fence, &NoopPostAcceptHook, now)
+            .await
+    }
+
+    pub async fn submit_next_with_fence_and_hook<
+        T: OutboundSubmitter + ?Sized,
+        F: OutboundGenerationFence + ?Sized,
+        H: OutboundPostAcceptHook + ?Sized,
+    >(
+        &self,
+        submitter: &T,
+        fence: &F,
+        hook: &H,
+        now: DateTime<Utc>,
+    ) -> Result<OutboundEngineOutcome> {
         let item = self
             .store
             .mutate_outbound(move |queue| {
+                for candidate in queue.snapshot().items {
+                    if !matches!(
+                        candidate.status,
+                        arkret::sync_client::SendQueueStatus::Queued
+                            | arkret::sync_client::SendQueueStatus::Sending
+                            | arkret::sync_client::SendQueueStatus::Failed
+                    ) {
+                        continue;
+                    }
+                    if let OutboundGenerationFenceDecision::Quarantine { reason } =
+                        fence.evaluate(&candidate)?
+                    {
+                        queue.cancel(&candidate.transaction_id, true)?;
+                        return Ok(QueuePreflight::Quarantined {
+                            item: owned_item(queue, &candidate.transaction_id)?,
+                            reason,
+                        });
+                    }
+                }
                 let Some(item) = queue.ready_batch(now, 1).into_iter().next() else {
-                    return Ok(None);
+                    return Ok(QueuePreflight::Idle);
                 };
                 queue.mark_sending(&item.transaction_id)?;
-                Ok(queue.get(&item.transaction_id).cloned())
+                Ok(QueuePreflight::Ready(owned_item(
+                    queue,
+                    &item.transaction_id,
+                )?))
             })
             .await?;
-        let Some(item) = item else {
-            return Ok(OutboundEngineOutcome::Idle);
+        let item = match item {
+            QueuePreflight::Idle => return Ok(OutboundEngineOutcome::Idle),
+            QueuePreflight::Quarantined { item, reason } => {
+                return Ok(OutboundEngineOutcome::Quarantined { item, reason });
+            }
+            QueuePreflight::Ready(item) => item,
         };
         let transaction_id = item.transaction_id.clone();
         let hook_item = item.clone();
@@ -211,6 +299,12 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
     }
 }
 
+enum QueuePreflight {
+    Idle,
+    Ready(SendQueueItem),
+    Quarantined { item: SendQueueItem, reason: String },
+}
+
 fn owned_item(queue: &SendQueue, id: &str) -> Result<SendQueueItem> {
     queue.get(id).cloned().ok_or_else(|| {
         Error::Protocol("outbound queue item disappeared during mutation".to_owned())
@@ -231,6 +325,20 @@ mod tests {
     }
 
     struct FailingSubmitter;
+
+    struct RejectGeneration(&'static str);
+
+    impl OutboundGenerationFence for RejectGeneration {
+        fn evaluate(&self, item: &SendQueueItem) -> Result<OutboundGenerationFenceDecision> {
+            if item.content.get("generation").and_then(Value::as_str) == Some(self.0) {
+                Ok(OutboundGenerationFenceDecision::Current)
+            } else {
+                Ok(OutboundGenerationFenceDecision::Quarantine {
+                    reason: "authoring_generation_superseded".to_owned(),
+                })
+            }
+        }
+    }
 
     #[derive(Clone, Default)]
     struct FailingOncePostAcceptHook {
@@ -425,6 +533,51 @@ mod tests {
             engine.snapshot().await.unwrap().items[0].remote_event_id,
             Some(event_id())
         );
+    }
+
+    #[tokio::test]
+    async fn generation_fence_quarantines_before_submit_and_cascades() {
+        let engine = OutboundEngine::new(MemoryStore::new());
+        let stale = engine
+            .enqueue(
+                Some("txn-stale".to_owned()),
+                realm_id(),
+                SendQueueItemKind::Message,
+                serde_json::json!({"generation": "1-old"}),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        engine
+            .enqueue(
+                Some("txn-dependent".to_owned()),
+                realm_id(),
+                SendQueueItemKind::Edit {
+                    target_event_id: event_id(),
+                },
+                serde_json::json!({"generation": "2-current"}),
+                vec![stale.transaction_id],
+            )
+            .await
+            .unwrap();
+        let submitter = QueueSubmitter {
+            outcomes: Arc::new(Mutex::new(VecDeque::new())),
+        };
+
+        let outcome = engine
+            .submit_next_with_fence(&submitter, &RejectGeneration("2-current"), Utc::now())
+            .await
+            .unwrap();
+        assert!(matches!(
+            outcome,
+            OutboundEngineOutcome::Quarantined { ref item, ref reason }
+                if item.transaction_id == "txn-stale"
+                    && reason == "authoring_generation_superseded"
+        ));
+        let snapshot = engine.snapshot().await.unwrap();
+        assert!(snapshot.items.iter().all(|item| {
+            item.status == arkret::sync_client::SendQueueStatus::Cancelled && item.attempts == 0
+        }));
     }
 
     #[cfg(all(feature = "native", not(target_arch = "wasm32")))]

@@ -482,6 +482,11 @@ mod tests {
     }
 
     fn frame(kind: EventsSubscribeFrameKind, payload: Value) -> EventsSubscribeFrame {
+        let payload = if payload.is_null() {
+            None
+        } else {
+            Some(serde_json::from_value(payload).expect("frame payload must be an object"))
+        };
         EventsSubscribeFrame {
             kind,
             realm_id: Some(realm_id()),
