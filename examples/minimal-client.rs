@@ -146,7 +146,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             grant_id: GrantId::new("ak:grant:01904100-0000-7000-8000-000000000001")?,
             grant_jwt: "reference-grant".to_owned(),
             expires_at: Utc::now() + Duration::hours(1),
-            audience: "did:webvh:z6mkfixture:service.example".to_owned(),
+            audience: Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
             session_public_key: Some("reference-public-key".to_owned()),
             dpop_jkt: Some("reference-jkt".to_owned()),

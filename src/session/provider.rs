@@ -314,7 +314,7 @@ mod tests {
             grant_id: grant_id(1),
             grant_jwt: "grant-1".to_owned(),
             expires_at: Utc::now() + Duration::hours(2),
-            audience: "did:webvh:z6mkfixture:service.example".to_owned(),
+            audience: Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
             session_public_key: Some("session-public-key".to_owned()),
             dpop_jkt: Some("jkt-1".to_owned()),
@@ -327,7 +327,7 @@ mod tests {
             grant_jwt: "grant-2".to_owned(),
             session_public_key: "session-public-key".to_owned(),
             expires_at: Utc::now() + Duration::hours(1),
-            audience: "did:webvh:z6mkfixture:service.example".to_owned(),
+            audience: Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
             scopes: vec!["ak.self.events.stream.subscribe".to_owned()],
             dpop_jkt: "jkt-1".to_owned(),
             previous_grant_id: grant_id(1),
@@ -354,7 +354,9 @@ mod tests {
                 SessionEngine::with_state(transport, state()),
                 factory,
                 SessionRefreshOptions {
-                    audience: Some("did:webvh:z6mkfixture:service.example".to_owned()),
+                    audience: Some(
+                        Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
+                    ),
                     device_id: Some(
                         DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
                     ),
@@ -364,7 +366,9 @@ mod tests {
                         request_canonical_digest: Some(
                             Hash::new("sha256:0000000000000000000000000000000000000000000000000000000000000000").unwrap(),
                         ),
-                        audience: Some("did:webvh:z6mkfixture:service.example".to_owned()),
+                        audience: Some(
+                            Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
+                        ),
                         issued_at: Some(Utc::now()),
                         expires_at: Some(Utc::now() + Duration::minutes(5)),
                         signature: Some("refresh-proof-signature".to_owned()),
@@ -416,7 +420,7 @@ mod tests {
             calls: Arc::new(Mutex::new(0)),
         };
         let options = SessionRefreshOptions {
-            audience: Some("did:webvh:z6mkfixture:service.example".to_owned()),
+            audience: Some(Did::new("did:webvh:z6mkfixture:service.example").unwrap()),
             device_id: state().device_id.clone(),
             proof: Some(SessionGrantRefreshProof {
                 proof_kind: Some(SessionGrantProofKind::DidBoundSignature),
@@ -427,7 +431,7 @@ mod tests {
                     )
                     .unwrap(),
                 ),
-                audience: Some("did:webvh:z6mkfixture:service.example".to_owned()),
+                audience: Some(Did::new("did:webvh:z6mkfixture:service.example").unwrap()),
                 issued_at: Some(Utc::now()),
                 expires_at: Some(Utc::now() + chrono::Duration::minutes(5)),
                 signature: Some("refresh-proof-signature".to_owned()),

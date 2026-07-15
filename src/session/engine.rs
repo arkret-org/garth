@@ -61,7 +61,7 @@ pub struct SessionGrantState {
     #[zeroize(skip)]
     pub expires_at: DateTime<Utc>,
     #[zeroize(skip)]
-    pub audience: String,
+    pub audience: Did,
     #[zeroize(skip)]
     pub granted_scope: Vec<String>,
     /// The session public key reported by the Account Authority when the grant
@@ -106,7 +106,7 @@ impl SessionGrantState {
 
 #[derive(Clone, Debug, Default)]
 pub struct SessionRefreshOptions {
-    pub audience: Option<String>,
+    pub audience: Option<Did>,
     pub device_id: Option<DeviceId>,
     pub proof: Option<SessionGrantRefreshProof>,
     pub expected_dpop_jkt: Option<String>,
@@ -407,7 +407,7 @@ fn state_from_refresh_outcome(
     if outcome.dpop_jkt != expected_dpop_jkt {
         return Err(protocol("refreshed session grant DPoP key changed"));
     }
-    if request.audience.as_deref() != Some(outcome.audience.as_str()) {
+    if request.audience.as_ref() != Some(&outcome.audience) {
         return Err(protocol(
             "refreshed session grant audience mismatched request",
         ));
@@ -540,8 +540,8 @@ mod tests {
             .unwrap()
     }
 
-    fn audience() -> String {
-        "did:webvh:z6mkfixture:service.example".to_owned()
+    fn audience() -> Did {
+        Did::new("did:webvh:z6mkfixture:service.example").unwrap()
     }
 
     fn proof_fields() -> SessionProofFields {
@@ -850,7 +850,7 @@ mod tests {
         let requests = transport.refresh_requests();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].grant_jwt, "grant-1");
-        assert_eq!(requests[0].audience.as_deref(), Some(audience().as_str()));
+        assert_eq!(requests[0].audience.as_ref(), Some(&audience()));
         let state = engine.current_state().unwrap();
         assert_eq!(state.grant_id, grant_id(2));
         assert_eq!(state.dpop_jkt.as_deref(), Some("jkt-1"));
@@ -859,7 +859,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_rejects_changed_outcomes_without_replacing_state() {
         let mut wrong_audience = refresh_outcome("grant-wrong-audience", grant_id(30));
-        wrong_audience.audience = "did:webvh:z6mkfixture:other-service.example".to_owned();
+        wrong_audience.audience = Did::new("did:webvh:z6mkfixture:other-service.example").unwrap();
 
         let mut wrong_previous = refresh_outcome("grant-wrong-previous", grant_id(31));
         wrong_previous.previous_grant_id = grant_id(99);
