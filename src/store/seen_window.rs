@@ -59,6 +59,10 @@ where
         &self.entries
     }
 
+    pub(crate) fn capacity(&self) -> usize {
+        self.capacity
+    }
+
     pub fn into_entries(self) -> VecDeque<T> {
         self.entries
     }

@@ -63,24 +63,81 @@ pub struct StampFloor {
     pub hlc_logical: u32,
 }
 
+/// One atomic transition applied to a durable [`StampFloor`].
+#[derive(Clone, Debug)]
+pub enum StampFloorUpdate {
+    Issue {
+        observed_frontier: Option<u64>,
+        now_ms: u64,
+    },
+    Observe(RemoteStamp),
+}
+
+impl StampFloor {
+    /// Apply one monotonic transition without mutating `self`.
+    ///
+    /// Stores call this while holding their transaction or cross-process lock,
+    /// then durably commit the result before releasing that boundary.
+    pub fn apply(self, update: StampFloorUpdate) -> Result<Self> {
+        if self.hlc_physical_ms > MAX_PHYSICAL || self.hlc_logical > MAX_LOGICAL {
+            return Err(Error::Protocol(
+                "persisted stamp floor exceeds the HLC wire bounds".to_owned(),
+            ));
+        }
+        match update {
+            StampFloorUpdate::Issue {
+                observed_frontier,
+                now_ms,
+            } => {
+                let actor_seq = self
+                    .actor_seq
+                    .max(observed_frontier.unwrap_or(0))
+                    .checked_add(1)
+                    .ok_or_else(|| Error::Protocol("actor_seq counter overflow".to_owned()))?;
+                let (hlc_physical_ms, hlc_logical) =
+                    advance_hlc(self.hlc_physical_ms, self.hlc_logical, now_ms)?;
+                Ok(Self {
+                    actor_seq,
+                    hlc_physical_ms,
+                    hlc_logical,
+                })
+            }
+            StampFloorUpdate::Observe(remote) => {
+                let mut next = self;
+                if let Some(actor_seq) = remote.actor_seq {
+                    next.actor_seq = next.actor_seq.max(actor_seq);
+                }
+                if let Some(hlc) = remote.hlc {
+                    let (physical, logical) = hlc_parts(&hlc)?;
+                    if (physical, logical) > (next.hlc_physical_ms, next.hlc_logical) {
+                        next.hlc_physical_ms = physical;
+                        next.hlc_logical = logical;
+                    }
+                }
+                Ok(next)
+            }
+        }
+    }
+}
+
 /// Durable persistence seam for the [`StampFloor`], keyed by [`StampScope`].
 ///
 /// Implemented by the batteries-included [`crate::MemoryStore`] and
 /// [`crate::FileStore`]; a web client provides an IndexedDB-backed
-/// implementation. `save_floor` MUST be durable before it resolves — the
-/// allocator persists the advanced floor *before* handing the stamp to the
-/// signer, so a crash can only ever skip stamps forward, never reissue one.
+/// implementation. `advance_floor` MUST atomically load, apply, and durably
+/// commit the transition before it resolves. A crash may skip an allocated
+/// stamp, but concurrent callers and restarts must never receive the same one.
 pub trait MonotonicStampStore: Clone + MaybeSendSync + 'static {
     fn load_floor(
         &self,
         scope: StampScope,
     ) -> impl Future<Output = Result<Option<StampFloor>>> + '_;
 
-    fn save_floor(
+    fn advance_floor(
         &self,
         scope: StampScope,
-        floor: StampFloor,
-    ) -> impl Future<Output = Result<()>> + '_;
+        update: StampFloorUpdate,
+    ) -> impl Future<Output = Result<StampFloor>> + '_;
 }
 
 /// A monotonic `(actor_seq, hlc)` pair ready to stamp onto an event before the
@@ -154,28 +211,27 @@ where
     /// crash between allocation and signing loses the stamp (the height is
     /// skipped) rather than reissuing it.
     pub async fn issue(&self, observed_frontier: Option<u64>) -> Result<SigningStamp> {
-        let mut floor = self
-            .store
-            .load_floor(self.scope.clone())
-            .await?
-            .unwrap_or_default();
-
-        let seq_floor = floor.actor_seq.max(observed_frontier.unwrap_or(0));
-        let actor_seq = seq_floor
-            .checked_add(1)
-            .ok_or_else(|| Error::Protocol("actor_seq counter overflow".to_owned()))?;
-
         let now_ms = host_now_ms(&self.clock);
-        let (physical, logical) = advance_hlc(floor.hlc_physical_ms, floor.hlc_logical, now_ms)?;
+        let floor = self
+            .store
+            .advance_floor(
+                self.scope.clone(),
+                StampFloorUpdate::Issue {
+                    observed_frontier,
+                    now_ms,
+                },
+            )
+            .await?;
 
-        floor.actor_seq = actor_seq;
-        floor.hlc_physical_ms = physical;
-        floor.hlc_logical = logical;
-        self.store.save_floor(self.scope.clone(), floor).await?;
-
-        let hlc = Hlc::new(format!("{physical:012x}-{logical:04x}-{}", self.node_id))
-            .map_err(|err| Error::Protocol(format!("allocated hlc is invalid: {err}")))?;
-        Ok(SigningStamp { actor_seq, hlc })
+        let hlc = Hlc::new(format!(
+            "{:012x}-{:04x}-{}",
+            floor.hlc_physical_ms, floor.hlc_logical, self.node_id
+        ))
+        .map_err(|err| Error::Protocol(format!("allocated hlc is invalid: {err}")))?;
+        Ok(SigningStamp {
+            actor_seq: floor.actor_seq,
+            hlc,
+        })
     }
 
     /// Advance the durable floor to at least a value observed from remote
@@ -184,31 +240,9 @@ where
     /// next local event, keeping the chain globally monotonic
     /// (`encoding.md` §7 receive rule).
     pub async fn observe(&self, remote: RemoteStamp) -> Result<()> {
-        let mut floor = self
-            .store
-            .load_floor(self.scope.clone())
-            .await?
-            .unwrap_or_default();
-        let mut changed = false;
-
-        if let Some(actor_seq) = remote.actor_seq
-            && actor_seq > floor.actor_seq
-        {
-            floor.actor_seq = actor_seq;
-            changed = true;
-        }
-        if let Some(hlc) = remote.hlc {
-            let (physical, logical) = hlc_parts(&hlc)?;
-            if (physical, logical) > (floor.hlc_physical_ms, floor.hlc_logical) {
-                floor.hlc_physical_ms = physical;
-                floor.hlc_logical = logical;
-                changed = true;
-            }
-        }
-
-        if changed {
-            self.store.save_floor(self.scope.clone(), floor).await?;
-        }
+        self.store
+            .advance_floor(self.scope.clone(), StampFloorUpdate::Observe(remote))
+            .await?;
         Ok(())
     }
 }
@@ -230,6 +264,11 @@ pub struct RemoteStamp {
 ///   equivalent of `encoding.md` §7's "wait for a larger unix_ms"; a wasm host
 ///   cannot block). Overflowing the 48-bit physical field is a hard error.
 fn advance_hlc(floor_physical: u64, floor_logical: u32, now_ms: u64) -> Result<(u64, u32)> {
+    if now_ms > MAX_PHYSICAL {
+        return Err(Error::Protocol(
+            "host clock exceeds the HLC 48-bit physical field".to_owned(),
+        ));
+    }
     if now_ms > floor_physical {
         return Ok((now_ms, 0));
     }
@@ -275,6 +314,9 @@ fn derive_node_id(realm_id: &str, device_id: &str, local_node_secret: &[u8]) -> 
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+    use std::path::Path;
     use std::sync::{Arc, Mutex};
 
     use chrono::{DateTime, Utc};
@@ -344,6 +386,86 @@ mod tests {
         assert_eq!(second.actor_seq, 2);
         assert!(second.hlc.as_str() > first.hlc.as_str());
         assert!(second.hlc.as_str().starts_with("01970e589d21-0001-"));
+    }
+
+    #[tokio::test]
+    async fn concurrent_allocator_clones_and_instances_never_reuse_stamps() {
+        let store = MemoryStore::new();
+        let clock = FixedClock::at(0x01970e589d21);
+        let cloned = allocator(store.clone(), clock.clone());
+        let barrier = Arc::new(tokio::sync::Barrier::new(65));
+        let mut tasks = Vec::new();
+
+        for index in 0..64 {
+            let alloc = if index % 2 == 0 {
+                cloned.clone()
+            } else {
+                allocator(store.clone(), clock.clone())
+            };
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                alloc.issue(None).await.unwrap()
+            }));
+        }
+        barrier.wait().await;
+
+        let mut actor_seqs = BTreeSet::new();
+        let mut hlcs = BTreeSet::new();
+        for task in tasks {
+            let stamp = task.await.unwrap();
+            assert!(actor_seqs.insert(stamp.actor_seq));
+            assert!(hlcs.insert(stamp.hlc));
+        }
+        assert_eq!(actor_seqs.len(), 64);
+        assert_eq!(actor_seqs.first(), Some(&1));
+        assert_eq!(actor_seqs.last(), Some(&64));
+        assert_eq!(
+            store.load_floor(scope()).await.unwrap().unwrap().actor_seq,
+            64
+        );
+    }
+
+    #[tokio::test]
+    async fn concurrent_observe_and_issue_never_regress_the_floor() {
+        let store = MemoryStore::new();
+        let clock = FixedClock::at(0x01970e589d21);
+        let alloc = allocator(store.clone(), clock);
+        let remote_hlc = Hlc::new("01970e589d90-0007-a13f9c2e").unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(34));
+        let mut tasks = Vec::new();
+
+        for _ in 0..32 {
+            let alloc = alloc.clone();
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                alloc.issue(None).await.map(|_| ())
+            }));
+        }
+        let observer = {
+            let alloc = alloc.clone();
+            let barrier = barrier.clone();
+            let remote_hlc = remote_hlc.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                alloc
+                    .observe(RemoteStamp {
+                        actor_seq: Some(10_000),
+                        hlc: Some(remote_hlc),
+                    })
+                    .await
+            })
+        };
+        barrier.wait().await;
+        for task in tasks {
+            task.await.unwrap().unwrap();
+        }
+        observer.await.unwrap().unwrap();
+
+        let next = alloc.issue(None).await.unwrap();
+        assert!(next.actor_seq > 10_000);
+        assert!(next.hlc > remote_hlc);
     }
 
     #[tokio::test]
@@ -440,8 +562,9 @@ mod tests {
     async fn durable_file_store_restart_never_reuses_a_stamp() {
         use crate::FileStore;
 
-        let path = std::env::temp_dir().join("garth-stamp-restart.json");
-        let _ = std::fs::remove_file(&path);
+        let path =
+            std::env::temp_dir().join(format!("garth-stamp-restart-{}.json", std::process::id()));
+        cleanup_file_store(&path);
         let clock = FixedClock::at(0x01970e589d21);
 
         let last = {
@@ -468,6 +591,221 @@ mod tests {
         let after = alloc.issue(None).await.unwrap();
         assert!(after.actor_seq > last.actor_seq);
         assert!(after.hlc.as_str() > last.hlc.as_str());
-        let _ = std::fs::remove_file(&path);
+        cleanup_file_store(&path);
+    }
+
+    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn separate_file_store_handles_allocate_unique_stamps() {
+        use crate::FileStore;
+
+        let path =
+            std::env::temp_dir().join(format!("garth-stamp-handles-{}.json", std::process::id()));
+        cleanup_file_store(&path);
+        let clock = FixedClock::at(0x01970e589d21);
+        let barrier = Arc::new(tokio::sync::Barrier::new(33));
+        let mut tasks = Vec::new();
+        for _ in 0..32 {
+            let store = FileStore::open(&path).unwrap();
+            let alloc = SigningStampAllocator::with_clock(
+                store,
+                scope(),
+                b"local-node-secret",
+                clock.clone(),
+            );
+            let barrier = barrier.clone();
+            tasks.push(tokio::spawn(async move {
+                barrier.wait().await;
+                alloc.issue(None).await.unwrap()
+            }));
+        }
+        barrier.wait().await;
+
+        let mut actor_seqs = BTreeSet::new();
+        let mut hlcs = BTreeSet::new();
+        for task in tasks {
+            let stamp = task.await.unwrap();
+            assert!(actor_seqs.insert(stamp.actor_seq));
+            assert!(hlcs.insert(stamp.hlc));
+        }
+        assert_eq!(actor_seqs.len(), 32);
+        assert_eq!(actor_seqs.first(), Some(&1));
+        assert_eq!(actor_seqs.last(), Some(&32));
+        let reopened = FileStore::open(&path).unwrap();
+        assert_eq!(
+            reopened
+                .load_floor(scope())
+                .await
+                .unwrap()
+                .unwrap()
+                .actor_seq,
+            32
+        );
+        cleanup_file_store(&path);
+    }
+
+    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+    #[tokio::test]
+    async fn separate_file_store_handles_do_not_lose_observations() {
+        use crate::FileStore;
+
+        let path = std::env::temp_dir().join(format!(
+            "garth-stamp-handle-observe-{}.json",
+            std::process::id()
+        ));
+        cleanup_file_store(&path);
+        let clock = FixedClock::at(0x01970e589d21);
+        let remote_hlc = Hlc::new("01970e589d90-0007-a13f9c2e").unwrap();
+        let barrier = Arc::new(tokio::sync::Barrier::new(34));
+        let mut issuers = Vec::new();
+        for _ in 0..32 {
+            let alloc = SigningStampAllocator::with_clock(
+                FileStore::open(&path).unwrap(),
+                scope(),
+                b"local-node-secret",
+                clock.clone(),
+            );
+            let barrier = barrier.clone();
+            issuers.push(tokio::spawn(async move {
+                barrier.wait().await;
+                alloc.issue(None).await.map(|_| ())
+            }));
+        }
+        let observer = {
+            let alloc = SigningStampAllocator::with_clock(
+                FileStore::open(&path).unwrap(),
+                scope(),
+                b"local-node-secret",
+                clock.clone(),
+            );
+            let barrier = barrier.clone();
+            let remote_hlc = remote_hlc.clone();
+            tokio::spawn(async move {
+                barrier.wait().await;
+                alloc
+                    .observe(RemoteStamp {
+                        actor_seq: Some(10_000),
+                        hlc: Some(remote_hlc),
+                    })
+                    .await
+            })
+        };
+        barrier.wait().await;
+        for issuer in issuers {
+            issuer.await.unwrap().unwrap();
+        }
+        observer.await.unwrap().unwrap();
+
+        let reopened = SigningStampAllocator::with_clock(
+            FileStore::open(&path).unwrap(),
+            scope(),
+            b"local-node-secret",
+            clock,
+        );
+        let next = reopened.issue(None).await.unwrap();
+        assert!(next.actor_seq > 10_000);
+        assert!(next.hlc > remote_hlc);
+        cleanup_file_store(&path);
+    }
+
+    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+    #[test]
+    fn file_store_process_worker() {
+        use crate::FileStore;
+
+        let Ok(path) = std::env::var("GARTH_STAMP_WORKER_PATH") else {
+            return;
+        };
+        let count = std::env::var("GARTH_STAMP_WORKER_COUNT")
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let store = FileStore::open(path).unwrap();
+            let alloc = SigningStampAllocator::with_clock(
+                store,
+                scope(),
+                b"local-node-secret",
+                FixedClock::at(0x01970e589d21),
+            );
+            for _ in 0..count {
+                let stamp = alloc.issue(None).await.unwrap();
+                println!("GARTH_STAMP_SEQ={}", stamp.actor_seq);
+            }
+        });
+    }
+
+    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+    #[test]
+    fn separate_processes_allocate_unique_stamps() {
+        use std::process::{Command, Stdio};
+
+        use crate::FileStore;
+
+        const WORKERS: usize = 4;
+        const PER_WORKER: usize = 16;
+        let path =
+            std::env::temp_dir().join(format!("garth-stamp-processes-{}.json", std::process::id()));
+        cleanup_file_store(&path);
+        let executable = std::env::current_exe().unwrap();
+        let mut children = Vec::new();
+        for _ in 0..WORKERS {
+            children.push(
+                Command::new(&executable)
+                    .arg("stamp::tests::file_store_process_worker")
+                    .arg("--exact")
+                    .arg("--nocapture")
+                    .env("GARTH_STAMP_WORKER_PATH", &path)
+                    .env("GARTH_STAMP_WORKER_COUNT", PER_WORKER.to_string())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            );
+        }
+
+        let mut actor_seqs = BTreeSet::new();
+        for child in children {
+            let output = child.wait_with_output().unwrap();
+            assert!(
+                output.status.success(),
+                "worker failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            for line in String::from_utf8_lossy(&output.stdout).lines() {
+                if let Some(value) = line.strip_prefix("GARTH_STAMP_SEQ=") {
+                    assert!(actor_seqs.insert(value.parse::<u64>().unwrap()));
+                }
+            }
+        }
+        assert_eq!(actor_seqs.len(), WORKERS * PER_WORKER);
+        assert_eq!(actor_seqs.first(), Some(&1));
+        assert_eq!(actor_seqs.last(), Some(&64));
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let store = FileStore::open(&path).unwrap();
+            assert_eq!(
+                store.load_floor(scope()).await.unwrap().unwrap().actor_seq,
+                64
+            );
+        });
+        cleanup_file_store(&path);
+    }
+
+    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+    fn cleanup_file_store(path: &Path) {
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(path.with_extension("tmp"));
+        let mut lock = path.as_os_str().to_owned();
+        lock.push(".lock");
+        let _ = std::fs::remove_file(std::path::PathBuf::from(lock));
     }
 }

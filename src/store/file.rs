@@ -6,6 +6,7 @@
 //! after each mutation. Web clients provide an IndexedDB-backed store instead.
 
 use std::collections::{BTreeMap, VecDeque};
+use std::fs::{File, OpenOptions};
 use std::future::Future;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -20,7 +21,7 @@ use super::{
     CursorScope, CursorStore, DeliveryErrorClass, DeliveryId, DurableInboxStore, EventCacheStore,
     OpaqueCursor, PendingDelivery,
 };
-use crate::stamp::{MonotonicStampStore, StampFloor, StampScope};
+use crate::stamp::{MonotonicStampStore, StampFloor, StampFloorUpdate, StampScope};
 use crate::{ClientEvent, OutboundQueueStore};
 
 /// Unit separator used to build a flat, deterministic string key from a
@@ -111,17 +112,29 @@ impl FileStore {
     }
 
     async fn mutate<T>(&self, f: impl FnOnce(&mut FileStoreInner) -> T) -> Result<T> {
-        // Serialize the complete transaction and do not publish candidate
-        // state to readers until its durable snapshot has succeeded.
+        // Serialize clones in-process, then take a stable sidecar lock shared
+        // by every handle and process. The data file itself is atomically
+        // replaced, so locking that inode would not survive a rename.
         let _mutation = self.mutation.lock().await;
+        let _file_lock = self.acquire_exclusive_lock().await?;
         let (out, candidate, snapshot) = self.stage_mutation(f)?;
-        self.persist_snapshot(snapshot).await?;
+        // Keep the OS lock alive through the complete durable commit. This is
+        // intentionally synchronous: cancelling the async caller must not
+        // detach a background writer after the cross-process lock is dropped.
+        self.persist_snapshot(snapshot)?;
         let mut guard = self
             .inner
             .lock()
             .map_err(|err: PoisonError<_>| Error::Protocol(format!("file store lock: {err}")))?;
         *guard = candidate;
         Ok(out)
+    }
+
+    async fn acquire_exclusive_lock(&self) -> Result<File> {
+        let path = self.path()?;
+        tokio::task::spawn_blocking(move || acquire_store_lock(&path))
+            .await
+            .map_err(|err| Error::Protocol(format!("file store lock task: {err}")))?
     }
 
     fn stage_mutation<T>(
@@ -132,8 +145,20 @@ impl FileStore {
             .inner
             .lock()
             .map_err(|err: PoisonError<_>| Error::Protocol(format!("file store lock: {err}")))?;
-        let mut candidate = guard.clone();
+        let path = guard.path.clone();
+        let capacity = guard.seen_window.capacity();
+        let generation = guard.generation;
         drop(guard);
+        let mut state = load_state(&path)?;
+        let seen_events = std::mem::take(&mut state.seen_events);
+        let seen_window = BoundedSeenWindow::from_entries(seen_events, capacity);
+        state.seen_events = seen_window.entries().clone();
+        let mut candidate = FileStoreInner {
+            path,
+            state,
+            seen_window,
+            generation,
+        };
         let out = f(&mut candidate);
         candidate.generation = candidate
             .generation
@@ -147,21 +172,16 @@ impl FileStore {
         Ok((out, candidate, snapshot))
     }
 
-    async fn persist_snapshot(&self, snapshot: PersistSnapshot) -> Result<()> {
-        let persist_state = self.persist.clone();
-        tokio::task::spawn_blocking(move || {
-            let mut guard = persist_state.lock().map_err(|err: PoisonError<_>| {
-                Error::Protocol(format!("file store persist lock: {err}"))
-            })?;
-            if guard.generation >= snapshot.generation {
-                return Ok(());
-            }
-            persist(&snapshot.path, &snapshot.state)?;
-            guard.generation = snapshot.generation;
-            Ok(())
-        })
-        .await
-        .map_err(|err| Error::Protocol(format!("file store persist task: {err}")))?
+    fn persist_snapshot(&self, snapshot: PersistSnapshot) -> Result<()> {
+        let mut guard = self.persist.lock().map_err(|err: PoisonError<_>| {
+            Error::Protocol(format!("file store persist lock: {err}"))
+        })?;
+        if guard.generation >= snapshot.generation {
+            return Ok(());
+        }
+        persist(&snapshot.path, &snapshot.state)?;
+        guard.generation = snapshot.generation;
+        Ok(())
     }
 
     fn read<T>(&self, f: impl FnOnce(&FileStoreInner) -> T) -> Result<T> {
@@ -171,6 +191,45 @@ impl FileStore {
             .map_err(|err: PoisonError<_>| Error::Protocol(format!("file store lock: {err}")))?;
         Ok(f(&guard))
     }
+}
+
+fn store_lock_path(path: &Path) -> PathBuf {
+    let mut lock = path.as_os_str().to_owned();
+    lock.push(".lock");
+    PathBuf::from(lock)
+}
+
+fn acquire_store_lock(path: &Path) -> Result<File> {
+    let lock_path = store_lock_path(path);
+    if let Some(parent) = lock_path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent).map_err(|err| {
+            Error::Protocol(format!(
+                "create file store lock parent {}: {err}",
+                parent.display()
+            ))
+        })?;
+    }
+    let file = OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&lock_path)
+        .map_err(|err| {
+            Error::Protocol(format!(
+                "open file store lock {}: {err}",
+                lock_path.display()
+            ))
+        })?;
+    file.lock().map_err(|err| {
+        Error::Protocol(format!(
+            "acquire file store lock {}: {err}",
+            lock_path.display()
+        ))
+    })?;
+    Ok(file)
 }
 
 fn scope_key(scope: &CursorScope) -> String {
@@ -437,29 +496,31 @@ impl MonotonicStampStore for FileStore {
         scope: StampScope,
     ) -> impl Future<Output = Result<Option<StampFloor>>> + '_ {
         async move {
-            self.read(|inner| {
-                inner
-                    .state
-                    .stamp_floors
-                    .get(&stamp_scope_key(&scope))
-                    .copied()
-            })
+            let _file_lock = self.acquire_exclusive_lock().await?;
+            let state = load_state(&self.path()?)?;
+            Ok(state.stamp_floors.get(&stamp_scope_key(&scope)).copied())
         }
     }
 
-    fn save_floor(
+    fn advance_floor(
         &self,
         scope: StampScope,
-        floor: StampFloor,
-    ) -> impl Future<Output = Result<()>> + '_ {
+        update: StampFloorUpdate,
+    ) -> impl Future<Output = Result<StampFloor>> + '_ {
         async move {
             self.mutate(|inner| {
-                inner
+                let key = stamp_scope_key(&scope);
+                let floor = inner
                     .state
                     .stamp_floors
-                    .insert(stamp_scope_key(&scope), floor);
+                    .get(&key)
+                    .copied()
+                    .unwrap_or_default()
+                    .apply(update)?;
+                inner.state.stamp_floors.insert(key, floor);
+                Ok(floor)
             })
-            .await
+            .await?
         }
     }
 }
@@ -513,7 +574,16 @@ mod tests {
         };
         {
             let store = FileStore::open(&path).unwrap();
-            store.save_floor(stamp_scope(), floor).await.unwrap();
+            store
+                .advance_floor(
+                    stamp_scope(),
+                    StampFloorUpdate::Observe(crate::stamp::RemoteStamp {
+                        actor_seq: Some(floor.actor_seq),
+                        hlc: Some(arkret_core::Hlc::new("01970e589d21-0007-a13f9c2e").unwrap()),
+                    }),
+                )
+                .await
+                .unwrap();
         }
         let reopened = FileStore::open(&path).unwrap();
         assert_eq!(
@@ -618,7 +688,6 @@ mod tests {
                 state: newer,
                 generation: 2,
             })
-            .await
             .unwrap();
         store
             .persist_snapshot(PersistSnapshot {
@@ -626,7 +695,6 @@ mod tests {
                 state: older,
                 generation: 1,
             })
-            .await
             .unwrap();
 
         let reopened = FileStore::open(&path).unwrap();

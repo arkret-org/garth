@@ -10,7 +10,7 @@ use super::{
     CursorScope, CursorStore, DeliveryErrorClass, DeliveryId, DurableInboxStore, EventCacheStore,
     OpaqueCursor, PendingDelivery,
 };
-use crate::stamp::{MonotonicStampStore, StampFloor, StampScope};
+use crate::stamp::{MonotonicStampStore, StampFloor, StampFloorUpdate, StampScope};
 use crate::{ClientEvent, OutboundQueueStore};
 
 #[derive(Clone, Debug, Default)]
@@ -215,15 +215,22 @@ impl MonotonicStampStore for MemoryStore {
         async move { self.with_state(|state| state.stamp_floors.get(&scope).copied()) }
     }
 
-    fn save_floor(
+    fn advance_floor(
         &self,
         scope: StampScope,
-        floor: StampFloor,
-    ) -> impl Future<Output = Result<()>> + '_ {
+        update: StampFloorUpdate,
+    ) -> impl Future<Output = Result<StampFloor>> + '_ {
         async move {
             self.with_state(|state| {
+                let floor = state
+                    .stamp_floors
+                    .get(&scope)
+                    .copied()
+                    .unwrap_or_default()
+                    .apply(update)?;
                 state.stamp_floors.insert(scope, floor);
-            })
+                Ok(floor)
+            })?
         }
     }
 }

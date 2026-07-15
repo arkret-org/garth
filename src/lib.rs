@@ -49,7 +49,8 @@ pub use session::{
     grant_due_for_rotation, grant_is_dead, refresh_decision,
 };
 pub use stamp::{
-    MonotonicStampStore, RemoteStamp, SigningStamp, SigningStampAllocator, StampFloor, StampScope,
+    MonotonicStampStore, RemoteStamp, SigningStamp, SigningStampAllocator, StampFloor,
+    StampFloorUpdate, StampScope,
 };
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use store::FileStore;
