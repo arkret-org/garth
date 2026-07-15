@@ -1,8 +1,8 @@
-use arkret::{AsyncSyncTransport, BoxSyncFuture, SyncOutcome, SyncRequestBody};
+use arkret::{AccountSubscribeBatch, AsyncSyncTransport, BoxSyncFuture, SyncRequestBody};
 use arkret_core::{
-    DeviceId, Did, EventsSubscribeFrame, GrantId, RealmId, Result, SessionGrantOutcome,
-    SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
-    SyncBackfillOutcome,
+    DeviceId, Did, EventsQueryOutcome, EventsSubscribeFrame, GrantId, RealmId, Result,
+    SessionGrantOutcome, SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody,
+    SessionGrantRequestBody,
 };
 use chrono::{Duration, Utc};
 use garth::subscribe::scan::BoxScanFuture;
@@ -60,21 +60,25 @@ impl EventsScanTransport for ReferenceTransport {
     fn scan_events<'a>(
         &'a self,
         _request: EventsScanRequest,
-    ) -> BoxScanFuture<'a, SyncBackfillOutcome> {
+    ) -> BoxScanFuture<'a, EventsQueryOutcome> {
         Box::pin(async {
-            Ok(SyncBackfillOutcome {
+            Ok(EventsQueryOutcome {
                 events: Vec::new(),
                 snapshot_bootstrap: None,
                 prev_cursor: None,
                 next_cursor: None,
-                limited: false,
+                has_more: false,
+                range_completeness: None,
             })
         })
     }
 }
 
 impl AsyncSyncTransport for ReferenceTransport {
-    fn sync_async<'a>(&'a self, _request: SyncRequestBody) -> BoxSyncFuture<'a, SyncOutcome> {
+    fn sync_async<'a>(
+        &'a self,
+        _request: SyncRequestBody,
+    ) -> BoxSyncFuture<'a, AccountSubscribeBatch> {
         Box::pin(async {
             Err(arkret_core::Error::Protocol(
                 "reference transport performs no network IO".to_owned(),

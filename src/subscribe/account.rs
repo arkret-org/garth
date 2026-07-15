@@ -30,10 +30,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use arkret_core::{
-        DeviceListChanges, NotificationDelta, NotificationDeltaAction, NotificationId,
-        NotificationType, RealmId, RealmUpdate, SyncUpdates,
+        AccountSubscribeDeviceListChanges, NotificationDelta, NotificationDeltaAction,
+        NotificationId, NotificationType, RealmId, RealmSyncEntry, RealmUpdate, SyncUpdates,
     };
-    use serde_json::Value;
 
     use super::*;
 
@@ -41,9 +40,7 @@ mod tests {
         SyncUpdates {
             realm_updates: vec![RealmUpdate {
                 realm_id: RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap(),
-                timeline: None,
-                state: Vec::new(),
-                summary: Value::Null,
+                entry: RealmSyncEntry::default(),
             }],
             malformed_realms: Vec::new(),
             to_device: Vec::new(),
@@ -51,7 +48,10 @@ mod tests {
             to_device_limited: false,
             to_device_next_cursor: None,
             to_device_lost: false,
-            device_lists: DeviceListChanges::default(),
+            device_lists: AccountSubscribeDeviceListChanges {
+                changed: Vec::new(),
+                left: Vec::new(),
+            },
             presence: Vec::new(),
             account_data: Vec::new(),
             notifications: vec![NotificationDelta {

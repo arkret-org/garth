@@ -1,6 +1,6 @@
 use arkret_core::{
-    DecodedMessage, Event, NotificationDelta, RealmId, RealmUpdate, SyncBackfillOutcome,
-    SyncUpdates, ToDeviceMessage,
+    DecodedMessage, DeviceMessageEnvelope, Event, EventsQueryOutcome, NotificationDelta, RealmId,
+    RealmUpdate, SyncUpdates,
 };
 use serde::{Deserialize, Serialize};
 
@@ -15,12 +15,12 @@ pub enum ClientEvent {
     },
     Backfill {
         realm_id: RealmId,
-        outcome: SyncBackfillOutcome,
+        outcome: EventsQueryOutcome,
     },
     Message(DecodedMessage),
     Event(Event),
     Notification(NotificationDelta),
-    ToDevice(ToDeviceMessage),
+    ToDevice(DeviceMessageEnvelope),
 }
 
 /// Async host seam: turns a batch of engine-emitted [`ClientEvent`]s into

@@ -4,14 +4,16 @@
 //! duplicated verbatim across `driver.rs` and `mod.rs`; they live here so both
 //! test modules share a single definition.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use arkret::{Result, SyncOutcome, SyncRequestBody};
-use serde_json::Value;
+use arkret::{
+    AccountSubscribeBatch, AccountSubscribeFrame, AccountSubscribeFrameKind, Result,
+    SyncRequestBody,
+};
 
 use crate::Executor;
 
@@ -34,27 +36,29 @@ impl Executor for RecordingExecutor {
     }
 }
 
-pub(crate) fn sync_response(cursor: &str) -> SyncOutcome {
-    SyncOutcome {
+pub(crate) fn sync_response(cursor: &str) -> AccountSubscribeBatch {
+    AccountSubscribeBatch {
         cursor: cursor.to_owned(),
-        realms: BTreeMap::new(),
-        left_realms: Vec::new(),
-        to_device: Vec::new(),
-        to_device_ack_token: None,
-        to_device_limited: false,
-        to_device_next_cursor: None,
-        to_device_lost: None,
-        device_lists: Value::Null,
-        account_data: Vec::new(),
-        presence: Vec::new(),
-        notifications: Default::default(),
-        partial: false,
+        frames: vec![AccountSubscribeFrame {
+            kind: AccountSubscribeFrameKind::Delta,
+            cursor: Some(cursor.to_owned()),
+            realms: None,
+            to_device: None,
+            device_lists: None,
+            account_data: None,
+            presence: None,
+            notifications: None,
+            partial: None,
+            priority: None,
+            reconnect_after_ms: None,
+        }],
     }
 }
 
 pub(crate) fn queued_transport(
-    responses: Arc<Mutex<VecDeque<Result<SyncOutcome>>>>,
-) -> impl Fn(SyncRequestBody) -> Pin<Box<dyn Future<Output = Result<SyncOutcome>> + Send>> {
+    responses: Arc<Mutex<VecDeque<Result<AccountSubscribeBatch>>>>,
+) -> impl Fn(SyncRequestBody) -> Pin<Box<dyn Future<Output = Result<AccountSubscribeBatch>> + Send>>
+{
     move |_request| {
         let responses = Arc::clone(&responses);
         Box::pin(async move {

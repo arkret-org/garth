@@ -586,11 +586,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use arkret::{AccountStreamInterrupt, BoxSyncFuture, Error, SyncOutcome, SyncRequestBody};
+    use arkret::{
+        AccountStreamInterrupt, AccountSubscribeBatch, BoxSyncFuture, Error, SyncRequestBody,
+    };
     use arkret_core::events::kinds;
     use arkret_core::{
-        EventsSubscribeFrame, EventsSubscribeFrameKind, Hlc, NotificationDelta,
-        NotificationDeltaAction, NotificationId, NotificationType, RealmId, SyncBackfillOutcome,
+        EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind, Hlc, NotificationDelta,
+        NotificationDeltaAction, NotificationId, NotificationType, RealmId,
     };
     use serde_json::{Value, json};
 
@@ -745,25 +747,26 @@ mod tests {
         fn scan_events<'a>(
             &'a self,
             _request: EventsScanRequest,
-        ) -> BoxScanFuture<'a, SyncBackfillOutcome> {
+        ) -> BoxScanFuture<'a, EventsQueryOutcome> {
             Box::pin(async move {
-                Ok(SyncBackfillOutcome {
+                Ok(EventsQueryOutcome {
                     events: Vec::new(),
                     snapshot_bootstrap: None,
                     prev_cursor: None,
                     next_cursor: None,
-                    limited: false,
+                    has_more: false,
+                    range_completeness: None,
                 })
             })
         }
     }
 
     struct AccountTransport {
-        response: Mutex<Option<Result<SyncOutcome>>>,
+        response: Mutex<Option<Result<AccountSubscribeBatch>>>,
     }
 
     impl AccountTransport {
-        fn new(response: Result<SyncOutcome>) -> Self {
+        fn new(response: Result<AccountSubscribeBatch>) -> Self {
             Self {
                 response: Mutex::new(Some(response)),
             }
@@ -771,7 +774,10 @@ mod tests {
     }
 
     impl AsyncSyncTransport for AccountTransport {
-        fn sync_async<'a>(&'a self, _request: SyncRequestBody) -> BoxSyncFuture<'a, SyncOutcome> {
+        fn sync_async<'a>(
+            &'a self,
+            _request: SyncRequestBody,
+        ) -> BoxSyncFuture<'a, AccountSubscribeBatch> {
             let response = self
                 .response
                 .lock()

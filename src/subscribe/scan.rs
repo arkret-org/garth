@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use arkret_core::{Did, EventsQueryOrder, RealmId, Result, SyncBackfillOutcome};
+use arkret_core::{Did, EventsQueryOrder, EventsQueryOutcome, RealmId, Result};
 
 use super::{ProjectedRunError, ProjectedRunResult};
 use crate::{CursorScope, CursorStore, MaybeSend, MaybeSendSync, OpaqueCursor};
@@ -34,18 +34,18 @@ pub trait EventsScanTransport {
     fn scan_events<'a>(
         &'a self,
         request: EventsScanRequest,
-    ) -> BoxScanFuture<'a, SyncBackfillOutcome>;
+    ) -> BoxScanFuture<'a, EventsQueryOutcome>;
 }
 
 impl<F, Fut> EventsScanTransport for F
 where
     F: Fn(EventsScanRequest) -> Fut + MaybeSendSync,
-    Fut: Future<Output = Result<SyncBackfillOutcome>> + MaybeSend + 'static,
+    Fut: Future<Output = Result<EventsQueryOutcome>> + MaybeSend + 'static,
 {
     fn scan_events<'a>(
         &'a self,
         request: EventsScanRequest,
-    ) -> BoxScanFuture<'a, SyncBackfillOutcome> {
+    ) -> BoxScanFuture<'a, EventsQueryOutcome> {
         Box::pin(self(request))
     }
 }
@@ -54,7 +54,7 @@ impl EventsScanTransport for arkret_http_client::Client {
     fn scan_events<'a>(
         &'a self,
         request: EventsScanRequest,
-    ) -> BoxScanFuture<'a, SyncBackfillOutcome> {
+    ) -> BoxScanFuture<'a, EventsQueryOutcome> {
         Box::pin(async move {
             self.events_query(
                 request.realm_id.as_str(),
@@ -116,7 +116,7 @@ where
         transport: &T,
         realm_id: RealmId,
         options: ScanCatchupOptions,
-    ) -> Result<SyncBackfillOutcome>
+    ) -> Result<EventsQueryOutcome>
     where
         T: EventsScanTransport + ?Sized,
     {
@@ -141,7 +141,7 @@ where
         transport: &T,
         realm_id: RealmId,
         options: ScanCatchupOptions,
-    ) -> Result<SyncBackfillOutcome>
+    ) -> Result<EventsQueryOutcome>
     where
         T: EventsScanTransport + ?Sized,
     {
@@ -155,7 +155,7 @@ where
         transport: &T,
         realm_id: RealmId,
         options: ScanCatchupOptions,
-    ) -> Result<SyncBackfillOutcome>
+    ) -> Result<EventsQueryOutcome>
     where
         T: EventsScanTransport + ?Sized,
     {
@@ -169,7 +169,7 @@ where
         transport: &T,
         realm_id: RealmId,
         options: ScanCatchupOptions,
-    ) -> ProjectedRunResult<SyncBackfillOutcome>
+    ) -> ProjectedRunResult<EventsQueryOutcome>
     where
         T: EventsScanTransport + ?Sized,
     {
@@ -183,7 +183,7 @@ where
         realm_id: RealmId,
         options: ScanCatchupOptions,
         checkpoint: bool,
-    ) -> ProjectedRunResult<SyncBackfillOutcome>
+    ) -> ProjectedRunResult<EventsQueryOutcome>
     where
         T: EventsScanTransport + ?Sized,
     {
@@ -192,12 +192,13 @@ where
             .after_cursor(scope.clone(), options.after)
             .await
             .map_err(ProjectedRunError::Store)?;
-        let mut aggregate = SyncBackfillOutcome {
+        let mut aggregate = EventsQueryOutcome {
             events: Vec::new(),
             snapshot_bootstrap: None,
             prev_cursor: None,
             next_cursor: None,
-            limited: false,
+            has_more: false,
+            range_completeness: None,
         };
         let max_pages = options.max_pages.max(1);
 
@@ -219,23 +220,26 @@ where
                 aggregate.snapshot_bootstrap = outcome.snapshot_bootstrap.take();
             }
             let next_cursor = outcome.next_cursor.clone();
-            let limited = outcome.limited;
+            let has_more = outcome.has_more;
+            if aggregate.range_completeness.is_none() {
+                aggregate.range_completeness = outcome.range_completeness.take();
+            }
             aggregate.events.append(&mut outcome.events);
             aggregate.next_cursor = next_cursor.clone();
-            aggregate.limited = limited;
+            aggregate.has_more = has_more;
             if checkpoint {
                 self.save_next_cursor(scope.clone(), next_cursor.clone())
                     .await
                     .map_err(ProjectedRunError::Store)?;
             }
 
-            match (limited, next_cursor) {
+            match (has_more, next_cursor) {
                 (true, Some(next)) => after = Some(next),
                 _ => return Ok(aggregate),
             }
         }
 
-        aggregate.limited = true;
+        aggregate.has_more = true;
         Ok(aggregate)
     }
 
@@ -289,13 +293,14 @@ mod tests {
         }
     }
 
-    fn outcome(next_cursor: Option<&str>, limited: bool) -> SyncBackfillOutcome {
-        SyncBackfillOutcome {
+    fn outcome(next_cursor: Option<&str>, has_more: bool) -> EventsQueryOutcome {
+        EventsQueryOutcome {
             events: Vec::new(),
             snapshot_bootstrap: None,
             prev_cursor: None,
             next_cursor: next_cursor.map(str::to_owned),
-            limited,
+            has_more,
+            range_completeness: None,
         }
     }
 
@@ -352,7 +357,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(!response.limited);
+        assert!(!response.has_more);
         assert_eq!(response.next_cursor.as_deref(), Some("ak:cursor:p3"));
         assert_eq!(
             afters.lock().unwrap().as_slice(),

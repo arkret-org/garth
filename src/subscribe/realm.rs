@@ -162,7 +162,11 @@ where
 
             match frame.kind {
                 EventsSubscribeFrameKind::Event => {
-                    if let Ok(event) = serde_json::from_value::<Event>(frame.payload) {
+                    if let Some(payload) = frame.payload
+                        && let Ok(event) = serde_json::from_value::<Event>(
+                            serde_json::Value::Object(payload.into_iter().collect()),
+                        )
+                    {
                         let event_id = event.event_id.clone();
                         if !self.event_cache_store.seen(event_id.clone()).await? {
                             batch = self.decode_event_batch(event);
@@ -194,7 +198,8 @@ where
                 EventsSubscribeFrameKind::Unauthorized => {
                     let reason = frame
                         .payload
-                        .get("reason")
+                        .as_ref()
+                        .and_then(|payload| payload.get("reason"))
                         .and_then(|reason| reason.as_str())
                         .map(str::to_owned);
                     return Ok(RealmStreamStopReason::Unauthorized { reason });
@@ -274,7 +279,11 @@ where
                     // Skip it and let the cursor advance, otherwise every
                     // reconnect would replay the same frame and wedge realm
                     // sync permanently.
-                    if let Ok(event) = serde_json::from_value::<Event>(frame.payload) {
+                    if let Some(payload) = frame.payload
+                        && let Ok(event) = serde_json::from_value::<Event>(
+                            serde_json::Value::Object(payload.into_iter().collect()),
+                        )
+                    {
                         let event_id = event.event_id.clone();
                         if !self
                             .event_cache_store
@@ -332,7 +341,8 @@ where
                 EventsSubscribeFrameKind::Unauthorized => {
                     let reason = frame
                         .payload
-                        .get("reason")
+                        .as_ref()
+                        .and_then(|payload| payload.get("reason"))
                         .and_then(|reason| reason.as_str())
                         .map(str::to_owned);
                     return Ok(RealmStreamStopReason::Unauthorized { reason });

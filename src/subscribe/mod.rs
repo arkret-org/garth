@@ -229,7 +229,7 @@ where
         transport: &T,
         realm_id: RealmId,
         options: ScanCatchupOptions,
-    ) -> Result<arkret_core::SyncBackfillOutcome>
+    ) -> Result<arkret_core::EventsQueryOutcome>
     where
         T: EventsScanTransport + ?Sized,
     {
@@ -250,7 +250,7 @@ where
         realm_id: RealmId,
         projector: &P,
         options: ScanCatchupOptions,
-    ) -> Result<arkret_core::SyncBackfillOutcome>
+    ) -> Result<arkret_core::EventsQueryOutcome>
     where
         T: EventsScanTransport + ?Sized,
         P: ClientProjector + ?Sized,
@@ -292,7 +292,7 @@ where
         transport: &T,
         realm_id: RealmId,
         options: ScanCatchupOptions,
-    ) -> ProjectedRunResult<arkret_core::SyncBackfillOutcome>
+    ) -> ProjectedRunResult<arkret_core::EventsQueryOutcome>
     where
         T: EventsScanTransport + ?Sized,
     {
@@ -361,7 +361,7 @@ mod tests {
 
     use arkret::{AccountStreamInterrupt, Error, SyncRequestBody};
     use arkret_core::identifiers::Cursor;
-    use arkret_core::{EventsSubscribeFrame, EventsSubscribeFrameKind, SyncBackfillOutcome};
+    use arkret_core::{EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind};
     use serde_json::Value;
 
     use super::realm::BoxRealmStreamFuture;
@@ -397,13 +397,14 @@ mod tests {
         }
     }
 
-    fn backfill_outcome(next_cursor: Option<&str>) -> SyncBackfillOutcome {
-        SyncBackfillOutcome {
+    fn backfill_outcome(next_cursor: Option<&str>) -> EventsQueryOutcome {
+        EventsQueryOutcome {
             events: Vec::new(),
             snapshot_bootstrap: None,
             prev_cursor: None,
             next_cursor: next_cursor.map(str::to_owned),
-            limited: false,
+            has_more: false,
+            range_completeness: None,
         }
     }
 
@@ -542,11 +543,11 @@ mod tests {
     struct RealmRecoveryTransport {
         source: Mutex<Option<VecRealmSource>>,
         scans: Arc<Mutex<Vec<EventsScanRequest>>>,
-        scan_outcomes: Arc<Mutex<VecDeque<SyncBackfillOutcome>>>,
+        scan_outcomes: Arc<Mutex<VecDeque<EventsQueryOutcome>>>,
     }
 
     impl RealmRecoveryTransport {
-        fn new(frames: Vec<EventsSubscribeFrame>, outcomes: Vec<SyncBackfillOutcome>) -> Self {
+        fn new(frames: Vec<EventsSubscribeFrame>, outcomes: Vec<EventsQueryOutcome>) -> Self {
             Self {
                 source: Mutex::new(Some(VecRealmSource {
                     frames: VecDeque::from(frames),
@@ -578,7 +579,7 @@ mod tests {
         fn scan_events<'a>(
             &'a self,
             request: EventsScanRequest,
-        ) -> BoxScanFuture<'a, SyncBackfillOutcome> {
+        ) -> BoxScanFuture<'a, EventsQueryOutcome> {
             self.scans.lock().unwrap().push(request);
             let outcome = self.scan_outcomes.lock().unwrap().pop_front().unwrap();
             Box::pin(async move { Ok(outcome) })
