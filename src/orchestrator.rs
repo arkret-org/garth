@@ -490,7 +490,7 @@ where
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "native"))]
     async fn wait_cancellable(&self, duration: Duration, control: &SyncLoopControl) -> bool {
         const QUANTUM: Duration = Duration::from_millis(50);
         let mut remaining = duration;

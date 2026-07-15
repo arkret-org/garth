@@ -59,6 +59,7 @@ where
         &self.entries
     }
 
+    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     pub(crate) fn capacity(&self) -> usize {
         self.capacity
     }
