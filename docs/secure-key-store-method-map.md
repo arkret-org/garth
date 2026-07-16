@@ -33,4 +33,4 @@ the shared secure store.
 as a `SecureKeyStore` for tests and transitional hosts.
 
 `SecureCryptoStoreAdapter<S: SecureKeyStore>` exposes SDK `CryptoStore`
-semantics while committing the typed backup JSON to the shared secure store.
+semantics while committing the validated backup envelope to the shared secure store.
