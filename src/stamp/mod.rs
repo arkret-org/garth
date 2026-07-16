@@ -260,9 +260,12 @@ pub struct RemoteStamp {
 /// - `now_ms > floor`: jump to the newer physical time, reset logical.
 /// - `now_ms <= floor` (clock stalled or rolled back): hold the physical floor
 ///   and bump logical, so the tuple stays strictly greater and is never reused.
-/// - logical saturated: step physical forward by 1 ms (the non-blocking
-///   equivalent of `encoding.md` §7's "wait for a larger unix_ms"; a wasm host
-///   cannot block). Overflowing the 48-bit physical field is a hard error.
+/// - logical saturated: fail with `hlc_logical_overflow`. `encoding.md` §7
+///   permits exactly two responses — wait for a larger `unix_ms`, or abort the
+///   write with a local transient error for the caller to retry — and
+///   explicitly forbids faking a larger wall clock to escape the overflow. A
+///   wasm host cannot block, so this takes the error path (the same one the
+///   SDK's non-blocking `HlcGenerator::try_generate` takes).
 fn advance_hlc(floor_physical: u64, floor_logical: u32, now_ms: u64) -> Result<(u64, u32)> {
     if now_ms > MAX_PHYSICAL {
         return Err(Error::Protocol(
@@ -275,13 +278,9 @@ fn advance_hlc(floor_physical: u64, floor_logical: u32, now_ms: u64) -> Result<(
     if floor_logical < MAX_LOGICAL {
         return Ok((floor_physical, floor_logical + 1));
     }
-    let bumped = floor_physical.checked_add(1).filter(|p| *p <= MAX_PHYSICAL);
-    match bumped {
-        Some(physical) => Ok((physical, 0)),
-        None => Err(Error::Protocol(
-            "hlc_logical_overflow: physical clock saturated the 48-bit field".to_owned(),
-        )),
-    }
+    Err(Error::Protocol(
+        "hlc_logical_overflow: local HLC saturated the 4-hex logical counter".to_owned(),
+    ))
 }
 
 fn host_now_ms<E: HostClock>(clock: &E) -> u64 {
@@ -540,9 +539,23 @@ mod tests {
     }
 
     #[test]
-    fn advance_hlc_saturated_logical_steps_physical() {
-        // Clock has not advanced and logical is saturated: step physical by 1.
-        let (physical, logical) = advance_hlc(1_000, MAX_LOGICAL, 500).unwrap();
+    fn advance_hlc_saturated_logical_fails_instead_of_faking_the_wall_clock() {
+        // Clock has not advanced and logical is saturated. `encoding.md` §7
+        // allows only "wait for a larger unix_ms" or "abort with
+        // hlc_logical_overflow", and forbids inventing wall-clock skew to
+        // escape the overflow. Non-blocking issuance must therefore fail.
+        let err = advance_hlc(1_000, MAX_LOGICAL, 500).unwrap_err();
+        assert!(
+            err.to_string().contains("hlc_logical_overflow"),
+            "expected hlc_logical_overflow, got {err}"
+        );
+    }
+
+    #[test]
+    fn advance_hlc_saturated_logical_recovers_once_the_clock_moves_on() {
+        // The caller's retry succeeds as soon as a larger unix_ms is available,
+        // which is what makes the error path a transient one.
+        let (physical, logical) = advance_hlc(1_000, MAX_LOGICAL, 1_001).unwrap();
         assert_eq!(physical, 1_001);
         assert_eq!(logical, 0);
     }
