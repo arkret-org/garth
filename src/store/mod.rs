@@ -16,8 +16,8 @@ pub use crypto_store::SecureCryptoStoreAdapter;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use file::FileStore;
 pub use inbox::{
-    DeliveryErrorClass, DeliveryId, DurableInboxStore, MAX_DELIVERY_ERROR_BYTES, MAX_PENDING_READ,
-    PendingDelivery,
+    DeliveryErrorClass, DeliveryId, DurableInboxStore, MAX_DELIVERY_ERROR_BYTES,
+    MAX_PENDING_DELIVERIES, MAX_PENDING_READ, PendingDelivery,
 };
 pub use keystore::{
     MemorySecureKeyStore, PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter,

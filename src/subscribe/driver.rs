@@ -93,10 +93,22 @@ where
                             Vec::new(),
                         )
                         .await?;
-                    self.executor.sleep(retry_after).await;
+                    if crate::executor::wait_cancellable(&self.executor, retry_after, || {
+                        self.control.is_cancelled()
+                    })
+                    .await
+                    {
+                        return Ok(SubscriptionStopReason::Cancelled);
+                    }
                 }
                 SyncLoopStep::Backpressure { retry_after } => {
-                    self.executor.sleep(retry_after).await;
+                    if crate::executor::wait_cancellable(&self.executor, retry_after, || {
+                        self.control.is_cancelled()
+                    })
+                    .await
+                    {
+                        return Ok(SubscriptionStopReason::Cancelled);
+                    }
                 }
                 SyncLoopStep::Cancelled => return Ok(SubscriptionStopReason::Cancelled),
                 SyncLoopStep::Unauthorized { reason } => {
@@ -146,10 +158,22 @@ where
                     checkpoint(sync_loop.token().map(str::to_owned))
                         .await
                         .map_err(ProjectedRunError::Store)?;
-                    self.executor.sleep(retry_after).await;
+                    if crate::executor::wait_cancellable(&self.executor, retry_after, || {
+                        self.control.is_cancelled()
+                    })
+                    .await
+                    {
+                        return Ok(SubscriptionStopReason::Cancelled);
+                    }
                 }
                 SyncLoopStep::Backpressure { retry_after } => {
-                    self.executor.sleep(retry_after).await;
+                    if crate::executor::wait_cancellable(&self.executor, retry_after, || {
+                        self.control.is_cancelled()
+                    })
+                    .await
+                    {
+                        return Ok(SubscriptionStopReason::Cancelled);
+                    }
                 }
                 SyncLoopStep::Cancelled => return Ok(SubscriptionStopReason::Cancelled),
                 SyncLoopStep::Unauthorized { reason } => {

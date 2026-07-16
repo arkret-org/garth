@@ -429,6 +429,14 @@ impl DurableInboxStore for FileStore {
     ) -> impl Future<Output = Result<Option<DeliveryId>>> + '_ {
         async move {
             self.mutate(|inner| {
+                if !events.is_empty()
+                    && inner.state.deliveries.len() >= super::MAX_PENDING_DELIVERIES
+                {
+                    return Err(Error::Protocol(
+                        "durable inbox capacity reached; acknowledge pending deliveries before polling"
+                            .to_owned(),
+                    ));
+                }
                 match cursor.clone() {
                     Some(cursor) => {
                         inner.state.cursors.insert(scope_key(&scope), cursor);

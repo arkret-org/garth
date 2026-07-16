@@ -8,6 +8,7 @@ use crate::{ClientEvent, MaybeSendSync};
 
 pub const MAX_DELIVERY_ERROR_BYTES: usize = 2048;
 pub const MAX_PENDING_READ: usize = 1024;
+pub const MAX_PENDING_DELIVERIES: usize = 4096;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct DeliveryId(u64);

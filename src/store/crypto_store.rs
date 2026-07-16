@@ -5,8 +5,9 @@ use arkret::{
 use arkret_core::{
     DeviceId, Did, MlsCommitEnvelope, MlsKeyPackageRecord, MlsWelcomeEnvelope, Result,
 };
+use zeroize::Zeroizing;
 
-use super::SecureKeyStore;
+use super::{PutSecretOptions, SecretClass, SecretDurability, SecureKeyStore};
 
 #[derive(Clone, Debug)]
 pub struct SecureCryptoStoreAdapter<S> {
@@ -22,8 +23,10 @@ where
     pub fn new(secure_store: S, storage_key: impl Into<String>) -> Result<Self> {
         let storage_key = storage_key.into();
         let mut inner = MemoryCryptoStore::new();
-        if let Some(backup_json) = secure_store.get_secret(&storage_key)? {
-            inner.import_backup_json(&backup_json)?;
+        if let Some(encoded) = secure_store.get_secret_bytes(&storage_key)? {
+            let envelope = serde_json::from_slice::<CryptoStoreBackupEnvelope>(&encoded)
+                .map_err(|error| arkret_core::Error::Protocol(format!("decode MLS backup: {error}")))?;
+            inner.import_backup_envelope(&envelope)?;
         }
         Ok(Self {
             inner,
@@ -45,9 +48,19 @@ where
     }
 
     fn persist(&self) -> Result<()> {
-        let backup_json = self.inner.export_backup_json()?;
+        let envelope = self.inner.export_backup_envelope(1)?;
+        let encoded = Zeroizing::new(serde_json::to_vec(&envelope).map_err(|error| {
+            arkret_core::Error::Protocol(format!("encode MLS backup envelope: {error}"))
+        })?);
         self.secure_store
-            .store_secret_bytes(&self.storage_key, backup_json.as_bytes())?;
+            .put_secret_sync(
+                &self.storage_key,
+                &encoded,
+                PutSecretOptions {
+                    durability: SecretDurability::DurableBeforeReturn,
+                    class: SecretClass::MlsSecret,
+                },
+            )?;
         Ok(())
     }
 }
@@ -168,7 +181,7 @@ mod tests {
     use crate::{MemorySecureKeyStore, SecureKeyStore};
 
     #[test]
-    fn persists_imported_backup_json_to_secure_store() {
+    fn persists_validated_backup_envelope_to_secure_store() {
         let secure = MemorySecureKeyStore::new();
         let source = MemoryCryptoStore::new();
         let backup = source.export_backup_json().unwrap();
@@ -176,10 +189,12 @@ mod tests {
 
         adapter.import_backup_json(&backup).unwrap();
 
-        assert_eq!(
-            secure.get_secret("mls.crypto").unwrap().as_deref(),
-            Some(backup.as_str())
-        );
+        let encoded = secure
+            .get_secret_bytes("mls.crypto")
+            .unwrap()
+            .expect("backup persisted");
+        let envelope: CryptoStoreBackupEnvelope = serde_json::from_slice(&encoded).unwrap();
+        envelope.validate().unwrap();
         let restored = SecureCryptoStoreAdapter::new(secure, "mls.crypto").unwrap();
         assert_eq!(restored.export_backup_json().unwrap(), backup);
     }

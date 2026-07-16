@@ -99,6 +99,18 @@ pub type SecureKeyStoreResult<T> = Result<T, SecureKeyStoreError>;
 pub trait SecureKeyStore: MaybeSendSync + 'static {
     fn store_secret_bytes(&self, key: &str, value: &[u8]) -> SecureKeyStoreResult<()>;
 
+    /// Synchronous classified write for protocol adapters whose upstream trait
+    /// is synchronous. Capability-aware backends should override this method
+    /// to honor both the sensitivity class and durability request.
+    fn put_secret_sync(
+        &self,
+        key: &str,
+        value: &[u8],
+        _options: PutSecretOptions,
+    ) -> SecureKeyStoreResult<()> {
+        self.store_secret_bytes(key, value)
+    }
+
     /// Persist a secret with crash durability.
     ///
     /// The default implementation provides NO real durability: it simply wraps

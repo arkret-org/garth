@@ -738,21 +738,6 @@ where
         }
     }
 
-    #[cfg(all(test, feature = "native"))]
-    async fn wait_cancellable(&self, duration: Duration, control: &SyncLoopControl) -> bool {
-        const QUANTUM: Duration = Duration::from_millis(50);
-        let mut remaining = duration;
-        while !remaining.is_zero() {
-            if control.is_cancelled() {
-                return true;
-            }
-            let step = remaining.min(QUANTUM);
-            self.executor.sleep(step).await;
-            remaining = remaining.saturating_sub(step);
-        }
-        control.is_cancelled()
-    }
-
     async fn wait_guarded<TP: TransportProvider + ?Sized>(
         &self,
         duration: Duration,
@@ -1563,12 +1548,13 @@ mod tests {
             canceller.cancel();
         });
 
-        let cancelled = tokio::time::timeout(
+        let provider = QueueProvider::<()>::new(Vec::new());
+        let reason = tokio::time::timeout(
             Duration::from_millis(250),
-            client.wait_cancellable(Duration::from_secs(30), &control),
+            client.wait_guarded(Duration::from_secs(30), &control, &provider),
         )
         .await
         .expect("cancellation must interrupt the long wait");
-        assert!(cancelled);
+        assert_eq!(reason, Some(RunStopReason::Cancelled));
     }
 }

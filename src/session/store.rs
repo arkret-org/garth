@@ -1,4 +1,5 @@
 use arkret_core::{Error, Result};
+use zeroize::Zeroizing;
 
 use super::SessionGrantState;
 use crate::{PutSecretOptions, SecretClass, SecretDurability};
@@ -63,10 +64,10 @@ where
 {
     fn load(&self) -> Result<Option<SessionGrantState>> {
         self.secure_store
-            .get_secret(&self.storage_key)
+            .get_secret_bytes(&self.storage_key)
             .map_err(Error::from)?
             .map(|encoded| {
-                serde_json::from_str(&encoded).map_err(|error| {
+                serde_json::from_slice(&encoded).map_err(|error| {
                     Error::Protocol(format!("decode secure session grant: {error}"))
                 })
             })
@@ -78,6 +79,7 @@ where
         state: &'a SessionGrantState,
     ) -> impl std::future::Future<Output = Result<()>> + crate::MaybeSend + 'a {
         let encoded = serde_json::to_vec(state)
+            .map(Zeroizing::new)
             .map_err(|error| Error::Protocol(format!("encode secure session grant: {error}")));
         async move {
             let encoded = encoded?;
