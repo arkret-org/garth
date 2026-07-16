@@ -32,9 +32,9 @@ use serde::{Deserialize, Serialize};
 use crate::{HostClock, MaybeSendSync};
 
 /// 16-bit logical counter ceiling (`encoding.md` §7: 4 lowercase hex digits).
-const MAX_LOGICAL: u32 = 0xffff;
+const MAX_LOGICAL: u32 = arkret::hlc::HLC_MAX_LOGICAL;
 /// 48-bit physical millisecond ceiling (`encoding.md` §7: 12 lowercase hex).
-const MAX_PHYSICAL: u64 = 0xffff_ffff_ffff;
+const MAX_PHYSICAL: u64 = arkret::hlc::HLC_MAX_PHYSICAL_MS;
 
 /// Identity of one signing chain: a single `(actor, device, realm)` combination
 /// under an optional service scope. `actor_seq` is a per-`(actor, realm)`
@@ -306,12 +306,8 @@ fn host_now_ms<E: HostClock>(clock: &E) -> u64 {
 }
 
 fn hlc_parts(hlc: &Hlc) -> Result<(u64, u32)> {
-    let value = hlc.as_str();
-    let physical = u64::from_str_radix(&value[0..12], 16)
-        .map_err(|_| Error::Protocol(format!("invalid hlc physical time: {value}")))?;
-    let logical = u32::from_str_radix(&value[13..17], 16)
-        .map_err(|_| Error::Protocol(format!("invalid hlc logical counter: {value}")))?;
-    Ok((physical, logical))
+    let parts = arkret::hlc::parse_hlc(hlc.as_str())?;
+    Ok((parts.physical_ms, parts.logical))
 }
 
 /// Derive the 8-hex `node_id` through the SDK so the derivation stays

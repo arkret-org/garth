@@ -120,7 +120,7 @@ where
     where
         T: EventsScanTransport + ?Sized,
     {
-        let scope = self.scope(&realm_id);
+        let scope = self.scope(&realm_id, options.order);
         let after = self.after_cursor(scope.clone(), options.after).await?;
         let outcome = transport
             .scan_events(EventsScanRequest {
@@ -187,7 +187,7 @@ where
     where
         T: EventsScanTransport + ?Sized,
     {
-        let scope = self.scope(&realm_id);
+        let scope = self.scope(&realm_id, options.order);
         let mut after = self
             .after_cursor(scope.clone(), options.after)
             .await
@@ -243,10 +243,11 @@ where
         Ok(aggregate)
     }
 
-    fn scope(&self, realm_id: &RealmId) -> CursorScope {
-        CursorScope::RealmEvents {
+    fn scope(&self, realm_id: &RealmId, order: Option<EventsQueryOrder>) -> CursorScope {
+        CursorScope::RealmEventsScan {
             service_id: self.service_id.clone(),
             realm_id: realm_id.clone(),
+            order: order.map(|value| value.as_str().to_owned()),
         }
     }
 
@@ -287,9 +288,10 @@ mod tests {
     }
 
     fn scope() -> CursorScope {
-        CursorScope::RealmEvents {
+        CursorScope::RealmEventsScan {
             service_id: None,
             realm_id: realm_id(),
+            order: None,
         }
     }
 

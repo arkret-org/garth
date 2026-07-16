@@ -220,6 +220,14 @@ fn classify_error(error: &arkret_core::Error) -> RunErrorClass {
         Error::InvalidId(_) | Error::Url(_) | Error::InsecureUrl(_) => {
             RunErrorClass::InvalidConfiguration
         }
+        Error::KeyStore(_) => RunErrorClass::StoreFailure,
+        Error::Crypto(_)
+        | Error::IdempotencyConflict(_)
+        | Error::CanonicalJson(_)
+        | Error::NonCanonicalNumber
+        | Error::NumberOutOfSafeRange
+        | Error::DuplicateObjectKey(_)
+        | Error::NonCanonicalString(_) => RunErrorClass::ProtocolViolation,
         Error::Protocol(_) | Error::Api { .. } | Error::AccountStreamInterrupt(_) => {
             RunErrorClass::ProtocolViolation
         }

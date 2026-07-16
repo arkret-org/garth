@@ -24,8 +24,10 @@ where
         let storage_key = storage_key.into();
         let mut inner = MemoryCryptoStore::new();
         if let Some(encoded) = secure_store.get_secret_bytes(&storage_key)? {
-            let envelope = serde_json::from_slice::<CryptoStoreBackupEnvelope>(&encoded)
-                .map_err(|error| arkret_core::Error::Protocol(format!("decode MLS backup: {error}")))?;
+            let envelope =
+                serde_json::from_slice::<CryptoStoreBackupEnvelope>(&encoded).map_err(|error| {
+                    arkret_core::Error::Protocol(format!("decode MLS backup: {error}"))
+                })?;
             inner.import_backup_envelope(&envelope)?;
         }
         Ok(Self {
@@ -52,15 +54,14 @@ where
         let encoded = Zeroizing::new(serde_json::to_vec(&envelope).map_err(|error| {
             arkret_core::Error::Protocol(format!("encode MLS backup envelope: {error}"))
         })?);
-        self.secure_store
-            .put_secret_sync(
-                &self.storage_key,
-                &encoded,
-                PutSecretOptions {
-                    durability: SecretDurability::DurableBeforeReturn,
-                    class: SecretClass::MlsSecret,
-                },
-            )?;
+        self.secure_store.put_secret_sync(
+            &self.storage_key,
+            &encoded,
+            PutSecretOptions {
+                durability: SecretDurability::DurableBeforeReturn,
+                class: SecretClass::MlsSecret,
+            },
+        )?;
         Ok(())
     }
 }

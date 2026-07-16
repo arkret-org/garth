@@ -191,20 +191,24 @@ where
                 cursor,
                 reconnect_after_ms,
             } => {
+                let after = self
+                    .cursor_store
+                    .load(self.realm_scope(realm_id.clone()))
+                    .await
+                    .map_err(ProjectedRunError::Store)?;
                 let outcome = self
                     .scan_realm_catchup_uncheckpointed_classified(
                         transport,
                         realm_id.clone(),
                         ScanCatchupOptions {
                             before: Some(cursor.clone()),
-                            after: None,
+                            after,
                             order: None,
                             limit: None,
                             max_pages: 64,
                         },
                     )
                     .await?;
-                let next_cursor = outcome.next_cursor.clone();
                 projector
                     .project(vec![ClientEvent::Backfill {
                         realm_id: realm_id.clone(),
@@ -212,7 +216,7 @@ where
                     }])
                     .await
                     .map_err(ProjectedRunError::Projector)?;
-                self.save_realm_cursor_after_project(realm_id.clone(), next_cursor)
+                self.save_realm_cursor_after_project(realm_id.clone(), Some(cursor.clone()))
                     .await
                     .map_err(ProjectedRunError::Store)?;
                 Ok(RealmStreamStopReason::Dropped {
@@ -653,7 +657,7 @@ mod tests {
         assert_eq!(scans[0].before.as_deref(), Some("ak:cursor:dropped"));
         assert_eq!(
             store.load(realm_scope()).await.unwrap().as_deref(),
-            Some("ak:cursor:next")
+            Some("ak:cursor:dropped")
         );
         // Reconnect policy belongs to the high-level runner so the wait can be
         // interrupted by cancellation or a host lifecycle transition.
@@ -702,7 +706,7 @@ mod tests {
         assert_eq!(projector.batches.lock().unwrap()[0].len(), 1);
         assert_eq!(
             store.load(realm_scope()).await.unwrap().as_deref(),
-            Some("ak:cursor:next")
+            Some("ak:cursor:dropped")
         );
     }
 

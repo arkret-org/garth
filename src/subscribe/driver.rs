@@ -188,6 +188,7 @@ where
 mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
+    use std::time::Duration;
 
     use arkret::Error;
 
@@ -266,6 +267,12 @@ mod tests {
 
         assert_eq!(reason, SubscriptionStopReason::Cancelled);
         assert_eq!(sync_loop.token(), Some("s1"));
-        assert_eq!(executor.sleeps().len(), 1);
+        let sleeps = executor.sleeps();
+        assert!(sleeps.len() > 1);
+        assert!(
+            sleeps
+                .iter()
+                .all(|duration| *duration <= Duration::from_millis(50))
+        );
     }
 }

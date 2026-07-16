@@ -282,6 +282,16 @@ fn scope_key(scope: &CursorScope) -> String {
             service_id,
             realm_id,
         } => format!("realm{SEP}{}{SEP}{}", did(service_id), realm_id.as_str()),
+        CursorScope::RealmEventsScan {
+            service_id,
+            realm_id,
+            order,
+        } => format!(
+            "realm_scan{SEP}{}{SEP}{}{SEP}{}",
+            did(service_id),
+            realm_id.as_str(),
+            order.as_deref().unwrap_or("")
+        ),
         CursorScope::DeviceMessages {
             service_id,
             actor_id,

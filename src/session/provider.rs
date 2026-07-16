@@ -173,10 +173,9 @@ where
     }
 
     pub async fn refresh_after_unauthorized(&self) -> Result<bool> {
-        let previous_state = self
-            .session
-            .current_state()
-            .ok_or_else(|| arkret_core::Error::Protocol("no active session grant".to_owned()))?;
+        let Some(previous_state) = self.session.current_state() else {
+            return Ok(false);
+        };
         let previous_grant_id = Some(previous_state.grant_id.clone());
         let refresh_options = self
             .factory

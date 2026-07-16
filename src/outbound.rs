@@ -1,3 +1,5 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::{future::Future, pin::Pin, time::Duration};
 
 use arkret::sync_client::{SendQueue, SendQueueItem, SendQueueItemKind, SendQueueSnapshot};
@@ -91,12 +93,18 @@ pub enum OutboundEngineOutcome {
     Idle,
     Accepted(SendQueueItem),
     Duplicate(SendQueueItem),
-    Rejected(SendQueueItem),
+    Rejected {
+        item: SendQueueItem,
+        reason: String,
+    },
     RetryAt {
         item: SendQueueItem,
         at: DateTime<Utc>,
     },
-    Terminal(SendQueueItem),
+    Terminal {
+        item: SendQueueItem,
+        reason: String,
+    },
     Quarantined {
         item: SendQueueItem,
         reason: String,
@@ -131,6 +139,12 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
     pub async fn snapshot(&self) -> Result<SendQueueSnapshot> {
         self.store
             .mutate_outbound(|queue| Ok(queue.snapshot()))
+            .await
+    }
+
+    pub async fn compact_terminal_before(&self, cutoff: DateTime<Utc>) -> Result<usize> {
+        self.store
+            .mutate_outbound(move |queue| Ok(queue.prune_terminal_before(cutoff)))
             .await
     }
 
@@ -188,15 +202,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         let item = self
             .store
             .mutate_outbound(move |queue| {
-                for candidate in queue.snapshot().items {
-                    if !matches!(
-                        candidate.status,
-                        arkret::sync_client::SendQueueStatus::Queued
-                            | arkret::sync_client::SendQueueStatus::Sending
-                            | arkret::sync_client::SendQueueStatus::Failed
-                    ) {
-                        continue;
-                    }
+                for candidate in queue.active_items() {
                     if let OutboundGenerationFenceDecision::Quarantine { reason } =
                         fence.evaluate(&candidate)?
                     {
@@ -229,17 +235,17 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         let submit_outcome = match submitter.submit(item).await {
             Ok(outcome) => outcome,
             Err(error) => {
-                self.mark_retry(transaction_id, Duration::from_secs(1))
-                    .await?;
-                return Err(error);
+                return self
+                    .retry_local_or_terminal(transaction_id, error.to_string())
+                    .await;
             }
         };
         match submit_outcome {
             OutboundSubmitOutcome::Accepted { event_id } => {
                 if let Err(error) = hook.post_accept(&hook_item, &event_id, false).await {
-                    self.mark_retry(transaction_id, Duration::from_secs(1))
-                        .await?;
-                    return Err(error);
+                    return self
+                        .retry_local_or_terminal(transaction_id, error.to_string())
+                        .await;
                 }
                 Ok(OutboundEngineOutcome::Accepted(
                     self.mark_sent(transaction_id, event_id).await?,
@@ -247,9 +253,9 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
             }
             OutboundSubmitOutcome::Duplicate { event_id } => {
                 if let Err(error) = hook.post_accept(&hook_item, &event_id, true).await {
-                    self.mark_retry(transaction_id, Duration::from_secs(1))
-                        .await?;
-                    return Err(error);
+                    return self
+                        .retry_local_or_terminal(transaction_id, error.to_string())
+                        .await;
                 }
                 Ok(OutboundEngineOutcome::Duplicate(
                     self.mark_sent(transaction_id, event_id).await?,
@@ -262,12 +268,14 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
                     item,
                 })
             }
-            OutboundSubmitOutcome::Rejected { .. } => Ok(OutboundEngineOutcome::Rejected(
-                self.cancel(transaction_id).await?,
-            )),
-            OutboundSubmitOutcome::Terminal { .. } => Ok(OutboundEngineOutcome::Terminal(
-                self.cancel(transaction_id).await?,
-            )),
+            OutboundSubmitOutcome::Rejected { reason } => Ok(OutboundEngineOutcome::Rejected {
+                item: self.cancel(transaction_id).await?,
+                reason,
+            }),
+            OutboundSubmitOutcome::Terminal { reason } => Ok(OutboundEngineOutcome::Terminal {
+                item: self.cancel(transaction_id).await?,
+                reason,
+            }),
         }
     }
 
@@ -297,6 +305,47 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
             })
             .await
     }
+
+    async fn retry_local_or_terminal(
+        &self,
+        id: String,
+        reason: String,
+    ) -> Result<OutboundEngineOutcome> {
+        const MAX_LOCAL_ATTEMPTS: u32 = 8;
+        self.store
+            .mutate_outbound(move |queue| {
+                let attempts = queue
+                    .get(&id)
+                    .ok_or_else(|| Error::Protocol("outbound queue item disappeared".to_owned()))?
+                    .attempts;
+                if attempts >= MAX_LOCAL_ATTEMPTS {
+                    queue.cancel(&id, true)?;
+                    return Ok(OutboundEngineOutcome::Terminal {
+                        item: owned_item(queue, &id)?,
+                        reason,
+                    });
+                }
+                queue.mark_failed(&id, local_retry_delay(&id, attempts))?;
+                let item = owned_item(queue, &id)?;
+                Ok(OutboundEngineOutcome::RetryAt {
+                    at: item.next_retry_at.unwrap_or_else(Utc::now),
+                    item,
+                })
+            })
+            .await
+    }
+}
+
+fn local_retry_delay(transaction_id: &str, attempts: u32) -> Duration {
+    let mut hasher = DefaultHasher::new();
+    transaction_id.hash(&mut hasher);
+    let mut backoff = crate::Backoff::new(Duration::from_secs(1), Duration::from_secs(60))
+        .with_jitter(0.2, hasher.finish());
+    let mut delay = Duration::from_secs(1);
+    for _ in 0..attempts.max(1) {
+        delay = backoff.next_delay();
+    }
+    delay
 }
 
 enum QueuePreflight {
@@ -449,11 +498,11 @@ mod tests {
             .await
             .unwrap();
 
-        let error = engine
+        let outcome = engine
             .submit_next(&FailingSubmitter, Utc::now())
             .await
-            .unwrap_err();
-        assert!(matches!(error, Error::Http(_)));
+            .unwrap();
+        assert!(matches!(outcome, OutboundEngineOutcome::RetryAt { .. }));
         let item = engine.snapshot().await.unwrap().items.remove(0);
         assert_eq!(item.status, arkret::sync_client::SendQueueStatus::Failed);
         assert_eq!(item.attempts, 1);
@@ -514,11 +563,11 @@ mod tests {
         };
         let hook = FailingOncePostAcceptHook::default();
 
-        let error = engine
+        let outcome = engine
             .submit_next_with_hook(&submitter, &hook, Utc::now())
             .await
-            .unwrap_err();
-        assert!(matches!(error, Error::Protocol(_)));
+            .unwrap();
+        assert!(matches!(outcome, OutboundEngineOutcome::RetryAt { .. }));
         let failed = engine.snapshot().await.unwrap().items.remove(0);
         assert_eq!(failed.status, arkret::sync_client::SendQueueStatus::Failed);
         assert!(failed.remote_event_id.is_none());
