@@ -146,7 +146,7 @@ pub enum LoginKind {
     AgentKeyProof(AgentKeyProofLogin),
     HolderProof(HolderProofLogin),
     Oidc(OidcLogin),
-    PreRegistrationHandoff(PreRegistrationHandoffLogin),
+    PreRegistrationHandoff(Box<PreRegistrationHandoffLogin>),
     DidProof(DidProofLogin),
 }
 

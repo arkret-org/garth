@@ -98,6 +98,24 @@ pub trait AccountPostCommitHook<T> {
     ) -> impl std::future::Future<Output = Result<AccountPostCommitOutcome>> + 'a;
 }
 
+/// The two host-owned boundaries for a standard account stream step.
+/// Grouping them makes their commit-before-post-processing order explicit at
+/// construction time.
+#[derive(Clone, Copy)]
+pub struct AccountStepHandlers<'a, C: ?Sized, H: ?Sized> {
+    committer: &'a C,
+    post_commit: &'a H,
+}
+
+impl<'a, C: ?Sized, H: ?Sized> AccountStepHandlers<'a, C, H> {
+    pub fn new(committer: &'a C, post_commit: &'a H) -> Self {
+        Self {
+            committer,
+            post_commit,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AccountPostCommitOutcome {
     Continue,
@@ -463,8 +481,7 @@ where
         actor_id: Did,
         device_id: DeviceId,
         provider: &TP,
-        committer: &CMT,
-        hook: &H,
+        handlers: AccountStepHandlers<'_, CMT, H>,
         control: &SyncLoopControl,
         options: RunOptions,
     ) -> RunResult<RunStopReason>
@@ -514,11 +531,15 @@ where
                         cursor: sync_loop.token().map(str::to_owned),
                         updates,
                     };
-                    let commit_outcome = committer.commit(&step).await.map_err(|error| {
-                        Self::fail(provider, RunErrorClass::StoreFailure, error)
-                    })?;
-                    let post_commit =
-                        hook.post_commit(&transport, &step).await.map_err(|error| {
+                    let commit_outcome =
+                        handlers.committer.commit(&step).await.map_err(|error| {
+                            Self::fail(provider, RunErrorClass::StoreFailure, error)
+                        })?;
+                    let post_commit = handlers
+                        .post_commit
+                        .post_commit(&transport, &step)
+                        .await
+                        .map_err(|error| {
                             Self::fail(provider, RunErrorClass::ProjectorFailure, error)
                         })?;
                     match post_commit {
@@ -1437,8 +1458,7 @@ mod tests {
                 actor_id(),
                 device_id(),
                 &provider,
-                &committer,
-                &hook,
+                AccountStepHandlers::new(&committer, &hook),
                 &control,
                 options(),
             )

@@ -40,8 +40,8 @@ pub use facade::ArkretClient;
 pub use maybe_send::{MaybeSend, MaybeSendSync};
 pub use orchestrator::{
     AccountCommitOutcome, AccountPostCommitHook, AccountPostCommitOutcome, AccountStepCommitter,
-    AccountStreamStep, RunError, RunErrorClass, RunEvent, RunOptions, RunResult, RunStopReason,
-    TransportProvider,
+    AccountStepHandlers, AccountStreamStep, RunError, RunErrorClass, RunEvent, RunOptions,
+    RunResult, RunStopReason, TransportProvider,
 };
 pub use outbound::{
     OutboundEngine, OutboundEngineOutcome, OutboundGenerationFence,
