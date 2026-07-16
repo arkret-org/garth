@@ -251,6 +251,7 @@ mod tests {
                 "ak:request:01964137-0000-7000-8000-000000000001".to_owned(),
             )
             .unwrap(),
+            account_handle: arkret::Handle::parse("alice:example.com").unwrap(),
             account_handoff_grant: "g".repeat(32),
             expires_at: Utc::now(),
             allowed_operations: arkret::ACCOUNT_HANDOFF_ALLOWED_OPERATIONS,
