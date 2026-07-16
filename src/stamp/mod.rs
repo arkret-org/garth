@@ -70,6 +70,12 @@ pub enum StampFloorUpdate {
         observed_frontier: Option<u64>,
         now_ms: u64,
     },
+    /// Advance only the Realm/device HLC floor for a protocol value that is
+    /// not itself an Event envelope. This must not consume an actor-chain
+    /// sequence number.
+    IssueHlc {
+        now_ms: u64,
+    },
     Observe(RemoteStamp),
 }
 
@@ -100,6 +106,15 @@ impl StampFloor {
                     actor_seq,
                     hlc_physical_ms,
                     hlc_logical,
+                })
+            }
+            StampFloorUpdate::IssueHlc { now_ms } => {
+                let (hlc_physical_ms, hlc_logical) =
+                    advance_hlc(self.hlc_physical_ms, self.hlc_logical, now_ms)?;
+                Ok(Self {
+                    hlc_physical_ms,
+                    hlc_logical,
+                    ..self
                 })
             }
             StampFloorUpdate::Observe(remote) => {
@@ -309,6 +324,29 @@ fn derive_node_id(realm_id: &str, device_id: &str, local_node_secret: &[u8]) -> 
             .current();
     // `probe` is `000000000000-0000-<node_id>`; the node segment is the last 8.
     probe.as_str()[18..26].to_owned()
+}
+
+/// Materialize the canonical HLC represented by a persisted floor.
+///
+/// Hosts with an unavoidable synchronous protocol builder can atomically
+/// persist [`StampFloorUpdate::IssueHlc`] in their store, then call this helper
+/// to obtain the same Realm-scoped SDK HLC representation used by
+/// [`SigningStampAllocator`].
+pub fn hlc_from_floor(
+    scope: &StampScope,
+    local_node_secret: &[u8],
+    floor: StampFloor,
+) -> Result<Hlc> {
+    let node_id = derive_node_id(
+        scope.realm_id.as_str(),
+        scope.device_id.as_str(),
+        local_node_secret,
+    );
+    Hlc::new(format!(
+        "{:012x}-{:04x}-{node_id}",
+        floor.hlc_physical_ms, floor.hlc_logical
+    ))
+    .map_err(|error| Error::Protocol(format!("allocated hlc is invalid: {error}")))
 }
 
 #[cfg(test)]

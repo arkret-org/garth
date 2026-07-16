@@ -53,6 +53,23 @@ impl MemoryStore {
             .map_err(|err: PoisonError<_>| Error::Protocol(format!("memory store lock: {err}")))?;
         Ok(f(&mut guard))
     }
+
+    pub fn advance_stamp_floor_blocking(
+        &self,
+        scope: StampScope,
+        update: StampFloorUpdate,
+    ) -> Result<StampFloor> {
+        self.with_state(|state| {
+            let floor = state
+                .stamp_floors
+                .get(&scope)
+                .copied()
+                .unwrap_or_default()
+                .apply(update)?;
+            state.stamp_floors.insert(scope, floor);
+            Ok(floor)
+        })?
+    }
 }
 
 impl OutboundQueueStore for MemoryStore {

@@ -111,6 +111,34 @@ impl FileStore {
         self.mutate(|_| ()).await
     }
 
+    /// Synchronous stamp-floor transition for host builders that cannot await.
+    /// The same sidecar OS lock and atomic file replace used by async mutations
+    /// preserve cross-handle and cross-process uniqueness.
+    pub fn advance_stamp_floor_blocking(
+        &self,
+        scope: StampScope,
+        update: StampFloorUpdate,
+    ) -> Result<StampFloor> {
+        let path = self.path()?;
+        let _file_lock = acquire_store_lock(&path)?;
+        let mut state = load_state(&path)?;
+        let key = stamp_scope_key(&scope);
+        let floor = state
+            .stamp_floors
+            .get(&key)
+            .copied()
+            .unwrap_or_default()
+            .apply(update)?;
+        state.stamp_floors.insert(key.clone(), floor);
+        persist(&path, &state)?;
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|error| Error::Protocol(format!("file store lock: {error}")))?;
+        inner.state.stamp_floors.insert(key, floor);
+        Ok(floor)
+    }
+
     async fn mutate<T>(&self, f: impl FnOnce(&mut FileStoreInner) -> T) -> Result<T> {
         // Serialize clones in-process, then take a stable sidecar lock shared
         // by every handle and process. The data file itself is atomically

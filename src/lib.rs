@@ -33,7 +33,9 @@ pub use executor::{Executor, HostClock, SystemClock};
 pub use facade::ArkretClient;
 pub use maybe_send::{MaybeSend, MaybeSendSync};
 pub use orchestrator::{
-    RunError, RunErrorClass, RunEvent, RunOptions, RunResult, RunStopReason, TransportProvider,
+    AccountCommitOutcome, AccountPostCommitHook, AccountPostCommitOutcome, AccountStepCommitter,
+    AccountStreamStep, RunError, RunErrorClass, RunEvent, RunOptions, RunResult, RunStopReason,
+    TransportProvider,
 };
 pub use outbound::{
     OutboundEngine, OutboundEngineOutcome, OutboundGenerationFence,
@@ -50,7 +52,7 @@ pub use session::{
 };
 pub use stamp::{
     MonotonicStampStore, RemoteStamp, SigningStamp, SigningStampAllocator, StampFloor,
-    StampFloorUpdate, StampScope,
+    StampFloorUpdate, StampScope, hlc_from_floor,
 };
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use store::FileStore;

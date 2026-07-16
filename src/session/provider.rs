@@ -142,6 +142,36 @@ where
         *self.cache_lock() = None;
     }
 
+    /// Return the transport most recently built for the current grant.
+    ///
+    /// This is the synchronous bridge for host APIs that cannot await
+    /// [`TransportProvider::provide`]. It never builds or refreshes a client;
+    /// callers must first establish the provider through `provide`, and treat
+    /// `None` as a signal to use an asynchronous provider-aware path.
+    pub fn cached_transport(&self) -> Option<F::Transport> {
+        let current_grant_id = self
+            .session
+            .current_state()
+            .map(|state| state.grant_id.clone());
+        self.cache_lock()
+            .as_ref()
+            .filter(|(grant_id, _)| Some(grant_id) == current_grant_id.as_ref())
+            .map(|(_, transport)| transport.clone())
+    }
+
+    /// Clear the live grant, its durable representation, and any client built
+    /// from it. Hosts call this only after a structured terminal grant error.
+    pub fn invalidate(&self) -> Result<()> {
+        self.session.clear_state();
+        self.state_store.clear()?;
+        *self
+            .persisted_grant_id
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = None;
+        self.clear_cached_transport();
+        Ok(())
+    }
+
     pub async fn refresh_after_unauthorized(&self) -> Result<bool> {
         let previous_state = self
             .session
@@ -159,14 +189,15 @@ where
             .current_state()
             .map(|state| state.grant_id.clone());
         if refreshed_grant_id == previous_grant_id {
-            // The shared refresh cooldown can legitimately return the current
-            // grant. Do not tell the orchestrator to reconnect forever with
-            // the same credential after the server has rejected it.
-            if self.session.refresh_in_flight() {
-                self.clear_cached_transport();
-                return Ok(true);
-            }
-            return Ok(false);
+            // Another runner may already have rotated the shared session while
+            // this request was still in flight with the previous transport.
+            // The SessionEngine cooldown then legitimately returns the current
+            // state unchanged. Treat that as a transport-rebuild recovery, not
+            // as a terminal inability to refresh; otherwise a late 401 from a
+            // sibling runner spuriously signs the user out even though the
+            // provider already holds a usable grant.
+            self.clear_cached_transport();
+            return Ok(true);
         }
         self.persist_current_state().await?;
         self.clear_cached_transport();
@@ -494,5 +525,22 @@ mod tests {
             second.session().current_state().unwrap().grant_id,
             grant_id(2)
         );
+    }
+
+    #[tokio::test]
+    async fn late_sibling_unauthorized_rebuilds_after_shared_rotation() {
+        let (first, refresh_calls, factory_calls) = provider();
+        let second = first.clone();
+
+        assert_eq!(second.provide().await.unwrap(), "grant-1");
+        assert!(first.refresh_after_unauthorized().await.unwrap());
+        assert_eq!(*refresh_calls.lock().unwrap(), 1);
+
+        // This models a request that left with grant-1 before the first runner
+        // rotated and returned its 401 afterwards, inside the shared cooldown.
+        assert!(second.refresh_after_unauthorized().await.unwrap());
+        assert_eq!(*refresh_calls.lock().unwrap(), 1);
+        assert_eq!(second.provide().await.unwrap(), "grant-2");
+        assert_eq!(*factory_calls.lock().unwrap(), 2);
     }
 }

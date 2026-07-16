@@ -13,9 +13,13 @@
 //! recover and the host must require sign-in or stop the client.
 
 use std::time::Duration;
+use std::{
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
+};
 
 use arkret::{AsyncSyncTransport, SyncLoopControl, SyncLoopStep};
-use arkret_core::{DeviceId, Did, RealmId, Result};
+use arkret_core::{DeviceId, Did, RealmId, Result, SyncUpdates};
 
 use crate::subscribe::{
     EventsScanTransport, ProjectedRunError, RealmEventsTransport, RealmStreamStopReason,
@@ -44,6 +48,61 @@ pub trait TransportProvider {
     fn is_active(&self) -> bool {
         true
     }
+}
+
+/// One validated account-stream checkpoint unit. The cursor comes from the
+/// SDK trace validator and the updates are the typed fold of the same stream
+/// step, so hosts never need to parse frames or reconstruct cursor ordering.
+#[derive(Clone, Debug)]
+pub struct AccountStreamStep {
+    /// True when the request started without a resume cursor and therefore
+    /// carries a server-authoritative full account snapshot.
+    pub initial: bool,
+    pub cursor: Option<String>,
+    pub updates: SyncUpdates,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AccountCommitOutcome {
+    /// The validated cursor was durably committed with the raw updates.
+    Committed,
+    /// The host durably retained the updates but intentionally withheld the
+    /// cursor (for example until incomplete to-device material is resolved).
+    /// Garth must restore the stream loop from the durable cursor before the
+    /// next request so the checkpoint unit is replayed.
+    Replay,
+}
+
+/// Durable host boundary for an account-stream step.
+///
+/// Implementations must persist the raw typed updates and `cursor` in one
+/// transaction before returning. Garth restores the next request from the
+/// same [`CursorStore`], then invokes [`AccountPostCommitHook`] for product
+/// work that must not hold the protocol cursor open (invite refresh, MLS,
+/// calls, and to-device acknowledgements).
+pub trait AccountStepCommitter {
+    fn commit<'a>(
+        &'a self,
+        step: &'a AccountStreamStep,
+    ) -> impl std::future::Future<Output = Result<AccountCommitOutcome>> + 'a;
+}
+
+/// Product-owned work that runs only after an [`AccountStreamStep`] is durable.
+/// The hook receives the authenticated transport used for the step so it does
+/// not rebuild credentials or a parallel HTTP client.
+pub trait AccountPostCommitHook<T> {
+    fn post_commit<'a>(
+        &'a self,
+        transport: &'a T,
+        step: &'a AccountStreamStep,
+    ) -> impl std::future::Future<Output = Result<AccountPostCommitOutcome>> + 'a;
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AccountPostCommitOutcome {
+    Continue,
+    Retry,
+    Unauthorized { reason: Option<String> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -157,6 +216,17 @@ fn retryable(class: RunErrorClass) -> bool {
     )
 }
 
+fn stable_backoff_seed(tag: u64, value: impl Hash) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    tag.hash(&mut hasher);
+    value.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn account_backoff_seed(scope: &crate::CursorScope) -> u64 {
+    stable_backoff_seed(0xACC0_0011, scope)
+}
+
 enum UnauthorizedRecovery {
     Recovered,
     Retry,
@@ -187,9 +257,10 @@ where
         TP::Transport: RealmEventsTransport + EventsScanTransport,
         P: ClientProjector + ?Sized,
     {
+        let backoff_seed = stable_backoff_seed(0xA11C_E001, &realm_id);
         let engine = self.subscription_engine().with_control(control.clone());
         let mut backoff = Backoff::new(options.min_backoff, options.max_backoff)
-            .with_jitter(options.jitter_ratio, 0xA11C_E001);
+            .with_jitter(options.jitter_ratio, backoff_seed);
         loop {
             if !provider.is_active() {
                 return Ok(Self::stop(provider, RunStopReason::LifecycleEnded));
@@ -300,7 +371,7 @@ where
             .await
             .map_err(|error| Self::fail(provider, RunErrorClass::StoreFailure, error))?;
         let mut provide_backoff = Backoff::new(options.min_backoff, options.max_backoff)
-            .with_jitter(options.jitter_ratio, 0xACC0_0011);
+            .with_jitter(options.jitter_ratio, account_backoff_seed(&scope));
         loop {
             if !provider.is_active() {
                 return Ok(Self::stop(provider, RunStopReason::LifecycleEnded));
@@ -382,6 +453,154 @@ where
         }
     }
 
+    /// Resilient account runner with an atomic raw-step commit followed by
+    /// product-owned post-processing. This is the composition point for hosts
+    /// whose account loop includes MLS/invite/call work that does not belong in
+    /// Garth, while trace validation, cursor restoration, session recovery,
+    /// cancellation and bounded reconnect backoff remain shared here.
+    pub async fn run_account_steps<TP, CMT, H>(
+        &self,
+        actor_id: Did,
+        device_id: DeviceId,
+        provider: &TP,
+        committer: &CMT,
+        hook: &H,
+        control: &SyncLoopControl,
+        options: RunOptions,
+    ) -> RunResult<RunStopReason>
+    where
+        TP: TransportProvider,
+        TP::Transport: AsyncSyncTransport,
+        CMT: AccountStepCommitter + ?Sized,
+        H: AccountPostCommitHook<TP::Transport> + ?Sized,
+    {
+        let engine = self.subscription_engine().with_control(control.clone());
+        let scope = engine.account_scope(actor_id, device_id);
+        let mut sync_loop = engine
+            .restore_account_loop(scope.clone())
+            .await
+            .map_err(|error| Self::fail(provider, RunErrorClass::StoreFailure, error))?;
+        let mut backoff = Backoff::new(options.min_backoff, options.max_backoff)
+            .with_jitter(options.jitter_ratio, account_backoff_seed(&scope));
+        loop {
+            if !provider.is_active() {
+                return Ok(Self::stop(provider, RunStopReason::LifecycleEnded));
+            }
+            if control.is_cancelled() {
+                return Ok(Self::stop(provider, RunStopReason::Cancelled));
+            }
+            provider.observe(RunEvent::Connecting);
+            let transport = match provider.provide().await {
+                Ok(transport) => {
+                    backoff.reset();
+                    provider.observe(RunEvent::Online);
+                    transport
+                }
+                Err(error) if retryable(classify_error(&error)) => {
+                    let delay = backoff.next_delay();
+                    provider.observe(RunEvent::Backoff { delay });
+                    if let Some(reason) = self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
+                    }
+                    continue;
+                }
+                Err(error) => return Err(Self::fail(provider, classify_error(&error), error)),
+            };
+            let initial = sync_loop.token().is_none();
+            match sync_loop.step_async_with_control(&transport, control).await {
+                SyncLoopStep::Updates(updates) => {
+                    let step = AccountStreamStep {
+                        initial,
+                        cursor: sync_loop.token().map(str::to_owned),
+                        updates,
+                    };
+                    let commit_outcome = committer.commit(&step).await.map_err(|error| {
+                        Self::fail(provider, RunErrorClass::StoreFailure, error)
+                    })?;
+                    let post_commit =
+                        hook.post_commit(&transport, &step).await.map_err(|error| {
+                            Self::fail(provider, RunErrorClass::ProjectorFailure, error)
+                        })?;
+                    match post_commit {
+                        AccountPostCommitOutcome::Continue => {}
+                        AccountPostCommitOutcome::Retry => {
+                            let delay = backoff.next_delay();
+                            provider.observe(RunEvent::Backoff { delay });
+                            if let Some(reason) = self.wait_guarded(delay, control, provider).await
+                            {
+                                return Ok(Self::stop(provider, reason));
+                            }
+                        }
+                        AccountPostCommitOutcome::Unauthorized { reason } => {
+                            match self
+                                .recover_unauthorized(provider, control, &mut backoff)
+                                .await?
+                            {
+                                UnauthorizedRecovery::Recovered | UnauthorizedRecovery::Retry => {
+                                    continue;
+                                }
+                                UnauthorizedRecovery::GuardedStop(reason) => return Ok(reason),
+                                UnauthorizedRecovery::Unavailable => {}
+                            }
+                            return Ok(Self::stop(
+                                provider,
+                                RunStopReason::Unauthorized { reason },
+                            ));
+                        }
+                    }
+                    if commit_outcome == AccountCommitOutcome::Replay {
+                        sync_loop =
+                            engine
+                                .restore_account_loop(scope.clone())
+                                .await
+                                .map_err(|error| {
+                                    Self::fail(provider, RunErrorClass::StoreFailure, error)
+                                })?;
+                        if let Some(reason) = self
+                            .wait_guarded(options.min_backoff, control, provider)
+                            .await
+                        {
+                            return Ok(Self::stop(provider, reason));
+                        }
+                    }
+                }
+                SyncLoopStep::Retry { retry_after, .. } => {
+                    engine
+                        .checkpoint_account_cursor(
+                            scope.clone(),
+                            sync_loop.token().map(str::to_owned),
+                        )
+                        .await
+                        .map_err(|error| {
+                            Self::fail(provider, RunErrorClass::StoreFailure, error)
+                        })?;
+                    if let Some(reason) = self.wait_guarded(retry_after, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
+                    }
+                }
+                SyncLoopStep::Backpressure { retry_after } => {
+                    if let Some(reason) = self.wait_guarded(retry_after, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
+                    }
+                }
+                SyncLoopStep::Cancelled => {
+                    return Ok(Self::stop(provider, RunStopReason::Cancelled));
+                }
+                SyncLoopStep::Unauthorized { reason } => {
+                    match self
+                        .recover_unauthorized(provider, control, &mut backoff)
+                        .await?
+                    {
+                        UnauthorizedRecovery::Recovered | UnauthorizedRecovery::Retry => continue,
+                        UnauthorizedRecovery::GuardedStop(reason) => return Ok(reason),
+                        UnauthorizedRecovery::Unavailable => {}
+                    }
+                    return Ok(Self::stop(provider, RunStopReason::Unauthorized { reason }));
+                }
+            }
+        }
+    }
+
     /// Resilient account runner whose successful checkpoint unit is an atomic
     /// durable-inbox commit instead of a synchronous host projection.
     pub async fn run_account_to_inbox<TP>(
@@ -408,7 +627,7 @@ where
             .await
             .map_err(|error| Self::fail(provider, RunErrorClass::StoreFailure, error))?;
         let mut backoff = Backoff::new(options.min_backoff, options.max_backoff)
-            .with_jitter(options.jitter_ratio, 0x1AB0_0001);
+            .with_jitter(options.jitter_ratio, account_backoff_seed(&scope));
         loop {
             if !provider.is_active() {
                 return Ok(Self::stop(provider, RunStopReason::LifecycleEnded));
@@ -763,6 +982,53 @@ mod tests {
 
     struct AccountTransport {
         response: Mutex<Option<Result<AccountSubscribeBatch>>>,
+    }
+
+    struct RecordingStepCommitter {
+        order: Arc<Mutex<Vec<&'static str>>>,
+        store: MemoryStore,
+    }
+
+    impl AccountStepCommitter for RecordingStepCommitter {
+        fn commit<'a>(
+            &'a self,
+            step: &'a AccountStreamStep,
+        ) -> impl std::future::Future<Output = Result<AccountCommitOutcome>> + 'a {
+            async move {
+                self.order.lock().unwrap().push("commit");
+                let cursor = step
+                    .cursor
+                    .clone()
+                    .ok_or_else(|| Error::Protocol("test step has no cursor".to_owned()))?;
+                self.store.save(account_scope(), cursor).await?;
+                Ok(AccountCommitOutcome::Committed)
+            }
+        }
+    }
+
+    struct RecordingPostCommitHook {
+        order: Arc<Mutex<Vec<&'static str>>>,
+        store: MemoryStore,
+        control: SyncLoopControl,
+    }
+
+    impl AccountPostCommitHook<AccountTransport> for RecordingPostCommitHook {
+        fn post_commit<'a>(
+            &'a self,
+            _transport: &'a AccountTransport,
+            step: &'a AccountStreamStep,
+        ) -> impl std::future::Future<Output = Result<AccountPostCommitOutcome>> + 'a {
+            async move {
+                assert_eq!(
+                    self.store.load(account_scope()).await?.as_deref(),
+                    step.cursor.as_deref(),
+                    "post-commit work must observe the durable cursor"
+                );
+                self.order.lock().unwrap().push("hook");
+                self.control.cancel();
+                Ok(AccountPostCommitOutcome::Continue)
+            }
+        }
     }
 
     impl AccountTransport {
@@ -1145,6 +1411,47 @@ mod tests {
         assert_eq!(provider.calls(), 2);
         assert_eq!(executor.sleeps(), vec![Duration::from_millis(10)]);
         assert_eq!(*calls.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn run_account_steps_commits_before_host_postprocessing() {
+        let store = MemoryStore::new();
+        let client = test_client(RecordingExecutor::default(), store.clone());
+        let provider = QueueProvider::new(vec![Ok(AccountTransport::new(Ok(sync_response(
+            "ak:cursor:standard-step",
+        ))))]);
+        let control = SyncLoopControl::new();
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let committer = RecordingStepCommitter {
+            order: order.clone(),
+            store: store.clone(),
+        };
+        let hook = RecordingPostCommitHook {
+            order: order.clone(),
+            store: store.clone(),
+            control: control.clone(),
+        };
+
+        let stop = client
+            .run_account_steps(
+                actor_id(),
+                device_id(),
+                &provider,
+                &committer,
+                &hook,
+                &control,
+                options(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(stop, RunStopReason::Cancelled);
+        assert_eq!(*order.lock().unwrap(), vec!["commit", "hook"]);
+        assert_eq!(provider.calls(), 1);
+        assert_eq!(
+            store.load(account_scope()).await.unwrap().as_deref(),
+            Some("ak:cursor:standard-step")
+        );
     }
 
     #[tokio::test]
