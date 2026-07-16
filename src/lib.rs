@@ -48,6 +48,7 @@ pub use outbound::{
     OutboundGenerationFenceDecision, OutboundPostAcceptHook, OutboundQueueStore,
     OutboundSubmitOutcome, OutboundSubmitter,
 };
+pub use projection::{ProjectionMount, RealmStateReducer};
 pub use session::{
     AgentKeyProofLogin, AuthenticatedTransportFactory, DidProofLogin, GRANT_ROTATION_SKEW_SECS,
     HolderProofLogin, LoginKind, NoopSessionGrantStore, OidcLogin, POLL_INTERVAL_SECS,
