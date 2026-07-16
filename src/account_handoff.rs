@@ -113,7 +113,6 @@ pub fn identity_creation_register_request(
     did_operation: DidOperationSubmitRequestBody,
     root_seed: &[u8; 32],
     display_name: Option<String>,
-    device_id: Option<DeviceId>,
 ) -> Result<AccountRegisterRequestBody> {
     let validated =
         arkret::signatures::webvh::validate_principal_inception_operation(&did_operation)
@@ -149,7 +148,9 @@ pub fn identity_creation_register_request(
     Ok(AccountRegisterRequestBody {
         principal_id: challenge.principal_id.clone(),
         display_name,
-        device_id,
+        // The founding device is enrolled only after the verified binding
+        // receipt exists; identity creation itself cannot authorize a device.
+        device_id: None,
         proof: None,
         identity_creation: Some(IdentityCreationRegistration {
             lease_id: challenge.lease_id.clone(),
