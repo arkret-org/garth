@@ -10,7 +10,8 @@ pub use engine::{
     SessionGrantTransport, SessionRefreshOptions,
 };
 pub use login::{
-    AgentKeyProofLogin, DidProofLogin, HolderProofLogin, LoginKind, OidcLogin, SessionProofFields,
+    AgentKeyProofLogin, DidProofLogin, HolderProofLogin, LoginKind, OidcLogin,
+    PreRegistrationHandoffLogin, SessionProofFields,
 };
 pub use provider::{AuthenticatedTransportFactory, SessionTransportProvider};
 pub use refresh::{
