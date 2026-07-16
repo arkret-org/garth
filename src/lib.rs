@@ -9,6 +9,7 @@
 // bounds and is not supported by all downstream toolchains we gate.
 #![allow(clippy::manual_async_fn)]
 
+pub mod account_handoff;
 pub mod backoff;
 pub mod event;
 pub mod executor;
@@ -22,6 +23,11 @@ pub mod stamp;
 pub mod store;
 pub mod subscribe;
 
+pub use account_handoff::{
+    AccountHandoffDisposition, OidcAccountHandoffInput, account_handoff_disposition,
+    identity_binding_challenge_request, identity_creation_register_request,
+    oidc_account_handoff_request, pre_registration_session_grant_request, validate_binding_receipt,
+};
 pub use arkret::SyncLoopControl;
 pub use backoff::Backoff;
 pub use event::{ClientEvent, ClientProjector};
@@ -43,10 +49,10 @@ pub use outbound::{
 pub use session::{
     AgentKeyProofLogin, AuthenticatedTransportFactory, DidProofLogin, GRANT_ROTATION_SKEW_SECS,
     HolderProofLogin, LoginKind, NoopSessionGrantStore, OidcLogin, POLL_INTERVAL_SECS,
-    REFRESH_SKEW_SECS, RefreshDecision, SecureSessionGrantStore, SessionEngine,
-    SessionGrantRefreshState, SessionGrantState, SessionGrantStore, SessionGrantTransport,
-    SessionHandle, SessionProofFields, SessionRefreshOptions, SessionTransportProvider,
-    grant_due_for_rotation, grant_is_dead, refresh_decision,
+    PreRegistrationHandoffLogin, REFRESH_SKEW_SECS, RefreshDecision, SecureSessionGrantStore,
+    SessionEngine, SessionGrantRefreshState, SessionGrantState, SessionGrantStore,
+    SessionGrantTransport, SessionHandle, SessionProofFields, SessionRefreshOptions,
+    SessionTransportProvider, grant_due_for_rotation, grant_is_dead, refresh_decision,
 };
 pub use stamp::{
     MonotonicStampStore, RemoteStamp, SigningStamp, SigningStampAllocator, StampFloor,

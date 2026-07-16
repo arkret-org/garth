@@ -21,6 +21,16 @@ pub fn access_token_auth(
     )
 }
 
+pub fn account_handoff_auth(
+    account_handoff_grant: impl Into<String>,
+    signing_key: SigningKey,
+) -> arkret_http_client::DpopAuth {
+    arkret_http_client::DpopAuth::with_dpop_token(
+        account_handoff_grant.into(),
+        dpop_proof_callback(signing_key),
+    )
+}
+
 pub fn build_http_dpop_proof(
     request: arkret_http_client::DpopProofRequest,
     signing_key: &SigningKey,

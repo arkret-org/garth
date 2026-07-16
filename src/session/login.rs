@@ -126,10 +126,27 @@ impl OidcLogin {
 }
 
 #[derive(Clone, Debug)]
+pub struct PreRegistrationHandoffLogin {
+    pub request: SessionGrantRequestBody,
+}
+
+impl PreRegistrationHandoffLogin {
+    pub fn into_session_grant_request(self) -> Result<SessionGrantRequestBody> {
+        if self.request.proof.proof_kind != arkret::SessionGrantProofKind::PreRegistrationHandoff {
+            return Err(arkret::Error::Protocol(
+                "pre-registration handoff login requires pre_registration_handoff proof".to_owned(),
+            ));
+        }
+        Ok(self.request)
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum LoginKind {
     AgentKeyProof(AgentKeyProofLogin),
     HolderProof(HolderProofLogin),
     Oidc(OidcLogin),
+    PreRegistrationHandoff(PreRegistrationHandoffLogin),
     DidProof(DidProofLogin),
 }
 
@@ -139,6 +156,7 @@ impl LoginKind {
             Self::AgentKeyProof(login) => login.into_session_grant_request(),
             Self::HolderProof(login) => Ok(login.into_session_grant_request()),
             Self::Oidc(login) => Ok(login.into_session_grant_request()),
+            Self::PreRegistrationHandoff(login) => login.into_session_grant_request(),
             Self::DidProof(login) => Ok(login.into_session_grant_request()),
         }
     }
