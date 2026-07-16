@@ -234,15 +234,16 @@ fn retryable(class: RunErrorClass) -> bool {
     )
 }
 
-fn stable_backoff_seed(tag: u64, value: impl Hash) -> u64 {
+fn stable_backoff_seed(instance_seed: u64, tag: u64, value: impl Hash) -> u64 {
     let mut hasher = DefaultHasher::new();
+    instance_seed.hash(&mut hasher);
     tag.hash(&mut hasher);
     value.hash(&mut hasher);
     hasher.finish()
 }
 
-fn account_backoff_seed(scope: &crate::CursorScope) -> u64 {
-    stable_backoff_seed(0xACC0_0011, scope)
+fn account_backoff_seed(instance_seed: u64, scope: &crate::CursorScope) -> u64 {
+    stable_backoff_seed(instance_seed, 0xACC0_0011, scope)
 }
 
 enum UnauthorizedRecovery {
@@ -275,7 +276,7 @@ where
         TP::Transport: RealmEventsTransport + EventsScanTransport,
         P: ClientProjector + ?Sized,
     {
-        let backoff_seed = stable_backoff_seed(0xA11C_E001, &realm_id);
+        let backoff_seed = stable_backoff_seed(self.backoff_seed, 0xA11C_E001, &realm_id);
         let engine = self.subscription_engine().with_control(control.clone());
         let mut backoff = Backoff::new(options.min_backoff, options.max_backoff)
             .with_jitter(options.jitter_ratio, backoff_seed);
@@ -389,7 +390,10 @@ where
             .await
             .map_err(|error| Self::fail(provider, RunErrorClass::StoreFailure, error))?;
         let mut provide_backoff = Backoff::new(options.min_backoff, options.max_backoff)
-            .with_jitter(options.jitter_ratio, account_backoff_seed(&scope));
+            .with_jitter(
+                options.jitter_ratio,
+                account_backoff_seed(self.backoff_seed, &scope),
+            );
         loop {
             if !provider.is_active() {
                 return Ok(Self::stop(provider, RunStopReason::LifecycleEnded));
@@ -497,8 +501,10 @@ where
             .restore_account_loop(scope.clone())
             .await
             .map_err(|error| Self::fail(provider, RunErrorClass::StoreFailure, error))?;
-        let mut backoff = Backoff::new(options.min_backoff, options.max_backoff)
-            .with_jitter(options.jitter_ratio, account_backoff_seed(&scope));
+        let mut backoff = Backoff::new(options.min_backoff, options.max_backoff).with_jitter(
+            options.jitter_ratio,
+            account_backoff_seed(self.backoff_seed, &scope),
+        );
         loop {
             if !provider.is_active() {
                 return Ok(Self::stop(provider, RunStopReason::LifecycleEnded));
@@ -647,8 +653,10 @@ where
             .restore_account_loop(scope.clone())
             .await
             .map_err(|error| Self::fail(provider, RunErrorClass::StoreFailure, error))?;
-        let mut backoff = Backoff::new(options.min_backoff, options.max_backoff)
-            .with_jitter(options.jitter_ratio, account_backoff_seed(&scope));
+        let mut backoff = Backoff::new(options.min_backoff, options.max_backoff).with_jitter(
+            options.jitter_ratio,
+            account_backoff_seed(self.backoff_seed, &scope),
+        );
         loop {
             if !provider.is_active() {
                 return Ok(Self::stop(provider, RunStopReason::LifecycleEnded));
@@ -1093,6 +1101,35 @@ mod tests {
             actor_id: actor_id(),
             device_id: device_id(),
         }
+    }
+
+    #[test]
+    fn backoff_seeds_are_stable_and_scope_specific() {
+        let realm_a = realm_id();
+        let realm_b = RealmId::new("ak:realm:01904100-0000-7000-8000-000000000002").unwrap();
+        assert_eq!(
+            stable_backoff_seed(11, 0xA11C_E001, &realm_a),
+            stable_backoff_seed(11, 0xA11C_E001, &realm_a)
+        );
+        assert_ne!(
+            stable_backoff_seed(11, 0xA11C_E001, &realm_a),
+            stable_backoff_seed(12, 0xA11C_E001, &realm_a)
+        );
+        assert_ne!(
+            stable_backoff_seed(11, 0xA11C_E001, &realm_a),
+            stable_backoff_seed(11, 0xA11C_E001, &realm_b)
+        );
+
+        let scope_a = account_scope();
+        let scope_b = CursorScope::Account {
+            service_id: None,
+            actor_id: actor_id(),
+            device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000002").unwrap(),
+        };
+        assert_ne!(
+            account_backoff_seed(11, &scope_a),
+            account_backoff_seed(11, &scope_b)
+        );
     }
 
     fn options() -> RunOptions {

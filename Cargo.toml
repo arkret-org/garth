@@ -30,6 +30,7 @@ arkret = {version = "0.3.0",path = "../arkret-rust-sdk/crates/sdk",default-featu
 arkret-core = {version = "0.3.0",path = "../arkret-rust-sdk/crates/core",default-features = false}
 arkret-http-client = {version = "0.3.0",path = "../arkret-rust-sdk/crates/http-client",default-features = false}
 ed25519-dalek = {version = "2.2.0",default-features = false,features = ["std", "rand_core"]}
+getrandom = {version = "0.4.3",default-features = false,features = ["std", "wasm_js"]}
 serde = {version = "1.0.228",default-features = false,features = ["std", "derive"]}
 serde_json = {version = "1.0.150",default-features = false,features = ["std"]}
 thiserror = {version = "2.0.18",default-features = false}
