@@ -467,7 +467,7 @@ mod tests {
 
     fn message_event() -> Event {
         Event::new(
-            kinds::MESSAGE_CREATE,
+            arkret_core::events::EventKind::MESSAGE_CREATE,
             realm_id(),
             Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
             1,
@@ -980,7 +980,7 @@ mod tests {
         // `ClientEvent::Event` instead of erroring the loop.
         let store = MemoryStore::new();
         let event = Event::new(
-            kinds::MESSAGE_CREATE,
+            arkret_core::events::EventKind::MESSAGE_CREATE,
             realm_id(),
             Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
             1,

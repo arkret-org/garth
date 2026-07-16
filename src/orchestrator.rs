@@ -1165,7 +1165,7 @@ mod tests {
 
     fn event_frame() -> EventsSubscribeFrame {
         let event = arkret_core::Event::new(
-            kinds::MESSAGE_CREATE,
+            arkret_core::events::EventKind::MESSAGE_CREATE,
             realm_id(),
             actor_id(),
             1,
