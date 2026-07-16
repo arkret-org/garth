@@ -34,8 +34,6 @@ pub struct PendingDelivery {
     pub last_error: Option<String>,
 }
 
-pub type DeliveryBatch = PendingDelivery;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeliveryErrorClass {

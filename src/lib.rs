@@ -55,12 +55,11 @@ pub use stamp::{
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use store::FileStore;
 pub use store::{
-    BoundedSeenWindow, CursorScope, CursorStore, DEFAULT_SEEN_EVENTS_CAPACITY, DeliveryBatch,
-    DeliveryErrorClass, DeliveryId, DurableInboxStore, EventCacheStore, MAX_DELIVERY_ERROR_BYTES,
-    MAX_PENDING_READ, MemorySecureKeyStore, MemoryStore, OpaqueCursor, PendingDelivery,
-    PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter, SecretBytes, SecretClass,
-    SecretDurability, SecureCryptoStoreAdapter, SecureKeyStore, SecureKeyStoreBackendInfo,
-    SecureKeyStoreError,
+    BoundedSeenWindow, CursorScope, CursorStore, DEFAULT_SEEN_EVENTS_CAPACITY, DeliveryErrorClass,
+    DeliveryId, DurableInboxStore, EventCacheStore, MAX_DELIVERY_ERROR_BYTES, MAX_PENDING_READ,
+    MemorySecureKeyStore, MemoryStore, OpaqueCursor, PendingDelivery, PutSecretOptions,
+    SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter, SecretBytes, SecretClass, SecretDurability,
+    SecureCryptoStoreAdapter, SecureKeyStore, SecureKeyStoreBackendInfo, SecureKeyStoreError,
 };
 pub use subscribe::{
     BoxRealmStreamFuture, EventsScanRequest, EventsScanTransport, RealmEventsDriver,

@@ -21,10 +21,6 @@ impl ProjectionMount {
         &self.state
     }
 
-    pub fn state_mut(&mut self) -> &mut RealmState {
-        &mut self.state
-    }
-
     pub fn apply_events(&mut self, events: &[Event]) -> Result<()> {
         self.state.apply_events(events)
     }
