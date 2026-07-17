@@ -556,6 +556,8 @@ where
                         .map_err(|error| {
                             Self::fail(provider, RunErrorClass::ProjectorFailure, error)
                         })?;
+                    let clean_commit = commit_outcome == AccountCommitOutcome::Committed
+                        && post_commit == AccountPostCommitOutcome::Continue;
                     match post_commit {
                         AccountPostCommitOutcome::Continue => {}
                         AccountPostCommitOutcome::Retry => {
@@ -597,6 +599,11 @@ where
                         {
                             return Ok(Self::stop(provider, reason));
                         }
+                    } else if clean_commit
+                        && let Some(reason) =
+                            self.wait_guarded(options.beat, control, provider).await
+                    {
+                        return Ok(Self::stop(provider, reason));
                     }
                 }
                 SyncLoopStep::Retry { retry_after, .. } => {
@@ -1053,6 +1060,18 @@ mod tests {
         }
     }
 
+    struct ContinuingPostCommitHook;
+
+    impl AccountPostCommitHook<AccountTransport> for ContinuingPostCommitHook {
+        fn post_commit<'a>(
+            &'a self,
+            _transport: &'a AccountTransport,
+            _step: &'a AccountStreamStep,
+        ) -> impl std::future::Future<Output = Result<AccountPostCommitOutcome>> + 'a {
+            async { Ok(AccountPostCommitOutcome::Continue) }
+        }
+    }
+
     impl AccountTransport {
         fn new(response: Result<AccountSubscribeBatch>) -> Self {
             Self {
@@ -1501,6 +1520,50 @@ mod tests {
         assert_eq!(
             store.load(account_scope()).await.unwrap().as_deref(),
             Some("ak:cursor:standard-step")
+        );
+    }
+
+    #[tokio::test]
+    async fn run_account_steps_waits_for_beat_after_a_clean_commit() {
+        let executor = RecordingExecutor::default();
+        let store = MemoryStore::new();
+        let client = test_client(executor.clone(), store.clone());
+        let provider = QueueProvider::new(vec![
+            Ok(AccountTransport::new(Ok(sync_response(
+                "ak:cursor:clean-step",
+            )))),
+            Ok(AccountTransport::new(Err(Error::AccountStreamInterrupt(
+                AccountStreamInterrupt::Unauthorized,
+            )))),
+        ]);
+        let control = SyncLoopControl::new();
+        let committer = RecordingStepCommitter {
+            order: Arc::new(Mutex::new(Vec::new())),
+            store,
+        };
+        let options = RunOptions {
+            beat: Duration::from_millis(200),
+            ..options()
+        };
+
+        let stop = client
+            .run_account_steps(
+                actor_id(),
+                device_id(),
+                &provider,
+                AccountStepHandlers::new(&committer, &ContinuingPostCommitHook),
+                &control,
+                options,
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(stop, RunStopReason::Unauthorized { reason: None });
+        assert_eq!(provider.calls(), 2);
+        assert_eq!(
+            executor.sleeps(),
+            vec![Duration::from_millis(50); 4],
+            "a clean, immediately-ended account response must honor the configured beat before reconnecting"
         );
     }
 
