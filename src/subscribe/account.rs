@@ -1,25 +1,47 @@
 use arkret_core::SyncUpdates;
 
-use crate::ClientEvent;
+use crate::{AccountUpdateContext, ClientEvent};
 
 /// Fan an account-subscribe step's [`SyncUpdates`] into the ordered
-/// [`ClientEvent`] batch a host consumes: the whole `AccountUpdates` first
-/// (carries batch context — to-device ack token, `partial`, presence, account
-/// data), then the granular realm / to-device / notification deltas.
+/// [`ClientEvent`] batch a host consumes: non-repeated batch context first,
+/// then the granular realm / to-device / notification deltas.
 pub fn account_updates_to_events(updates: SyncUpdates) -> Vec<ClientEvent> {
-    let mut batch = Vec::new();
-    batch.push(ClientEvent::AccountUpdates(updates.clone()));
+    let SyncUpdates {
+        realm_updates,
+        malformed_realms,
+        to_device,
+        to_device_ack_token,
+        to_device_limited,
+        to_device_next_cursor,
+        to_device_lost,
+        device_lists,
+        presence,
+        account_data,
+        notifications,
+        partial,
+    } = updates;
+    let mut batch = vec![ClientEvent::AccountUpdates(AccountUpdateContext {
+        malformed_realms,
+        to_device_ack_token,
+        to_device_limited,
+        to_device_next_cursor,
+        to_device_lost,
+        device_lists,
+        presence,
+        account_data,
+        partial,
+    })];
 
-    for update in updates.realm_updates {
+    for update in realm_updates {
         batch.push(ClientEvent::RealmDelta {
             realm_id: update.realm_id.clone(),
             update,
         });
     }
-    for message in updates.to_device {
+    for message in to_device {
         batch.push(ClientEvent::ToDevice(message));
     }
-    for notification in updates.notifications {
+    for notification in notifications {
         batch.push(ClientEvent::Notification(notification));
     }
     batch
@@ -66,7 +88,7 @@ mod tests {
     }
 
     #[test]
-    fn account_update_fanout_emits_raw_and_granular_events() {
+    fn account_update_fanout_emits_context_and_each_granular_event_once() {
         let kinds = Arc::new(Mutex::new(Vec::new()));
         for event in account_updates_to_events(updates()) {
             let kind = match event {
@@ -81,6 +103,25 @@ mod tests {
         assert_eq!(
             kinds.lock().unwrap().as_slice(),
             &["account", "realm", "notification"]
+        );
+        let events = account_updates_to_events(updates());
+        let ClientEvent::AccountUpdates(context) = &events[0] else {
+            panic!("first event must carry account batch context");
+        };
+        assert!(context.account_data.is_empty());
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ClientEvent::RealmDelta { .. }))
+                .count(),
+            1
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event, ClientEvent::Notification(_)))
+                .count(),
+            1
         );
     }
 }

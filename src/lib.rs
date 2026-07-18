@@ -30,7 +30,7 @@ pub use account_handoff::{
 };
 pub use arkret::SyncLoopControl;
 pub use backoff::Backoff;
-pub use event::{ClientEvent, ClientProjector};
+pub use event::{AccountUpdateContext, ClientEvent, ClientProjector};
 #[cfg(feature = "native")]
 pub use executor::NativeExecutor;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]

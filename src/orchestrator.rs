@@ -830,7 +830,6 @@ mod tests {
     use arkret::{
         AccountStreamInterrupt, AccountSubscribeBatch, BoxSyncFuture, Error, SyncRequestBody,
     };
-    use arkret_core::events::kinds;
     use arkret_core::{
         EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind, Hlc, NotificationDelta,
         NotificationDeltaAction, NotificationId, NotificationType, RealmId,

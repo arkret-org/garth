@@ -400,7 +400,6 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
-    use arkret_core::events::kinds;
     use arkret_core::identifiers::Cursor;
     use arkret_core::{Did, Event, Hlc};
     use serde_json::{Value, json};

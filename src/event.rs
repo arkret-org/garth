@@ -1,6 +1,6 @@
 use arkret_core::{
-    DecodedMessage, DeviceMessageEnvelope, Event, EventsQueryOutcome, NotificationDelta, RealmId,
-    RealmUpdate, SyncUpdates,
+    AccountSubscribeDeviceListChanges, DecodedMessage, DeviceMessageEnvelope, EphemeralEnvelope,
+    Event, EventsQueryOutcome, NotificationDelta, RealmId, RealmUpdate,
 };
 use serde::{Deserialize, Serialize};
 
@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 #[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum ClientEvent {
-    AccountUpdates(SyncUpdates),
+    AccountUpdates(AccountUpdateContext),
     RealmDelta {
         realm_id: RealmId,
         update: RealmUpdate,
@@ -21,6 +21,24 @@ pub enum ClientEvent {
     Event(Event),
     Notification(NotificationDelta),
     ToDevice(DeviceMessageEnvelope),
+}
+
+/// Account-subscribe batch metadata that is not emitted as a granular event.
+///
+/// Realm updates, to-device messages, and notifications deliberately do not
+/// live here: each is emitted once through its dedicated [`ClientEvent`]
+/// variant, keeping durable inbox records free of duplicate payloads.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AccountUpdateContext {
+    pub malformed_realms: Vec<String>,
+    pub to_device_ack_token: Option<String>,
+    pub to_device_limited: bool,
+    pub to_device_next_cursor: Option<String>,
+    pub to_device_lost: bool,
+    pub device_lists: AccountSubscribeDeviceListChanges,
+    pub presence: Vec<EphemeralEnvelope>,
+    pub account_data: Vec<Event>,
+    pub partial: bool,
 }
 
 /// Async host seam: turns a batch of engine-emitted [`ClientEvent`]s into
