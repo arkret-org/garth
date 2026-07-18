@@ -382,8 +382,8 @@ where
     /// every reconnect).
     fn decode_event_batch(&self, event: Event) -> Vec<ClientEvent> {
         match self.decoder.decode_event(event) {
-            DecodedInbound::Message(message) => vec![ClientEvent::Message(message)],
-            DecodedInbound::Event(event) => vec![ClientEvent::Event(event)],
+            DecodedInbound::Message(message) => vec![ClientEvent::Message(*message)],
+            DecodedInbound::Event(event) => vec![ClientEvent::Event(*event)],
         }
     }
 

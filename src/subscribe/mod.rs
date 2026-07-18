@@ -274,10 +274,10 @@ where
             }
             match decoder.decode_event(event) {
                 arkret_core::DecodedInbound::Message(message) => {
-                    batch.push(ClientEvent::Message(message));
+                    batch.push(ClientEvent::Message(*message));
                 }
                 arkret_core::DecodedInbound::Event(event) => {
-                    batch.push(ClientEvent::Event(event));
+                    batch.push(ClientEvent::Event(*event));
                 }
             }
             accepted_ids.push(event_id);
