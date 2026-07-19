@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::str;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use arkret_core::{Error, KeyStore, KeyStoreError};
+use arkret_core::{Error, KeyBytes, KeyStore, KeyStoreError};
 use thiserror::Error;
 use zeroize::Zeroizing;
 
@@ -273,24 +273,30 @@ impl<S> KeyStore for SdkKeyStoreAdapter<S>
 where
     S: SecureKeyStore + Send + Sync,
 {
-    fn load(&self, id: &str) -> arkret_core::Result<arkret_core::KeyBytes> {
+    fn load(&self, id: &str) -> Result<KeyBytes, KeyStoreError> {
         let bytes = self.inner.get_secret_bytes(id).map_err(|err| match err {
-            SecureKeyStoreError::NotFound => Error::from(KeyStoreError::not_found(id)),
-            other => Error::from(other),
+            SecureKeyStoreError::NotFound => KeyStoreError::not_found(id),
+            other => KeyStoreError::backend(other.to_string()),
         })?;
-        bytes.ok_or_else(|| KeyStoreError::not_found(id).into())
+        bytes.ok_or_else(|| KeyStoreError::not_found(id))
     }
 
-    fn store(&self, id: &str, key: &[u8]) -> arkret_core::Result<()> {
-        self.inner.store_secret_bytes(id, key).map_err(Error::from)
+    fn store(&self, id: &str, key: &[u8]) -> Result<(), KeyStoreError> {
+        self.inner
+            .store_secret_bytes(id, key)
+            .map_err(|err| KeyStoreError::backend(err.to_string()))
     }
 
-    fn list(&self) -> arkret_core::Result<Vec<String>> {
-        self.inner.list_secret_keys(None).map_err(Error::from)
+    fn list(&self) -> Result<Vec<String>, KeyStoreError> {
+        self.inner
+            .list_secret_keys(None)
+            .map_err(|err| KeyStoreError::backend(err.to_string()))
     }
 
-    fn delete(&self, id: &str) -> arkret_core::Result<()> {
-        self.inner.delete_secret(id).map_err(Error::from)
+    fn delete(&self, id: &str) -> Result<(), KeyStoreError> {
+        self.inner
+            .delete_secret(id)
+            .map_err(|err| KeyStoreError::backend(err.to_string()))
     }
 }
 
@@ -322,7 +328,7 @@ where
     fn get_secret_bytes(&self, key: &str) -> SecureKeyStoreResult<Option<SecretBytes>> {
         match self.inner.load(key) {
             Ok(bytes) => Ok(Some(bytes)),
-            Err(err) if err.is_key_store_not_found() => Ok(None),
+            Err(err) if err.is_not_found() => Ok(None),
             Err(err) => Err(SecureKeyStoreError::Backend(err.to_string())),
         }
     }
@@ -367,19 +373,19 @@ mod tests {
     struct MissingKeyStore;
 
     impl KeyStore for MissingKeyStore {
-        fn load(&self, id: &str) -> arkret_core::Result<arkret_core::KeyBytes> {
-            Err(KeyStoreError::not_found(id).into())
+        fn load(&self, id: &str) -> Result<KeyBytes, KeyStoreError> {
+            Err(KeyStoreError::not_found(id))
         }
 
-        fn store(&self, _id: &str, _key: &[u8]) -> arkret_core::Result<()> {
+        fn store(&self, _id: &str, _key: &[u8]) -> Result<(), KeyStoreError> {
             Ok(())
         }
 
-        fn list(&self) -> arkret_core::Result<Vec<String>> {
+        fn list(&self) -> Result<Vec<String>, KeyStoreError> {
             Ok(Vec::new())
         }
 
-        fn delete(&self, _id: &str) -> arkret_core::Result<()> {
+        fn delete(&self, _id: &str) -> Result<(), KeyStoreError> {
             Ok(())
         }
     }
@@ -388,21 +394,21 @@ mod tests {
     struct BackendTextKeyStore;
 
     impl KeyStore for BackendTextKeyStore {
-        fn load(&self, _id: &str) -> arkret_core::Result<arkret_core::KeyBytes> {
-            Err(Error::Protocol(
-                "backend text mentions key not found but is not typed".to_owned(),
+        fn load(&self, _id: &str) -> Result<KeyBytes, KeyStoreError> {
+            Err(KeyStoreError::backend(
+                "backend text mentions key not found but is not typed",
             ))
         }
 
-        fn store(&self, _id: &str, _key: &[u8]) -> arkret_core::Result<()> {
+        fn store(&self, _id: &str, _key: &[u8]) -> Result<(), KeyStoreError> {
             Ok(())
         }
 
-        fn list(&self) -> arkret_core::Result<Vec<String>> {
+        fn list(&self) -> Result<Vec<String>, KeyStoreError> {
             Ok(Vec::new())
         }
 
-        fn delete(&self, _id: &str) -> arkret_core::Result<()> {
+        fn delete(&self, _id: &str) -> Result<(), KeyStoreError> {
             Ok(())
         }
     }
@@ -425,6 +431,6 @@ mod tests {
     fn key_store_adapter_preserves_secure_store_not_found_as_typed_sdk_error() {
         let adapter = SdkKeyStoreAdapter::new(MemorySecureKeyStore::new());
         let err = adapter.load("missing").unwrap_err();
-        assert!(err.is_key_store_not_found());
+        assert!(err.is_not_found());
     }
 }
