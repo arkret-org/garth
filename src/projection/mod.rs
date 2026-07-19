@@ -22,7 +22,9 @@ impl ProjectionMount {
     }
 
     pub fn apply_events(&mut self, events: &[Event]) -> Result<()> {
-        self.state.apply_events(events)
+        // `arkret-state`'s reducer returns `arkret_wire::WireError`; bridge to
+        // `arkret_core::Error` via the `?` From conversion.
+        Ok(self.state.apply_events(events)?)
     }
 
     pub fn apply_events_with_domain<P>(&mut self, events: &[Event], projector: &mut P) -> Result<()>
