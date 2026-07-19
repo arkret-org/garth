@@ -23,6 +23,7 @@ use arkret_core::{DeviceId, Did, RealmId, Result, SyncUpdates};
 
 use crate::subscribe::{
     EventsScanTransport, ProjectedRunError, RealmEventsTransport, RealmStreamStopReason,
+    ScanCatchupOptions,
 };
 use crate::{
     ArkretClient, Backoff, ClientProjector, CursorStore, DurableInboxStore, EventCacheStore,
@@ -288,6 +289,10 @@ where
         let engine = self.subscription_engine().with_control(control.clone());
         let mut backoff = Backoff::new(options.min_backoff, options.max_backoff)
             .with_jitter(options.jitter_ratio, backoff_seed);
+        // One reset may legitimately be needed for a persisted cursor. A
+        // second invalid-cursor response before a healthy stream result is a
+        // server/protocol fault and must stop instead of becoming a tight loop.
+        let mut cursor_recovery_attempted = false;
         loop {
             if !provider.is_active() {
                 return Ok(Self::stop(provider, RunStopReason::LifecycleEnded));
@@ -318,6 +323,7 @@ where
                 .await
             {
                 Ok(RealmStreamStopReason::StreamEnded) => {
+                    cursor_recovery_attempted = false;
                     backoff.reset();
                     if let Some(reason) = self.wait_guarded(options.beat, control, provider).await {
                         return Ok(Self::stop(provider, reason));
@@ -326,6 +332,7 @@ where
                 Ok(RealmStreamStopReason::Dropped {
                     reconnect_after_ms, ..
                 }) => {
+                    cursor_recovery_attempted = false;
                     let delay =
                         backoff.next_delay_with_hint(reconnect_after_ms.map(Duration::from_millis));
                     provider.observe(RunEvent::Backoff { delay });
@@ -334,7 +341,33 @@ where
                     }
                 }
                 Ok(RealmStreamStopReason::ResyncRequired { reconnect_after_ms }) => {
+                    if cursor_recovery_attempted {
+                        return Err(Self::fail(
+                            provider,
+                            RunErrorClass::ProtocolViolation,
+                            arkret_core::Error::Protocol(
+                                "realm stream required resync again before recovery completed"
+                                    .to_owned(),
+                            ),
+                        ));
+                    }
                     provider.observe(RunEvent::CursorReset);
+                    engine
+                        .clear_realm_history_cursors(realm_id.clone())
+                        .await
+                        .map_err(|error| {
+                            Self::fail(provider, RunErrorClass::StoreFailure, error)
+                        })?;
+                    engine
+                        .bootstrap_realm_history(
+                            &transport,
+                            realm_id.clone(),
+                            projector,
+                            ScanCatchupOptions::default(),
+                        )
+                        .await
+                        .map_err(|error| Self::fail(provider, classify_error(&error), error))?;
+                    cursor_recovery_attempted = true;
                     let delay =
                         backoff.next_delay_with_hint(reconnect_after_ms.map(Duration::from_millis));
                     provider.observe(RunEvent::Backoff { delay });
@@ -352,6 +385,33 @@ where
                         UnauthorizedRecovery::Unavailable => {}
                     }
                     return Ok(Self::stop(provider, RunStopReason::Unauthorized { reason }));
+                }
+                Err(ProjectedRunError::Transport(error)) if error.is_invalid_cursor() => {
+                    if cursor_recovery_attempted {
+                        return Err(Self::fail(
+                            provider,
+                            RunErrorClass::ProtocolViolation,
+                            error,
+                        ));
+                    }
+                    provider.observe(RunEvent::CursorReset);
+                    engine
+                        .clear_realm_history_cursors(realm_id.clone())
+                        .await
+                        .map_err(|error| {
+                            Self::fail(provider, RunErrorClass::StoreFailure, error)
+                        })?;
+                    engine
+                        .bootstrap_realm_history(
+                            &transport,
+                            realm_id.clone(),
+                            projector,
+                            ScanCatchupOptions::default(),
+                        )
+                        .await
+                        .map_err(|error| Self::fail(provider, classify_error(&error), error))?;
+                    cursor_recovery_attempted = true;
+                    backoff.reset();
                 }
                 Err(ProjectedRunError::Transport(error)) if retryable(classify_error(&error)) => {
                     let delay = backoff.next_delay();
@@ -459,6 +519,13 @@ where
                     if let Some(reason) = self.wait_guarded(retry_after, control, provider).await {
                         return Ok(Self::stop(provider, reason));
                     }
+                }
+                SyncLoopStep::Failed { error } => {
+                    return Err(Self::fail(
+                        provider,
+                        RunErrorClass::ProtocolViolation,
+                        arkret_core::Error::Protocol(error),
+                    ));
                 }
                 SyncLoopStep::Backpressure { retry_after } => {
                     if let Some(reason) = self.wait_guarded(retry_after, control, provider).await {
@@ -613,6 +680,13 @@ where
                         return Ok(Self::stop(provider, reason));
                     }
                 }
+                SyncLoopStep::Failed { error } => {
+                    return Err(Self::fail(
+                        provider,
+                        RunErrorClass::ProtocolViolation,
+                        arkret_core::Error::Protocol(error),
+                    ));
+                }
                 SyncLoopStep::Backpressure { retry_after } => {
                     if let Some(reason) = self.wait_guarded(retry_after, control, provider).await {
                         return Ok(Self::stop(provider, reason));
@@ -723,6 +797,13 @@ where
                         return Ok(Self::stop(provider, reason));
                     }
                 }
+                SyncLoopStep::Failed { error } => {
+                    return Err(Self::fail(
+                        provider,
+                        RunErrorClass::ProtocolViolation,
+                        arkret_core::Error::Protocol(error),
+                    ));
+                }
                 SyncLoopStep::Backpressure { retry_after } => {
                     if let Some(reason) = self.wait_guarded(retry_after, control, provider).await {
                         return Ok(Self::stop(provider, reason));
@@ -831,8 +912,8 @@ mod tests {
         AccountStreamInterrupt, AccountSubscribeBatch, BoxSyncFuture, Error, SyncRequestBody,
     };
     use arkret_core::{
-        EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind, Hlc, NotificationDelta,
-        NotificationDeltaAction, NotificationId, NotificationType, RealmId,
+        ErrorEnvelope, EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind, Hlc,
+        NotificationDelta, NotificationDeltaAction, NotificationId, NotificationType, RealmId,
     };
     use serde_json::{Value, json};
 
@@ -1179,6 +1260,13 @@ mod tests {
         framed
     }
 
+    fn cursor_expired_error() -> Error {
+        Error::Api {
+            status: 410,
+            error: Box::new(ErrorEnvelope::new("cursor_expired", "cursor expired")),
+        }
+    }
+
     fn projector(
         control: Option<SyncLoopControl>,
         fail: bool,
@@ -1330,6 +1418,100 @@ mod tests {
         assert_eq!(provider.calls(), 2);
         assert_eq!(executor.sleeps(), vec![Duration::from_millis(10)]);
         assert_eq!(*calls.lock().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn run_realm_clears_all_cursors_bootstraps_and_reconnects_after_cursor_expiry() {
+        let store = MemoryStore::new();
+        let realm_scope = CursorScope::RealmEvents {
+            service_id: None,
+            realm_id: realm_id(),
+        };
+        let scan_scope = CursorScope::RealmEventsScan {
+            service_id: None,
+            realm_id: realm_id(),
+            order: None,
+        };
+        store
+            .save(realm_scope.clone(), "ak:cursor:expired-stream".to_owned())
+            .await
+            .unwrap();
+        store
+            .save(scan_scope.clone(), "ak:cursor:expired-scan".to_owned())
+            .await
+            .unwrap();
+        let client = test_client(RecordingExecutor::default(), store.clone());
+        let provider = QueueProvider::new(vec![
+            Ok(TestRealmTransport {
+                open_error: Mutex::new(Some(cursor_expired_error())),
+                source: Mutex::new(None),
+            }),
+            Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
+                "revoked",
+            ))])),
+        ]);
+        let control = SyncLoopControl::new();
+        let (projector, calls) = projector(None, false);
+
+        let stop = client
+            .run_realm(&provider, realm_id(), &projector, &control, options())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            stop,
+            RunStopReason::Unauthorized {
+                reason: Some("revoked".to_owned())
+            }
+        );
+        assert_eq!(provider.calls(), 2);
+        assert!(store.load(realm_scope).await.unwrap().is_none());
+        assert!(store.load(scan_scope).await.unwrap().is_none());
+        assert_eq!(*calls.lock().unwrap(), 0);
+        assert!(provider.events().contains(&RunEvent::CursorReset));
+    }
+
+    #[tokio::test]
+    async fn run_realm_stops_instead_of_looping_when_cursorless_retry_is_rejected() {
+        let store = MemoryStore::new();
+        let scope = CursorScope::RealmEvents {
+            service_id: None,
+            realm_id: realm_id(),
+        };
+        store
+            .save(scope.clone(), "ak:cursor:expired-stream".to_owned())
+            .await
+            .unwrap();
+        let client = test_client(RecordingExecutor::default(), store.clone());
+        let provider = QueueProvider::new(vec![
+            Ok(TestRealmTransport {
+                open_error: Mutex::new(Some(cursor_expired_error())),
+                source: Mutex::new(None),
+            }),
+            Ok(TestRealmTransport {
+                open_error: Mutex::new(Some(cursor_expired_error())),
+                source: Mutex::new(None),
+            }),
+        ]);
+        let control = SyncLoopControl::new();
+        let (projector, _) = projector(None, false);
+
+        let error = client
+            .run_realm(&provider, realm_id(), &projector, &control, options())
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.class, RunErrorClass::ProtocolViolation);
+        assert_eq!(provider.calls(), 2);
+        assert!(store.load(scope).await.unwrap().is_none());
+        assert_eq!(
+            provider
+                .events()
+                .iter()
+                .filter(|event| matches!(event, RunEvent::CursorReset))
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -1509,9 +1691,10 @@ mod tests {
         let store = MemoryStore::new();
         let client = test_client(executor.clone(), store.clone());
         let provider = QueueProvider::new(vec![
-            Ok(AccountTransport::new(Err(Error::Protocol(
-                "network down".to_owned(),
-            )))),
+            Ok(AccountTransport::new(Err(Error::Api {
+                status: 503,
+                error: Box::new(ErrorEnvelope::new("service_unavailable", "network down")),
+            }))),
             Ok(AccountTransport::new(Ok(sync_response("ak:cursor:next")))),
         ]);
         let control = SyncLoopControl::new();
@@ -1539,6 +1722,35 @@ mod tests {
         let waited = executor.sleeps().into_iter().sum::<Duration>();
         assert!(waited >= Duration::from_secs(1));
         assert!(waited <= Duration::from_millis(1200));
+    }
+
+    #[tokio::test]
+    async fn run_account_stops_after_one_non_retryable_protocol_error() {
+        let executor = RecordingExecutor::default();
+        let store = MemoryStore::new();
+        let client = test_client(executor.clone(), store);
+        let provider = QueueProvider::new(vec![Ok(AccountTransport::new(Err(Error::Protocol(
+            "malformed account frame".to_owned(),
+        ))))]);
+        let control = SyncLoopControl::new();
+        let (projector, calls) = projector(Some(control.clone()), false);
+
+        let error = client
+            .run_account(
+                actor_id(),
+                device_id(),
+                &provider,
+                &projector,
+                &control,
+                options(),
+            )
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.class, RunErrorClass::ProtocolViolation);
+        assert_eq!(provider.calls(), 1);
+        assert_eq!(*calls.lock().unwrap(), 0);
+        assert!(executor.sleeps().is_empty());
     }
 
     #[tokio::test]

@@ -101,6 +101,9 @@ where
                         return Ok(SubscriptionStopReason::Cancelled);
                     }
                 }
+                SyncLoopStep::Failed { error } => {
+                    return Err(arkret_core::Error::Protocol(error));
+                }
                 SyncLoopStep::Backpressure { retry_after } => {
                     if crate::executor::wait_cancellable(&self.executor, retry_after, || {
                         self.control.is_cancelled()
@@ -166,6 +169,11 @@ where
                         return Ok(SubscriptionStopReason::Cancelled);
                     }
                 }
+                SyncLoopStep::Failed { error } => {
+                    return Err(ProjectedRunError::Transport(arkret_core::Error::Protocol(
+                        error,
+                    )));
+                }
                 SyncLoopStep::Backpressure { retry_after } => {
                     if crate::executor::wait_cancellable(&self.executor, retry_after, || {
                         self.control.is_cancelled()
@@ -191,6 +199,7 @@ mod tests {
     use std::time::Duration;
 
     use arkret::Error;
+    use arkret_core::ErrorEnvelope;
 
     use super::super::test_support::{RecordingExecutor, queued_transport, sync_response};
     use super::*;
@@ -254,7 +263,10 @@ mod tests {
             control,
         };
         let responses = Arc::new(Mutex::new(VecDeque::from([
-            Err(Error::Protocol("network down".to_owned())),
+            Err(Error::Api {
+                status: 503,
+                error: Box::new(ErrorEnvelope::new("service_unavailable", "network down")),
+            }),
             Ok(sync_response("s1")),
         ])));
         let transport = queued_transport(responses);
@@ -273,6 +285,29 @@ mod tests {
             sleeps
                 .iter()
                 .all(|duration| *duration <= Duration::from_millis(50))
+        );
+    }
+
+    #[tokio::test]
+    async fn account_driver_stops_after_non_retryable_protocol_error() {
+        let driver = SubscriptionLoopDriver::new(RecordingExecutor::default());
+        let projector = CountingProjector {
+            events: Arc::new(Mutex::new(0)),
+            control: driver.control(),
+        };
+        let responses = Arc::new(Mutex::new(VecDeque::from([Err(Error::Protocol(
+            "malformed account frame".to_owned(),
+        ))])));
+        let transport = queued_transport(responses);
+        let mut sync_loop = SyncLoop::new();
+
+        let error = driver
+            .run_account(&mut sync_loop, &transport, &projector)
+            .await
+            .unwrap_err();
+
+        assert!(
+            matches!(error, Error::Protocol(message) if message.contains("malformed account frame"))
         );
     }
 }

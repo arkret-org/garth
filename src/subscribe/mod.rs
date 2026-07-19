@@ -379,6 +379,23 @@ where
         }
     }
 
+    /// Discard every continuation position used to rebuild a Realm stream.
+    /// Subscribe and scan cursors are bound to different request filters, but
+    /// either can expire while the application is offline. Recovery must clear
+    /// both before performing a fresh history bootstrap.
+    pub(crate) async fn clear_realm_history_cursors(&self, realm_id: RealmId) -> Result<()> {
+        self.cursor_store
+            .clear(self.realm_scope(realm_id.clone()))
+            .await?;
+        self.cursor_store
+            .clear(CursorScope::RealmEventsScan {
+                service_id: self.service_id.clone(),
+                realm_id,
+                order: None,
+            })
+            .await
+    }
+
     pub(crate) fn account_scope(&self, actor_id: Did, device_id: DeviceId) -> CursorScope {
         CursorScope::Account {
             service_id: self.service_id.clone(),
