@@ -1,6 +1,7 @@
 use arkret::{
-    CryptoStore, CryptoStoreBackupEnvelope, MemoryCryptoStore, MlsCommitSource, MlsEpochSecretRecord,
-    MlsGroupStateRecord, MlsGroupStateSink, MlsRecoveryPlan, StoredDeviceVerification, WireError,
+    CryptoStore, CryptoStoreBackupEnvelope, MemoryCryptoStore, MlsCommitSource,
+    MlsEpochSecretRecord, MlsGroupStateRecord, MlsGroupStateSink, MlsRecoveryPlan,
+    StoredDeviceVerification, WireError,
 };
 use arkret_core::{
     DeviceId, Did, MlsCommitEnvelope, MlsKeyPackageRecord, MlsWelcomeEnvelope, Result,
