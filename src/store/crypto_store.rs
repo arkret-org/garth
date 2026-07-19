@@ -1,6 +1,6 @@
 use arkret::{
-    CryptoStore, CryptoStoreBackupEnvelope, MemoryCryptoStore, MlsEpochSecretRecord,
-    MlsGroupStateRecord, MlsRecoveryPlan, StoredDeviceVerification,
+    CryptoStore, CryptoStoreBackupEnvelope, MemoryCryptoStore, MlsCommitSource, MlsEpochSecretRecord,
+    MlsGroupStateRecord, MlsGroupStateSink, MlsRecoveryPlan, StoredDeviceVerification, WireError,
 };
 use arkret_core::{
     DeviceId, Did, MlsCommitEnvelope, MlsKeyPackageRecord, MlsWelcomeEnvelope, Result,
@@ -70,15 +70,33 @@ where
 // must require its wrapped `SecureKeyStore` to actually be `Send + Sync` (on
 // native this is implied by `SecureKeyStore`; on wasm the relaxed store trait no
 // longer implies it, and a `!Send` store cannot back an SDK crypto store).
+impl<S> MlsGroupStateSink for SecureCryptoStoreAdapter<S>
+where
+    S: SecureKeyStore + Send + Sync,
+{
+    fn put_mls_group_state(
+        &mut self,
+        record: MlsGroupStateRecord,
+    ) -> std::result::Result<(), WireError> {
+        self.inner.put_mls_group_state(record)?;
+        self.persist()
+            .map_err(|error| WireError::Protocol(error.to_string()))
+    }
+}
+
+impl<S> MlsCommitSource for SecureCryptoStoreAdapter<S>
+where
+    S: SecureKeyStore + Send + Sync,
+{
+    fn commits_for_group(&self, group_id: &str) -> Vec<&MlsCommitEnvelope> {
+        self.inner.commits_for_group(group_id)
+    }
+}
+
 impl<S> CryptoStore for SecureCryptoStoreAdapter<S>
 where
     S: SecureKeyStore + Send + Sync,
 {
-    fn put_mls_group_state(&mut self, record: MlsGroupStateRecord) -> Result<()> {
-        self.inner.put_mls_group_state(record)?;
-        self.persist()
-    }
-
     fn mls_group_state(&self, group_id: &str) -> Option<&MlsGroupStateRecord> {
         self.inner.mls_group_state(group_id)
     }
@@ -112,10 +130,6 @@ where
     fn put_commit(&mut self, record: MlsCommitEnvelope) -> Result<()> {
         self.inner.put_commit(record)?;
         self.persist()
-    }
-
-    fn commits_for_group(&self, group_id: &str) -> Vec<&MlsCommitEnvelope> {
-        self.inner.commits_for_group(group_id)
     }
 
     fn put_epoch_secret(&mut self, record: MlsEpochSecretRecord) -> Result<()> {
