@@ -18,7 +18,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use arkret::{AsyncSyncTransport, SyncLoopControl, SyncLoopStep};
+use crate::sync_client::{AsyncSyncTransport, SyncLoopControl, SyncLoopStep};
 use arkret_core::{DeviceId, Did, RealmId, Result, SyncUpdates};
 
 use crate::subscribe::{
@@ -908,9 +908,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use arkret::{
-        AccountStreamInterrupt, AccountSubscribeBatch, BoxSyncFuture, Error, SyncRequestBody,
-    };
+    use arkret::{AccountStreamInterrupt, AccountSubscribeBatch, Error, SyncRequestBody};
     use arkret_core::{
         ErrorEnvelope, EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind, Hlc,
         NotificationDelta, NotificationDeltaAction, NotificationId, NotificationType, RealmId,
@@ -922,8 +920,8 @@ mod tests {
     use crate::subscribe::scan::BoxScanFuture;
     use crate::subscribe::test_support::{RecordingExecutor, sync_response};
     use crate::{
-        BoxRealmStreamFuture, ClientEvent, CursorScope, DurableInboxStore, EventsScanRequest,
-        MemoryStore, RealmEventsFrameSource,
+        BoxRealmStreamFuture, BoxSyncFuture, ClientEvent, CursorScope, DurableInboxStore,
+        EventsScanRequest, MemoryStore, RealmEventsFrameSource,
     };
 
     fn test_client(

@@ -71,7 +71,7 @@ struct FileState {
     #[serde(default)]
     deliveries: VecDeque<PendingDelivery>,
     #[serde(default)]
-    outbound: arkret::sync_client::SendQueueSnapshot,
+    outbound: crate::sync_client::SendQueueSnapshot,
     #[serde(default)]
     stamp_floors: BTreeMap<String, StampFloor>,
 }
@@ -412,7 +412,7 @@ impl EventCacheStore for FileStore {
 impl OutboundQueueStore for FileStore {
     fn mutate_outbound<'a, R>(
         &'a self,
-        mutation: impl FnOnce(&mut arkret::sync_client::SendQueue) -> Result<R> + crate::MaybeSend + 'a,
+        mutation: impl FnOnce(&mut crate::sync_client::SendQueue) -> Result<R> + crate::MaybeSend + 'a,
     ) -> crate::outbound::BoxOutboundFuture<'a, R>
     where
         R: crate::MaybeSend + 'a,
@@ -420,7 +420,7 @@ impl OutboundQueueStore for FileStore {
         Box::pin(async move {
             self.mutate(|inner| {
                 let mut queue =
-                    arkret::sync_client::SendQueue::from_snapshot(inner.state.outbound.clone())?;
+                    crate::sync_client::SendQueue::from_snapshot(inner.state.outbound.clone())?;
                 let output = mutation(&mut queue)?;
                 inner.state.outbound = queue.snapshot();
                 Ok(output)

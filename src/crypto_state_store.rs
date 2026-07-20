@@ -1,0 +1,995 @@
+//! Durable crypto store traits and an in-memory implementation.
+//!
+//! The SDK keeps this layer independent from OpenMLS internals. Applications can
+//! serialize provider-specific MLS state into `MlsGroupStateRecord` while using
+//! the typed Arkret envelopes for KeyPackages, Welcomes and Commits.
+
+use std::collections::BTreeMap;
+
+pub use arkret_models_crypto::{MlsCommitSource, MlsGroupStateSink};
+use arkret_wire::WireError;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+use crate::runtime_store::StoreEncryptionKey;
+use arkret::{
+    DeviceId, DeviceVerificationState, Did, Error, MlsCommitEnvelope, MlsKeyPackageRecord,
+    MlsWelcomeEnvelope, Result,
+};
+
+pub const CRYPTO_STORE_BACKUP_VERSION: &str = "arkret.crypto_store.backup.v1";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlatformKeyStoreKind {
+    IosKeychain,
+    AndroidKeystore,
+    WebCrypto,
+    NativeKeychain,
+    ExternalHsm,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlatformKeyStoreDescriptor {
+    pub kind: PlatformKeyStoreKind,
+    pub key_ref: String,
+    pub hardware_backed: bool,
+    pub exportable: bool,
+}
+
+impl PlatformKeyStoreDescriptor {
+    pub fn validate(&self) -> Result<()> {
+        if self.key_ref.trim().is_empty() {
+            return Err(Error::Protocol(
+                "platform key store key_ref is required".to_owned(),
+            ));
+        }
+        if self.hardware_backed && self.exportable {
+            return Err(Error::Protocol(
+                "hardware-backed key store keys must not be exportable".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CryptoStoreKeyRotation {
+    pub previous_key_version: u64,
+    pub new_key_version: u64,
+    pub rotated_at: DateTime<Utc>,
+    pub reason: String,
+}
+
+impl CryptoStoreKeyRotation {
+    pub fn validate(&self) -> Result<()> {
+        if self.new_key_version <= self.previous_key_version {
+            return Err(Error::Protocol(
+                "crypto store key rotation must advance key version".to_owned(),
+            ));
+        }
+        if self.reason.trim().is_empty() {
+            return Err(Error::Protocol(
+                "crypto store key rotation reason is required".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CryptoStoreBackupEnvelope {
+    pub version: String,
+    pub key_version: u64,
+    pub exported_at: DateTime<Utc>,
+    pub payload_json: String,
+    pub payload_digest: String,
+}
+
+impl CryptoStoreBackupEnvelope {
+    pub fn new(key_version: u64, payload_json: String, exported_at: DateTime<Utc>) -> Result<Self> {
+        let payload_digest = arkret::canonical::sha256_digest(payload_json.as_bytes());
+        Ok(Self {
+            version: CRYPTO_STORE_BACKUP_VERSION.to_owned(),
+            key_version,
+            exported_at,
+            payload_json,
+            payload_digest,
+        })
+    }
+
+    pub fn validate(&self) -> Result<()> {
+        if self.version != CRYPTO_STORE_BACKUP_VERSION {
+            return Err(Error::Protocol(
+                "unsupported crypto store backup version".to_owned(),
+            ));
+        }
+        if self.payload_digest != arkret::canonical::sha256_digest(self.payload_json.as_bytes()) {
+            return Err(Error::Protocol(
+                "crypto store backup digest mismatch".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MlsRecoveryAction {
+    UseLocalState,
+    ApplyCommits { from_epoch: u64, to_epoch: u64 },
+    ConsumeWelcome,
+    RequestEpochRecovery { missing_from_epoch: u64 },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MlsRecoveryPlan {
+    pub group_id: String,
+    pub action: MlsRecoveryAction,
+}
+
+// `MlsGroupStateRecord` moved to `arkret_models_crypto::mls_records` so the MLS
+// behavior layer can consume it without the SDK crypto store. Re-exported here
+// to keep the `crate::MlsGroupStateRecord` path and the `arkret::` surface
+// stable.
+pub use arkret_models_crypto::MlsGroupStateRecord;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MlsEpochSecretRecord {
+    pub group_id: String,
+    pub epoch: u64,
+    pub secret_ref: String,
+    pub encrypted_secret: Vec<u8>,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredDeviceVerification {
+    pub principal_id: Did,
+    pub device_id: DeviceId,
+    pub state: DeviceVerificationState,
+    pub updated_at: DateTime<Utc>,
+}
+
+// `put_mls_group_state` / `commits_for_group` moved to the narrow
+// `arkret_models_crypto::{MlsGroupStateSink, MlsCommitSource}` ports so the MLS
+// behavior layer can persist / read those records without depending on the
+// umbrella crate — and so binding them here drags no OpenMLS into a full-surface
+// build. `CryptoStore` re-declares them as supertraits: any `impl CryptoStore`
+// still satisfies both ports, and existing `&mut impl CryptoStore` call sites
+// coerce unchanged. Direct callers of the two moved methods now need the port
+// trait in scope.
+pub trait CryptoStore: Send + Sync + MlsGroupStateSink + MlsCommitSource {
+    fn mls_group_state(&self, group_id: &str) -> Option<&MlsGroupStateRecord>;
+    fn put_key_package(&mut self, record: MlsKeyPackageRecord) -> Result<()>;
+    fn key_package(&self, principal_id: &Did, device_id: &DeviceId)
+    -> Option<&MlsKeyPackageRecord>;
+    fn put_welcome(&mut self, record: MlsWelcomeEnvelope) -> Result<()>;
+    fn welcomes_for_device(
+        &self,
+        principal_id: &Did,
+        device_id: &DeviceId,
+    ) -> Vec<&MlsWelcomeEnvelope>;
+    fn put_commit(&mut self, record: MlsCommitEnvelope) -> Result<()>;
+    fn put_epoch_secret(&mut self, record: MlsEpochSecretRecord) -> Result<()>;
+    fn epoch_secret(&self, group_id: &str, epoch: u64) -> Option<&MlsEpochSecretRecord>;
+    fn put_device_verification(&mut self, record: StoredDeviceVerification) -> Result<()>;
+    fn device_verification(
+        &self,
+        principal_id: &Did,
+        device_id: &DeviceId,
+    ) -> Option<&StoredDeviceVerification>;
+    fn plan_mls_recovery(
+        &self,
+        group_id: &str,
+        local_epoch: Option<u64>,
+        required_epoch: u64,
+        principal_id: &Did,
+        device_id: &DeviceId,
+    ) -> MlsRecoveryPlan;
+    fn export_backup_json(&self) -> Result<String>;
+    fn import_backup_json(&mut self, backup: &str) -> Result<()>;
+    fn export_backup_envelope(&self, key_version: u64) -> Result<CryptoStoreBackupEnvelope> {
+        CryptoStoreBackupEnvelope::new(key_version, self.export_backup_json()?, Utc::now())
+    }
+    fn import_backup_envelope(&mut self, envelope: &CryptoStoreBackupEnvelope) -> Result<()> {
+        envelope.validate()?;
+        self.import_backup_json(&envelope.payload_json)
+    }
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+pub struct MemoryCryptoStore {
+    group_states: BTreeMap<String, MlsGroupStateRecord>,
+    key_packages: BTreeMap<(Did, DeviceId), MlsKeyPackageRecord>,
+    welcomes: Vec<MlsWelcomeEnvelope>,
+    commits: BTreeMap<String, Vec<MlsCommitEnvelope>>,
+    epoch_secrets: BTreeMap<(String, u64), MlsEpochSecretRecord>,
+    device_verifications: BTreeMap<(Did, DeviceId), StoredDeviceVerification>,
+}
+
+// The store aggregates MLS group snapshots, key packages and sealed epoch
+// secrets: Debug renders entry counts only so no secret bytes can reach logs.
+impl std::fmt::Debug for MemoryCryptoStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MemoryCryptoStore")
+            .field("group_states", &self.group_states.len())
+            .field("key_packages", &self.key_packages.len())
+            .field("welcomes", &self.welcomes.len())
+            .field("commits", &self.commits.len())
+            .field("epoch_secrets", &self.epoch_secrets.len())
+            .field("device_verifications", &self.device_verifications.len())
+            .finish()
+    }
+}
+
+impl MemoryCryptoStore {
+    pub fn new() -> Self {
+        Self::default()
+    }
+}
+
+impl MlsGroupStateSink for MemoryCryptoStore {
+    fn put_mls_group_state(
+        &mut self,
+        record: MlsGroupStateRecord,
+    ) -> std::result::Result<(), WireError> {
+        if let Some(existing) = self.group_states.get(&record.group_id)
+            && record.epoch < existing.epoch
+        {
+            return Err(WireError::Protocol(
+                "MLS group state rollback protection rejected older epoch".to_owned(),
+            ));
+        }
+        self.group_states.insert(record.group_id.clone(), record);
+        Ok(())
+    }
+}
+
+impl MlsCommitSource for MemoryCryptoStore {
+    fn commits_for_group(&self, group_id: &str) -> Vec<&MlsCommitEnvelope> {
+        self.commits
+            .get(group_id)
+            .map(|commits| commits.iter().collect())
+            .unwrap_or_default()
+    }
+}
+
+impl CryptoStore for MemoryCryptoStore {
+    fn mls_group_state(&self, group_id: &str) -> Option<&MlsGroupStateRecord> {
+        self.group_states.get(group_id)
+    }
+
+    fn put_key_package(&mut self, record: MlsKeyPackageRecord) -> Result<()> {
+        self.key_packages.insert(
+            (record.principal_id.clone(), record.device_id.clone()),
+            record,
+        );
+        Ok(())
+    }
+
+    fn key_package(
+        &self,
+        principal_id: &Did,
+        device_id: &DeviceId,
+    ) -> Option<&MlsKeyPackageRecord> {
+        self.key_packages
+            .get(&(principal_id.clone(), device_id.clone()))
+    }
+
+    fn put_welcome(&mut self, record: MlsWelcomeEnvelope) -> Result<()> {
+        if record.group_id.is_empty() {
+            return Err(Error::Protocol("MLS welcome group_id is empty".to_owned()));
+        }
+        if let Some(existing) = self.welcomes.iter().find(|welcome| {
+            welcome.group_id == record.group_id
+                && welcome.epoch == record.epoch
+                && welcome.recipient_principal_id == record.recipient_principal_id
+                && welcome.recipient_device_id == record.recipient_device_id
+        }) {
+            return if existing.welcome_hash == record.welcome_hash {
+                Ok(())
+            } else {
+                Err(Error::IdempotencyConflict(format!(
+                    "welcome:{}:{}:{}",
+                    record.group_id, record.epoch, record.recipient_device_id
+                )))
+            };
+        }
+        self.welcomes.push(record);
+        Ok(())
+    }
+
+    fn welcomes_for_device(
+        &self,
+        principal_id: &Did,
+        device_id: &DeviceId,
+    ) -> Vec<&MlsWelcomeEnvelope> {
+        self.welcomes
+            .iter()
+            .filter(|welcome| {
+                &welcome.recipient_principal_id == principal_id
+                    && &welcome.recipient_device_id == device_id
+            })
+            .collect()
+    }
+
+    fn put_commit(&mut self, record: MlsCommitEnvelope) -> Result<()> {
+        if record.group_id.is_empty() {
+            return Err(Error::Protocol("MLS commit group_id is empty".to_owned()));
+        }
+        let commits = self.commits.entry(record.group_id.clone()).or_default();
+        if commits
+            .iter()
+            .any(|commit| commit.commit_digest == record.commit_digest)
+        {
+            return Ok(());
+        }
+        if commits.iter().any(|commit| commit.epoch == record.epoch) {
+            return Err(Error::IdempotencyConflict(format!(
+                "commit:{}:{}",
+                record.group_id, record.epoch
+            )));
+        }
+        commits.push(record);
+        Ok(())
+    }
+
+    fn put_epoch_secret(&mut self, record: MlsEpochSecretRecord) -> Result<()> {
+        self.epoch_secrets
+            .insert((record.group_id.clone(), record.epoch), record);
+        Ok(())
+    }
+
+    fn epoch_secret(&self, group_id: &str, epoch: u64) -> Option<&MlsEpochSecretRecord> {
+        self.epoch_secrets.get(&(group_id.to_owned(), epoch))
+    }
+
+    fn put_device_verification(&mut self, record: StoredDeviceVerification) -> Result<()> {
+        self.device_verifications.insert(
+            (record.principal_id.clone(), record.device_id.clone()),
+            record,
+        );
+        Ok(())
+    }
+
+    fn device_verification(
+        &self,
+        principal_id: &Did,
+        device_id: &DeviceId,
+    ) -> Option<&StoredDeviceVerification> {
+        self.device_verifications
+            .get(&(principal_id.clone(), device_id.clone()))
+    }
+
+    fn plan_mls_recovery(
+        &self,
+        group_id: &str,
+        local_epoch: Option<u64>,
+        required_epoch: u64,
+        principal_id: &Did,
+        device_id: &DeviceId,
+    ) -> MlsRecoveryPlan {
+        let action = match local_epoch {
+            Some(epoch) if epoch >= required_epoch => MlsRecoveryAction::UseLocalState,
+            Some(epoch)
+                if self
+                    .commits_for_group(group_id)
+                    .iter()
+                    .any(|commit| commit.epoch > epoch && commit.epoch <= required_epoch) =>
+            {
+                MlsRecoveryAction::ApplyCommits {
+                    from_epoch: epoch.saturating_add(1),
+                    to_epoch: required_epoch,
+                }
+            }
+            _ if !self.welcomes_for_device(principal_id, device_id).is_empty() => {
+                MlsRecoveryAction::ConsumeWelcome
+            }
+            Some(epoch) => MlsRecoveryAction::RequestEpochRecovery {
+                missing_from_epoch: epoch.saturating_add(1),
+            },
+            None => MlsRecoveryAction::RequestEpochRecovery {
+                missing_from_epoch: required_epoch,
+            },
+        };
+        MlsRecoveryPlan {
+            group_id: group_id.to_owned(),
+            action,
+        }
+    }
+
+    fn export_backup_json(&self) -> Result<String> {
+        serde_json::to_string(self).map_err(Into::into)
+    }
+
+    fn import_backup_json(&mut self, backup: &str) -> Result<()> {
+        *self = serde_json::from_str(backup)?;
+        Ok(())
+    }
+}
+
+/// Encrypted at-rest crypto store wrapper.
+///
+/// Wraps `MemoryCryptoStore` and encrypts every record before storing it,
+/// so that raw MLS state, epoch secrets and key packages are never persisted
+/// in plaintext. The inner store still keeps a plaintext copy for the `CryptoStore`
+/// trait API, but callers can inspect `encrypted_*` methods to verify that
+/// ciphertext was produced.
+#[derive(Clone, Debug)]
+pub struct EncryptedMemoryCryptoStore {
+    inner: MemoryCryptoStore,
+    key: StoreEncryptionKey,
+    key_version: u64,
+    key_store: Option<PlatformKeyStoreDescriptor>,
+    rotations: Vec<CryptoStoreKeyRotation>,
+    encrypted_group_states: BTreeMap<String, Vec<u8>>,
+    encrypted_epoch_secrets: BTreeMap<(String, u64), Vec<u8>>,
+    encrypted_key_packages: BTreeMap<(Did, DeviceId), Vec<u8>>,
+}
+
+impl EncryptedMemoryCryptoStore {
+    /// Create an encrypted crypto store.
+    pub fn new(key: StoreEncryptionKey) -> Self {
+        Self {
+            inner: MemoryCryptoStore::new(),
+            key,
+            key_version: 1,
+            key_store: None,
+            rotations: Vec::new(),
+            encrypted_group_states: BTreeMap::new(),
+            encrypted_epoch_secrets: BTreeMap::new(),
+            encrypted_key_packages: BTreeMap::new(),
+        }
+    }
+
+    /// Attach a platform key store descriptor; key material remains host-owned.
+    pub fn with_platform_key_store(
+        mut self,
+        descriptor: PlatformKeyStoreDescriptor,
+    ) -> Result<Self> {
+        descriptor.validate()?;
+        self.key_store = Some(descriptor);
+        Ok(self)
+    }
+
+    pub fn key_version(&self) -> u64 {
+        self.key_version
+    }
+
+    pub fn platform_key_store(&self) -> Option<&PlatformKeyStoreDescriptor> {
+        self.key_store.as_ref()
+    }
+
+    pub fn rotations(&self) -> &[CryptoStoreKeyRotation] {
+        &self.rotations
+    }
+
+    /// Rotate the at-rest key and reseal existing protected records.
+    pub fn rotate_key(
+        &mut self,
+        new_key: StoreEncryptionKey,
+        new_key_version: u64,
+        reason: impl Into<String>,
+    ) -> Result<CryptoStoreKeyRotation> {
+        let rotation = CryptoStoreKeyRotation {
+            previous_key_version: self.key_version,
+            new_key_version,
+            rotated_at: Utc::now(),
+            reason: reason.into(),
+        };
+        rotation.validate()?;
+        self.key = new_key;
+        self.key_version = new_key_version;
+        self.rotations.push(rotation.clone());
+        self.reseal_all()?;
+        Ok(rotation)
+    }
+
+    /// Raw encrypted group state bytes.
+    pub fn encrypted_group_state_bytes(&self, group_id: &str) -> Option<&[u8]> {
+        self.encrypted_group_states.get(group_id).map(Vec::as_slice)
+    }
+
+    /// Raw encrypted epoch secret bytes.
+    pub fn encrypted_epoch_secret_bytes(&self, group_id: &str, epoch: u64) -> Option<&[u8]> {
+        self.encrypted_epoch_secrets
+            .get(&(group_id.to_owned(), epoch))
+            .map(Vec::as_slice)
+    }
+
+    /// Raw encrypted key package bytes.
+    pub fn encrypted_key_package_bytes(
+        &self,
+        principal_id: &Did,
+        device_id: &DeviceId,
+    ) -> Option<&[u8]> {
+        self.encrypted_key_packages
+            .get(&(principal_id.clone(), device_id.clone()))
+            .map(Vec::as_slice)
+    }
+
+    fn seal_record<T: Serialize>(&self, record: &T, aad: &[u8]) -> Result<Vec<u8>> {
+        let bytes = serde_json::to_vec(record)?;
+        self.key.seal(&bytes, aad)
+    }
+
+    fn reseal_all(&mut self) -> Result<()> {
+        self.encrypted_group_states.clear();
+        self.encrypted_epoch_secrets.clear();
+        self.encrypted_key_packages.clear();
+
+        for record in self.inner.group_states.values() {
+            let aad = format!("group_state:{}", record.group_id);
+            self.encrypted_group_states.insert(
+                record.group_id.clone(),
+                self.seal_record(record, aad.as_bytes())?,
+            );
+        }
+        for record in self.inner.epoch_secrets.values() {
+            let aad = format!("epoch_secret:{}:{}", record.group_id, record.epoch);
+            self.encrypted_epoch_secrets.insert(
+                (record.group_id.clone(), record.epoch),
+                self.seal_record(record, aad.as_bytes())?,
+            );
+        }
+        for record in self.inner.key_packages.values() {
+            let aad = format!(
+                "key_package:{}:{}",
+                record.principal_id.as_str(),
+                record.device_id.as_str()
+            );
+            self.encrypted_key_packages.insert(
+                (record.principal_id.clone(), record.device_id.clone()),
+                self.seal_record(record, aad.as_bytes())?,
+            );
+        }
+        Ok(())
+    }
+}
+
+impl MlsGroupStateSink for EncryptedMemoryCryptoStore {
+    fn put_mls_group_state(
+        &mut self,
+        record: MlsGroupStateRecord,
+    ) -> std::result::Result<(), WireError> {
+        let aad = format!("group_state:{}", record.group_id);
+        let encrypted = self
+            .seal_record(&record, aad.as_bytes())
+            .map_err(|error| WireError::Protocol(error.to_string()))?;
+        let group_id = record.group_id.clone();
+        self.inner.put_mls_group_state(record)?;
+        self.encrypted_group_states.insert(group_id, encrypted);
+        Ok(())
+    }
+}
+
+impl MlsCommitSource for EncryptedMemoryCryptoStore {
+    fn commits_for_group(&self, group_id: &str) -> Vec<&MlsCommitEnvelope> {
+        self.inner.commits_for_group(group_id)
+    }
+}
+
+impl CryptoStore for EncryptedMemoryCryptoStore {
+    fn mls_group_state(&self, group_id: &str) -> Option<&MlsGroupStateRecord> {
+        self.inner.mls_group_state(group_id)
+    }
+
+    fn put_key_package(&mut self, record: MlsKeyPackageRecord) -> Result<()> {
+        let aad = format!(
+            "key_package:{}:{}",
+            record.principal_id.as_str(),
+            record.device_id.as_str()
+        );
+        let encrypted = self.seal_record(&record, aad.as_bytes())?;
+        let key = (record.principal_id.clone(), record.device_id.clone());
+        self.inner.put_key_package(record)?;
+        self.encrypted_key_packages.insert(key, encrypted);
+        Ok(())
+    }
+
+    fn key_package(
+        &self,
+        principal_id: &Did,
+        device_id: &DeviceId,
+    ) -> Option<&MlsKeyPackageRecord> {
+        self.inner.key_package(principal_id, device_id)
+    }
+
+    fn put_welcome(&mut self, record: MlsWelcomeEnvelope) -> Result<()> {
+        self.inner.put_welcome(record)
+    }
+
+    fn welcomes_for_device(
+        &self,
+        principal_id: &Did,
+        device_id: &DeviceId,
+    ) -> Vec<&MlsWelcomeEnvelope> {
+        self.inner.welcomes_for_device(principal_id, device_id)
+    }
+
+    fn put_commit(&mut self, record: MlsCommitEnvelope) -> Result<()> {
+        self.inner.put_commit(record)
+    }
+
+    fn put_epoch_secret(&mut self, record: MlsEpochSecretRecord) -> Result<()> {
+        let aad = format!("epoch_secret:{}:{}", record.group_id, record.epoch);
+        let encrypted = self.seal_record(&record, aad.as_bytes())?;
+        let key = (record.group_id.clone(), record.epoch);
+        self.inner.put_epoch_secret(record)?;
+        self.encrypted_epoch_secrets.insert(key, encrypted);
+        Ok(())
+    }
+
+    fn epoch_secret(&self, group_id: &str, epoch: u64) -> Option<&MlsEpochSecretRecord> {
+        self.inner.epoch_secret(group_id, epoch)
+    }
+
+    fn put_device_verification(&mut self, record: StoredDeviceVerification) -> Result<()> {
+        self.inner.put_device_verification(record)
+    }
+
+    fn device_verification(
+        &self,
+        principal_id: &Did,
+        device_id: &DeviceId,
+    ) -> Option<&StoredDeviceVerification> {
+        self.inner.device_verification(principal_id, device_id)
+    }
+
+    fn plan_mls_recovery(
+        &self,
+        group_id: &str,
+        local_epoch: Option<u64>,
+        required_epoch: u64,
+        principal_id: &Did,
+        device_id: &DeviceId,
+    ) -> MlsRecoveryPlan {
+        self.inner.plan_mls_recovery(
+            group_id,
+            local_epoch,
+            required_epoch,
+            principal_id,
+            device_id,
+        )
+    }
+
+    fn export_backup_json(&self) -> Result<String> {
+        self.inner.export_backup_json()
+    }
+
+    fn import_backup_json(&mut self, backup: &str) -> Result<()> {
+        self.inner.import_backup_json(backup)?;
+        self.reseal_all()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arkret::Hash;
+
+    fn did(name: &str) -> Did {
+        Did::new(format!("did:webvh:z6mkfixture:{name}.example")).unwrap()
+    }
+
+    fn device(id: &str) -> DeviceId {
+        let mut acc = 0xcbf29ce484222325u64;
+        for byte in id.bytes() {
+            acc = (acc ^ u64::from(byte)).wrapping_mul(0x100000001b3);
+        }
+        DeviceId::new(format!(
+            "ak:device:01904100-0000-7000-8000-{:012x}",
+            acc & 0x0000_ffff_ffff_ffff
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn memory_crypto_store_roundtrips_mls_records_and_verification() {
+        let alice = did("alice");
+        let device_id = device("phone");
+        let mut store = MemoryCryptoStore::new();
+
+        store
+            .put_mls_group_state(MlsGroupStateRecord {
+                group_id: "group1".to_owned(),
+                principal_id: alice.clone(),
+                device_id: device_id.clone(),
+                epoch: 3,
+                serialized_state: b"state".to_vec(),
+                updated_at: Utc::now(),
+            })
+            .unwrap();
+        assert_eq!(store.mls_group_state("group1").unwrap().epoch, 3);
+
+        store
+            .put_key_package(MlsKeyPackageRecord {
+                keypackage_id: format!("ak:mls:kp:{}", uuid::Uuid::now_v7()),
+                principal_id: alice.clone(),
+                device_id: device_id.clone(),
+                key_package: "kp".to_owned(),
+                keypackage_ref: Hash::new(
+                    "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+                )
+                .unwrap(),
+                cipher_suites: vec!["suite".to_owned()],
+                capabilities: Vec::new(),
+                state: arkret_core::MlsKeyPackageState::Published,
+                claim_id: None,
+                created_at: Utc::now(),
+                expires_at: None,
+                device_signature: None,
+                last_resort: false,
+            })
+            .unwrap();
+        assert!(store.key_package(&alice, &device_id).is_some());
+
+        store
+            .put_device_verification(StoredDeviceVerification {
+                principal_id: alice.clone(),
+                device_id: device_id.clone(),
+                state: DeviceVerificationState::Verified,
+                updated_at: Utc::now(),
+            })
+            .unwrap();
+        assert_eq!(
+            store.device_verification(&alice, &device_id).unwrap().state,
+            DeviceVerificationState::Verified
+        );
+    }
+
+    #[test]
+    fn crypto_store_rejects_group_state_rollback() {
+        let alice = did("alice");
+        let device_id = device("phone");
+        let mut store = MemoryCryptoStore::new();
+        store
+            .put_mls_group_state(MlsGroupStateRecord {
+                group_id: "group1".to_owned(),
+                principal_id: alice.clone(),
+                device_id: device_id.clone(),
+                epoch: 5,
+                serialized_state: b"newer".to_vec(),
+                updated_at: Utc::now(),
+            })
+            .unwrap();
+        assert!(
+            store
+                .put_mls_group_state(MlsGroupStateRecord {
+                    group_id: "group1".to_owned(),
+                    principal_id: alice,
+                    device_id,
+                    epoch: 4,
+                    serialized_state: b"older".to_vec(),
+                    updated_at: Utc::now(),
+                })
+                .is_err()
+        );
+        assert_eq!(store.mls_group_state("group1").unwrap().epoch, 5);
+    }
+
+    #[test]
+    fn memory_crypto_store_plans_recovery_and_restores_backup() {
+        let alice = did("alice");
+        let device_id = device("phone");
+        let mut store = MemoryCryptoStore::new();
+        store
+            .put_welcome(MlsWelcomeEnvelope {
+                group_id: "group1".to_owned(),
+                epoch: 1,
+                recipient_principal_id: alice.clone(),
+                recipient_device_id: device_id.clone(),
+                welcome: "welcome".to_owned(),
+                welcome_hash: Hash::new(
+                    "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+                )
+                .unwrap(),
+                ratchet_tree: None,
+            })
+            .unwrap();
+
+        let plan = store.plan_mls_recovery("group1", None, 1, &alice, &device_id);
+        assert!(matches!(plan.action, MlsRecoveryAction::ConsumeWelcome));
+
+        let backup = store.export_backup_json().unwrap();
+        let mut restored = MemoryCryptoStore::new();
+        restored.import_backup_json(&backup).unwrap();
+        assert_eq!(restored.welcomes_for_device(&alice, &device_id).len(), 1);
+    }
+
+    #[test]
+    fn encrypted_crypto_store_seals_group_state_and_epoch_secrets_at_rest() {
+        let alice = did("alice");
+        let device_id = device("phone");
+        let key = StoreEncryptionKey::derive("test-passphrase", b"crypto-store-salt", 4);
+        let mut store = EncryptedMemoryCryptoStore::new(key);
+
+        store
+            .put_mls_group_state(MlsGroupStateRecord {
+                group_id: "group1".to_owned(),
+                principal_id: alice.clone(),
+                device_id: device_id.clone(),
+                epoch: 5,
+                serialized_state: b"secret-mls-state".to_vec(),
+                updated_at: Utc::now(),
+            })
+            .unwrap();
+
+        let encrypted_bytes = store.encrypted_group_state_bytes("group1").unwrap();
+        let plain_text = String::from_utf8_lossy(encrypted_bytes);
+        assert!(
+            !plain_text.contains("secret-mls-state"),
+            "encrypted bytes must not contain plaintext MLS state"
+        );
+        assert_eq!(store.mls_group_state("group1").unwrap().epoch, 5);
+
+        store
+            .put_epoch_secret(MlsEpochSecretRecord {
+                group_id: "group1".to_owned(),
+                epoch: 5,
+                secret_ref: "epoch-5-secret".to_owned(),
+                encrypted_secret: b"already-encrypted".to_vec(),
+                created_at: Utc::now(),
+            })
+            .unwrap();
+
+        let encrypted_epoch = store.encrypted_epoch_secret_bytes("group1", 5).unwrap();
+        let epoch_plain = String::from_utf8_lossy(encrypted_epoch);
+        assert!(!epoch_plain.contains("epoch-5-secret"));
+        assert_eq!(
+            store.epoch_secret("group1", 5).unwrap().secret_ref,
+            "epoch-5-secret"
+        );
+
+        store
+            .put_key_package(MlsKeyPackageRecord {
+                keypackage_id: format!("ak:mls:kp:{}", uuid::Uuid::now_v7()),
+                principal_id: alice.clone(),
+                device_id: device_id.clone(),
+                key_package: "kp-secret".to_owned(),
+                keypackage_ref: Hash::new(
+                    "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                )
+                .unwrap(),
+                cipher_suites: vec!["MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519".to_owned()],
+                capabilities: Vec::new(),
+                state: arkret_core::MlsKeyPackageState::Published,
+                claim_id: None,
+                created_at: Utc::now(),
+                expires_at: None,
+                device_signature: None,
+                last_resort: false,
+            })
+            .unwrap();
+
+        let encrypted_kp = store
+            .encrypted_key_package_bytes(&alice, &device_id)
+            .unwrap();
+        let kp_plain = String::from_utf8_lossy(encrypted_kp);
+        assert!(!kp_plain.contains("kp-secret"));
+        assert!(store.key_package(&alice, &device_id).is_some());
+    }
+
+    #[test]
+    fn encrypted_crypto_store_supports_keychain_rotation_backup_and_restore() {
+        let alice = did("alice");
+        let device_id = device("phone");
+        let descriptor = PlatformKeyStoreDescriptor {
+            kind: PlatformKeyStoreKind::NativeKeychain,
+            key_ref: "arkret-crypto-root".to_owned(),
+            hardware_backed: true,
+            exportable: false,
+        };
+        let key = StoreEncryptionKey::derive("test-passphrase", b"crypto-store-salt", 4);
+        let mut store = EncryptedMemoryCryptoStore::new(key)
+            .with_platform_key_store(descriptor)
+            .unwrap();
+        assert!(store.platform_key_store().is_some());
+
+        store
+            .put_mls_group_state(MlsGroupStateRecord {
+                group_id: "group1".to_owned(),
+                principal_id: alice,
+                device_id,
+                epoch: 7,
+                serialized_state: b"rotatable-state".to_vec(),
+                updated_at: Utc::now(),
+            })
+            .unwrap();
+        let before_rotation = store
+            .encrypted_group_state_bytes("group1")
+            .unwrap()
+            .to_vec();
+        let rotation = store
+            .rotate_key(
+                StoreEncryptionKey::derive("new-passphrase", b"crypto-store-salt", 4),
+                2,
+                "scheduled rotation",
+            )
+            .unwrap();
+        assert_eq!(rotation.previous_key_version, 1);
+        assert_eq!(store.key_version(), 2);
+        assert_eq!(store.rotations().len(), 1);
+        assert_ne!(
+            before_rotation,
+            store.encrypted_group_state_bytes("group1").unwrap()
+        );
+
+        let backup = store.export_backup_envelope(store.key_version()).unwrap();
+        backup.validate().unwrap();
+        let mut restored = EncryptedMemoryCryptoStore::new(StoreEncryptionKey::derive(
+            "restore-passphrase",
+            b"crypto-store-salt",
+            4,
+        ));
+        restored.import_backup_envelope(&backup).unwrap();
+        assert_eq!(restored.mls_group_state("group1").unwrap().epoch, 7);
+
+        assert!(
+            PlatformKeyStoreDescriptor {
+                kind: PlatformKeyStoreKind::NativeKeychain,
+                key_ref: "bad".to_owned(),
+                hardware_backed: true,
+                exportable: true,
+            }
+            .validate()
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn memory_crypto_store_deduplicates_welcomes_and_commits() {
+        let alice = did("alice");
+        let device_id = device("phone");
+        let mut store = MemoryCryptoStore::new();
+        let welcome = MlsWelcomeEnvelope {
+            group_id: "group1".to_owned(),
+            epoch: 1,
+            recipient_principal_id: alice.clone(),
+            recipient_device_id: device_id.clone(),
+            welcome: "welcome".to_owned(),
+            welcome_hash: Hash::new(
+                "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+            )
+            .unwrap(),
+            ratchet_tree: None,
+        };
+
+        store.put_welcome(welcome.clone()).unwrap();
+        store.put_welcome(welcome.clone()).unwrap();
+        assert_eq!(store.welcomes_for_device(&alice, &device_id).len(), 1);
+
+        let mut conflicting_welcome = welcome;
+        conflicting_welcome.welcome_hash =
+            Hash::new("sha256:3333333333333333333333333333333333333333333333333333333333333333")
+                .unwrap();
+        assert!(matches!(
+            store.put_welcome(conflicting_welcome),
+            Err(Error::IdempotencyConflict(_))
+        ));
+
+        let commit = MlsCommitEnvelope {
+            group_id: "group1".to_owned(),
+            epoch: 2,
+            commit: "commit".to_owned(),
+            commit_digest: Hash::new(
+                "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+            )
+            .unwrap(),
+            ratchet_tree: None,
+            app_state_ref: None,
+        };
+        store.put_commit(commit.clone()).unwrap();
+        store.put_commit(commit.clone()).unwrap();
+        assert_eq!(store.commits_for_group("group1").len(), 1);
+
+        let mut conflicting_commit = commit;
+        conflicting_commit.commit_digest =
+            Hash::new("sha256:5555555555555555555555555555555555555555555555555555555555555555")
+                .unwrap();
+        assert!(matches!(
+            store.put_commit(conflicting_commit),
+            Err(Error::IdempotencyConflict(_))
+        ));
+    }
+}

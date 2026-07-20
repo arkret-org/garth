@@ -1,11 +1,12 @@
-use arkret::{
+use crate::crypto_state_store::{
     CryptoStore, CryptoStoreBackupEnvelope, MemoryCryptoStore, MlsCommitSource,
     MlsEpochSecretRecord, MlsGroupStateRecord, MlsGroupStateSink, MlsRecoveryPlan,
-    StoredDeviceVerification, WireError,
+    StoredDeviceVerification,
 };
 use arkret_core::{
     DeviceId, Did, MlsCommitEnvelope, MlsKeyPackageRecord, MlsWelcomeEnvelope, Result,
 };
+use arkret_wire::WireError;
 use zeroize::Zeroizing;
 
 use super::{PutSecretOptions, SecretClass, SecretDurability, SecureKeyStore};

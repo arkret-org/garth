@@ -8,7 +8,9 @@ pub(crate) mod test_support;
 pub use account::account_updates_to_events;
 use std::sync::Arc;
 
-use arkret::{AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot};
+use crate::sync_client::{
+    AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot,
+};
 use arkret_core::{DeviceId, Did, Error, RealmId, Result};
 pub use driver::{SubscriptionLoopDriver, SubscriptionStopReason};
 pub use realm::{
@@ -46,7 +48,7 @@ pub struct SubscriptionEngine<E, C, D> {
     event_cache_store: D,
     control: SyncLoopControl,
     service_id: Option<Did>,
-    ephemeral_device_key_resolver: Option<Arc<dyn arkret::EphemeralDeviceKeyResolver>>,
+    ephemeral_device_key_resolver: Option<Arc<dyn crate::EphemeralDeviceKeyResolver>>,
 }
 
 impl<E, C, D> std::fmt::Debug for SubscriptionEngine<E, C, D>
@@ -95,7 +97,7 @@ where
 
     pub fn with_ephemeral_device_key_resolver(
         mut self,
-        resolver: Arc<dyn arkret::EphemeralDeviceKeyResolver>,
+        resolver: Arc<dyn crate::EphemeralDeviceKeyResolver>,
     ) -> Self {
         self.ephemeral_device_key_resolver = Some(resolver);
         self
@@ -298,7 +300,7 @@ where
             .await
             .map_err(ProjectedRunError::into_error)?;
 
-        let decoder = arkret_core::InboundDecoder::new();
+        let decoder = crate::InboundDecoder::new();
         let mut batch = Vec::new();
         let mut accepted_ids = Vec::new();
         for event in outcome.events.iter().cloned() {
@@ -307,10 +309,10 @@ where
                 continue;
             }
             match decoder.decode_event(event) {
-                arkret_core::DecodedInbound::Message(message) => {
+                crate::DecodedInbound::Message(message) => {
                     batch.push(ClientEvent::Message(*message));
                 }
-                arkret_core::DecodedInbound::Event(event) => {
+                crate::DecodedInbound::Event(event) => {
                     batch.push(ClientEvent::Event(*event));
                 }
             }
@@ -420,7 +422,7 @@ mod tests {
 
     use arkret::{
         AccountStreamInterrupt, EphemeralEnvelope, EphemeralEventContainer, Error, Hash, Proof,
-        SyncLoopStep, SyncRequestBody, canonical,
+        SyncRequestBody, canonical,
         signatures::{PublicKeyMaterial, sign_eddsa_detached_jws},
     };
     use arkret_core::identifiers::Cursor;
@@ -433,6 +435,7 @@ mod tests {
     use super::scan::BoxScanFuture;
     use super::test_support::{RecordingExecutor, queued_transport, sync_response};
     use super::*;
+    use crate::SyncLoopStep;
     use crate::{ClientEvent, MemoryStore};
 
     fn actor_id() -> Did {

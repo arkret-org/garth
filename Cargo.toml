@@ -21,21 +21,32 @@ rustdoc-args = ["--cfg", "docsrs"]
 [features]
 default = []
 mls = ["arkret/mls"]
-native = ["dep:tokio"]
-wasm = ["dep:gloo-timers"]
+client = []
+native = ["dep:tokio", "client"]
+wasm = ["dep:gloo-timers", "client"]
 
 [dependencies]
 chrono = {version = "0.4.45",default-features = false,features = ["clock", "std", "serde", "wasmbind"]}
-arkret = {version = "0.3.0",path = "../arkret-rust-sdk/crates/sdk",default-features = false,features = ["client", "full-surface", "signer", "sync-runtime"]}
+arkret = {version = "0.3.0",path = "../arkret-rust-sdk/crates/sdk",default-features = false,features = ["client", "full-surface", "signer"]}
+arkret-canonical = {version = "0.3.0",path = "../arkret-rust-sdk/crates/canonical",default-features = false}
 arkret-core = {version = "0.3.0",path = "../arkret-rust-sdk/crates/core",default-features = false}
+arkret-event-draft = {version = "0.3.0",path = "../arkret-rust-sdk/crates/event-draft",default-features = false}
+arkret-models-collaboration = {version = "0.3.0",path = "../arkret-rust-sdk/crates/models-collaboration",default-features = false}
+arkret-models-crypto = {version = "0.3.0",path = "../arkret-rust-sdk/crates/models-crypto",default-features = false}
+arkret-policy = {version = "0.3.0",path = "../arkret-rust-sdk/crates/policy",default-features = false}
 arkret-http-client = {version = "0.3.0",path = "../arkret-rust-sdk/crates/http-client",default-features = false}
+arkret-signatures = {version = "0.3.0",path = "../arkret-rust-sdk/crates/signatures",default-features = false}
+arkret-wire = {version = "0.3.0",path = "../arkret-rust-sdk/crates/wire",default-features = false}
 ed25519-dalek = {version = "2.2.0",default-features = false,features = ["std", "rand_core"]}
 getrandom = {version = "0.4.3",default-features = false,features = ["std", "wasm_js"]}
+parking_lot = {version = "0.12.5",default-features = false}
+reqwest = {version = "0.13.4",default-features = false,features = ["query"]}
 serde = {version = "1.0.228",default-features = false,features = ["std", "derive"]}
 serde_json = {version = "1.0.150",default-features = false,features = ["std"]}
 thiserror = {version = "2.0.18",default-features = false}
 tokio = {version = "1.52.3",default-features = false,features = ["rt", "sync", "time"],optional = true}
 zeroize = {version = "1.8.2",default-features = false,features = ["derive"]}
+uuid = {version = "1.23",default-features = false,features = ["std", "v7"]}
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 gloo-timers = {version = "0.3",default-features = false,features = ["futures"],optional = true}

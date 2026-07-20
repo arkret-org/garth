@@ -24,7 +24,7 @@ struct MemoryState {
     seen_events: BoundedSeenWindow<EventId>,
     next_delivery_id: u64,
     deliveries: VecDeque<PendingDelivery>,
-    outbound: arkret::sync_client::SendQueueSnapshot,
+    outbound: crate::sync_client::SendQueueSnapshot,
     stamp_floors: BTreeMap<StampScope, StampFloor>,
 }
 
@@ -40,7 +40,7 @@ impl MemoryStore {
                 seen_events: BoundedSeenWindow::new(capacity),
                 next_delivery_id: 0,
                 deliveries: VecDeque::new(),
-                outbound: arkret::sync_client::SendQueueSnapshot::default(),
+                outbound: crate::sync_client::SendQueueSnapshot::default(),
                 stamp_floors: BTreeMap::new(),
             })),
         }
@@ -75,7 +75,7 @@ impl MemoryStore {
 impl OutboundQueueStore for MemoryStore {
     fn mutate_outbound<'a, R>(
         &'a self,
-        mutation: impl FnOnce(&mut arkret::sync_client::SendQueue) -> Result<R> + crate::MaybeSend + 'a,
+        mutation: impl FnOnce(&mut crate::sync_client::SendQueue) -> Result<R> + crate::MaybeSend + 'a,
     ) -> crate::outbound::BoxOutboundFuture<'a, R>
     where
         R: crate::MaybeSend + 'a,
@@ -83,7 +83,7 @@ impl OutboundQueueStore for MemoryStore {
         Box::pin(async move {
             self.with_state(|state| {
                 let mut queue =
-                    arkret::sync_client::SendQueue::from_snapshot(state.outbound.clone())?;
+                    crate::sync_client::SendQueue::from_snapshot(state.outbound.clone())?;
                 let output = mutation(&mut queue)?;
                 state.outbound = queue.snapshot();
                 Ok(output)

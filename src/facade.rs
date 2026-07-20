@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use arkret::EphemeralDeviceKeyResolver;
+use crate::EphemeralDeviceKeyResolver;
 
 use crate::{CursorStore, EventCacheStore, Executor, SubscriptionEngine};
 

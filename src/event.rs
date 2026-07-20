@@ -1,8 +1,10 @@
 use arkret_core::{
-    AccountSubscribeDeviceListChanges, DecodedMessage, DeviceMessageEnvelope, EphemeralEnvelope,
-    Event, EventsQueryOutcome, NotificationDelta, RealmId, RealmUpdate,
+    AccountSubscribeDeviceListChanges, DeviceMessageEnvelope, EphemeralEnvelope, Event,
+    EventsQueryOutcome, NotificationDelta, RealmId, RealmUpdate,
 };
 use serde::{Deserialize, Serialize};
+
+use crate::DecodedMessage;
 
 /// Typed events emitted by the shared client engines toward a host adapter.
 #[allow(clippy::large_enum_variant)]

@@ -2,7 +2,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::{future::Future, pin::Pin, time::Duration};
 
-use arkret::sync_client::{SendQueue, SendQueueItem, SendQueueItemKind, SendQueueSnapshot};
+use crate::sync_client::{SendQueue, SendQueueItem, SendQueueItemKind, SendQueueSnapshot};
 use arkret_core::{Error, EventId, RealmId, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -504,7 +504,7 @@ mod tests {
             .unwrap();
         assert!(matches!(outcome, OutboundEngineOutcome::RetryAt { .. }));
         let item = engine.snapshot().await.unwrap().items.remove(0);
-        assert_eq!(item.status, arkret::sync_client::SendQueueStatus::Failed);
+        assert_eq!(item.status, crate::sync_client::SendQueueStatus::Failed);
         assert_eq!(item.attempts, 1);
         assert!(item.next_retry_at.is_some());
     }
@@ -569,7 +569,7 @@ mod tests {
             .unwrap();
         assert!(matches!(outcome, OutboundEngineOutcome::RetryAt { .. }));
         let failed = engine.snapshot().await.unwrap().items.remove(0);
-        assert_eq!(failed.status, arkret::sync_client::SendQueueStatus::Failed);
+        assert_eq!(failed.status, crate::sync_client::SendQueueStatus::Failed);
         assert!(failed.remote_event_id.is_none());
 
         let outcome = engine
@@ -625,7 +625,7 @@ mod tests {
         ));
         let snapshot = engine.snapshot().await.unwrap();
         assert!(snapshot.items.iter().all(|item| {
-            item.status == arkret::sync_client::SendQueueStatus::Cancelled && item.attempts == 0
+            item.status == crate::sync_client::SendQueueStatus::Cancelled && item.attempts == 0
         }));
     }
 

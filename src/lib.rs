@@ -9,27 +9,67 @@
 // bounds and is not supported by all downstream toolchains we gate.
 #![allow(clippy::manual_async_fn)]
 
+// Protocol and behavior owners consumed by the migrated runtime modules.
+// These are compatibility names inside Garth while the remaining SDK-local
+// data helpers are moved to their semantic crates.
+pub use arkret::{
+    ACTOR_PROFILE_SCHEMA, AEAD_ALGORITHM, ActorKind, ActorProfile, ActorProfileId, ActorStatus,
+    AppletId, BlobRef, CallId, CallRecordingId, CallStatePayloadRecordingResult, Cursor, DeviceId,
+    Did, EncryptedEnvelope, Error, Event, EventId, EventRequirements, Hash, Hlc, MORPH_SCHEMA,
+    NonEmptyString, ObjectCreatePayload, ObjectPatchPayload, OperationType, Patch, RealmId,
+    RecordingCaptureKind, RecordingMode, RecordingStartPayload, Result, STRAND_SCHEMA,
+    STRAND_TRACK_NAME_SYNTHESIS, SpaceId, StateSnapshot, StrandId, StrandTrackConfig, Timeline,
+};
+pub use arkret::{canonical, crypto, cursor, media, models, resolver, sync};
+
+pub mod account;
 pub mod account_handoff;
 pub mod backoff;
+pub mod base;
+pub mod crypto_state_store;
 pub mod event;
 pub mod executor;
 pub mod facade;
+pub mod inbound;
 pub mod maybe_send;
 pub mod orchestrator;
 pub mod outbound;
+pub mod presence;
+pub mod profile;
 pub mod projection;
+pub mod realm;
+pub mod receipts;
+pub mod runtime_store;
 pub mod session;
+pub mod settings;
 pub mod stamp;
 pub mod store;
 pub mod subscribe;
+pub mod sync_client;
+pub mod timeline;
+pub mod typing;
 
+pub use account::{
+    ACCOUNT_DATA_BLOCKLIST, AccountBlocklistPayload, AccountBlocklistPayloadEntry,
+    AccountBlocklistTarget, AccountDataManager, AccountDataSetPayload, ContactRemark,
+    ContactRemarkSubject, RealmRemark, RealmRemarkSubject,
+};
 pub use account_handoff::{
     AccountHandoffDisposition, OidcAccountHandoffInput, account_handoff_disposition,
     identity_binding_challenge_request, identity_creation_register_request,
     oidc_account_handoff_request, pre_registration_session_grant_request, validate_binding_receipt,
 };
-pub use arkret::SyncLoopControl;
 pub use backoff::Backoff;
+pub use base::{
+    BaseClient, BootstrapSequence, BootstrapStep, BootstrapStepKind, BootstrapStepStatus,
+    ClientRealm, RealmMembershipState, SessionMeta, SessionRestore,
+};
+pub use crypto_state_store::{
+    CRYPTO_STORE_BACKUP_VERSION, CryptoStore, CryptoStoreBackupEnvelope, CryptoStoreKeyRotation,
+    EncryptedMemoryCryptoStore, MemoryCryptoStore, MlsCommitSource, MlsEpochSecretRecord,
+    MlsGroupStateRecord, MlsGroupStateSink, MlsRecoveryAction, MlsRecoveryPlan,
+    PlatformKeyStoreDescriptor, PlatformKeyStoreKind, StoredDeviceVerification,
+};
 pub use event::{AccountUpdateContext, ClientEvent, ClientProjector};
 #[cfg(feature = "native")]
 pub use executor::NativeExecutor;
@@ -37,6 +77,7 @@ pub use executor::NativeExecutor;
 pub use executor::WasmExecutor;
 pub use executor::{Executor, HostClock, SystemClock};
 pub use facade::ArkretClient;
+pub use inbound::{DecodedInbound, DecodedMessage, InboundDecoder};
 pub use maybe_send::{MaybeSend, MaybeSendSync};
 pub use orchestrator::{
     AccountCommitOutcome, AccountPostCommitHook, AccountPostCommitOutcome, AccountStepCommitter,
@@ -48,7 +89,19 @@ pub use outbound::{
     OutboundGenerationFenceDecision, OutboundPostAcceptHook, OutboundQueueStore,
     OutboundSubmitOutcome, OutboundSubmitter,
 };
+pub use presence::{Presence, PresenceManager};
+pub use profile::*;
 pub use projection::{ProjectionMount, RealmStateReducer};
+pub use realm::{
+    BatchCreateMorph, BatchUpdateMorph, GraphTraversal, MorphAggregation, MorphQuery, MorphVersion,
+    MorphVersionDiff, Realm, RelationOperationInput,
+};
+pub use receipts::*;
+pub use runtime_store::{
+    AccountSessionStore, AuditLogStore, BlobMetadataStore, EventCacheStore as EventBodyCacheStore,
+    MemoryPersistenceStore, StateSnapshotStore, StoreCache, StoreEncryptionKey, StoredAccountData,
+    rebuild_realm_state_from_events, restore_realm_state_from_persistence,
+};
 pub use session::{
     AgentKeyProofLogin, AuthenticatedTransportFactory, DidProofLogin, GRANT_ROTATION_SKEW_SECS,
     HolderProofLogin, LoginKind, NoopSessionGrantStore, OidcLogin, POLL_INTERVAL_SECS,
@@ -57,6 +110,7 @@ pub use session::{
     SessionGrantTransport, SessionHandle, SessionProofFields, SessionRefreshOptions,
     SessionTransportProvider, grant_due_for_rotation, grant_is_dead, refresh_decision,
 };
+pub use settings::*;
 pub use stamp::{
     MonotonicStampStore, RemoteStamp, SigningStamp, SigningStampAllocator, StampFloor,
     StampFloorUpdate, StampScope, hlc_from_floor,
@@ -77,3 +131,19 @@ pub use subscribe::{
     ScanCatchupOptions, SubscriptionEngine, SubscriptionLoopDriver, SubscriptionStopReason,
     account_updates_to_events,
 };
+pub use sync_client::{
+    AsyncSyncTransport, BackoffConfig, BackpressureConfig, BoxSyncFuture, CancellationToken,
+    EphemeralDeviceKeyResolver, EventsSubscribeTransport, ExponentialBackoff, LocalEcho,
+    ProcessedRealm, RealmListChange, RealmListEntry, RealmListFilter, RealmListService,
+    RealmListSnapshot, RealmListSort, SendQueue, SendQueueItem, SendQueueItemKind,
+    SendQueueSnapshot, SendQueueStatus, SlidingSync, SlidingWindow, SyncGapStrategy, SyncLoop,
+    SyncLoopControl, SyncLoopSnapshot, SyncLoopStep, SyncRecoveryAction, SyncResponseProcessor,
+    SyncTransport,
+};
+pub use timeline::{
+    CachedEvent, EventCache, EventCacheInsert, EventCacheUpdate, FocusedTimeline,
+    TimelineDirection, TimelineEvent, TimelineFrom, TimelineGap, TimelineItem, TimelineItemKind,
+    TimelineOptions, TimelineReactionSummary, TimelineReadReceipt, TimelineStore,
+    TimelineTypingUpdate,
+};
+pub use typing::{TypingManager, TypingNotification};

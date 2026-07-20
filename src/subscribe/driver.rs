@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use arkret::{AsyncSyncTransport, SyncLoop, SyncLoopControl, SyncLoopStep};
+use crate::sync_client::{AsyncSyncTransport, SyncLoop, SyncLoopControl, SyncLoopStep};
 use arkret_core::Result;
 
 use super::{ProjectedRunError, ProjectedRunResult, account_updates_to_events};

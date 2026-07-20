@@ -1,4 +1,4 @@
-use arkret::{AccountSubscribeBatch, AsyncSyncTransport, BoxSyncFuture, SyncRequestBody};
+use arkret::{AccountSubscribeBatch, SyncRequestBody};
 use arkret_core::{
     DeviceId, Did, EventsQueryOutcome, EventsSubscribeFrame, GrantId, RealmId, Result,
     SessionGrantOutcome, SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody,
@@ -13,6 +13,7 @@ use garth::{
     SecureSessionGrantStore, SessionGrantState, SessionGrantStore, SessionGrantTransport,
     SessionRefreshOptions, SessionTransportProvider, SyncLoopControl, TransportProvider,
 };
+use garth::{AsyncSyncTransport, BoxSyncFuture};
 
 struct Projector;
 
