@@ -1,6 +1,12 @@
 use arkret::RealmState;
 use arkret_core::{Event, RealmId, Result};
 
+mod sidecar;
+
+pub use sidecar::{
+    SidecarProjectionFold, SidecarTimelineEvent, SidecarTimelineItem, merge_sidecar_timeline,
+};
+
 pub trait RealmStateReducer {
     fn apply_domain_events(&mut self, realm_id: &RealmId, events: &[Event]) -> Result<()>;
 }
