@@ -389,4 +389,52 @@ mod tests {
                 .all(|item| { item.provenance == AgentSidecarProjectionProvenance::Private })
         );
     }
+
+    #[test]
+    fn long_history_merge_handles_ten_thousand_shared_and_two_thousand_private_events() {
+        fn indexed_event(index: usize, track_name: &str) -> SidecarTimelineEvent<usize> {
+            SidecarTimelineEvent {
+                event_id: EventId::new(format!("ak:event:01964137-0000-7000-8000-{index:012x}"))
+                    .unwrap(),
+                hlc: format!("{:012x}-0001-a13f9c2e", 0x0197_0e58_9d21_u64 + index as u64),
+                track_name: track_name.to_owned(),
+                value: index,
+            }
+        }
+
+        let shared = (0..10_000)
+            .map(|index| indexed_event(index, "discussion"))
+            .collect::<Vec<_>>();
+        let private = (10_000..12_000)
+            .map(|index| indexed_event(index, "discussion"))
+            .collect::<Vec<_>>();
+
+        let merged = merge_sidecar_timeline(
+            std::iter::empty::<&AgentSidecarExchangeProjection>(),
+            AgentSidecarDisplayMode::ContextMerged,
+            &shared,
+            &private,
+        );
+        assert_eq!(merged.len(), 12_000);
+        assert_eq!(
+            merged
+                .iter()
+                .filter(|item| item.provenance == AgentSidecarProjectionProvenance::Shared)
+                .count(),
+            10_000
+        );
+        assert_eq!(merged.first().map(|item| item.value), Some(0));
+        assert_eq!(merged.last().map(|item| item.value), Some(11_999));
+
+        let private_only = merge_sidecar_timeline(
+            std::iter::empty::<&AgentSidecarExchangeProjection>(),
+            AgentSidecarDisplayMode::SidecarOnly,
+            &shared,
+            &private,
+        );
+        assert_eq!(private_only.len(), 2_000);
+        assert!(private_only.iter().all(|item| {
+            item.provenance == AgentSidecarProjectionProvenance::Private && item.value >= 10_000
+        }));
+    }
 }
