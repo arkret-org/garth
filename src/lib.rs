@@ -59,6 +59,7 @@ pub use account_handoff::{
     identity_binding_challenge_request, identity_creation_register_request,
     oidc_account_handoff_request, pre_registration_session_grant_request, validate_binding_receipt,
 };
+pub use arkret_event_draft::MessageEventPayload;
 pub use backoff::Backoff;
 pub use base::{
     BaseClient, BootstrapSequence, BootstrapStep, BootstrapStepKind, BootstrapStepStatus,
