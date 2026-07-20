@@ -48,7 +48,7 @@ pub trait RealmEventsTransport {
 
 impl RealmEventsFrameSource for arkret_http_client::EventsSubscribeFrameStream {
     fn next_frame<'a>(&'a mut self) -> BoxRealmStreamFuture<'a, Option<EventsSubscribeFrame>> {
-        Box::pin(async move { self.next_frame().await })
+        Box::pin(async move { self.next_frame().await.map_err(arkret::Error::from) })
     }
 }
 
@@ -69,7 +69,9 @@ impl RealmEventsTransport for arkret_http_client::Client {
             if let Some(after) = after {
                 options = options.after(after.to_owned()).catchup(true);
             }
-            self.events_subscribe_frames(&options).await
+            self.events_subscribe_frames(&options)
+                .await
+                .map_err(arkret::Error::from)
         })
     }
 }

@@ -64,6 +64,7 @@ impl EventsScanTransport for arkret_http_client::Client {
                 request.limit,
             )
             .await
+            .map_err(arkret::Error::from)
         })
     }
 }

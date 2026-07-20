@@ -2,8 +2,10 @@ use ed25519_dalek::SigningKey;
 
 pub fn dpop_proof_callback(
     signing_key: SigningKey,
-) -> impl Fn(arkret_http_client::DpopProofRequest) -> arkret_core::Result<String> + Send + Sync + 'static
-{
+) -> impl Fn(arkret_http_client::DpopProofRequest) -> arkret_http_client::Result<String>
++ Send
++ Sync
++ 'static {
     move |request| build_http_dpop_proof(request, &signing_key)
 }
 
@@ -34,7 +36,8 @@ pub fn account_handoff_auth(
 pub fn build_http_dpop_proof(
     request: arkret_http_client::DpopProofRequest,
     signing_key: &SigningKey,
-) -> arkret_core::Result<String> {
-    let proof = arkret::dpop::build_dpop_proof(&request, signing_key)?;
+) -> arkret_http_client::Result<String> {
+    let proof = arkret::dpop::build_dpop_proof(&request, signing_key)
+        .map_err(|error| arkret_http_client::Error::Protocol(error.to_string()))?;
     Ok(proof.header_value)
 }

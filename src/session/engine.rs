@@ -38,14 +38,22 @@ impl SessionGrantTransport for arkret_http_client::Client {
         &'a self,
         request: SessionGrantRequestBody,
     ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
-        Box::pin(async move { self.auth_issue_session_grant(&request).await })
+        Box::pin(async move {
+            self.auth_issue_session_grant(&request)
+                .await
+                .map_err(arkret::Error::from)
+        })
     }
 
     fn refresh_session_grant<'a>(
         &'a self,
         request: SessionGrantRefreshRequestBody,
     ) -> BoxSessionFuture<'a, SessionGrantRefreshOutcome> {
-        Box::pin(async move { self.auth_refresh_session_grant(&request).await })
+        Box::pin(async move {
+            self.auth_refresh_session_grant(&request)
+                .await
+                .map_err(arkret::Error::from)
+        })
     }
 }
 
