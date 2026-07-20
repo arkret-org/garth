@@ -225,7 +225,7 @@ impl ReceiptManager {
 
 // ─── Read Receipt disclosure policy (spec read-receipts.md §2.5) ────────
 
-/// `disclosure` field of `ak.realm.read_receipt_policy`. Soft policy —
+// `disclosure` field of `ak.realm.read_receipt_policy`. Soft policy —
 // Policy wire types are owned by arkret-models-collaboration; Garth only
 // evaluates them together with the actor-private preferences below.
 // ─── Account-data preferences (client-preferences.md §3.6) ─────────────

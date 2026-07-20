@@ -18,8 +18,8 @@ use std::{
     hash::{Hash, Hasher},
 };
 
+use crate::protocol::{DeviceId, Did, RealmId, Result, SyncUpdates};
 use crate::sync_client::{AsyncSyncTransport, SyncLoopControl, SyncLoopStep};
-use arkret_core::{DeviceId, Did, RealmId, Result, SyncUpdates};
 
 use crate::subscribe::{
     EventsScanTransport, ProjectedRunError, RealmEventsTransport, RealmStreamStopReason,
@@ -192,13 +192,13 @@ pub enum RunErrorClass {
 pub struct RunError {
     pub class: RunErrorClass,
     #[source]
-    pub source: arkret_core::Error,
+    pub source: crate::protocol::Error,
 }
 
 pub type RunResult<T> = std::result::Result<T, RunError>;
 
-fn classify_error(error: &arkret_core::Error) -> RunErrorClass {
-    use arkret_core::Error;
+fn classify_error(error: &crate::protocol::Error) -> RunErrorClass {
+    use crate::protocol::Error;
     match error {
         Error::Http(_) => RunErrorClass::RetryableTransport,
         Error::Api { status: 429, .. } => RunErrorClass::RateLimited,
@@ -232,7 +232,8 @@ fn classify_error(error: &arkret_core::Error) -> RunErrorClass {
         Error::Protocol(_) | Error::Api { .. } | Error::AccountStreamInterrupt(_) => {
             RunErrorClass::ProtocolViolation
         }
-        _ => RunErrorClass::InvalidConfiguration,
+        #[cfg(feature = "mls")]
+        Error::Mls(_) => RunErrorClass::ProtocolViolation,
     }
 }
 
@@ -345,7 +346,7 @@ where
                         return Err(Self::fail(
                             provider,
                             RunErrorClass::ProtocolViolation,
-                            arkret_core::Error::Protocol(
+                            crate::protocol::Error::Protocol(
                                 "realm stream required resync again before recovery completed"
                                     .to_owned(),
                             ),
@@ -490,7 +491,7 @@ where
             };
             match sync_loop.step_async_with_control(&transport, control).await {
                 SyncLoopStep::Updates(updates) => {
-                    let batch = account_updates_to_events(updates);
+                    let batch = account_updates_to_events(*updates);
                     if !batch.is_empty() {
                         projector.project(batch).await.map_err(|error| {
                             Self::fail(provider, RunErrorClass::ProjectorFailure, error)
@@ -524,7 +525,7 @@ where
                     return Err(Self::fail(
                         provider,
                         RunErrorClass::ProtocolViolation,
-                        arkret_core::Error::Protocol(error),
+                        crate::protocol::Error::Protocol(error),
                     ));
                 }
                 SyncLoopStep::Backpressure { retry_after } => {
@@ -610,7 +611,7 @@ where
                     let step = AccountStreamStep {
                         initial,
                         cursor: sync_loop.token().map(str::to_owned),
-                        updates,
+                        updates: *updates,
                     };
                     let commit_outcome =
                         handlers.committer.commit(&step).await.map_err(|error| {
@@ -684,7 +685,7 @@ where
                     return Err(Self::fail(
                         provider,
                         RunErrorClass::ProtocolViolation,
-                        arkret_core::Error::Protocol(error),
+                        crate::protocol::Error::Protocol(error),
                     ));
                 }
                 SyncLoopStep::Backpressure { retry_after } => {
@@ -772,7 +773,7 @@ where
                         .commit(
                             scope.clone(),
                             sync_loop.token().map(str::to_owned),
-                            account_updates_to_events(updates),
+                            account_updates_to_events(*updates),
                         )
                         .await
                         .map_err(|error| {
@@ -801,7 +802,7 @@ where
                     return Err(Self::fail(
                         provider,
                         RunErrorClass::ProtocolViolation,
-                        arkret_core::Error::Protocol(error),
+                        crate::protocol::Error::Protocol(error),
                     ));
                 }
                 SyncLoopStep::Backpressure { retry_after } => {
@@ -893,7 +894,7 @@ where
     fn fail<TP: TransportProvider + ?Sized>(
         provider: &TP,
         class: RunErrorClass,
-        source: arkret_core::Error,
+        source: crate::protocol::Error,
     ) -> RunError {
         provider.observe(RunEvent::Stopped {
             reason: RunStopReason::Failed { class },
@@ -908,8 +909,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use arkret::{AccountStreamInterrupt, AccountSubscribeBatch, Error, SyncRequestBody};
-    use arkret_core::{
+    use crate::protocol::{AccountStreamInterrupt, AccountSubscribeBatch, Error, SyncRequestBody};
+    use crate::protocol::{
         ErrorEnvelope, EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind, Hlc,
         NotificationDelta, NotificationDeltaAction, NotificationId, NotificationType, RealmId,
     };
@@ -1235,8 +1236,8 @@ mod tests {
     }
 
     fn event_frame() -> EventsSubscribeFrame {
-        let event = arkret_core::Event::new(
-            arkret_core::events::EventKind::MESSAGE_CREATE,
+        let event = crate::protocol::Event::new(
+            crate::protocol::events::EventKind::MESSAGE_CREATE,
             realm_id(),
             actor_id(),
             1,
@@ -1254,7 +1255,7 @@ mod tests {
         );
         // Data frames are cursor-bearing under the §1.1 trace rules.
         framed.cursor =
-            Some(arkret_core::identifiers::Cursor::new("ak:cursor:event-frame").unwrap());
+            Some(crate::protocol::identifiers::Cursor::new("ak:cursor:event-frame").unwrap());
         framed
     }
 
@@ -1554,7 +1555,8 @@ mod tests {
         // the engine backfills from it, honours the server's 25ms hint, and
         // the orchestrator then skips its local backoff sleep.
         let mut dropped = frame(EventsSubscribeFrameKind::Dropped, Value::Null);
-        dropped.cursor = Some(arkret_core::identifiers::Cursor::new("ak:cursor:dropped").unwrap());
+        dropped.cursor =
+            Some(crate::protocol::identifiers::Cursor::new("ak:cursor:dropped").unwrap());
         dropped.reconnect_after_ms = Some(25);
         let provider = QueueProvider::new(vec![
             Ok(TestRealmTransport::frames(vec![Ok(dropped)])),

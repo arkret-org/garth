@@ -11,11 +11,11 @@ use arkret_wire::WireError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::runtime_store::StoreEncryptionKey;
-use arkret::{
+use crate::protocol::{
     DeviceId, DeviceVerificationState, Did, Error, MlsCommitEnvelope, MlsKeyPackageRecord,
     MlsWelcomeEnvelope, Result,
 };
+use crate::runtime_store::StoreEncryptionKey;
 
 pub const CRYPTO_STORE_BACKUP_VERSION: &str = "arkret.crypto_store.backup.v1";
 
@@ -88,7 +88,7 @@ pub struct CryptoStoreBackupEnvelope {
 
 impl CryptoStoreBackupEnvelope {
     pub fn new(key_version: u64, payload_json: String, exported_at: DateTime<Utc>) -> Result<Self> {
-        let payload_digest = arkret::canonical::sha256_digest(payload_json.as_bytes());
+        let payload_digest = crate::protocol::canonical::sha256_digest(payload_json.as_bytes());
         Ok(Self {
             version: CRYPTO_STORE_BACKUP_VERSION.to_owned(),
             key_version,
@@ -104,7 +104,9 @@ impl CryptoStoreBackupEnvelope {
                 "unsupported crypto store backup version".to_owned(),
             ));
         }
-        if self.payload_digest != arkret::canonical::sha256_digest(self.payload_json.as_bytes()) {
+        if self.payload_digest
+            != crate::protocol::canonical::sha256_digest(self.payload_json.as_bytes())
+        {
             return Err(Error::Protocol(
                 "crypto store backup digest mismatch".to_owned(),
             ));
@@ -129,7 +131,7 @@ pub struct MlsRecoveryPlan {
 
 // `MlsGroupStateRecord` moved to `arkret_models_crypto::mls_records` so the MLS
 // behavior layer can consume it without the SDK crypto store. Re-exported here
-// to keep the `crate::MlsGroupStateRecord` path and the `arkret::` surface
+// to keep the `crate::MlsGroupStateRecord` path and the `crate::protocol::` surface
 // stable.
 pub use arkret_models_crypto::MlsGroupStateRecord;
 
@@ -153,7 +155,7 @@ pub struct StoredDeviceVerification {
 // `put_mls_group_state` / `commits_for_group` moved to the narrow
 // `arkret_models_crypto::{MlsGroupStateSink, MlsCommitSource}` ports so the MLS
 // behavior layer can persist / read those records without depending on the
-// umbrella crate — and so binding them here drags no OpenMLS into a full-surface
+// umbrella crate — and so binding them here does not drag OpenMLS into ordinary
 // build. `CryptoStore` re-declares them as supertraits: any `impl CryptoStore`
 // still satisfies both ports, and existing `&mut impl CryptoStore` call sites
 // coerce unchanged. Direct callers of the two moved methods now need the port
@@ -666,7 +668,7 @@ impl CryptoStore for EncryptedMemoryCryptoStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arkret::Hash;
+    use crate::protocol::Hash;
 
     fn did(name: &str) -> Did {
         Did::new(format!("did:webvh:z6mkfixture:{name}.example")).unwrap()
@@ -714,7 +716,7 @@ mod tests {
                 .unwrap(),
                 cipher_suites: vec!["suite".to_owned()],
                 capabilities: Vec::new(),
-                state: arkret_core::MlsKeyPackageState::Published,
+                state: crate::protocol::MlsKeyPackageState::Published,
                 claim_id: None,
                 created_at: Utc::now(),
                 expires_at: None,
@@ -853,7 +855,7 @@ mod tests {
                 .unwrap(),
                 cipher_suites: vec!["MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519".to_owned()],
                 capabilities: Vec::new(),
-                state: arkret_core::MlsKeyPackageState::Published,
+                state: crate::protocol::MlsKeyPackageState::Published,
                 claim_id: None,
                 created_at: Utc::now(),
                 expires_at: None,

@@ -372,10 +372,10 @@ impl BaseClient {
     }
 
     /// Get the current cursor for resuming sync.
-    pub fn current_cursor(&self) -> Result<crate::Cursor> {
+    pub fn current_cursor(&self) -> Result<crate::cursor::Cursor> {
         let tracker = self.sync_tracker.read();
-        // `SyncTracker` moved to arkret-hlc (core-retirement batch 2) and now
-        // surfaces `HlcError`; coerce it into the SDK facade error via `?`.
+        // The generator cursor belongs to arkret-hlc; Garth converts its
+        // focused error once at the client-runtime boundary.
         Ok(tracker.current_cursor()?)
     }
 

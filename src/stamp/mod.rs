@@ -26,15 +26,15 @@
 
 use std::future::Future;
 
-use arkret_core::{DeviceId, Did, Error, Hlc, RealmId, Result};
+use crate::protocol::{DeviceId, Did, Error, Hlc, RealmId, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::{HostClock, MaybeSendSync};
 
 /// 16-bit logical counter ceiling (`encoding.md` §7: 4 lowercase hex digits).
-const MAX_LOGICAL: u32 = arkret::hlc::HLC_MAX_LOGICAL;
+const MAX_LOGICAL: u32 = crate::protocol::hlc::HLC_MAX_LOGICAL;
 /// 48-bit physical millisecond ceiling (`encoding.md` §7: 12 lowercase hex).
-const MAX_PHYSICAL: u64 = arkret::hlc::HLC_MAX_PHYSICAL_MS;
+const MAX_PHYSICAL: u64 = crate::protocol::hlc::HLC_MAX_PHYSICAL_MS;
 
 /// Identity of one signing chain: a single `(actor, device, realm)` combination
 /// under an optional service scope. `actor_seq` is a per-`(actor, realm)`
@@ -306,7 +306,7 @@ fn host_now_ms<E: HostClock>(clock: &E) -> u64 {
 }
 
 fn hlc_parts(hlc: &Hlc) -> Result<(u64, u32)> {
-    let parts = arkret::hlc::parse_hlc(hlc.as_str())?;
+    let parts = crate::protocol::hlc::parse_hlc(hlc.as_str())?;
     Ok((parts.physical_ms, parts.logical))
 }
 
@@ -315,9 +315,13 @@ fn hlc_parts(hlc: &Hlc) -> Result<(u64, u32)> {
 /// the system clock and panic on wasm, but `with_initial_time(..).current()`
 /// only formats the seeded state, so it is clock-free and wasm-safe.
 fn derive_node_id(realm_id: &str, device_id: &str, local_node_secret: &[u8]) -> String {
-    let probe =
-        arkret::hlc::HlcGenerator::with_initial_time(realm_id, device_id, local_node_secret, 0)
-            .current();
+    let probe = crate::protocol::hlc::HlcGenerator::with_initial_time(
+        realm_id,
+        device_id,
+        local_node_secret,
+        0,
+    )
+    .current();
     // `probe` is `000000000000-0000-<node_id>`; the node segment is the last 8.
     probe.as_str()[18..26].to_owned()
 }

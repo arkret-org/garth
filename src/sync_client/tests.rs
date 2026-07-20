@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use arkret_core::{
+use crate::protocol::{
     AccountSubscribeRealms, AccountSubscribeUnreadCounts, DeviceMessageContainer,
     EphemeralEventContainer, ErrorEnvelope, EventContainer, ProtocolKind, RealmSyncEntry,
 };
@@ -9,7 +9,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::json;
 
 use super::*;
-use arkret_core::{
+use crate::protocol::{
     AccountNotificationDataKind, AgentRuntimeApprovalNotificationData,
     AgentRuntimeApprovalNotificationRemovalData, AgentRuntimeApprovalRemovalReason,
     DeviceMessageId, Did, EphemeralEnvelope, Hash, NotificationContainer, NotificationData,
@@ -95,7 +95,7 @@ fn signed_presence(
     )
     .unwrap();
     envelope.proof.event_digest = Hash::new(canonical::sha256_digest(
-        &envelope.canonical_bytes_without_proof().unwrap(),
+        envelope.canonical_bytes_without_proof().unwrap(),
     ))
     .unwrap();
     let binding = envelope
@@ -309,10 +309,10 @@ fn sync_loop_can_reset_token_on_limited_timeline_gap() {
 fn sync_loop_includes_wait_for_frontier() {
     let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
     let wait_for = WaitForFrontier {
-        positions: vec![arkret_core::sync::SyncStreamPosition {
+        positions: vec![crate::protocol::sync::SyncStreamPosition {
             realm_id,
             frontier: Vec::new(),
-            timeline_order: arkret_core::Hlc::new("01970e589d21-0000-a13f9c2e").unwrap(),
+            timeline_order: crate::protocol::Hlc::new("01970e589d21-0000-a13f9c2e").unwrap(),
             state_digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
                 .to_owned(),
         }],
@@ -362,7 +362,7 @@ fn processor_dispatches_all_update_categories() {
         realm,
         sender.clone(),
         2,
-        arkret_core::Hlc::new("01970e589d22-0000-a13f9c2e").unwrap(),
+        crate::protocol::Hlc::new("01970e589d22-0000-a13f9c2e").unwrap(),
         json!({"key":"ak.settings","body":{"theme":"light"}}),
     )
     .unwrap();
@@ -604,7 +604,7 @@ fn processor_tracks_limited_timelines_and_to_device_ack() {
         parsed_realm_id.clone(),
         Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
         1,
-        arkret_core::Hlc::new("01970e589d21-0000-a13f9c2e").unwrap(),
+        crate::protocol::Hlc::new("01970e589d21-0000-a13f9c2e").unwrap(),
         json!({"body":"hello"}),
     )
     .unwrap();

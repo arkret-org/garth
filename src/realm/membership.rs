@@ -83,7 +83,7 @@ impl Realm {
         Ok(Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::INVITE_CREATE,
+            crate::protocol::events::EventKind::INVITE_CREATE,
             payload.to_value()?,
         ))
     }
@@ -127,7 +127,7 @@ impl Realm {
         Ok(Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::MEMBER_STATE,
+            crate::protocol::events::EventKind::MEMBER_STATE,
             payload.to_value()?,
         ))
     }
@@ -161,7 +161,7 @@ impl Realm {
         Ok(Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::MEMBER_STATE,
+            crate::protocol::events::EventKind::MEMBER_STATE,
             payload.to_value()?,
         ))
     }
@@ -193,7 +193,7 @@ impl Realm {
         Ok(Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::MEMBER_STATE,
+            crate::protocol::events::EventKind::MEMBER_STATE,
             payload.to_value()?,
         ))
     }
@@ -222,7 +222,7 @@ impl Realm {
         Ok(Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::MEMBER_STATE,
+            crate::protocol::events::EventKind::MEMBER_STATE,
             payload.to_value()?,
         ))
     }
@@ -251,7 +251,7 @@ impl Realm {
         Ok(Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::MEMBER_STATE,
+            crate::protocol::events::EventKind::MEMBER_STATE,
             payload.to_value()?,
         ))
     }
@@ -280,7 +280,7 @@ impl Realm {
         Ok(Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::MEMBER_STATE,
+            crate::protocol::events::EventKind::MEMBER_STATE,
             payload.to_value()?,
         ))
     }

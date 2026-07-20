@@ -37,7 +37,7 @@ pub fn build_http_dpop_proof(
     request: arkret_http_client::DpopProofRequest,
     signing_key: &SigningKey,
 ) -> arkret_http_client::Result<String> {
-    let proof = arkret::dpop::build_dpop_proof(&request, signing_key)
+    let proof = crate::protocol::dpop::build_dpop_proof(&request, signing_key)
         .map_err(|error| arkret_http_client::Error::Protocol(error.to_string()))?;
     Ok(proof.header_value)
 }

@@ -1,4 +1,4 @@
-use arkret_core::{Event, Result};
+use crate::protocol::{Event, Result};
 use arkret_event_draft::{EventPayloadExt, MessageEventPayload};
 use serde::{Deserialize, Serialize};
 

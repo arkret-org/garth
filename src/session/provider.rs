@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
-use arkret_core::{GrantId, Result};
+use crate::protocol::{GrantId, Result};
 
 use super::{
     NoopSessionGrantStore, SessionEngine, SessionGrantState, SessionGrantStore,
@@ -204,20 +204,18 @@ where
     }
 
     async fn provide_authenticated(&self) -> Result<F::Transport> {
-        let current = self
-            .session
-            .current_state()
-            .ok_or_else(|| arkret_core::Error::Protocol("no active session grant".to_owned()))?;
+        let current = self.session.current_state().ok_or_else(|| {
+            crate::protocol::Error::Protocol("no active session grant".to_owned())
+        })?;
         let refresh_options = self
             .factory
             .refresh_options(&current, &self.refresh_options)?;
         self.session
             .refresh_if_due(refresh_options, self.clock.now())
             .await?;
-        let state = self
-            .session
-            .current_state()
-            .ok_or_else(|| arkret_core::Error::Protocol("no active session grant".to_owned()))?;
+        let state = self.session.current_state().ok_or_else(|| {
+            crate::protocol::Error::Protocol("no active session grant".to_owned())
+        })?;
         self.persist_state_if_needed(&state).await?;
         if let Some((grant_id, transport)) = self.cache_lock().as_ref()
             && grant_id == &state.grant_id
@@ -234,10 +232,9 @@ where
     }
 
     async fn persist_current_state(&self) -> Result<()> {
-        let state = self
-            .session
-            .current_state()
-            .ok_or_else(|| arkret_core::Error::Protocol("no active session grant".to_owned()))?;
+        let state = self.session.current_state().ok_or_else(|| {
+            crate::protocol::Error::Protocol("no active session grant".to_owned())
+        })?;
         self.persist_state_if_needed(&state).await
     }
 
@@ -283,7 +280,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
-    use arkret_core::{
+    use crate::protocol::{
         DeviceId, Did, Error, Hash, SessionGrantOutcome, SessionGrantProofKind,
         SessionGrantRefreshOutcome, SessionGrantRefreshProof, SessionGrantRefreshRequestBody,
         SessionGrantRequestBody,

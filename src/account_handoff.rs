@@ -4,7 +4,7 @@
 //! module owns the canonical request sequence and delegates all protocol
 //! cryptography and DTO validation to the Arkret SDK.
 
-use arkret::{
+use crate::protocol::{
     AccountBindingReceipt, AccountHandoffAuthenticationProof,
     AccountHandoffAuthenticationProofKind, AccountHandoffBinding, AccountHandoffOutcome,
     AccountHandoffRequestBody, AccountRegisterRequestBody, DeviceId, Did,
@@ -90,7 +90,8 @@ pub fn identity_binding_challenge_request(
     lease: &IdentityCreationLease,
     did_operation: DidOperationSubmitRequestBody,
 ) -> Result<IdentityBindingChallengeRequestBody> {
-    let reserved = arkret::ReservedIdentityCreation::from_operation(did_operation.clone())?;
+    let reserved =
+        crate::protocol::ReservedIdentityCreation::from_operation(did_operation.clone())?;
     if let Some(existing) = lease.reserved_identity.as_ref()
         && existing != &reserved
     {
@@ -115,7 +116,7 @@ pub fn identity_creation_register_request(
     display_name: Option<String>,
 ) -> Result<AccountRegisterRequestBody> {
     let validated =
-        arkret::signatures::webvh::validate_principal_inception_operation(&did_operation)
+        crate::protocol::signatures::webvh::validate_principal_inception_operation(&did_operation)
             .map_err(|error| protocol(error.to_string()))?;
     if challenge.principal_id != validated.principal_id
         || challenge.operation_digest != validated.operation_digest
@@ -143,8 +144,11 @@ pub fn identity_creation_register_request(
         verification_key_multibase: validated.root_public_key_multibase,
         signature: String::new(),
     };
-    arkret::signatures::webvh::sign_identity_creation_control_proof(&mut control_proof, root_seed)
-        .map_err(|error| protocol(error.to_string()))?;
+    crate::protocol::signatures::webvh::sign_identity_creation_control_proof(
+        &mut control_proof,
+        root_seed,
+    )
+    .map_err(|error| protocol(error.to_string()))?;
     Ok(AccountRegisterRequestBody {
         principal_id: challenge.principal_id.clone(),
         display_name,
@@ -188,20 +192,21 @@ pub fn pre_registration_session_grant_request(
     expires_at: DateTime<Utc>,
     sign: impl FnOnce(&[u8]) -> Result<String>,
 ) -> Result<SessionGrantRequestBody> {
-    let mut request = arkret::session_grant::pre_registration_handoff_session_grant_request(
-        principal_id,
-        device_id,
-        requested_scope,
-        account_handoff_grant,
-        audience,
-        expires_at,
-    )?;
+    let mut request =
+        crate::protocol::session_grant::pre_registration_handoff_session_grant_request(
+            principal_id,
+            device_id,
+            requested_scope,
+            account_handoff_grant,
+            audience,
+            expires_at,
+        )?;
     request.proof.signature = sign(&request.proof.canonical_signing_bytes()?)?;
     Ok(request)
 }
 
-fn protocol(message: impl Into<String>) -> arkret::Error {
-    arkret::Error::Protocol(message.into())
+fn protocol(message: impl Into<String>) -> crate::protocol::Error {
+    crate::protocol::Error::Protocol(message.into())
 }
 
 #[cfg(test)]
@@ -251,10 +256,10 @@ mod tests {
                 "ak:request:01964137-0000-7000-8000-000000000001".to_owned(),
             )
             .unwrap(),
-            account_handle: arkret::Handle::parse("alice:example.com").unwrap(),
+            account_handle: crate::protocol::Handle::parse("alice:example.com").unwrap(),
             account_handoff_grant: "g".repeat(32),
             expires_at: Utc::now(),
-            allowed_operations: arkret::ACCOUNT_HANDOFF_ALLOWED_OPERATIONS,
+            allowed_operations: crate::protocol::ACCOUNT_HANDOFF_ALLOWED_OPERATIONS,
             binding: AccountHandoffBinding::Bound {
                 principal_id: did("did:webvh:z6mkfixture:alice.example"),
             },

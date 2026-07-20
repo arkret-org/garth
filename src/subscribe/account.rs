@@ -1,4 +1,4 @@
-use arkret_core::SyncUpdates;
+use crate::protocol::SyncUpdates;
 
 use crate::{AccountUpdateContext, ClientEvent};
 
@@ -51,7 +51,7 @@ pub fn account_updates_to_events(updates: SyncUpdates) -> Vec<ClientEvent> {
 mod tests {
     use std::sync::{Arc, Mutex};
 
-    use arkret_core::{
+    use crate::protocol::{
         AccountSubscribeDeviceListChanges, NotificationDelta, NotificationDeltaAction,
         NotificationId, NotificationType, RealmId, RealmSyncEntry, RealmUpdate, SyncUpdates,
     };

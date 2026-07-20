@@ -1,5 +1,5 @@
-use arkret::*;
 use garth::BaseClient;
+use garth::*;
 use serde_json::json;
 
 fn did(name: &str) -> Did {
@@ -7,10 +7,10 @@ fn did(name: &str) -> Did {
 }
 
 #[test]
-fn umbrella_crate_builds_client_signs_event_and_verifies_binding() {
+fn runtime_builds_client_signs_event_and_verifies_binding() {
     let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap();
     let mut event = Event::new(
-        arkret_core::events::EventKind::MESSAGE_CREATE,
+        garth::events::EventKind::MESSAGE_CREATE,
         realm_id.clone(),
         did("alice"),
         1,

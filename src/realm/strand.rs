@@ -8,7 +8,7 @@ pub struct StrandCreateMetadata {
     pub encrypted_metadata: Option<crate::EncryptedEnvelope>,
     pub tracks: BTreeMap<String, crate::StrandTrackConfig>,
     /// AKP-0007 — optional Circle that defines this Strand's encryption scope.
-    pub scope_circle_id: Option<arkret_core::CircleId>,
+    pub scope_circle_id: Option<crate::protocol::CircleId>,
 }
 
 /// Optional Strand patch metadata accepted by [`Space::update_strand_operation_with_metadata`].
@@ -86,7 +86,7 @@ impl Realm {
         Ok(Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::STRAND_CREATE,
+            crate::protocol::events::EventKind::STRAND_CREATE,
             ObjectCreatePayload::new(object).to_value()?,
         ))
     }
@@ -161,7 +161,7 @@ impl Realm {
         let mut operation = Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::STRAND_UPDATE,
+            crate::protocol::events::EventKind::STRAND_UPDATE,
             StrandPatchPayload::for_strand(strand_id.clone(), patch)?.to_value()?,
         );
         operation.operation_type = OperationType::Update;
@@ -173,7 +173,7 @@ impl Realm {
     pub fn archive_strand_operation(&self, strand_id: StrandId) -> Result<Operation> {
         self.strand_lifecycle_operation(
             strand_id,
-            arkret_core::events::EventKind::STRAND_ARCHIVE,
+            crate::protocol::events::EventKind::STRAND_ARCHIVE,
             OperationType::Delete,
         )
     }
@@ -182,7 +182,7 @@ impl Realm {
     pub fn restore_strand_operation(&self, strand_id: StrandId) -> Result<Operation> {
         self.strand_lifecycle_operation(
             strand_id,
-            arkret_core::events::EventKind::STRAND_RESTORE,
+            crate::protocol::events::EventKind::STRAND_RESTORE,
             OperationType::Update,
         )
     }
@@ -198,7 +198,7 @@ impl Realm {
             .ok_or_else(|| crate::Error::Protocol("no session".to_owned()))?;
 
         let operation_id = OperationId::new(generate_id("ak:operation:"))?;
-        let target_state = if kind == arkret_core::events::EventKind::STRAND_RESTORE {
+        let target_state = if kind == crate::protocol::events::EventKind::STRAND_RESTORE {
             "active"
         } else {
             "archived"
@@ -238,7 +238,7 @@ impl Realm {
         let mut operation = Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::STRAND_MOVE,
+            crate::protocol::events::EventKind::STRAND_MOVE,
             payload.to_value()?,
         );
         operation.operation_type = OperationType::Update;
@@ -273,7 +273,7 @@ impl Realm {
         let mut operation = Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::STRAND_REORDER,
+            crate::protocol::events::EventKind::STRAND_REORDER,
             payload.to_value()?,
         );
         operation.operation_type = OperationType::Update;

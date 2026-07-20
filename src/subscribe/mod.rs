@@ -8,10 +8,10 @@ pub(crate) mod test_support;
 pub use account::account_updates_to_events;
 use std::sync::Arc;
 
+use crate::protocol::{DeviceId, Did, Error, RealmId, Result};
 use crate::sync_client::{
     AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot,
 };
-use arkret_core::{DeviceId, Did, Error, RealmId, Result};
 pub use driver::{SubscriptionLoopDriver, SubscriptionStopReason};
 pub use realm::{
     BoxRealmStreamFuture, RealmEventsDriver, RealmEventsFrameSource, RealmEventsTransport,
@@ -269,7 +269,7 @@ where
         transport: &T,
         realm_id: RealmId,
         options: ScanCatchupOptions,
-    ) -> Result<arkret_core::EventsQueryOutcome>
+    ) -> Result<crate::protocol::EventsQueryOutcome>
     where
         T: EventsScanTransport + ?Sized,
     {
@@ -290,7 +290,7 @@ where
         realm_id: RealmId,
         projector: &P,
         options: ScanCatchupOptions,
-    ) -> Result<arkret_core::EventsQueryOutcome>
+    ) -> Result<crate::protocol::EventsQueryOutcome>
     where
         T: EventsScanTransport + ?Sized,
         P: ClientProjector + ?Sized,
@@ -332,7 +332,7 @@ where
         transport: &T,
         realm_id: RealmId,
         options: ScanCatchupOptions,
-    ) -> ProjectedRunResult<arkret_core::EventsQueryOutcome>
+    ) -> ProjectedRunResult<crate::protocol::EventsQueryOutcome>
     where
         T: EventsScanTransport + ?Sized,
     {
@@ -420,13 +420,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use arkret::{
+    use crate::protocol::identifiers::Cursor;
+    use crate::protocol::{
         AccountStreamInterrupt, EphemeralEnvelope, EphemeralEventContainer, Error, Hash, Proof,
         SyncRequestBody, canonical,
         signatures::{PublicKeyMaterial, sign_eddsa_detached_jws},
     };
-    use arkret_core::identifiers::Cursor;
-    use arkret_core::{EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind};
+    use crate::protocol::{EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind};
     use chrono::Utc;
     use ed25519_dalek::SigningKey;
     use serde_json::json;
@@ -484,7 +484,7 @@ mod tests {
         )
         .unwrap();
         envelope.proof.event_digest = Hash::new(canonical::sha256_digest(
-            &envelope.canonical_bytes_without_proof().unwrap(),
+            envelope.canonical_bytes_without_proof().unwrap(),
         ))
         .unwrap();
         let binding = envelope

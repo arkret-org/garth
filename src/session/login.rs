@@ -1,13 +1,14 @@
-use arkret::session_grant::{
-    did_proof_session_grant_request, holder_proof_session_grant_request, oidc_session_grant_request,
+use crate::protocol::session_grant::{
+    agent_key_proof_session_grant_request, did_proof_session_grant_request,
+    holder_proof_session_grant_request, oidc_session_grant_request,
 };
-use arkret::{
+use crate::protocol::{
     DeviceId, Did, Hash, Result, SessionGrantAgentScopeRequest, SessionGrantAppletDelegation,
     SessionGrantDpopBindingProof, SessionGrantRequestBody,
 };
 use chrono::{DateTime, Utc};
 
-pub use arkret::session_grant::SessionGrantProofFields as SessionProofFields;
+pub use crate::protocol::session_grant::SessionGrantProofFields as SessionProofFields;
 
 #[derive(Clone, Debug)]
 pub struct AgentKeyProofLogin {
@@ -26,7 +27,7 @@ pub struct AgentKeyProofLogin {
 
 impl AgentKeyProofLogin {
     pub fn into_session_grant_request(self) -> Result<SessionGrantRequestBody> {
-        arkret::agent::agent_key_proof_session_grant_request(
+        Ok(agent_key_proof_session_grant_request(
             self.principal_id,
             self.requested_scope,
             self.agent_key_authorization_ref,
@@ -38,7 +39,7 @@ impl AgentKeyProofLogin {
             self.audience,
             self.expires_at,
             self.signature,
-        )
+        )?)
     }
 }
 
@@ -132,8 +133,10 @@ pub struct PreRegistrationHandoffLogin {
 
 impl PreRegistrationHandoffLogin {
     pub fn into_session_grant_request(self) -> Result<SessionGrantRequestBody> {
-        if self.request.proof.proof_kind != arkret::SessionGrantProofKind::PreRegistrationHandoff {
-            return Err(arkret::Error::Protocol(
+        if self.request.proof.proof_kind
+            != crate::protocol::SessionGrantProofKind::PreRegistrationHandoff
+        {
+            return Err(crate::protocol::Error::Protocol(
                 "pre-registration handoff login requires pre_registration_handoff proof".to_owned(),
             ));
         }
@@ -164,7 +167,7 @@ impl LoginKind {
 
 #[cfg(test)]
 mod tests {
-    use arkret::{RealmId, SessionGrantProofKind};
+    use crate::protocol::{RealmId, SessionGrantProofKind};
 
     use super::*;
 
@@ -279,7 +282,7 @@ mod tests {
     }
 
     #[test]
-    fn agent_key_proof_login_reuses_sdk_request_builder() {
+    fn agent_key_proof_login_builds_bound_request() {
         let request = LoginKind::AgentKeyProof(AgentKeyProofLogin {
             principal_id: did(),
             requested_scope: vec!["ak.self.events.stream.subscribe".to_owned()],

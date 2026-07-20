@@ -2,8 +2,8 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::{future::Future, pin::Pin, time::Duration};
 
+use crate::protocol::{Error, EventId, RealmId, Result};
 use crate::sync_client::{SendQueue, SendQueueItem, SendQueueItemKind, SendQueueSnapshot};
-use arkret_core::{Error, EventId, RealmId, Result};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 

@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use arkret_core::{Error, EventId, Result};
+use crate::protocol::{Error, EventId, Result};
 
 use super::inbox::{bounded_delivery_error, bounded_pending_limit};
 use super::seen_window::BoundedSeenWindow;
@@ -260,7 +260,7 @@ impl MonotonicStampStore for MemoryStore {
 
 #[cfg(test)]
 mod tests {
-    use arkret_core::{DeviceId, Did, EventId};
+    use crate::protocol::{DeviceId, Did, EventId};
 
     use super::*;
 

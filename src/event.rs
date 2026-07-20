@@ -1,4 +1,4 @@
-use arkret_core::{
+use crate::protocol::{
     AccountSubscribeDeviceListChanges, DeviceMessageEnvelope, EphemeralEnvelope, Event,
     EventsQueryOutcome, NotificationDelta, RealmId, RealmUpdate,
 };
@@ -59,5 +59,5 @@ pub trait ClientProjector {
     fn project(
         &self,
         batch: Vec<ClientEvent>,
-    ) -> impl std::future::Future<Output = arkret_core::Result<()>> + '_;
+    ) -> impl std::future::Future<Output = crate::protocol::Result<()>> + '_;
 }

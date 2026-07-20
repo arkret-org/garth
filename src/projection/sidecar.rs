@@ -1,10 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use arkret::models::{
+use crate::protocol::models::{
     AgentSidecarDisplayMode, AgentSidecarExchangeOrigin, AgentSidecarExchangeProjection,
     AgentSidecarProjectionProvenance, AgentSidecarViewState,
 };
-use arkret_core::{EventId, RealmId, Result, StrandId};
+use crate::protocol::{EventId, RealmId, Result, StrandId};
 
 /// Incremental controller-private Sidecar account-data projection.
 ///
@@ -286,11 +286,11 @@ fn push_private<T: Clone>(
 
 #[cfg(test)]
 mod tests {
-    use arkret::models::{
+    use crate::protocol::models::{
         AgentSidecarExchangeId, AgentSidecarExchangeProjectionSchema, AgentSidecarExchangeStatus,
         AgentSidecarSourceTrackRef,
     };
-    use arkret::{Did, Hlc, NonEmptyString, SidecarId};
+    use crate::protocol::{Did, Hlc, NonEmptyString, SidecarId};
 
     use super::*;
 

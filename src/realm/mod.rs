@@ -392,7 +392,7 @@ impl Realm {
     /// Create a snapshot of the current space state.
     pub fn snapshot(&self) -> Result<crate::StateSnapshot> {
         // `arkret-state` returns `arkret_wire::WireError`; bridge into the
-        // SDK's `arkret_core::Error` via the `?` From conversion.
+        // SDK's `crate::protocol::Error` via the `?` From conversion.
         Ok(self.state.snapshot()?)
     }
 
@@ -412,7 +412,7 @@ impl Realm {
         Ok(Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::MESSAGE_CREATE,
+            crate::protocol::events::EventKind::MESSAGE_CREATE,
             payload,
         ))
     }
@@ -440,7 +440,7 @@ impl Realm {
         let mut operation = Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::MESSAGE_REVISE,
+            crate::protocol::events::EventKind::MESSAGE_REVISE,
             payload_value(&payload, "message revise payload")?,
         );
         operation.object_id = Some(message_id.as_str().to_owned());
@@ -467,7 +467,7 @@ impl Realm {
         let mut operation = Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::MESSAGE_REDACT,
+            crate::protocol::events::EventKind::MESSAGE_REDACT,
             payload_value(&payload, "message redact payload")?,
         );
         operation.operation_type = OperationType::Redact;

@@ -10,7 +10,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use arkret::{
+use crate::protocol::{
     AccountSubscribeBatch, AccountSubscribeFrame, AccountSubscribeFrameKind, Result,
     SyncRequestBody,
 };

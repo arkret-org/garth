@@ -8,7 +8,7 @@ mod seen_window;
 
 use std::future::Future;
 
-use arkret_core::{DeviceId, Did, EventId, RealmId, Result};
+use crate::protocol::{DeviceId, Did, EventId, RealmId, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::MaybeSendSync;

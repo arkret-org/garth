@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use arkret_core::{
+use crate::protocol::{
     Did, Event, EventsSubscribeFrame, EventsSubscribeFrameKind, RealmId, Result,
     StreamTraceValidator,
 };
@@ -48,7 +48,11 @@ pub trait RealmEventsTransport {
 
 impl RealmEventsFrameSource for arkret_http_client::EventsSubscribeFrameStream {
     fn next_frame<'a>(&'a mut self) -> BoxRealmStreamFuture<'a, Option<EventsSubscribeFrame>> {
-        Box::pin(async move { self.next_frame().await.map_err(arkret::Error::from) })
+        Box::pin(async move {
+            self.next_frame()
+                .await
+                .map_err(crate::protocol::Error::from)
+        })
     }
 }
 
@@ -71,7 +75,7 @@ impl RealmEventsTransport for arkret_http_client::Client {
             }
             self.events_subscribe_frames(&options)
                 .await
-                .map_err(arkret::Error::from)
+                .map_err(crate::protocol::Error::from)
         })
     }
 }
@@ -154,7 +158,7 @@ where
             .await?;
 
         while let Some(frame) = source.next_frame().await? {
-            let update = trace.push(&frame).map_err(arkret_core::Error::from)?;
+            let update = trace.push(&frame).map_err(crate::protocol::Error::from)?;
             let cursor = frame
                 .cursor
                 .as_ref()
@@ -182,7 +186,7 @@ where
                 | EventsSubscribeFrameKind::EpochRotation => {}
                 EventsSubscribeFrameKind::Dropped => {
                     let Some(cursor) = cursor else {
-                        return Err(arkret_core::Error::Protocol(
+                        return Err(crate::protocol::Error::Protocol(
                             "dropped frame passed trace validation without a cursor".to_owned(),
                         ));
                     };
@@ -222,7 +226,7 @@ where
             }
         }
 
-        trace.finish().map_err(arkret_core::Error::from)?;
+        trace.finish().map_err(crate::protocol::Error::from)?;
         Ok(RealmStreamStopReason::StreamEnded)
     }
 
@@ -322,9 +326,11 @@ where
                     // frame (the server MUST use `resync_required` instead),
                     // so the cursor is guaranteed here.
                     let Some(cursor) = cursor else {
-                        return Err(ProjectedRunError::Transport(arkret_core::Error::Protocol(
-                            "dropped frame passed trace validation without a cursor".to_owned(),
-                        )));
+                        return Err(ProjectedRunError::Transport(
+                            crate::protocol::Error::Protocol(
+                                "dropped frame passed trace validation without a cursor".to_owned(),
+                            ),
+                        ));
                     };
                     return Ok(RealmStreamStopReason::Dropped {
                         cursor,
@@ -402,8 +408,8 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
-    use arkret_core::identifiers::Cursor;
-    use arkret_core::{Did, Event, Hlc};
+    use crate::protocol::identifiers::Cursor;
+    use crate::protocol::{Did, Event, Hlc};
     use serde_json::{Value, json};
 
     use super::*;
@@ -468,7 +474,7 @@ mod tests {
 
     fn message_event() -> Event {
         Event::new(
-            arkret_core::events::EventKind::MESSAGE_CREATE,
+            crate::protocol::events::EventKind::MESSAGE_CREATE,
             realm_id(),
             Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
             1,
@@ -834,7 +840,9 @@ mod tests {
             async move {
                 batches.lock().unwrap().push(batch.len());
                 if fail {
-                    Err(arkret_core::Error::Protocol("projector failed".to_owned()))
+                    Err(crate::protocol::Error::Protocol(
+                        "projector failed".to_owned(),
+                    ))
                 } else {
                     Ok(())
                 }
@@ -981,7 +989,7 @@ mod tests {
         // `ClientEvent::Event` instead of erroring the loop.
         let store = MemoryStore::new();
         let event = Event::new(
-            arkret_core::events::EventKind::MESSAGE_CREATE,
+            crate::protocol::events::EventKind::MESSAGE_CREATE,
             realm_id(),
             Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
             1,

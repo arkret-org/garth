@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::str;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use arkret_core::{Error, KeyBytes, KeyStore, KeyStoreError};
+use crate::protocol::{Error, KeyBytes, KeyStore, KeyStoreError};
 use thiserror::Error;
 use zeroize::Zeroizing;
 

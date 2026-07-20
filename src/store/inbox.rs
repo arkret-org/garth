@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use arkret_core::Result;
+use crate::protocol::Result;
 use serde::{Deserialize, Serialize};
 
 use super::{CursorScope, OpaqueCursor};

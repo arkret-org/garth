@@ -10,11 +10,34 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use arkret::auth::AuthSession;
-use arkret::e2ee::AuditEntry;
-use arkret::models::BlobMetadata;
-use arkret::resolver::{RealmState, SnapshotRestore, StateSnapshot};
-use arkret::{BlobRef, Did, Error, Event, EventId, RealmId, Result, crypto};
+use crate::protocol::auth::AuthSession;
+use crate::protocol::models::BlobMetadata;
+use crate::protocol::resolver::{RealmState, SnapshotRestore, StateSnapshot};
+use crate::protocol::{BlobRef, Did, Error, Event, EventId, RealmId, Result};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuditAction {
+    GroupCreated,
+    MemberJoined,
+    MemberRemoved,
+    GroupMerged,
+    EpochAdvanced,
+    KeyRotated,
+    KeyExported,
+    KeyBackedUp,
+    KeyRestored,
+    MessageValidated,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AuditEntry {
+    pub timestamp: DateTime<Utc>,
+    pub action: AuditAction,
+    pub actor: Option<Did>,
+    pub group_id: Option<String>,
+    pub detail: String,
+}
 
 pub trait StateSnapshotStore: Send + Sync {
     fn put_state_snapshot(&mut self, snapshot: StateSnapshot) -> Result<()>;
@@ -62,15 +85,16 @@ pub struct StoreEncryptionKey([u8; 32]);
 impl StoreEncryptionKey {
     /// Derive a key using repeated SHA-256 rounds.
     pub fn derive(passphrase: &str, salt: &[u8], rounds: u32) -> Self {
-        let mut key = arkret::canonical::sha256_bytes_from_slices(&[passphrase.as_bytes(), salt]);
+        let mut key =
+            crate::protocol::canonical::sha256_bytes_from_slices(&[passphrase.as_bytes(), salt]);
         for _ in 0..rounds.max(1) {
-            key = arkret::canonical::sha256_bytes_from_slices(&[&key, salt]);
+            key = crate::protocol::canonical::sha256_bytes_from_slices(&[&key, salt]);
         }
         Self(key)
     }
 
     pub fn seal(&self, bytes: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
-        crypto::seal(bytes, &self.0, aad)
+        crate::crypto_box::seal(bytes, &self.0, aad)
     }
 }
 
@@ -205,7 +229,7 @@ impl AccountSessionStore for MemoryPersistenceStore {
 
 impl BlobMetadataStore for MemoryPersistenceStore {
     fn put_blob_metadata(&mut self, metadata: BlobMetadata) -> Result<()> {
-        let digest = arkret::canonical::canonical_sha256(&metadata)?;
+        let digest = crate::protocol::canonical::canonical_sha256(&metadata)?;
         match self.blob_metadata.get(&metadata.blob_ref) {
             Some((existing_digest, _)) if existing_digest == &digest => Ok(()),
             Some(_) => Err(Error::IdempotencyConflict(metadata.blob_ref.to_string())),
@@ -262,7 +286,7 @@ where
         .cloned()
         .collect();
     // `arkret-state` returns `arkret_wire::WireError`; bridge into the SDK's
-    // `arkret_core::Error` via the `?` From conversion.
+    // `crate::protocol::Error` via the `?` From conversion.
     Ok(RealmState::restore_snapshot_or_replay(
         store.state_snapshot(realm_id).cloned(),
         realm_id.clone(),
@@ -332,15 +356,15 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use arkret::resolver::SnapshotRestoreSource;
-    use arkret::{
-        AuditAction, BLOB_SCHEMA, BlobRef, DeviceId, Did, EventId, Hlc, ObjectState, RealmId,
+    use crate::protocol::resolver::SnapshotRestoreSource;
+    use crate::protocol::{
+        BLOB_SCHEMA, BlobRef, DeviceId, Did, EventId, Hlc, ObjectState, RealmId,
     };
 
     fn morph_event(event_id: &str, title: &str) -> Event {
         Event {
             event_id: EventId::new(event_id).unwrap(),
-            kind: arkret_core::events::EventKind::MORPH_CREATE.into(),
+            kind: crate::protocol::events::EventKind::MORPH_CREATE.into(),
             realm_id: RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap(),
             actor_id: Did::new("did:webvh:z6mkfixture:alice.example.com").unwrap(),
             actor_seq: 1,
@@ -354,14 +378,14 @@ mod tests {
             seal_ref: None,
             auth_context: None,
             seal_basis: None,
-            requirements: arkret::EventRequirements::default(),
+            requirements: crate::protocol::EventRequirements::default(),
             redacts: None,
             payload: serde_json::from_value(json!({
                 "object": {
                     "id": "ak:morph:01904100-0000-7000-8000-b7a4e10c8c77",
-                    "schema": arkret::MORPH_SCHEMA,
+                    "schema": crate::protocol::MORPH_SCHEMA,
                     "realm_id": "ak:realm:01904100-0000-7000-8000-9b64700c6ee8",
-                    "schema_refs": [arkret::MORPH_SCHEMA],
+                    "schema_refs": [crate::protocol::MORPH_SCHEMA],
                     "morph_type": "task",
                     "metadata": {"title": title},
                     "stage": "draft",
@@ -413,9 +437,9 @@ mod tests {
         conflicting.payload = serde_json::from_value(json!({
             "object": {
                 "id": "ak:morph:01904100-0000-7000-8000-b7a4e10c8c77",
-                "schema": arkret::MORPH_SCHEMA,
+                "schema": crate::protocol::MORPH_SCHEMA,
                 "realm_id": "ak:realm:01904100-0000-7000-8000-9b64700c6ee8",
-                "schema_refs": [arkret::MORPH_SCHEMA],
+                "schema_refs": [crate::protocol::MORPH_SCHEMA],
                 "morph_type": "task",
                 "metadata": {"title": "Changed"},
                 "stage": "draft",

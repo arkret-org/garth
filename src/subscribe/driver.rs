@@ -1,7 +1,7 @@
 use std::future::Future;
 
+use crate::protocol::Result;
 use crate::sync_client::{AsyncSyncTransport, SyncLoop, SyncLoopControl, SyncLoopStep};
-use arkret_core::Result;
 
 use super::{ProjectedRunError, ProjectedRunResult, account_updates_to_events};
 use crate::{ClientProjector, CursorScope, DurableInboxStore, Executor};
@@ -81,7 +81,7 @@ where
                         .commit(
                             scope.clone(),
                             sync_loop.token().map(str::to_owned),
-                            account_updates_to_events(updates),
+                            account_updates_to_events(*updates),
                         )
                         .await?;
                 }
@@ -102,7 +102,7 @@ where
                     }
                 }
                 SyncLoopStep::Failed { error } => {
-                    return Err(arkret_core::Error::Protocol(error));
+                    return Err(crate::protocol::Error::Protocol(error));
                 }
                 SyncLoopStep::Backpressure { retry_after } => {
                     if crate::executor::wait_cancellable(&self.executor, retry_after, || {
@@ -146,7 +146,7 @@ where
                 .await
             {
                 SyncLoopStep::Updates(updates) => {
-                    let batch = account_updates_to_events(updates);
+                    let batch = account_updates_to_events(*updates);
                     if !batch.is_empty() {
                         projector
                             .project(batch)
@@ -170,9 +170,9 @@ where
                     }
                 }
                 SyncLoopStep::Failed { error } => {
-                    return Err(ProjectedRunError::Transport(arkret_core::Error::Protocol(
-                        error,
-                    )));
+                    return Err(ProjectedRunError::Transport(
+                        crate::protocol::Error::Protocol(error),
+                    ));
                 }
                 SyncLoopStep::Backpressure { retry_after } => {
                     if crate::executor::wait_cancellable(&self.executor, retry_after, || {
@@ -198,8 +198,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use arkret::Error;
-    use arkret_core::ErrorEnvelope;
+    use crate::protocol::Error;
+    use crate::protocol::ErrorEnvelope;
 
     use super::super::test_support::{RecordingExecutor, queued_transport, sync_response};
     use super::*;
@@ -214,7 +214,7 @@ mod tests {
         fn project(
             &self,
             batch: Vec<ClientEvent>,
-        ) -> impl Future<Output = arkret_core::Result<()>> + '_ {
+        ) -> impl Future<Output = crate::protocol::Result<()>> + '_ {
             let events = Arc::clone(&self.events);
             let control = self.control.clone();
             async move {

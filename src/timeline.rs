@@ -1153,7 +1153,7 @@ mod tests {
         Event {
             event_id: EventId::new(format!("ak:event:01904100-0000-7000-8000-{:012x}", index))
                 .unwrap(),
-            kind: arkret_core::events::EventKind::MORPH_CREATE.into(),
+            kind: crate::protocol::events::EventKind::MORPH_CREATE.into(),
             realm_id: realm_id.clone(),
             actor_id: Did::new("did:webvh:z6mkfixture:alice.example.com").unwrap(),
             actor_seq: index as u64,
@@ -1372,8 +1372,8 @@ mod tests {
 
         timeline.append_events(vec![message]).unwrap();
         timeline.apply_read_receipt(ReadReceipt {
-            receipt_type: arkret_core::READ_RECEIPT_TYPE.to_owned(),
-            schema: arkret_core::READ_RECEIPT_SCHEMA.to_owned(),
+            receipt_type: crate::protocol::READ_RECEIPT_TYPE.to_owned(),
+            schema: crate::protocol::READ_RECEIPT_SCHEMA.to_owned(),
             realm_id: realm_id.clone(),
             actor_id: actor.clone(),
             event_id: event_id.clone(),

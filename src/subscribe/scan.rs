@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use arkret_core::{Did, EventsQueryOrder, EventsQueryOutcome, RealmId, Result};
+use crate::protocol::{Did, EventsQueryOrder, EventsQueryOutcome, RealmId, Result};
 
 use super::{ProjectedRunError, ProjectedRunResult};
 use crate::{CursorScope, CursorStore, MaybeSend, MaybeSendSync, OpaqueCursor};
@@ -64,7 +64,7 @@ impl EventsScanTransport for arkret_http_client::Client {
                 request.limit,
             )
             .await
-            .map_err(arkret::Error::from)
+            .map_err(crate::protocol::Error::from)
         })
     }
 }

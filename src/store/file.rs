@@ -12,7 +12,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use arkret_core::{Error, EventId, Result};
+use crate::protocol::{Error, EventId, Result};
 use serde::{Deserialize, Serialize};
 
 use super::inbox::{bounded_delivery_error, bounded_pending_limit};
@@ -261,7 +261,7 @@ fn acquire_store_lock(path: &Path) -> Result<File> {
 }
 
 fn scope_key(scope: &CursorScope) -> String {
-    fn did(value: &Option<arkret_core::Did>) -> String {
+    fn did(value: &Option<crate::protocol::Did>) -> String {
         value
             .as_ref()
             .map(|d| d.as_str().to_owned())
@@ -573,7 +573,7 @@ impl MonotonicStampStore for FileStore {
 
 #[cfg(test)]
 mod tests {
-    use arkret_core::{
+    use crate::protocol::{
         DeviceId, Did, NotificationDelta, NotificationDeltaAction, NotificationId,
         NotificationType, RealmId,
     };
@@ -625,7 +625,7 @@ mod tests {
                     stamp_scope(),
                     StampFloorUpdate::Observe(crate::stamp::RemoteStamp {
                         actor_seq: Some(floor.actor_seq),
-                        hlc: Some(arkret_core::Hlc::new("01970e589d21-0007-a13f9c2e").unwrap()),
+                        hlc: Some(crate::protocol::Hlc::new("01970e589d21-0007-a13f9c2e").unwrap()),
                     }),
                 )
                 .await

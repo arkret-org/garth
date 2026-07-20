@@ -1,5 +1,5 @@
-use arkret::RealmState;
-use arkret_core::{Event, RealmId, Result};
+use crate::protocol::RealmState;
+use crate::protocol::{Event, RealmId, Result};
 
 mod sidecar;
 
@@ -29,7 +29,7 @@ impl ProjectionMount {
 
     pub fn apply_events(&mut self, events: &[Event]) -> Result<()> {
         // `arkret-state`'s reducer returns `arkret_wire::WireError`; bridge to
-        // `arkret_core::Error` via the `?` From conversion.
+        // `crate::protocol::Error` via the `?` From conversion.
         Ok(self.state.apply_events(events)?)
     }
 
@@ -50,7 +50,7 @@ impl RealmStateReducer for () {
 
 #[cfg(test)]
 mod tests {
-    use arkret_core::RealmId;
+    use crate::protocol::RealmId;
 
     use super::*;
 

@@ -389,5 +389,5 @@ pub struct ProcessedRealm {
     pub last_limited: bool,
     pub last_prev_cursor: Option<String>,
     pub limited_timeline_count: usize,
-    pub pending_gap: Option<arkret_core::sync::SyncGap>,
+    pub pending_gap: Option<crate::protocol::sync::SyncGap>,
 }

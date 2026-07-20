@@ -3,7 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use arkret_core::{
+use crate::protocol::{
     DeviceId, Did, Error, GrantId, Result, SessionGrantOutcome, SessionGrantRefreshOutcome,
     SessionGrantRefreshProof, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
 };
@@ -41,7 +41,7 @@ impl SessionGrantTransport for arkret_http_client::Client {
         Box::pin(async move {
             self.auth_issue_session_grant(&request)
                 .await
-                .map_err(arkret::Error::from)
+                .map_err(crate::protocol::Error::from)
         })
     }
 
@@ -52,7 +52,7 @@ impl SessionGrantTransport for arkret_http_client::Client {
         Box::pin(async move {
             self.auth_refresh_session_grant(&request)
                 .await
-                .map_err(arkret::Error::from)
+                .map_err(crate::protocol::Error::from)
         })
     }
 }
@@ -456,7 +456,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
-    use arkret_core::{
+    use crate::protocol::{
         Hash, RealmId, SessionGrantAgentScopeRequest, SessionGrantDpopBindingProof,
         SessionGrantProofKind, SessionGrantScopeDetails,
     };

@@ -102,7 +102,7 @@ impl Default for ExponentialBackoff {
 #[derive(Clone, Debug)]
 pub enum SyncLoopStep {
     /// A response was processed successfully.
-    Updates(SyncUpdates),
+    Updates(Box<SyncUpdates>),
     /// Sync failed; caller should wait for `retry_after` before trying again.
     Retry {
         retry_after: Duration,
@@ -527,7 +527,7 @@ impl SyncLoop {
                 {
                     self.token = None;
                 }
-                SyncLoopStep::Updates(updates)
+                SyncLoopStep::Updates(Box::new(updates))
             }
             Err(error) => SyncLoopStep::Failed {
                 error: error.to_string(),

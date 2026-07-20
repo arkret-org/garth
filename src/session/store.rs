@@ -1,4 +1,4 @@
-use arkret_core::{Error, Result};
+use crate::protocol::{Error, Result};
 use zeroize::Zeroizing;
 
 use super::SessionGrantState;
@@ -110,8 +110,8 @@ mod tests {
     use chrono::{Duration, Utc};
 
     use super::*;
+    use crate::protocol::{DeviceId, Did, GrantId};
     use crate::{MemorySecureKeyStore, SecureKeyStore};
-    use arkret_core::{DeviceId, Did, GrantId};
 
     fn state() -> SessionGrantState {
         SessionGrantState {

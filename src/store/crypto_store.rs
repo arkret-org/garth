@@ -3,7 +3,7 @@ use crate::crypto_state_store::{
     MlsEpochSecretRecord, MlsGroupStateRecord, MlsGroupStateSink, MlsRecoveryPlan,
     StoredDeviceVerification,
 };
-use arkret_core::{
+use crate::protocol::{
     DeviceId, Did, MlsCommitEnvelope, MlsKeyPackageRecord, MlsWelcomeEnvelope, Result,
 };
 use arkret_wire::WireError;
@@ -28,7 +28,7 @@ where
         if let Some(encoded) = secure_store.get_secret_bytes(&storage_key)? {
             let envelope =
                 serde_json::from_slice::<CryptoStoreBackupEnvelope>(&encoded).map_err(|error| {
-                    arkret_core::Error::Protocol(format!("decode MLS backup: {error}"))
+                    crate::protocol::Error::Protocol(format!("decode MLS backup: {error}"))
                 })?;
             inner.import_backup_envelope(&envelope)?;
         }
@@ -54,7 +54,7 @@ where
     fn persist(&self) -> Result<()> {
         let envelope = self.inner.export_backup_envelope(1)?;
         let encoded = Zeroizing::new(serde_json::to_vec(&envelope).map_err(|error| {
-            arkret_core::Error::Protocol(format!("encode MLS backup envelope: {error}"))
+            crate::protocol::Error::Protocol(format!("encode MLS backup envelope: {error}"))
         })?);
         self.secure_store.put_secret_sync(
             &self.storage_key,

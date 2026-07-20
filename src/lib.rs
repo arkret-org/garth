@@ -9,18 +9,85 @@
 // bounds and is not supported by all downstream toolchains we gate.
 #![allow(clippy::manual_async_fn)]
 
-// Protocol and behavior owners consumed by the migrated runtime modules.
-// These are compatibility names inside Garth while the remaining SDK-local
-// data helpers are moved to their semantic crates.
-pub use arkret::{
-    ACTOR_PROFILE_SCHEMA, AEAD_ALGORITHM, ActorKind, ActorProfile, ActorProfileId, ActorStatus,
-    AppletId, BlobRef, CallId, CallRecordingId, CallStatePayloadRecordingResult, Cursor, DeviceId,
-    Did, EncryptedEnvelope, Error, Event, EventId, EventRequirements, Hash, Hlc, MORPH_SCHEMA,
-    NonEmptyString, ObjectCreatePayload, ObjectPatchPayload, OperationType, Patch, RealmId,
-    RecordingCaptureKind, RecordingMode, RecordingStartPayload, Result, STRAND_SCHEMA,
-    STRAND_TRACK_NAME_SYNTHESIS, SpaceId, StateSnapshot, StrandId, StrandTrackConfig, Timeline,
+mod crypto_box;
+pub mod discovery;
+mod error;
+mod protocol;
+
+pub use arkret_auth::AuthManager;
+pub use arkret_canonical as canonical;
+pub use arkret_crypto as crypto;
+pub use arkret_models_collaboration::http_bodies::{EventsQueryOutcome, EventsSubscribeFrame};
+pub use arkret_models_collaboration::session_grant_bodies::{
+    SessionGrantOutcome, SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody,
+    SessionGrantRequestBody,
 };
-pub use arkret::{canonical, crypto, cursor, media, models, resolver, sync};
+pub use arkret_models_collaboration::sync_frames::account_subscribe::{
+    AccountSubscribeBatch, AccountSubscribeFrame, AccountSubscribeFrameKind, AccountSubscribeRealms,
+};
+pub use arkret_models_collaboration::sync_frames::account_sync::RealmSyncEntry;
+pub use arkret_models_collaboration::sync_frames::client_sync::SyncRequestBody;
+pub use arkret_state::resolver;
+pub use arkret_state::resolver::RealmState;
+pub use arkret_wire::GrantId;
+pub use arkret_wire::{MorphId, Proof};
+pub use discovery::{DirectoryService, RealmSearchEntry};
+pub use error::{Error, Result};
+pub use protocol::{
+    ACTOR_PROFILE_SCHEMA, ActorKind, ActorProfile, ActorProfileId, ActorStatus, AppletId, BlobRef,
+    CallId, CallRecordingId, CallStatePayloadRecordingResult, Cursor, DeviceId, Did,
+    EncryptedEnvelope, Event, EventId, EventRequirements, Hash, Hlc, MORPH_SCHEMA, NonEmptyString,
+    ObjectCreatePayload, ObjectPatchPayload, OperationType, Patch, RealmId, RecordingCaptureKind,
+    RecordingMode, RecordingStartPayload, STRAND_SCHEMA, STRAND_TRACK_NAME_SYNTHESIS, SpaceId,
+    StateSnapshot, StrandId, StrandTrackConfig, Timeline,
+};
+
+pub mod events {
+    pub use arkret_wire::EventKind;
+}
+
+pub const AEAD_ALGORITHM: &str = "xchacha20poly1305-hkdf-sha256-v1";
+
+pub mod cursor {
+    pub use arkret_hlc::*;
+}
+
+pub mod media;
+
+#[allow(ambiguous_glob_reexports, unused_imports)]
+pub mod models {
+    pub use arkret_event_draft::*;
+    pub use arkret_models_collaboration::events_payloads::{
+        account_misc::*, agent::*, call::*, capability_circle_consent_contact::*,
+        content_block_poll::*, device_identity::*, ephemeral::*, event_wire::*,
+        list_message_mimi_mls::*, mention::*, moderation::*, moderation_morph_misc::*,
+        morph_message::*, object_create::*, preview_realm_reaction::*, redaction::*,
+        strand_history_join::*, strand_ops::*,
+    };
+    pub use arkret_models_collaboration::governance::{
+        accountability::*, agent_artifacts::*, agent_participation::*, audit::*, authorization::*,
+        circle::*, delivery_binding::*, erasure::*, grant_constraint::*, handle_claim::*,
+        history_visibility::*, invite_addressing::*, member_delivery_binding_candidate::*,
+        membership_invite::*, moderation::*, moderation_appeal::*, moderation_queue::*,
+        operation_wire::*, peer_contact::*, plaintext_visibility::*, policy_check::*,
+        realm_governance::*, realm_lifecycle::*, resource_selector::*, third_party_invite::*,
+    };
+    pub use arkret_models_collaboration::object_lifecycle::*;
+    pub use arkret_models_collaboration::objects::{
+        account_status::*, blob::*, direct_conversation::*, interop::*, media::*, mimi::*,
+        object_facets::*, productivity::*, profiles::*, queries::*, query_projection::*,
+        read_receipts::*, realm::*, realm_alias::*, relation::*, space::*, strand::*, view::*,
+    };
+    pub use arkret_models_identity::*;
+    pub use arkret_wire::*;
+}
+
+pub mod sync {
+    pub use arkret_models_collaboration::sync_frames::{
+        account_subscribe::*, account_sync::*, client_sync::*, snapshot::*, stream_trace::*,
+    };
+    pub use arkret_models_discovery::PresenceStatus;
+}
 
 pub mod account;
 pub mod account_handoff;
@@ -99,9 +166,10 @@ pub use realm::{
 };
 pub use receipts::*;
 pub use runtime_store::{
-    AccountSessionStore, AuditLogStore, BlobMetadataStore, EventCacheStore as EventBodyCacheStore,
-    MemoryPersistenceStore, StateSnapshotStore, StoreCache, StoreEncryptionKey, StoredAccountData,
-    rebuild_realm_state_from_events, restore_realm_state_from_persistence,
+    AccountSessionStore, AuditAction, AuditEntry, AuditLogStore, BlobMetadataStore,
+    EventCacheStore as EventBodyCacheStore, MemoryPersistenceStore, StateSnapshotStore, StoreCache,
+    StoreEncryptionKey, StoredAccountData, rebuild_realm_state_from_events,
+    restore_realm_state_from_persistence,
 };
 pub use session::{
     AgentKeyProofLogin, AuthenticatedTransportFactory, DidProofLogin, GRANT_ROTATION_SKEW_SECS,

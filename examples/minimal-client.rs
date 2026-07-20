@@ -1,11 +1,6 @@
-use arkret::{AccountSubscribeBatch, SyncRequestBody};
-use arkret_core::{
-    DeviceId, Did, EventsQueryOutcome, EventsSubscribeFrame, GrantId, RealmId, Result,
-    SessionGrantOutcome, SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody,
-    SessionGrantRequestBody,
-};
 use chrono::{Duration, Utc};
 use garth::subscribe::scan::BoxScanFuture;
+use garth::{AccountSubscribeBatch, SyncRequestBody};
 use garth::{
     ArkretClient, AuthenticatedTransportFactory, BoxRealmStreamFuture, ClientEvent,
     ClientProjector, EventsScanRequest, EventsScanTransport, MemorySecureKeyStore, MemoryStore,
@@ -14,6 +9,11 @@ use garth::{
     SessionRefreshOptions, SessionTransportProvider, SyncLoopControl, TransportProvider,
 };
 use garth::{AsyncSyncTransport, BoxSyncFuture};
+use garth::{
+    DeviceId, Did, EventsQueryOutcome, EventsSubscribeFrame, GrantId, RealmId, Result,
+    SessionGrantOutcome, SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody,
+    SessionGrantRequestBody,
+};
 
 struct Projector;
 
@@ -81,7 +81,7 @@ impl AsyncSyncTransport for ReferenceTransport {
         _request: SyncRequestBody,
     ) -> BoxSyncFuture<'a, AccountSubscribeBatch> {
         Box::pin(async {
-            Err(arkret_core::Error::Protocol(
+            Err(garth::Error::Protocol(
                 "reference transport performs no network IO".to_owned(),
             ))
         })
@@ -97,7 +97,7 @@ impl SessionGrantTransport for ReferenceSessionTransport {
         _request: SessionGrantRequestBody,
     ) -> garth::session::BoxSessionFuture<'a, SessionGrantOutcome> {
         Box::pin(async {
-            Err(arkret_core::Error::Protocol(
+            Err(garth::Error::Protocol(
                 "reference transport performs no login IO".to_owned(),
             ))
         })
@@ -108,7 +108,7 @@ impl SessionGrantTransport for ReferenceSessionTransport {
         _request: SessionGrantRefreshRequestBody,
     ) -> garth::session::BoxSessionFuture<'a, SessionGrantRefreshOutcome> {
         Box::pin(async {
-            Err(arkret_core::Error::Protocol(
+            Err(garth::Error::Protocol(
                 "reference transport performs no refresh IO".to_owned(),
             ))
         })

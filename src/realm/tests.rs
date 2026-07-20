@@ -91,7 +91,10 @@ fn realm_creates_morph_operation() {
 
     assert_eq!(op.operation_type, OperationType::Create);
     assert_eq!(op.realm_id.as_str(), realm_id.as_str());
-    assert_eq!(op.object_type, arkret_core::events::EventKind::MORPH_CREATE);
+    assert_eq!(
+        op.object_type,
+        crate::protocol::events::EventKind::MORPH_CREATE
+    );
     assert_eq!(op.payload["object"]["morph_type"], "task");
     assert_eq!(op.payload["object"]["metadata"]["title"], "Test task");
     assert!(
@@ -145,7 +148,7 @@ fn realm_creates_strand_operations_and_reads_default_view_relations() {
     assert_eq!(create.operation_type, OperationType::Create);
     assert_eq!(
         create.object_type,
-        arkret_core::events::EventKind::STRAND_CREATE
+        crate::protocol::events::EventKind::STRAND_CREATE
     );
     assert!(create.payload["object"]["tracks"]["synthesis"].is_object());
 
@@ -154,7 +157,7 @@ fn realm_creates_strand_operations_and_reads_default_view_relations() {
             &realm_id,
             vec![
                 event(
-                    arkret_core::events::EventKind::STRAND_CREATE,
+                    crate::protocol::events::EventKind::STRAND_CREATE,
                     1,
                     &realm_id,
                     json!({
@@ -170,7 +173,7 @@ fn realm_creates_strand_operations_and_reads_default_view_relations() {
                     }),
                 ),
                 event(
-                    arkret_core::events::EventKind::RELATION_CREATE,
+                    crate::protocol::events::EventKind::RELATION_CREATE,
                     2,
                     &realm_id,
                     json!({
@@ -203,7 +206,10 @@ fn realm_strand_move_operation_uses_target_space_id() {
 
     assert_eq!(op.operation_type, OperationType::Update);
     assert_eq!(op.realm_id.as_str(), realm_id.as_str());
-    assert_eq!(op.object_type, arkret_core::events::EventKind::STRAND_MOVE);
+    assert_eq!(
+        op.object_type,
+        crate::protocol::events::EventKind::STRAND_MOVE
+    );
     assert_eq!(
         op.payload["target_space_id"],
         "ak:space:01904100-0000-7000-8000-000000000030"
@@ -222,7 +228,7 @@ fn realm_queries_searches_and_aggregates_morphs() {
             &realm_id,
             vec![
                 event(
-                    arkret_core::events::EventKind::MORPH_CREATE,
+                    crate::protocol::events::EventKind::MORPH_CREATE,
                     1,
                     &realm_id,
                     json!({
@@ -242,7 +248,7 @@ fn realm_queries_searches_and_aggregates_morphs() {
                     }),
                 ),
                 event(
-                    arkret_core::events::EventKind::MORPH_CREATE,
+                    crate::protocol::events::EventKind::MORPH_CREATE,
                     2,
                     &realm_id,
                     json!({
@@ -302,37 +308,37 @@ fn realm_traverses_relation_ref_graph_paths_and_cycles() {
             &realm_id,
             vec![
                 event(
-                    arkret_core::events::EventKind::MORPH_CREATE,
+                    crate::protocol::events::EventKind::MORPH_CREATE,
                     1,
                     &realm_id,
                     morph_create_payload(&MorphId::new(a).unwrap(), "task", "A"),
                 ),
                 event(
-                    arkret_core::events::EventKind::MORPH_CREATE,
+                    crate::protocol::events::EventKind::MORPH_CREATE,
                     2,
                     &realm_id,
                     morph_create_payload(&MorphId::new(b).unwrap(), "task", "B"),
                 ),
                 event(
-                    arkret_core::events::EventKind::MORPH_CREATE,
+                    crate::protocol::events::EventKind::MORPH_CREATE,
                     3,
                     &realm_id,
                     morph_create_payload(&MorphId::new(c).unwrap(), "task", "C"),
                 ),
                 event(
-                    arkret_core::events::EventKind::RELATION_CREATE,
+                    crate::protocol::events::EventKind::RELATION_CREATE,
                     4,
                     &realm_id,
                     json!({"kind": "depends_on", "from_ref": a, "to_ref": b}),
                 ),
                 event(
-                    arkret_core::events::EventKind::RELATION_CREATE,
+                    crate::protocol::events::EventKind::RELATION_CREATE,
                     5,
                     &realm_id,
                     json!({"kind": "depends_on", "from_ref": b, "to_ref": c}),
                 ),
                 event(
-                    arkret_core::events::EventKind::RELATION_CREATE,
+                    crate::protocol::events::EventKind::RELATION_CREATE,
                     6,
                     &realm_id,
                     json!({"kind": "depends_on", "from_ref": c, "to_ref": a}),
@@ -370,7 +376,7 @@ fn realm_tracks_morph_versions_compares_and_rolls_back() {
             &realm_id,
             vec![
                 event(
-                    arkret_core::events::EventKind::MORPH_CREATE,
+                    crate::protocol::events::EventKind::MORPH_CREATE,
                     1,
                     &realm_id,
                     json!({
@@ -389,7 +395,7 @@ fn realm_tracks_morph_versions_compares_and_rolls_back() {
                     }),
                 ),
                 event(
-                    arkret_core::events::EventKind::MORPH_UPDATE,
+                    crate::protocol::events::EventKind::MORPH_UPDATE,
                     2,
                     &realm_id,
                     json!({

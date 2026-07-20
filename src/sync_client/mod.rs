@@ -17,13 +17,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 #[cfg(test)]
-use arkret_core::AccountSubscribeFrame;
-use arkret_core::sync::{
+use crate::protocol::AccountSubscribeFrame;
+use crate::protocol::sync::{
     LimitedTimelineState, MembershipBucket, RealmSubscription, RealmUpdate, SubscriptionConfig,
     SyncFilter, SyncRequestBody, SyncUpdates, TimelineFilter, TimelineOrderKey, ToDeviceAck,
     ToDeviceAckStatus, WaitForFrontier,
 };
-use arkret_core::{
+use crate::protocol::{
     AccountStreamInterrupt, AccountSubscribeBatch, AccountSubscribeDeviceListChanges,
     AccountSubscribeFrameKind, AccountSubscribeRealmSummary, DeviceId, DeviceMessageEnvelope, Did,
     EphemeralEnvelope, Error, Event, EventId, NotificationDelta, NotificationDeltaAction,

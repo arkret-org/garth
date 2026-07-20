@@ -84,7 +84,7 @@ impl Realm {
         let mut operation = Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::SPACE_CREATE,
+            crate::protocol::events::EventKind::SPACE_CREATE,
             ObjectCreatePayload::new(object).to_value()?,
         );
         operation.object_id = Some(space_id.as_str().to_owned());
@@ -154,7 +154,7 @@ impl Realm {
         let mut operation = Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::SPACE_UPDATE,
+            crate::protocol::events::EventKind::SPACE_UPDATE,
             payload_value(&payload, "space patch payload")?,
         );
         operation.operation_type = OperationType::Update;
@@ -181,7 +181,7 @@ impl Realm {
         let mut operation = Operation::create(
             operation_id,
             self.realm_id()?,
-            arkret_core::events::EventKind::SPACE_PARENT,
+            crate::protocol::events::EventKind::SPACE_PARENT,
             payload_value(&payload, "space parent payload")?,
         );
         operation.operation_type = OperationType::Update;
@@ -193,7 +193,7 @@ impl Realm {
     pub fn archive_space_operation(&self, space_id: SpaceId) -> Result<Operation> {
         self.space_lifecycle_operation(
             space_id,
-            arkret_core::events::EventKind::SPACE_ARCHIVE,
+            crate::protocol::events::EventKind::SPACE_ARCHIVE,
             OperationType::Update,
         )
     }
@@ -203,7 +203,7 @@ impl Realm {
     pub fn restore_space_operation(&self, space_id: SpaceId) -> Result<Operation> {
         self.space_lifecycle_operation(
             space_id,
-            arkret_core::events::EventKind::SPACE_RESTORE,
+            crate::protocol::events::EventKind::SPACE_RESTORE,
             OperationType::Update,
         )
     }
@@ -212,7 +212,7 @@ impl Realm {
     pub fn tombstone_space_operation(&self, space_id: SpaceId) -> Result<Operation> {
         self.space_lifecycle_operation(
             space_id,
-            arkret_core::events::EventKind::SPACE_TOMBSTONE,
+            crate::protocol::events::EventKind::SPACE_TOMBSTONE,
             OperationType::Delete,
         )
     }
@@ -228,7 +228,7 @@ impl Realm {
             .ok_or_else(|| crate::Error::Protocol("no session".to_owned()))?;
 
         let operation_id = OperationId::new(generate_id("ak:operation:"))?;
-        let payload = if kind == arkret_core::events::EventKind::SPACE_TOMBSTONE {
+        let payload = if kind == crate::protocol::events::EventKind::SPACE_TOMBSTONE {
             payload_value(
                 &SpaceObjectTombstonePayload {
                     space_id: space_id.clone(),

@@ -1,8 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
-use arkret::{canonical, *};
+use garth::cursor::Cursor as SyncCursor;
 use garth::{BaseClient, Realm, SessionMeta, StoreCache};
+use garth::{canonical, *};
 use serde_json::json;
 
 fn did(name: &str) -> Did {
@@ -75,7 +76,7 @@ fn end_to_end_auth_session_and_realm_query() {
     base.process_events(
         &realm_id,
         vec![event(
-            arkret_core::events::EventKind::MORPH_CREATE,
+            garth::events::EventKind::MORPH_CREATE,
             1,
             &realm_id,
             json!({
@@ -125,8 +126,8 @@ fn protocol_conformance_vectors_remain_stable() {
         "sha256:43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
     );
 
-    let cursor = Cursor::new().unwrap().encode().unwrap();
-    let decoded = Cursor::decode(&cursor).unwrap();
+    let cursor = SyncCursor::new().unwrap().encode().unwrap();
+    let decoded = SyncCursor::decode(&cursor).unwrap();
     assert_eq!(decoded.v, "1");
     assert!(!decoded.h.is_empty());
 }
