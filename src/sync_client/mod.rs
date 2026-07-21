@@ -25,10 +25,10 @@ use crate::protocol::sync::{
 };
 use crate::protocol::{
     AccountStreamInterrupt, AccountSubscribeBatch, AccountSubscribeDeviceListChanges,
-    AccountSubscribeFrameKind, AccountSubscribeRealmSummary, DeviceId, DeviceMessageEnvelope, Did,
-    EphemeralEnvelope, Error, Event, EventId, NotificationDelta, NotificationDeltaAction,
-    PresenceStatus, RealmId, Result, Timeline, aggregate_presence_states, canonical,
-    validate_last_active_at, validate_status_message,
+    AccountSubscribeFrameKind, AccountSubscribeRealmSummary, CollaborationRealmRole, DeviceId,
+    DeviceMessageEnvelope, Did, EphemeralEnvelope, Error, Event, EventId, NotificationDelta,
+    NotificationDeltaAction, PresenceStatus, RealmId, Result, Timeline, aggregate_presence_states,
+    canonical, validate_last_active_at, validate_status_message,
 };
 
 mod loop_control;

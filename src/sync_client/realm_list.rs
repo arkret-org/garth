@@ -198,6 +198,10 @@ pub struct RealmListEntry {
     /// Optional category.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+    /// Strong role projected from the registered Realm profile and
+    /// discriminator. Never inferred from display metadata or member count.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub collaboration_role: Option<CollaborationRealmRole>,
 }
 
 impl RealmListEntry {
@@ -213,6 +217,7 @@ impl RealmListEntry {
             highlight_count: 0,
             favorite: false,
             category: None,
+            collaboration_role: None,
         }
     }
 }
@@ -351,6 +356,7 @@ impl RealmListService {
             .map(|state| &state.realm_metadata)
         {
             entry.name = metadata.title.clone();
+            entry.collaboration_role = metadata.collaboration_role;
         }
         if let Some(unread) = &update.entry.unread_notifications {
             entry.unread_count = unread.notification_count.unwrap_or(0);

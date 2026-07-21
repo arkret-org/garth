@@ -830,3 +830,30 @@ fn realm_list_sorts_filters_and_reports_incremental_changes() {
     assert_eq!(restored.entries().len(), 2);
     assert_eq!(restored.entries()[0].realm_id, s2);
 }
+
+#[test]
+fn realm_list_folds_typed_direct_conversation_role_from_window_start() {
+    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-0000000000d1").unwrap();
+    let update: RealmUpdate = serde_json::from_value(json!({
+        "realm_id": realm_id,
+        "entry": {
+            "state_at_window_start": {
+                "actor_profiles": {},
+                "realm_metadata": {
+                    "title": "Direct conversation",
+                    "collaboration_role": "direct_conversation"
+                },
+                "e2ee_epoch": null
+            }
+        }
+    }))
+    .unwrap();
+    let mut list = RealmListService::new();
+
+    list.apply_space_update(&update, MembershipBucket::Joined);
+
+    assert_eq!(
+        list.entries()[0].collaboration_role,
+        Some(CollaborationRealmRole::DirectConversation)
+    );
+}
