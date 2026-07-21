@@ -25,6 +25,7 @@ pub struct UserProfile {
     /// Monotonic profile version.
     pub version: u64,
     /// Last update time.
+    #[serde(with = "arkret_canonical::serde_helpers::canonical_timestamp")]
     pub updated_at: DateTime<Utc>,
 }
 
@@ -76,6 +77,7 @@ pub struct SovereignDeploymentPolicy {
     pub external_device_approval: ExternalDeviceApprovalMode,
     #[serde(default)]
     pub data_classification: BTreeMap<String, DataClassification>,
+    #[serde(with = "arkret_canonical::serde_helpers::canonical_timestamp")]
     pub created_at: DateTime<Utc>,
 }
 
@@ -127,6 +129,7 @@ pub struct RealmExportManifest {
     pub source_service_id: Did,
     pub event_count: u64,
     pub state_digest: String,
+    #[serde(with = "arkret_canonical::serde_helpers::canonical_timestamp")]
     pub created_at: DateTime<Utc>,
 }
 
@@ -143,6 +146,7 @@ pub struct ServiceReplacementPlan {
     pub old_service_id: Did,
     pub new_service_id: Did,
     pub reason: String,
+    #[serde(with = "arkret_canonical::serde_helpers::canonical_timestamp")]
     pub effective_at: DateTime<Utc>,
     #[serde(default)]
     pub preserve_service_history: bool,
@@ -205,8 +209,12 @@ pub struct TspTrustBinding {
     pub tsp_endpoint: String,
     pub trust_anchor: String,
     pub binding_proof: String,
+    #[serde(with = "arkret_canonical::serde_helpers::canonical_timestamp")]
     pub created_at: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        with = "arkret_canonical::serde_helpers::optional_canonical_timestamp"
+    )]
     pub expires_at: Option<DateTime<Utc>>,
 }
 
@@ -242,8 +250,12 @@ pub struct PairwiseControlMessage {
     pub kind: PairwiseControlMessageKind,
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub payload: Value,
+    #[serde(with = "arkret_canonical::serde_helpers::canonical_timestamp")]
     pub created_at: DateTime<Utc>,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(
+        skip_serializing_if = "Option::is_none",
+        with = "arkret_canonical::serde_helpers::optional_canonical_timestamp"
+    )]
     pub expires_at: Option<DateTime<Utc>>,
 }
 

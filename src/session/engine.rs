@@ -520,7 +520,7 @@ mod tests {
     }
 
     fn now() -> DateTime<Utc> {
-        "2026-07-08T00:00:00Z".parse().unwrap()
+        "2026-07-08T00:00:00.000Z".parse().unwrap()
     }
 
     fn did() -> Did {

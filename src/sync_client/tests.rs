@@ -51,7 +51,7 @@ fn approval_notifications(notification_id: &str, expires_at: &str) -> Notificati
                     approval_request_id:
                         "agent_runtime_approval:01964137-0000-7000-8000-000000000001".to_owned(),
                     agent_id: Did::new("did:webvh:z6mkfixture:agent.example").unwrap(),
-                    requested_at: DateTime::parse_from_rfc3339("2026-07-13T10:00:00Z")
+                    requested_at: DateTime::parse_from_rfc3339("2026-07-13T10:00:00.000Z")
                         .unwrap()
                         .with_timezone(&Utc),
                     expires_at: DateTime::parse_from_rfc3339(expires_at)
@@ -409,7 +409,7 @@ fn processor_dispatches_all_update_categories() {
     let notification_id = "ak:notification:01964137-0000-7000-8000-000000000000";
     frame.notifications = Some(approval_notifications(
         notification_id,
-        "2026-07-13T10:15:00Z",
+        "2026-07-13T10:15:00.000Z",
     ));
 
     let mut processor = SyncResponseProcessor::new();
@@ -649,19 +649,20 @@ fn processor_applies_notification_add_update_and_remove_deltas() {
     let mut add = sync_response("s-add");
     delta_mut(&mut add).notifications = Some(approval_notifications(
         notification_id,
-        "2026-07-13T10:15:00Z",
+        "2026-07-13T10:15:00.000Z",
     ));
     processor.process(add).unwrap();
     assert!(processor.notification(notification_id).is_some());
 
     let mut update = sync_response("s-update");
-    let mut update_notifications = approval_notifications(notification_id, "2026-07-13T10:20:00Z");
+    let mut update_notifications =
+        approval_notifications(notification_id, "2026-07-13T10:20:00.000Z");
     update_notifications.items[0].action = NotificationDeltaAction::Update;
     delta_mut(&mut update).notifications = Some(update_notifications);
     processor.process(update).unwrap();
     let serialized =
         serde_json::to_value(processor.notification(notification_id).unwrap()).unwrap();
-    assert_eq!(serialized["data"]["expires_at"], "2026-07-13T10:20:00Z");
+    assert_eq!(serialized["data"]["expires_at"], "2026-07-13T10:20:00.000Z");
 
     let mut remove = sync_response("s-remove");
     delta_mut(&mut remove).notifications = Some(NotificationContainer {

@@ -51,7 +51,7 @@ mod tests {
     use super::*;
 
     fn now() -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339("2026-07-08T00:00:00Z")
+        DateTime::parse_from_rfc3339("2026-07-08T00:00:00.000Z")
             .unwrap()
             .with_timezone(&Utc)
     }

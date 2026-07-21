@@ -185,7 +185,7 @@ mod tests {
     }
 
     fn expires_at() -> DateTime<Utc> {
-        "2026-07-08T10:05:00Z".parse().unwrap()
+        "2026-07-08T10:05:00.000Z".parse().unwrap()
     }
 
     fn proof_fields() -> SessionProofFields {

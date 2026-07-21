@@ -43,6 +43,7 @@ pub struct AccountDataSetPayload {
     /// Tombstone marker — when true the entry is logically deleted.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub tombstone: bool,
+    #[serde(with = "arkret_canonical::serde_helpers::canonical_timestamp")]
     pub updated_at: DateTime<Utc>,
     /// CAS guard against expected per-key state digest.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -70,8 +71,12 @@ pub struct AccountBlocklistPayloadEntry {
     pub applies_to: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reason_code: Option<NonEmptyString>,
+    #[serde(with = "arkret_canonical::serde_helpers::canonical_timestamp")]
     pub created_at: DateTime<Utc>,
-    #[serde(default)]
+    #[serde(
+        default,
+        with = "arkret_canonical::serde_helpers::optional_canonical_timestamp"
+    )]
     pub expires_at: Option<DateTime<Utc>>,
 }
 
@@ -112,9 +117,16 @@ pub struct RealmRemark {
     pub verified_title_at_save: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub verified_owning_organizations_at_save: Vec<String>,
-    #[serde(default = "Utc::now")]
+    #[serde(
+        default = "Utc::now",
+        with = "arkret_canonical::serde_helpers::canonical_timestamp"
+    )]
     pub saved_at: DateTime<Utc>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        with = "arkret_canonical::serde_helpers::optional_canonical_timestamp"
+    )]
     pub updated_at: Option<DateTime<Utc>>,
 }
 

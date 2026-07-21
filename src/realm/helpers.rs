@@ -127,10 +127,12 @@ pub(super) fn morph_field_value(morph: &Morph, field: &str) -> Option<Value> {
             .state
             .as_ref()
             .and_then(|state| serde_json::to_value(state).ok()),
-        "created_at" => Some(json!(morph.created_at.to_rfc3339())),
+        "created_at" => Some(json!(arkret_canonical::format_timestamp_canonical(
+            morph.created_at
+        ))),
         "updated_at" => morph
             .updated_at
-            .map(|updated_at| json!(updated_at.to_rfc3339())),
+            .map(|updated_at| json!(arkret_canonical::format_timestamp_canonical(updated_at))),
         "content" => morph
             .content
             .as_ref()
