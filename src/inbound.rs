@@ -46,3 +46,57 @@ impl InboundDecoder {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use arkret_wire::{Did, Hlc, RealmId};
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    fn event(kind: &str, payload: Value) -> Event {
+        Event::new(
+            kind,
+            RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap(),
+            Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            1,
+            Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
+            payload,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn decoder_parses_message_create_payload() {
+        let inbound = InboundDecoder::new()
+            .try_decode_event(event(
+                arkret_wire::EventKind::MESSAGE_CREATE,
+                json!({
+                    "strand_id": "ak:strand:01904100-0000-7000-8000-000000000002",
+                    "track_name": "discussion",
+                    "content": {"kind": "ak.content.text", "body": "hello"}
+                }),
+            ))
+            .unwrap();
+
+        match inbound {
+            DecodedInbound::Message(message) => match message.payload {
+                MessageEventPayload::Create(payload) => {
+                    assert_eq!(payload.track_name, "discussion")
+                }
+                other => panic!("unexpected payload: {other:?}"),
+            },
+            other => panic!("unexpected decode result: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn decoder_rejects_invalid_standard_message_payload() {
+        let result = InboundDecoder::new().try_decode_event(event(
+            arkret_wire::EventKind::MESSAGE_CREATE,
+            json!({"content": {"kind": "ak.content.text", "body": "missing strand"}}),
+        ));
+
+        assert!(result.is_err());
+    }
+}
