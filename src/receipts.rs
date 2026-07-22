@@ -16,8 +16,8 @@
 //! if a discussion needs an independent boundary.
 
 pub use arkret_models_collaboration::objects::read_receipts::{
-    ReadCursor, ReadCursorPosition, ReadReceipt, ReadReceiptDisclosure, ReadReceiptPolicy,
-    ReadReceiptPolicyChildViolation, ReadReceiptVisibility,
+    ReadCursor, ReadCursorPosition, ReadReceipt, ReadReceiptComplianceOptIn, ReadReceiptDisclosure,
+    ReadReceiptPolicy, ReadReceiptPolicyChildViolation, ReadReceiptVisibility,
 };
 use arkret_wire::ReadCursorId;
 pub use arkret_wire::{
@@ -548,7 +548,11 @@ mod tests {
         assert_eq!(policy.disclosure, ReadReceiptDisclosure::Optional);
         assert_eq!(policy.visibility, ReadReceiptVisibility::Members);
         assert!(policy.scope_overrides_allowed);
-        assert!(!policy.allow_child_privacy_tightening_against_required);
+        assert!(
+            !policy
+                .receipt_compliance_opt_in
+                .child_privacy_tightening_against_required
+        );
     }
 
     #[test]
@@ -577,7 +581,7 @@ mod tests {
 
         let looser_visibility = ReadReceiptPolicy {
             visibility: ReadReceiptVisibility::Public,
-            ..child
+            ..child.clone()
         };
         assert_eq!(
             parent.validate_child_policy(&looser_visibility),
@@ -586,7 +590,7 @@ mod tests {
 
         let looser_disclosure = ReadReceiptPolicy {
             disclosure: ReadReceiptDisclosure::Required,
-            ..child
+            ..child.clone()
         };
         assert_eq!(
             parent.validate_child_policy(&looser_disclosure),
@@ -612,8 +616,11 @@ mod tests {
         );
 
         let parent_with_escape = ReadReceiptPolicy {
-            allow_child_privacy_tightening_against_required: true,
-            ..parent
+            receipt_compliance_opt_in: ReadReceiptComplianceOptIn {
+                child_privacy_tightening_against_required: true,
+                ..Default::default()
+            },
+            ..parent.clone()
         };
         parent_with_escape.validate_child_policy(&child).unwrap();
     }
@@ -631,7 +638,7 @@ mod tests {
         let child = ReadReceiptPolicy {
             disclosure: ReadReceiptDisclosure::Disabled,
             visibility: ReadReceiptVisibility::Members,
-            ..parent
+            ..parent.clone()
         };
         assert_eq!(
             parent.validate_child_policy(&child),
