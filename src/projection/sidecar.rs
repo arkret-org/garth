@@ -354,12 +354,16 @@ mod tests {
     fn merged_timeline_anchors_echo_and_dedupes_by_event_id() {
         let anchor = event_id("34");
         let private_id = event_id("35");
-        let projection = projection(anchor.clone(), private_id.clone());
+        let response_id = event_id("36");
+        let mut projection = projection(anchor.clone(), private_id.clone());
+        projection.user_facing_response_event_ids = vec![response_id.clone()];
+        projection.status = AgentSidecarExchangeStatus::Complete;
         let shared = vec![event("34", "01970e589d21-0001-a13f9c2e", "shared")];
         let private = vec![
             event("35", "01970e589d21-0002-a13f9c2e", "echo"),
             event("35", "01970e589d21-0002-a13f9c2e", "duplicate"),
-            event("36", "01970e589d21-0003-a13f9c2e", "native"),
+            event("36", "01970e589d21-0003-a13f9c2e", "response"),
+            event("37", "01970e589d21-0004-a13f9c2e", "internal"),
         ];
 
         let merged = merge_sidecar_timeline(
@@ -368,7 +372,7 @@ mod tests {
             &shared,
             &private,
         );
-        assert_eq!(merged.len(), 3);
+        assert_eq!(merged.len(), 4);
         assert_eq!(merged[0].event_id, anchor);
         assert_eq!(merged[1].event_id, private_id);
         assert_eq!(
@@ -377,8 +381,14 @@ mod tests {
         );
         assert_eq!(
             merged[2].provenance,
+            AgentSidecarProjectionProvenance::PrivateEcho
+        );
+        assert_eq!(merged[2].event_id, response_id);
+        assert_eq!(
+            merged[3].provenance,
             AgentSidecarProjectionProvenance::Private
         );
+        assert_eq!(merged[3].event_id, event_id("37"));
 
         let private_only = merge_sidecar_timeline(
             [&projection],
@@ -386,7 +396,7 @@ mod tests {
             &shared,
             &private,
         );
-        assert_eq!(private_only.len(), 2);
+        assert_eq!(private_only.len(), 3);
         assert!(
             private_only
                 .iter()
