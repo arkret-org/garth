@@ -614,7 +614,6 @@ mod tests {
         let path = temp_path("stamp-floor-roundtrip");
         let _ = std::fs::remove_file(&path);
         let floor = StampFloor {
-            actor_seq: 42,
             hlc_physical_ms: 0x01970e589d21,
             hlc_logical: 7,
         };
@@ -624,7 +623,6 @@ mod tests {
                 .advance_floor(
                     stamp_scope(),
                     StampFloorUpdate::Observe(crate::stamp::RemoteStamp {
-                        actor_seq: Some(floor.actor_seq),
                         hlc: Some(crate::protocol::Hlc::new("01970e589d21-0007-a13f9c2e").unwrap()),
                     }),
                 )

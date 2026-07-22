@@ -81,16 +81,43 @@ impl OutboundPostAcceptHook for NoopPostAcceptHook {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum OutboundSubmitOutcome {
-    Accepted { event_id: EventId },
-    Duplicate { event_id: EventId },
-    Rejected { reason: String },
-    RetryAfter { delay: Duration, reason: String },
-    Terminal { reason: String },
+    /// Host prepared and signed the queued unsigned intent. Persist it before
+    /// beginning transport.
+    Prepared {
+        content: Value,
+    },
+    Accepted {
+        event_id: EventId,
+    },
+    Duplicate {
+        event_id: EventId,
+    },
+    Rejected {
+        reason: String,
+    },
+    RetryAfter {
+        delay: Duration,
+        reason: String,
+    },
+    Terminal {
+        reason: String,
+    },
+    /// The service explicitly rejected the old authoring basis without
+    /// accepting the Event. Persist this new immutable attempt before any
+    /// network send is allowed.
+    Supersede {
+        transaction_id: String,
+        realm_id: RealmId,
+        kind: SendQueueItemKind,
+        content: Value,
+        depends_on: Vec<String>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum OutboundEngineOutcome {
     Idle,
+    Prepared(SendQueueItem),
     Accepted(SendQueueItem),
     Duplicate(SendQueueItem),
     Rejected {
@@ -108,6 +135,10 @@ pub enum OutboundEngineOutcome {
     Quarantined {
         item: SendQueueItem,
         reason: String,
+    },
+    Superseded {
+        previous: SendQueueItem,
+        replacement: SendQueueItem,
     },
 }
 
@@ -132,6 +163,24 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         self.store
             .mutate_outbound(move |queue| {
                 queue.enqueue(transaction_id, realm_id, kind, content, depends_on)
+            })
+            .await
+    }
+
+    pub async fn enqueue_scoped(
+        &self,
+        transaction_id: Option<String>,
+        realm_id: RealmId,
+        actor_id: crate::Did,
+        kind: SendQueueItemKind,
+        content: Value,
+        depends_on: Vec<String>,
+    ) -> Result<SendQueueItem> {
+        self.store
+            .mutate_outbound(move |queue| {
+                let item = queue.enqueue(transaction_id, realm_id, kind, content, depends_on)?;
+                queue.set_actor_scope(&item.transaction_id, actor_id)?;
+                owned_item(queue, &item.transaction_id)
             })
             .await
     }
@@ -241,6 +290,13 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
             }
         };
         match submit_outcome {
+            OutboundSubmitOutcome::Prepared { content } => {
+                let item = self
+                    .store
+                    .mutate_outbound(move |queue| queue.mark_prepared(&transaction_id, content))
+                    .await?;
+                Ok(OutboundEngineOutcome::Prepared(item))
+            }
             OutboundSubmitOutcome::Accepted { event_id } => {
                 if let Err(error) = hook.post_accept(&hook_item, &event_id, false).await {
                     return self
@@ -276,6 +332,32 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
                 item: self.cancel(transaction_id).await?,
                 reason,
             }),
+            OutboundSubmitOutcome::Supersede {
+                transaction_id: replacement_id,
+                realm_id,
+                kind,
+                content,
+                depends_on,
+            } => {
+                let previous_id = transaction_id;
+                self.store
+                    .mutate_outbound(move |queue| {
+                        let previous = owned_item(queue, &previous_id)?;
+                        let replacement = queue.supersede(
+                            &previous_id,
+                            replacement_id,
+                            realm_id,
+                            kind,
+                            content,
+                            depends_on,
+                        )?;
+                        Ok(OutboundEngineOutcome::Superseded {
+                            previous,
+                            replacement,
+                        })
+                    })
+                    .await
+            }
         }
     }
 
@@ -482,6 +564,44 @@ mod tests {
             engine.snapshot().await.unwrap().items[0].remote_event_id,
             Some(event_id())
         );
+    }
+
+    #[tokio::test]
+    async fn unsigned_intent_is_prepared_and_persisted_before_transport() {
+        let engine = OutboundEngine::new(MemoryStore::new());
+        engine
+            .enqueue_scoped(
+                Some("local-operation-1".to_owned()),
+                realm_id(),
+                crate::Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+                SendQueueItemKind::Message,
+                serde_json::json!({"intent": "unsigned"}),
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+        let submitter = QueueSubmitter {
+            outcomes: Arc::new(Mutex::new(VecDeque::from([
+                OutboundSubmitOutcome::Prepared {
+                    content: serde_json::json!({"signed": "immutable-attempt"}),
+                },
+                OutboundSubmitOutcome::Accepted {
+                    event_id: event_id(),
+                },
+            ]))),
+        };
+
+        let prepared = engine.submit_next(&submitter, Utc::now()).await.unwrap();
+        assert!(matches!(prepared, OutboundEngineOutcome::Prepared(_)));
+        let snapshot = engine.snapshot().await.unwrap();
+        assert_eq!(snapshot.items[0].transaction_id, "local-operation-1");
+        assert_eq!(snapshot.items[0].content["signed"], "immutable-attempt");
+        assert!(!snapshot.items[0].canonical_payload_bytes.is_empty());
+
+        assert!(matches!(
+            engine.submit_next(&submitter, Utc::now()).await.unwrap(),
+            OutboundEngineOutcome::Accepted(_)
+        ));
     }
 
     #[tokio::test]

@@ -728,6 +728,109 @@ fn send_queue_is_idempotent_orders_dependencies_and_snapshots() {
 }
 
 #[test]
+fn send_queue_serializes_unsigned_intents_per_realm_actor_scope() {
+    let realm_a = RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap();
+    let realm_b = RealmId::new("ak:realm:01904100-0000-7000-8000-000000000002").unwrap();
+    let actor = Did::new("did:webvh:z6mkfixture:alice.example").unwrap();
+    let mut queue = SendQueue::new();
+
+    for (transaction_id, realm_id) in [
+        ("scope-a-1", realm_a.clone()),
+        ("scope-a-2", realm_a),
+        ("scope-b-1", realm_b),
+    ] {
+        let item = queue
+            .enqueue_message(
+                Some(transaction_id.to_owned()),
+                realm_id,
+                json!({"unsigned_intent": transaction_id}),
+            )
+            .unwrap();
+        queue
+            .set_actor_scope(&item.transaction_id, actor.clone())
+            .unwrap();
+    }
+
+    let ready = queue.ready_batch(Utc::now(), 10);
+    assert_eq!(
+        ready
+            .iter()
+            .map(|item| item.transaction_id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["scope-a-1", "scope-b-1"]
+    );
+
+    queue.mark_sending("scope-a-1").unwrap();
+    queue
+        .mark_sent(
+            "scope-a-1",
+            EventId::new("ak:event:01904100-0000-7000-8000-000000000001").unwrap(),
+        )
+        .unwrap();
+    assert!(
+        queue
+            .ready_batch(Utc::now(), 10)
+            .iter()
+            .any(|item| item.transaction_id == "scope-a-2")
+    );
+}
+
+#[test]
+fn send_queue_replays_exact_persisted_bytes_and_links_semantic_replacement() {
+    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap();
+    let actor = Did::new("did:webvh:z6mkfixture:alice.example").unwrap();
+    let mut queue = SendQueue::new();
+    let original = queue
+        .enqueue_message(
+            Some("attempt-1".to_owned()),
+            realm_id.clone(),
+            json!({"signed": "immutable-body-1"}),
+        )
+        .unwrap();
+    queue
+        .set_actor_scope(&original.transaction_id, actor.clone())
+        .unwrap();
+    let exact_bytes = queue
+        .get("attempt-1")
+        .unwrap()
+        .canonical_payload_bytes
+        .clone();
+
+    queue.mark_sending("attempt-1").unwrap();
+    queue
+        .mark_failed("attempt-1", std::time::Duration::ZERO)
+        .unwrap();
+    let restored = SendQueue::from_snapshot(queue.snapshot()).unwrap();
+    assert_eq!(
+        restored.get("attempt-1").unwrap().canonical_payload_bytes,
+        exact_bytes
+    );
+
+    let mut queue = restored;
+    let replacement = queue
+        .supersede(
+            "attempt-1",
+            "attempt-2".to_owned(),
+            realm_id,
+            SendQueueItemKind::Message,
+            json!({"signed": "immutable-body-2"}),
+            Vec::new(),
+        )
+        .unwrap();
+    assert_eq!(
+        queue.get("attempt-1").unwrap().status,
+        SendQueueStatus::Superseded
+    );
+    assert_eq!(replacement.local_operation_id, "attempt-1");
+    assert_eq!(
+        replacement.supersedes_transaction_id.as_deref(),
+        Some("attempt-1")
+    );
+    assert_eq!(replacement.actor_id, Some(actor));
+    assert_ne!(replacement.canonical_payload_bytes, exact_bytes);
+}
+
+#[test]
 fn send_queue_cancels_dependent_edit_redaction_and_reaction() {
     let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
     let event_id = EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap();

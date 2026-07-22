@@ -1,7 +1,7 @@
 use super::*;
 
 /// Outbound send queue operation kind.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SendQueueItemKind {
     /// New message/event.
@@ -47,6 +47,9 @@ pub enum SendQueueStatus {
     Failed,
     /// User or dependency cancellation.
     Cancelled,
+    /// Replaced by a newly-authored immutable attempt for the same local
+    /// operation after an explicit `accepted=false` CAS response.
+    Superseded,
 }
 
 /// Local echo projected before a queued item is sent.
@@ -73,14 +76,26 @@ pub struct LocalEcho {
 pub struct SendQueueItem {
     /// Idempotent transaction ID.
     pub transaction_id: String,
+    /// Stable host operation identity shared by semantic replacements.
+    pub local_operation_id: String,
+    /// Previous immutable attempt replaced by this item, when any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub supersedes_transaction_id: Option<String>,
     /// Target Realm.
     pub realm_id: RealmId,
+    /// Actor partition for ordinary Event authoring. Generic non-Event queue
+    /// items leave this unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor_id: Option<Did>,
     /// Operation kind.
     pub kind: SendQueueItemKind,
     /// Event content.
     pub content: Value,
     /// Canonical hash of the idempotent payload.
     pub payload_digest: String,
+    /// Exact canonical payload persisted for deterministic transport replay.
+    #[serde(default)]
+    pub canonical_payload_bytes: Vec<u8>,
     /// Other transaction IDs that must be sent first.
     #[serde(default)]
     pub depends_on: Vec<String>,
@@ -197,6 +212,27 @@ impl SendQueue {
         )
     }
 
+    /// Attach the authoring partition to a newly enqueued item.
+    pub fn set_actor_scope(&mut self, transaction_id: &str, actor_id: Did) -> Result<()> {
+        self.item_mut(transaction_id)?.actor_id = Some(actor_id);
+        Ok(())
+    }
+
+    /// Atomically replace an unsigned intent payload with its first immutable
+    /// signed attempt before any transport call.
+    pub fn mark_prepared(&mut self, transaction_id: &str, content: Value) -> Result<SendQueueItem> {
+        let item = self.item_mut(transaction_id)?;
+        item.content = content;
+        item.canonical_payload_bytes = canonical::canonical_json_bytes(&item.content)?;
+        item.payload_digest =
+            queue_payload_digest(&item.realm_id, &item.kind, &item.content, &item.depends_on)?;
+        item.status = SendQueueStatus::Queued;
+        item.next_retry_at = None;
+        item.updated_at = Utc::now();
+        item.local_echo.status = item.status;
+        Ok(item.clone())
+    }
+
     /// Enqueue a message edit.
     pub fn enqueue_edit(
         &mut self,
@@ -292,12 +328,17 @@ impl SendQueue {
             created_at: now,
             status: SendQueueStatus::Queued,
         };
+        let canonical_payload_bytes = canonical::canonical_json_bytes(&content)?;
         let item = SendQueueItem {
             transaction_id: transaction_id.clone(),
+            local_operation_id: transaction_id.clone(),
+            supersedes_transaction_id: None,
             realm_id,
+            actor_id: None,
             kind,
             content,
             payload_digest,
+            canonical_payload_bytes,
             depends_on,
             status: SendQueueStatus::Queued,
             attempts: 0,
@@ -311,6 +352,53 @@ impl SendQueue {
         self.order.push_back(transaction_id.clone());
         self.items.insert(transaction_id, item.clone());
         Ok(item)
+    }
+
+    /// Atomically retire one immutable attempt and enqueue its semantic
+    /// replacement. The new transaction must carry a distinct identity and
+    /// payload, while retaining the stable local operation identity.
+    pub fn supersede(
+        &mut self,
+        transaction_id: &str,
+        replacement_transaction_id: String,
+        realm_id: RealmId,
+        kind: SendQueueItemKind,
+        content: Value,
+        depends_on: Vec<String>,
+    ) -> Result<SendQueueItem> {
+        let local_operation_id = self
+            .get(transaction_id)
+            .ok_or_else(|| Error::Protocol("superseded queue item disappeared".to_owned()))?
+            .local_operation_id
+            .clone();
+        let actor_id = self
+            .get(transaction_id)
+            .and_then(|item| item.actor_id.clone());
+        let previous_sequence = self
+            .get(transaction_id)
+            .map(|item| item.sequence)
+            .ok_or_else(|| Error::Protocol("superseded queue item disappeared".to_owned()))?;
+        {
+            let previous = self.item_mut(transaction_id)?;
+            previous.status = SendQueueStatus::Superseded;
+            previous.next_retry_at = None;
+            previous.updated_at = Utc::now();
+            previous.local_echo.status = previous.status;
+        }
+        self.enqueue(
+            Some(replacement_transaction_id.clone()),
+            realm_id,
+            kind,
+            content,
+            depends_on,
+        )?;
+        let item = self.item_mut(&replacement_transaction_id)?;
+        item.local_operation_id = local_operation_id;
+        item.actor_id = actor_id;
+        item.supersedes_transaction_id = Some(transaction_id.to_owned());
+        item.sequence = previous_sequence;
+        item.local_echo.item_id = format!("local:{}", item.local_operation_id);
+        Ok(item.clone())
     }
 
     /// Items ready to send now, in dependency-safe order.
@@ -352,7 +440,9 @@ impl SendQueue {
             .filter(|item| {
                 matches!(
                     item.status,
-                    SendQueueStatus::Sent | SendQueueStatus::Cancelled
+                    SendQueueStatus::Sent
+                        | SendQueueStatus::Cancelled
+                        | SendQueueStatus::Superseded
                 ) && item.updated_at < cutoff
             })
             .map(|item| item.transaction_id.clone())
@@ -440,6 +530,22 @@ impl SendQueue {
             .next_retry_at
             .map(|retry_at| retry_at > now)
             .unwrap_or(false)
+        {
+            return false;
+        }
+        if let Some(actor_id) = &item.actor_id
+            && self.items.values().any(|earlier| {
+                earlier.transaction_id != item.transaction_id
+                    && earlier.realm_id == item.realm_id
+                    && earlier.actor_id.as_ref() == Some(actor_id)
+                    && earlier.sequence < item.sequence
+                    && matches!(
+                        earlier.status,
+                        SendQueueStatus::Queued
+                            | SendQueueStatus::Sending
+                            | SendQueueStatus::Failed
+                    )
+            })
         {
             return false;
         }
