@@ -610,6 +610,7 @@ mod tests {
     fn agent_login() -> LoginKind {
         LoginKind::AgentKeyProof(AgentKeyProofLogin {
             principal_id: did(),
+            device_id: device_id(),
             requested_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
             agent_key_authorization_ref: "ak:event:01904100-0000-7000-8000-000000000002".to_owned(),
             agent_scope_request: SessionGrantAgentScopeRequest {

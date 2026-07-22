@@ -13,6 +13,7 @@ pub use crate::protocol::session_grant::SessionGrantProofFields as SessionProofF
 #[derive(Clone, Debug)]
 pub struct AgentKeyProofLogin {
     pub principal_id: Did,
+    pub device_id: DeviceId,
     pub requested_scope: Vec<String>,
     pub agent_key_authorization_ref: String,
     pub agent_scope_request: SessionGrantAgentScopeRequest,
@@ -29,6 +30,7 @@ impl AgentKeyProofLogin {
     pub fn into_session_grant_request(self) -> Result<SessionGrantRequestBody> {
         Ok(agent_key_proof_session_grant_request(
             self.principal_id,
+            self.device_id,
             self.requested_scope,
             self.agent_key_authorization_ref,
             self.agent_scope_request,
@@ -285,6 +287,7 @@ mod tests {
     fn agent_key_proof_login_builds_bound_request() {
         let request = LoginKind::AgentKeyProof(AgentKeyProofLogin {
             principal_id: did(),
+            device_id: device_id(),
             requested_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
             agent_key_authorization_ref: "ak:event:01904100-0000-7000-8000-000000000002".to_owned(),
             agent_scope_request: SessionGrantAgentScopeRequest {
@@ -315,6 +318,7 @@ mod tests {
             request.agent_key_authorization_ref.as_deref(),
             Some("ak:event:01904100-0000-7000-8000-000000000002")
         );
+        assert_eq!(request.device_id, Some(device_id()));
         assert_eq!(
             request.dpop_binding_proof.as_ref().unwrap().proof_jwt,
             "dpop-proof"
