@@ -41,10 +41,15 @@ impl SidecarProjectionFold {
     pub fn apply_exchange(&mut self, value: AgentSidecarExchangeProjection) -> Result<bool> {
         value.validate()?;
         let key = value.exchange_id.to_string();
-        let should_replace = self
-            .exchanges
-            .get(&key)
-            .is_none_or(|current| value.updated_hlc.to_string() > current.updated_hlc.to_string());
+        let should_replace = self.exchanges.get(&key).is_none_or(|current| {
+            (
+                value.updated_hlc.to_string(),
+                value.client_order_key.as_str(),
+            ) > (
+                current.updated_hlc.to_string(),
+                current.client_order_key.as_str(),
+            )
+        });
         if should_replace {
             self.exchanges.insert(key, value);
         }
@@ -115,13 +120,13 @@ pub struct SidecarTimelineItem<T> {
 struct EchoOrder {
     anchor: Option<String>,
     source_hlc: String,
-    client_order_key: String,
     exchange_id: String,
 }
 
 /// Deterministically merge one Track's shared timeline with the controller's
 /// private Sidecar timeline. Source-routed events are inserted immediately
-/// after their shared frontier anchor; missing anchors fall back to HLC order.
+/// after their shared frontier anchor; echoes with an unsynchronized anchor
+/// remain pending until that anchor is present.
 /// Event-id dedupe guarantees a private Event never renders once as native
 /// content and again as an account-data echo.
 pub fn merge_sidecar_timeline<'a, T: Clone>(
@@ -147,7 +152,6 @@ pub fn merge_sidecar_timeline<'a, T: Clone>(
                 .as_ref()
                 .map(ToString::to_string),
             source_hlc: exchange.source_hlc.to_string(),
-            client_order_key: exchange.client_order_key.to_string(),
             exchange_id: exchange.exchange_id.to_string(),
         };
         for event_id in std::iter::once(&exchange.private_request_event_id)
@@ -180,12 +184,14 @@ pub fn merge_sidecar_timeline<'a, T: Clone>(
     let mut anchored = BTreeMap::<String, Vec<&SidecarTimelineEvent<T>>>::new();
     let mut chronological = Vec::new();
     for event in private_events {
-        match echo_order
-            .get(event.event_id.as_str())
-            .and_then(|order| order.anchor.as_ref())
-            .filter(|anchor| shared_ids.contains(*anchor))
-        {
-            Some(anchor) => anchored.entry(anchor.clone()).or_default().push(event),
+        match echo_order.get(event.event_id.as_str()) {
+            Some(order) => match order.anchor.as_ref() {
+                Some(anchor) if shared_ids.contains(anchor) => {
+                    anchored.entry(anchor.clone()).or_default().push(event);
+                }
+                Some(_) => {}
+                None => chronological.push(event),
+            },
             None => chronological.push(event),
         }
     }
@@ -195,13 +201,11 @@ pub fn merge_sidecar_timeline<'a, T: Clone>(
             let right_order = &echo_order[right.event_id.as_str()];
             (
                 &left_order.source_hlc,
-                &left_order.client_order_key,
                 &left_order.exchange_id,
                 left.event_id.as_str(),
             )
                 .cmp(&(
                     &right_order.source_hlc,
-                    &right_order.client_order_key,
                     &right_order.exchange_id,
                     right.event_id.as_str(),
                 ))
@@ -340,7 +344,7 @@ mod tests {
             participating_agent_ids: Vec::new(),
             private_request_event_id: private_event,
             user_facing_response_event_ids: Vec::new(),
-            status: AgentSidecarExchangeStatus::Complete,
+            status: AgentSidecarExchangeStatus::Delivered,
             failure_code: None,
             updated_hlc: Hlc::new("01970e589d21-0002-a13f9c2e").unwrap(),
         }
@@ -387,6 +391,83 @@ mod tests {
             private_only
                 .iter()
                 .all(|item| { item.provenance == AgentSidecarProjectionProvenance::Private })
+        );
+    }
+
+    #[test]
+    fn merged_timeline_holds_echo_until_its_anchor_arrives() {
+        let missing_anchor = event_id("34");
+        let private_id = event_id("35");
+        let projection = projection(missing_anchor, private_id.clone());
+        let private = vec![
+            event("35", "01970e589d21-0002-a13f9c2e", "echo"),
+            event("36", "01970e589d21-0003-a13f9c2e", "native"),
+        ];
+
+        let merged = merge_sidecar_timeline(
+            [&projection],
+            AgentSidecarDisplayMode::ContextMerged,
+            &[],
+            &private,
+        );
+        assert_eq!(merged.len(), 1);
+        assert_eq!(merged[0].event_id, event_id("36"));
+
+        let private_only = merge_sidecar_timeline(
+            [&projection],
+            AgentSidecarDisplayMode::SidecarOnly,
+            &[],
+            &private,
+        );
+        assert_eq!(private_only.len(), 2);
+        assert_eq!(private_only[0].event_id, private_id);
+    }
+
+    #[test]
+    fn exchange_fold_uses_client_order_key_to_break_equal_hlc_ties() {
+        let mut fold = SidecarProjectionFold::default();
+        let mut initial = projection(event_id("34"), event_id("35"));
+        initial.client_order_key = NonEmptyString::new("device-1-b").unwrap();
+        assert!(fold.apply_exchange(initial.clone()).unwrap());
+
+        let mut lower = initial.clone();
+        lower.client_order_key = NonEmptyString::new("device-1-a").unwrap();
+        assert!(!fold.apply_exchange(lower).unwrap());
+
+        let mut higher = initial;
+        higher.client_order_key = NonEmptyString::new("device-1-c").unwrap();
+        assert!(fold.apply_exchange(higher).unwrap());
+    }
+
+    #[test]
+    fn same_anchor_echoes_order_by_source_hlc_then_exchange_id() {
+        let anchor = event_id("34");
+        let earlier_event = event_id("35");
+        let later_event = event_id("36");
+        let mut earlier = projection(anchor.clone(), earlier_event.clone());
+        earlier.exchange_id = AgentSidecarExchangeId::new("Aabcdefghijklmnopqrstu").unwrap();
+        earlier.client_order_key = NonEmptyString::new("z-device-order").unwrap();
+        let mut later = projection(anchor.clone(), later_event.clone());
+        later.exchange_id = AgentSidecarExchangeId::new("Babcdefghijklmnopqrstu").unwrap();
+        later.client_order_key = NonEmptyString::new("a-device-order").unwrap();
+        let shared = vec![event("34", "01970e589d21-0001-a13f9c2e", "shared")];
+        let private = vec![
+            event("36", "01970e589d21-0002-a13f9c2e", "later"),
+            event("35", "01970e589d21-0002-a13f9c2e", "earlier"),
+        ];
+
+        let merged = merge_sidecar_timeline(
+            [&later, &earlier],
+            AgentSidecarDisplayMode::ContextMerged,
+            &shared,
+            &private,
+        );
+        assert_eq!(
+            merged
+                .iter()
+                .map(|item| item.event_id.clone())
+                .collect::<Vec<_>>(),
+            vec![anchor, earlier_event, later_event]
         );
     }
 
