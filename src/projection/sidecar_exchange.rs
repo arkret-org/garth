@@ -66,6 +66,10 @@ pub struct SidecarExchangeControlFact {
     pub actor_id: Did,
     pub actor_seq: u64,
     pub event_digest: String,
+    /// Top-level `refs[role=after]` targets of the carrying Event. §7.2.3
+    /// requires an `after` ref for every `basis_event_ids` entry; controls
+    /// whose outer refs do not cover their plaintext basis are invalid.
+    pub refs_after: Vec<EventId>,
     pub control: AgentSidecarExchangeControl,
 }
 
@@ -189,11 +193,12 @@ pub fn fold_sidecar_exchange(
     let mut participating: BTreeSet<Did> = BTreeSet::new();
     let mut accepted_agent_facts: BTreeMap<String, &SidecarExchangeAgentFact> = BTreeMap::new();
     for fact in agent_facts {
+        // Checks 1–4: exchange-scoped fact, valid closed binding, verbatim
+        // exchange id, canonical request reference, non-controller actor.
         if fact.binding.validate().is_err()
             || fact.binding.exchange_id != *exchange_id
             || fact.binding.request_event_id.as_ref() != Some(&request.event_id)
             || fact.actor_id == scope.controller_id
-            || !fact.refs_after.contains(&request.event_id)
         {
             continue;
         }
@@ -212,11 +217,14 @@ pub fn fold_sidecar_exchange(
             continue;
         }
         // Checks 1–4 passed: the actor joins the bookkeeping union whether or
-        // not it is addressed. Echo eligibility additionally requires an
-        // addressed actor with role=user_facing_response.
+        // not it is addressed or causally well-formed (§7.2.2: participation
+        // accrues outside checks 5/6/7). Echo eligibility additionally
+        // requires an addressed actor (check 5), role=user_facing_response
+        // (check 6), and a top-level after-ref to the request (check 7).
         participating.insert(fact.actor_id.clone());
         if role == AgentSidecarExchangeBindingRole::UserFacingResponse
             && addressed.contains(&fact.actor_id)
+            && fact.refs_after.contains(&request.event_id)
         {
             responses.insert(fact.event_id.to_string(), fact);
         }
@@ -237,6 +245,7 @@ pub fn fold_sidecar_exchange(
     let mut coordinator = context.effective_coordinator()?.clone();
     let mut coordinator_assignment_event_id = request.event_id.clone();
     let mut terminal: Option<&SidecarExchangeControlFact> = None;
+    let mut terminal_closure: BTreeSet<String> = BTreeSet::new();
     let mut accepted_controls: Vec<&SidecarExchangeControlFact> = Vec::new();
     for (_, mut group) in control_groups {
         // Same-sequence siblings resolve to the bytewise-max event digest;
@@ -244,6 +253,46 @@ pub fn fold_sidecar_exchange(
         group.sort_by(|left, right| left.event_digest.as_bytes().cmp(right.event_digest.as_bytes()));
         let fact = group.pop().expect("group is non-empty");
         if terminal.is_some() {
+            continue;
+        }
+        // §7.2.3 basis validation (every control): the outer Event refs MUST
+        // carry role=after for every basis entry, every basis head must be a
+        // locally verified exchange fact, and the canonical request must be
+        // covered by the basis causal closure. Unknown basis heads mean the
+        // local history is incomplete: backfill, never guess. A basis that
+        // points at a locally known-but-rejected Event also surfaces here as
+        // unknown; callers keep the previous cache and treat the exchange as
+        // pending backfill rather than inventing a terminal state.
+        if fact
+            .control
+            .basis_event_ids
+            .iter()
+            .any(|basis| !fact.refs_after.contains(basis))
+        {
+            // Invalid producer output (missing after-ref): skip the control.
+            continue;
+        }
+        let known: BTreeSet<&str> = accepted_agent_facts
+            .keys()
+            .map(String::as_str)
+            .chain(std::iter::once(request.event_id.as_str()))
+            .chain(accepted_controls.iter().map(|fact| fact.event_id.as_str()))
+            .collect();
+        if fact
+            .control
+            .basis_event_ids
+            .iter()
+            .any(|basis| !known.contains(basis.as_str()))
+        {
+            return Err(Error::Protocol(
+                "Sidecar control basis is not covered by local verified history; backfill required"
+                    .to_owned(),
+            ));
+        }
+        let closure =
+            basis_causal_closure(fact, &accepted_agent_facts, &accepted_controls);
+        if !closure.contains(request.event_id.as_str()) {
+            // §7.2.3: the canonical request MUST be causally covered.
             continue;
         }
         match fact.control.action {
@@ -258,6 +307,9 @@ pub fn fold_sidecar_exchange(
                     .coordinator_agent_id
                     .as_ref()
                     .expect("validated");
+                // `next` must be addressed; authoring-time eligibility is a
+                // controller-authoring obligation the deterministic fold has
+                // no lifecycle input to re-check.
                 if *expected == coordinator && addressed.contains(next) {
                     coordinator = next.clone();
                     coordinator_assignment_event_id = fact.event_id.clone();
@@ -265,7 +317,27 @@ pub fn fold_sidecar_exchange(
                 }
             }
             _ => {
+                // §7.2.3: a terminal's response_event_ids must be EXACTLY the
+                // basis-covered validated user-facing response set. Any
+                // mismatch in either direction invalidates the control.
+                let listed: BTreeSet<&str> = fact
+                    .control
+                    .response_event_ids
+                    .as_ref()
+                    .expect("terminal controls carry response_event_ids")
+                    .iter()
+                    .map(EventId::as_str)
+                    .collect();
+                let covered_validated: BTreeSet<&str> = responses
+                    .keys()
+                    .map(String::as_str)
+                    .filter(|response_id| closure.contains(*response_id))
+                    .collect();
+                if listed != covered_validated {
+                    continue;
+                }
                 terminal = Some(fact);
+                terminal_closure = closure;
                 accepted_controls.push(fact);
             }
         }
@@ -277,21 +349,6 @@ pub fn fold_sidecar_exchange(
     let mut response_facts: Vec<&SidecarExchangeAgentFact>;
     match terminal {
         Some(terminal_fact) => {
-            let known: BTreeSet<&str> = accepted_agent_facts
-                .keys()
-                .map(String::as_str)
-                .chain(std::iter::once(request.event_id.as_str()))
-                .chain(accepted_controls.iter().map(|fact| fact.event_id.as_str()))
-                .collect();
-            for basis in &terminal_fact.control.basis_event_ids {
-                if !known.contains(basis.as_str()) {
-                    return Err(Error::Protocol(
-                        "Sidecar terminal control basis is not covered by local verified history; backfill required"
-                            .to_owned(),
-                    ));
-                }
-            }
-            let covered = basis_causal_closure(terminal_fact, &accepted_agent_facts);
             let terminal_responses = terminal_fact
                 .control
                 .response_event_ids
@@ -299,18 +356,15 @@ pub fn fold_sidecar_exchange(
                 .expect("terminal controls carry response_event_ids");
             response_facts = Vec::with_capacity(terminal_responses.len());
             for response_id in terminal_responses {
-                let Some(fact) = responses.get(response_id.as_str()) else {
-                    return Err(Error::Protocol(
-                        "Sidecar terminal control lists a response that did not pass local validation; backfill required"
-                            .to_owned(),
-                    ));
-                };
+                let fact = responses
+                    .get(response_id.as_str())
+                    .expect("exactness validated above");
                 response_facts.push(fact);
             }
             // Only Agent facts covered by the terminal basis closure fold;
             // concurrent or later Events stay private audit history.
             for (event_id, fact) in &accepted_agent_facts {
-                if covered.contains(event_id.as_str()) {
+                if terminal_closure.contains(event_id.as_str()) {
                     fold_ids.insert(fact.event_id.clone());
                 }
             }
@@ -394,15 +448,22 @@ pub fn fold_sidecar_exchange(
     Ok(Some(projection))
 }
 
-/// Walk the `refs[role=after]` edges of known exchange facts starting from
-/// the terminal control's basis heads. Every reached Event id is causally
-/// covered by that basis within the exchange fact set.
+/// Walk the causal edges of known exchange facts starting from a control's
+/// basis heads: Agent facts contribute their `refs[role=after]` targets and
+/// previously accepted controls contribute their own `basis_event_ids`.
+/// Every reached Event id is causally covered by that basis within the
+/// exchange fact set.
 fn basis_causal_closure(
-    terminal: &SidecarExchangeControlFact,
+    control: &SidecarExchangeControlFact,
     agent_facts: &BTreeMap<String, &SidecarExchangeAgentFact>,
+    accepted_controls: &[&SidecarExchangeControlFact],
 ) -> BTreeSet<String> {
+    let control_edges: BTreeMap<&str, &SidecarExchangeControlFact> = accepted_controls
+        .iter()
+        .map(|fact| (fact.event_id.as_str(), *fact))
+        .collect();
     let mut covered: BTreeSet<String> = BTreeSet::new();
-    let mut queue: Vec<String> = terminal
+    let mut queue: Vec<String> = control
         .control
         .basis_event_ids
         .iter()
@@ -414,6 +475,11 @@ fn basis_causal_closure(
         }
         if let Some(fact) = agent_facts.get(&event_id) {
             for parent in &fact.refs_after {
+                queue.push(parent.to_string());
+            }
+        }
+        if let Some(fact) = control_edges.get(event_id.as_str()) {
+            for parent in &fact.control.basis_event_ids {
                 queue.push(parent.to_string());
             }
         }
@@ -583,6 +649,7 @@ mod tests {
             actor_id: controller(),
             actor_seq,
             event_digest: digest.to_owned(),
+            refs_after: control.basis_event_ids.clone(),
             control,
         }
     }
@@ -896,6 +963,159 @@ mod tests {
             event_id(0x36),
             "assignment id becomes the accepted reassign control Event id"
         );
+    }
+
+    #[test]
+    fn participation_accrues_without_causal_ref_but_echo_does_not() {
+        let request = request_fact(0x34, 1, "aa");
+        let mut missing_ref = agent_fact(
+            0x35,
+            2,
+            agent_s(),
+            AgentSidecarExchangeBindingRole::UserFacingResponse,
+            0x34,
+        );
+        missing_ref.refs_after = Vec::new();
+        let projection = fold_sidecar_exchange(
+            &scope(),
+            &exchange_id(),
+            &[request],
+            &[missing_ref],
+            &[],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            projection.participating_agent_ids,
+            vec![agent_s()],
+            "checks 1-4 alone accrue participation (§7.2.2)"
+        );
+        assert!(
+            projection.user_facing_response_event_ids.is_empty(),
+            "echo additionally requires the causal request ref (check 7)"
+        );
+        assert_eq!(projection.status, AgentSidecarExchangeStatus::Delivered);
+    }
+
+    #[test]
+    fn terminal_response_set_must_exactly_match_basis_covered_responses() {
+        let request = request_fact(0x34, 1, "aa");
+        let response = agent_fact(
+            0x35,
+            2,
+            agent_s(),
+            AgentSidecarExchangeBindingRole::UserFacingResponse,
+            0x34,
+        );
+        // Empty close whose basis covers a validated response: invalid in
+        // §7.2.3 ("exactly the basis-covered validated set"), so the
+        // exchange stays responding instead of forking to failed.
+        let invalid_empty_close = control_fact(
+            0x36,
+            3,
+            "cc",
+            close_control(vec![event_id(0x35)], vec![]),
+        );
+        let projection = fold_sidecar_exchange(
+            &scope(),
+            &exchange_id(),
+            std::slice::from_ref(&request),
+            std::slice::from_ref(&response),
+            &[invalid_empty_close],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            projection.status,
+            AgentSidecarExchangeStatus::Responding,
+            "an inexact terminal response set invalidates the control"
+        );
+
+        // Listing a response outside the basis closure is equally invalid.
+        let uncovered_listing = control_fact(
+            0x37,
+            4,
+            "dd",
+            close_control(vec![event_id(0x34)], vec![event_id(0x35)]),
+        );
+        let projection = fold_sidecar_exchange(
+            &scope(),
+            &exchange_id(),
+            std::slice::from_ref(&request),
+            std::slice::from_ref(&response),
+            &[uncovered_listing],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(projection.status, AgentSidecarExchangeStatus::Responding);
+    }
+
+    #[test]
+    fn control_without_after_refs_for_basis_is_invalid() {
+        let request = request_fact(0x34, 1, "aa");
+        let mut missing_refs = control_fact(
+            0x36,
+            2,
+            "cc",
+            close_control(vec![event_id(0x34)], vec![]),
+        );
+        missing_refs.refs_after = Vec::new();
+        let projection = fold_sidecar_exchange(
+            &scope(),
+            &exchange_id(),
+            std::slice::from_ref(&request),
+            &[],
+            &[missing_refs],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            projection.status,
+            AgentSidecarExchangeStatus::Delivered,
+            "outer refs must carry role=after for every basis entry (§7.2.3)"
+        );
+    }
+
+    #[test]
+    fn basis_closure_traverses_accepted_control_edges() {
+        let request = request_fact(0x34, 1, "aa");
+        let response = agent_fact(
+            0x35,
+            2,
+            agent_s(),
+            AgentSidecarExchangeBindingRole::UserFacingResponse,
+            0x34,
+        );
+        // Intermediate reassign whose basis covers the response; the later
+        // terminal's basis only names the reassign control, so coverage of
+        // both the request and the response flows through the control edge.
+        let mut reassign = close_control(vec![event_id(0x35)], vec![]);
+        reassign.action = AgentSidecarExchangeControlAction::ReassignCoordinator;
+        reassign.response_event_ids = None;
+        reassign.expected_coordinator_agent_id = Some(agent_s());
+        reassign.coordinator_agent_id = Some(agent_t());
+        let reassign_fact = control_fact(0x36, 2, "cc", reassign);
+        let close = control_fact(
+            0x37,
+            3,
+            "dd",
+            close_control(vec![event_id(0x36)], vec![event_id(0x35)]),
+        );
+        let projection = fold_sidecar_exchange(
+            &scope(),
+            &exchange_id(),
+            std::slice::from_ref(&request),
+            std::slice::from_ref(&response),
+            &[reassign_fact, close],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(projection.status, AgentSidecarExchangeStatus::Complete);
+        assert_eq!(
+            projection.user_facing_response_event_ids,
+            vec![event_id(0x35)]
+        );
+        assert_eq!(projection.coordinator_agent_id, agent_t());
     }
 
     #[test]
