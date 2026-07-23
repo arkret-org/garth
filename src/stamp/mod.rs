@@ -76,7 +76,6 @@ impl StampFloor {
                 Ok(Self {
                     hlc_physical_ms,
                     hlc_logical,
-                    ..self
                 })
             }
             StampFloorUpdate::Observe(remote) => {

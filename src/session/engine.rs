@@ -716,7 +716,12 @@ mod tests {
     #[tokio::test]
     async fn engine_exchanges_all_login_kinds() {
         let transport = MockSessionTransport::with_issue_responses(vec![
-            Ok(issue_outcome("grant-agent", grant_id(10), did(), None)),
+            Ok(issue_outcome(
+                "grant-agent",
+                grant_id(10),
+                did(),
+                Some(device_id()),
+            )),
             Ok(issue_outcome(
                 "grant-holder",
                 grant_id(11),

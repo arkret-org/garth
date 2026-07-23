@@ -138,7 +138,7 @@ pub enum OutboundEngineOutcome {
     },
     Superseded {
         previous: SendQueueItem,
-        replacement: SendQueueItem,
+        replacement: Box<SendQueueItem>,
     },
 }
 
@@ -353,7 +353,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
                         )?;
                         Ok(OutboundEngineOutcome::Superseded {
                             previous,
-                            replacement,
+                            replacement: Box::new(replacement),
                         })
                     })
                     .await

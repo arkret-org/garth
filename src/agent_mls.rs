@@ -1174,7 +1174,7 @@ mod tests {
             .unwrap();
         let capabilities = record.capabilities.clone();
         let capabilities_digest = Hash::new(arkret_canonical::sha256_digest(
-            &canonical_json_bytes(&capabilities).unwrap(),
+            canonical_json_bytes(&capabilities).unwrap(),
         ))
         .unwrap();
         let claim_id = NonEmptyString::new("claim-agent-runtime-001").unwrap();
