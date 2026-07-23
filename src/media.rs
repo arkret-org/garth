@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::{AEAD_ALGORITHM, BlobRef, Did, Error, RealmId, Result};
+use crate::{BlobRef, Did, RealmId, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -42,14 +42,6 @@ pub struct Attachment {
     pub filename: String,
     pub media_type: String,
     pub size_bytes: u64,
-    pub encryption: Option<EncryptedAttachment>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct EncryptedAttachment {
-    pub algorithm: String,
-    pub key_sha256: String,
-    pub plaintext_sha256: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -118,72 +110,9 @@ impl MemoryBlobStore {
             filename,
             media_type,
             size_bytes: metadata.size_bytes,
-            encryption: None,
         };
         self.attachments
             .insert(attachment.id.clone(), attachment.clone());
         Ok(attachment)
-    }
-
-    pub fn upload_encrypted_attachment(
-        &mut self,
-        id: impl Into<String>,
-        filename: impl Into<String>,
-        media_type: impl Into<String>,
-        plaintext: impl AsRef<[u8]>,
-        key: &[u8],
-        uploaded_by: Did,
-    ) -> Result<Attachment> {
-        let plaintext = plaintext.as_ref();
-        let ciphertext = crate::crypto_box::seal(plaintext, key, b"arkret-media-attachment-v1")?;
-        let filename = filename.into();
-        let media_type = media_type.into();
-        let metadata = self.upload(
-            &ciphertext,
-            "application/octet-stream",
-            Some(filename.clone()),
-            uploaded_by,
-        )?;
-        let attachment = Attachment {
-            id: id.into(),
-            blob_ref: metadata.blob_ref,
-            filename,
-            media_type,
-            size_bytes: plaintext.len() as u64,
-            encryption: Some(EncryptedAttachment {
-                algorithm: AEAD_ALGORITHM.to_owned(),
-                key_sha256: arkret_canonical::sha256_hex(key),
-                plaintext_sha256: arkret_canonical::sha256_hex(plaintext),
-            }),
-        };
-        self.attachments
-            .insert(attachment.id.clone(), attachment.clone());
-        Ok(attachment)
-    }
-
-    pub fn download_decrypted_attachment(&self, id: &str, key: &[u8]) -> Result<Vec<u8>> {
-        let attachment = self
-            .attachments
-            .get(id)
-            .ok_or_else(|| Error::Protocol("attachment not found".to_owned()))?;
-        let encryption = attachment
-            .encryption
-            .as_ref()
-            .ok_or_else(|| Error::Protocol("attachment is not encrypted".to_owned()))?;
-        if encryption.algorithm != AEAD_ALGORITHM
-            || encryption.key_sha256 != arkret_canonical::sha256_hex(key)
-        {
-            return Err(Error::Protocol(
-                "attachment encryption metadata mismatch".to_owned(),
-            ));
-        }
-        let ciphertext = self
-            .download(&attachment.blob_ref)
-            .ok_or_else(|| Error::Protocol("attachment blob not found".to_owned()))?;
-        let plaintext = crate::crypto_box::open(ciphertext, key, b"arkret-media-attachment-v1")?;
-        if encryption.plaintext_sha256 != arkret_canonical::sha256_hex(&plaintext) {
-            return Err(Error::Protocol("attachment digest mismatch".to_owned()));
-        }
-        Ok(plaintext)
     }
 }

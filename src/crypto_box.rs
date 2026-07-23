@@ -36,27 +36,3 @@ pub(crate) fn seal(plaintext: &[u8], key_material: &[u8], aad: &[u8]) -> Result<
     envelope.extend_from_slice(&ciphertext);
     Ok(envelope)
 }
-
-pub(crate) fn open(envelope: &[u8], key_material: &[u8], aad: &[u8]) -> Result<Vec<u8>> {
-    if envelope.len() < NONCE_LEN {
-        return Err(Error::Crypto(
-            "AEAD envelope is shorter than its nonce".to_owned(),
-        ));
-    }
-    let (nonce, ciphertext) = envelope.split_at(NONCE_LEN);
-    let nonce: [u8; NONCE_LEN] = nonce
-        .try_into()
-        .map_err(|_| Error::Crypto("AEAD nonce has invalid length".to_owned()))?;
-    let key = derive_key(key_material, aad)?;
-    let cipher = XChaCha20Poly1305::new_from_slice(&key)
-        .map_err(|_| Error::Crypto("AEAD cipher initialization failed".to_owned()))?;
-    cipher
-        .decrypt(
-            &nonce.into(),
-            Payload {
-                msg: ciphertext,
-                aad,
-            },
-        )
-        .map_err(|_| Error::Crypto("AEAD decryption failed".to_owned()))
-}

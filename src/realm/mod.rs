@@ -501,22 +501,4 @@ impl Realm {
         self.base_client
             .upload_attachment(id, filename, media_type, bytes)
     }
-
-    /// Upload an encrypted attachment into the base client's local in-memory media store.
-    pub fn upload_encrypted_attachment(
-        &self,
-        id: impl Into<String>,
-        filename: impl Into<String>,
-        media_type: impl Into<String>,
-        plaintext: impl AsRef<[u8]>,
-        key: &[u8],
-    ) -> Result<Attachment> {
-        self.base_client
-            .upload_encrypted_attachment(id, filename, media_type, plaintext, key)
-    }
-
-    /// Download and decrypt an encrypted attachment from the base client.
-    pub fn download_decrypted_attachment(&self, id: &str, key: &[u8]) -> Result<Vec<u8>> {
-        self.base_client.download_decrypted_attachment(id, key)
-    }
 }

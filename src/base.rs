@@ -677,31 +677,6 @@ impl BaseClient {
             .write()
             .upload_attachment(id, filename, media_type, bytes, session.user_id)
     }
-
-    /// Upload an encrypted attachment into the local in-memory media store.
-    pub fn upload_encrypted_attachment(
-        &self,
-        id: impl Into<String>,
-        filename: impl Into<String>,
-        media_type: impl Into<String>,
-        plaintext: impl AsRef<[u8]>,
-        key: &[u8],
-    ) -> Result<Attachment> {
-        let session = self.whoami()?;
-        self.media.write().upload_encrypted_attachment(
-            id,
-            filename,
-            media_type,
-            plaintext,
-            key,
-            session.user_id,
-        )
-    }
-
-    /// Download and decrypt a local encrypted attachment.
-    pub fn download_decrypted_attachment(&self, id: &str, key: &[u8]) -> Result<Vec<u8>> {
-        self.media.read().download_decrypted_attachment(id, key)
-    }
 }
 
 impl Default for BaseClient {
@@ -902,14 +877,6 @@ mod tests {
             .upload_media(b"hello", "text/plain", Some("hello.txt".to_owned()))
             .unwrap();
         assert_eq!(client.download_media(&metadata.blob_ref).unwrap(), b"hello");
-
-        client
-            .upload_encrypted_attachment("a1", "secret.txt", "text/plain", b"secret", b"key")
-            .unwrap();
-        assert_eq!(
-            client.download_decrypted_attachment("a1", b"key").unwrap(),
-            b"secret"
-        );
     }
 
     #[test]

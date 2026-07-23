@@ -90,6 +90,7 @@ fn signed_presence(
             created_at: sent_at,
             domain: None,
             audience: None,
+            proof_purpose: None,
             jws: "header..signature".to_owned(),
         },
     )
@@ -725,6 +726,128 @@ fn send_queue_is_idempotent_orders_dependencies_and_snapshots() {
     let restored = SendQueue::from_snapshot(queue.snapshot()).unwrap();
     assert_eq!(restored.len(), 2);
     assert_eq!(restored.get("txn1").unwrap().status, SendQueueStatus::Sent);
+}
+
+#[test]
+fn send_queue_rejects_unbounded_active_work() {
+    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let mut queue = SendQueue::new();
+    for index in 0..MAX_SEND_QUEUE_ITEMS {
+        queue
+            .enqueue_message(
+                Some(format!("bounded-{index}")),
+                realm_id.clone(),
+                json!({"index": index}),
+            )
+            .unwrap();
+    }
+
+    let error = queue
+        .enqueue_message(
+            Some("over-limit".to_owned()),
+            realm_id,
+            json!({"over_limit": true}),
+        )
+        .unwrap_err();
+    assert!(error.to_string().contains("item limit"));
+    assert_eq!(queue.len(), MAX_SEND_QUEUE_ITEMS);
+}
+
+#[test]
+fn send_queue_prunes_unreferenced_terminal_work_at_capacity() {
+    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let mut queue = SendQueue::new();
+    for index in 0..MAX_SEND_QUEUE_ITEMS {
+        queue
+            .enqueue_message(
+                Some(format!("prunable-{index}")),
+                realm_id.clone(),
+                json!({"index": index}),
+            )
+            .unwrap();
+    }
+    queue
+        .mark_sent(
+            "prunable-0",
+            EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap(),
+        )
+        .unwrap();
+
+    queue
+        .enqueue_message(
+            Some("replacement".to_owned()),
+            realm_id,
+            json!({"replacement": true}),
+        )
+        .unwrap();
+    assert!(queue.get("prunable-0").is_none());
+    assert!(queue.get("replacement").is_some());
+    assert_eq!(queue.len(), MAX_SEND_QUEUE_ITEMS);
+}
+
+#[test]
+fn send_queue_preserves_transitive_dependencies_during_capacity_pruning() {
+    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let mut queue = SendQueue::new();
+    queue
+        .enqueue_message(
+            Some("dependency-root".to_owned()),
+            realm_id.clone(),
+            json!({"root": true}),
+        )
+        .unwrap();
+    queue
+        .enqueue(
+            Some("dependency-middle".to_owned()),
+            realm_id.clone(),
+            SendQueueItemKind::Message,
+            json!({"middle": true}),
+            vec!["dependency-root".to_owned()],
+        )
+        .unwrap();
+    queue
+        .enqueue(
+            Some("active-leaf".to_owned()),
+            realm_id.clone(),
+            SendQueueItemKind::Message,
+            json!({"leaf": true}),
+            vec!["dependency-middle".to_owned()],
+        )
+        .unwrap();
+    queue
+        .mark_sent(
+            "dependency-root",
+            EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap(),
+        )
+        .unwrap();
+    queue
+        .mark_sent(
+            "dependency-middle",
+            EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f438").unwrap(),
+        )
+        .unwrap();
+    for index in queue.len()..MAX_SEND_QUEUE_ITEMS {
+        queue
+            .enqueue_message(
+                Some(format!("capacity-{index}")),
+                realm_id.clone(),
+                json!({"index": index}),
+            )
+            .unwrap();
+    }
+
+    assert!(
+        queue
+            .enqueue_message(
+                Some("over-limit".to_owned()),
+                realm_id,
+                json!({"over_limit": true}),
+            )
+            .is_err()
+    );
+    assert!(queue.get("dependency-root").is_some());
+    assert!(queue.get("dependency-middle").is_some());
+    assert!(queue.get("active-leaf").is_some());
 }
 
 #[test]

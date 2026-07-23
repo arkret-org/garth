@@ -20,13 +20,15 @@ fn event(kind: &str, seq: u64, realm_id: &RealmId, content: Value) -> Event {
         actor_id: Did::new("did:webvh:z6mkfixture:alice.example.com").unwrap(),
         actor_seq: seq,
         created_at: Utc::now(),
-        hlc: Hlc::new(format!("01970e589d21-{seq:04x}-a13f9c2e")).unwrap(),
+        hlc: Some(Hlc::new(format!("01970e589d21-{seq:04x}-a13f9c2e")).unwrap()),
         prev_refs: vec![],
         effective_scope: None,
         refs: vec![],
+        causal_refs: vec![],
         preconditions: vec![],
         effects: vec![],
         seal_ref: None,
+        conflict_keys_digest: None,
         auth_context: None,
         seal_basis: None,
         requirements: EventRequirements::default(),
@@ -518,14 +520,6 @@ fn realm_provides_message_membership_and_media_convenience_helpers() {
         .upload_media(b"bytes", "text/plain", Some("note.txt".to_owned()))
         .unwrap();
     assert_eq!(realm.download_media(&media.blob_ref).unwrap(), b"bytes");
-
-    realm
-        .upload_encrypted_attachment("att1", "secret.txt", "text/plain", b"secret", b"key")
-        .unwrap();
-    assert_eq!(
-        realm.download_decrypted_attachment("att1", b"key").unwrap(),
-        b"secret"
-    );
 }
 
 #[test]
@@ -571,6 +565,7 @@ fn member_add_with_candidate_emits_routable_join_with_typed_binding() {
             created_at: "2026-05-19T00:00:00.000Z".parse().unwrap(),
             domain: None,
             audience: None,
+            proof_purpose: None,
             jws: "aaa.bbb.ccc".to_owned(),
         }],
         claim_digest: None,
@@ -630,6 +625,7 @@ fn member_add_with_candidate_rejects_audience_mismatch() {
             created_at: "2026-05-19T00:00:00.000Z".parse().unwrap(),
             domain: None,
             audience: None,
+            proof_purpose: None,
             jws: "aaa.bbb.ccc".to_owned(),
         }],
         claim_digest: None,

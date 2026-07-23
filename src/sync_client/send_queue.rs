@@ -137,6 +137,8 @@ pub struct SendQueue {
     next_sequence: u64,
 }
 
+pub const MAX_SEND_QUEUE_ITEMS: usize = 4_096;
+
 impl SendQueue {
     /// Create an empty queue.
     pub fn new() -> Self {
@@ -154,6 +156,11 @@ impl SendQueue {
     /// because submission is idempotent on `event_id` / transaction identity
     /// (operations-sync.md §events.submit dedup).
     pub fn from_snapshot(snapshot: SendQueueSnapshot) -> Result<Self> {
+        if snapshot.items.len() > MAX_SEND_QUEUE_ITEMS {
+            return Err(Error::Protocol(format!(
+                "send queue snapshot exceeds the {MAX_SEND_QUEUE_ITEMS} item limit"
+            )));
+        }
         let mut queue = Self {
             next_sequence: snapshot.next_sequence,
             ..Self::default()
@@ -314,6 +321,14 @@ impl SendQueue {
             }
             return Err(Error::IdempotencyConflict(transaction_id));
         }
+        if self.items.len() >= MAX_SEND_QUEUE_ITEMS {
+            self.prune_unreferenced_terminal();
+        }
+        if self.items.len() >= MAX_SEND_QUEUE_ITEMS {
+            return Err(Error::Protocol(format!(
+                "send queue reached the {MAX_SEND_QUEUE_ITEMS} item limit"
+            )));
+        }
 
         let now = Utc::now();
         let sequence = self.next_sequence;
@@ -456,6 +471,48 @@ impl SendQueue {
         let removable = candidates
             .difference(&protected)
             .cloned()
+            .collect::<BTreeSet<_>>();
+        for transaction_id in &removable {
+            self.items.remove(transaction_id);
+        }
+        self.order
+            .retain(|transaction_id| !removable.contains(transaction_id));
+        removable.len()
+    }
+
+    fn prune_unreferenced_terminal(&mut self) -> usize {
+        let mut pending = self
+            .items
+            .values()
+            .filter(|item| {
+                matches!(
+                    item.status,
+                    SendQueueStatus::Queued | SendQueueStatus::Sending | SendQueueStatus::Failed
+                )
+            })
+            .flat_map(|item| item.depends_on.iter().cloned())
+            .collect::<Vec<_>>();
+        let mut protected = BTreeSet::new();
+        while let Some(transaction_id) = pending.pop() {
+            if !protected.insert(transaction_id.clone()) {
+                continue;
+            }
+            if let Some(item) = self.items.get(&transaction_id) {
+                pending.extend(item.depends_on.iter().cloned());
+            }
+        }
+        let removable = self
+            .items
+            .values()
+            .filter(|item| {
+                matches!(
+                    item.status,
+                    SendQueueStatus::Sent
+                        | SendQueueStatus::Cancelled
+                        | SendQueueStatus::Superseded
+                ) && !protected.contains(&item.transaction_id)
+            })
+            .map(|item| item.transaction_id.clone())
             .collect::<BTreeSet<_>>();
         for transaction_id in &removable {
             self.items.remove(transaction_id);

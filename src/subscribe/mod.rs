@@ -479,6 +479,7 @@ mod tests {
                 created_at: now,
                 domain: None,
                 audience: None,
+                proof_purpose: None,
                 jws: "header..signature".to_owned(),
             },
         )

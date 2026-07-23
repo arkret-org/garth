@@ -32,6 +32,7 @@ fn runtime_builds_client_signs_event_and_verifies_binding() {
         created_at: chrono::Utc::now(),
         domain: None,
         audience: None,
+        proof_purpose: None,
         jws: "AAAA.BBBB.CCCC".to_owned(),
     });
     event.validate_proof_bindings().unwrap();

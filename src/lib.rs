@@ -46,8 +46,6 @@ pub mod events {
     pub use arkret_wire::EventKind;
 }
 
-pub const AEAD_ALGORITHM: &str = "xchacha20poly1305-hkdf-sha256-v1";
-
 pub mod cursor {
     pub use arkret_hlc::*;
 }
