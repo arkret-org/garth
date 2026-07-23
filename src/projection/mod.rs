@@ -2,9 +2,15 @@ use crate::protocol::RealmState;
 use crate::protocol::{Event, RealmId, Result};
 
 mod sidecar;
+mod sidecar_exchange;
 
 pub use sidecar::{
     SidecarProjectionFold, SidecarTimelineEvent, SidecarTimelineItem, merge_sidecar_timeline,
+};
+pub use sidecar_exchange::{
+    SidecarExchangeAgentFact, SidecarExchangeCacheDecision, SidecarExchangeControlFact,
+    SidecarExchangeFoldScope, SidecarExchangeRequestFact, evaluate_sidecar_exchange_cache,
+    fold_sidecar_exchange,
 };
 
 pub trait RealmStateReducer {

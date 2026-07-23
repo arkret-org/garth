@@ -6,10 +6,13 @@ use crate::protocol::models::{
 };
 use crate::protocol::{EventId, RealmId, Result, StrandId};
 
-/// Incremental controller-private Sidecar account-data projection.
+/// Incremental controller-private Sidecar projection registry.
 ///
-/// Entries are folded independently by their canonical key and LWW stamp, so
-/// account-stream deltas never require replaying the complete private history.
+/// View states remain encrypted Account Data and fold by LWW stamp. Exchange
+/// projections are deterministic local Event-fold outputs
+/// ([`super::sidecar_exchange::fold_sidecar_exchange`]): they never arrive
+/// over the account stream, never merge across devices, and each refold
+/// replaces the cached entry wholesale (`zh/models/sidecar.md` §7.2.4).
 #[derive(Clone, Debug, Default)]
 pub struct SidecarProjectionFold {
     view_states: BTreeMap<(String, String, String), AgentSidecarViewState>,
@@ -38,22 +41,19 @@ impl SidecarProjectionFold {
         should_replace
     }
 
-    pub fn apply_exchange(&mut self, value: AgentSidecarExchangeProjection) -> Result<bool> {
+    /// Install one deterministic Event-fold result. There is no LWW and no
+    /// cross-device merge: the fold of the local accepted history is always
+    /// authoritative for its exchange, so the entry is replaced wholesale.
+    pub fn apply_folded_exchange(&mut self, value: AgentSidecarExchangeProjection) -> Result<()> {
         value.validate()?;
-        let key = value.exchange_id.to_string();
-        let should_replace = self.exchanges.get(&key).is_none_or(|current| {
-            (
-                value.updated_hlc.to_string(),
-                value.client_order_key.as_str(),
-            ) > (
-                current.updated_hlc.to_string(),
-                current.client_order_key.as_str(),
-            )
-        });
-        if should_replace {
-            self.exchanges.insert(key, value);
-        }
-        Ok(should_replace)
+        self.exchanges.insert(value.exchange_id.to_string(), value);
+        Ok(())
+    }
+
+    /// Drop one cached exchange (e.g. after a failed cache frontier check).
+    /// The projection is always rebuildable from private history.
+    pub fn remove_exchange(&mut self, exchange_id: &str) -> Option<AgentSidecarExchangeProjection> {
+        self.exchanges.remove(exchange_id)
     }
 
     pub fn view_state(
@@ -291,8 +291,9 @@ fn push_private<T: Clone>(
 #[cfg(test)]
 mod tests {
     use crate::protocol::models::{
+        AgentSidecarExchangeCompletionPolicy, AgentSidecarExchangeFoldedFrontier,
         AgentSidecarExchangeId, AgentSidecarExchangeProjectionSchema, AgentSidecarExchangeStatus,
-        AgentSidecarSourceTrackRef,
+        AgentSidecarSourceTrackRef, agent_sidecar_exchange_event_set_digest,
     };
     use crate::protocol::{Did, Hlc, NonEmptyString, SidecarId};
 
@@ -315,6 +316,8 @@ mod tests {
     }
 
     fn projection(anchor: EventId, private_event: EventId) -> AgentSidecarExchangeProjection {
+        let addressed_agent =
+            Did::new("did:webvh:z6mkfixture:assistant.agents.example").unwrap();
         AgentSidecarExchangeProjection {
             schema: AgentSidecarExchangeProjectionSchema::V1,
             controller_id: Did::new("did:web:example.com:users:alice").unwrap(),
@@ -340,13 +343,22 @@ mod tests {
             source_frontier_anchor: Some(anchor),
             source_hlc: Hlc::new("01970e589d21-0001-a13f9c2e").unwrap(),
             client_order_key: NonEmptyString::new("device-1-1").unwrap(),
-            addressed_agent_ids: Vec::new(),
+            addressed_agent_ids: vec![addressed_agent.clone()],
+            completion_policy: AgentSidecarExchangeCompletionPolicy::Coordinator,
+            coordinator_agent_id: addressed_agent,
+            coordinator_assignment_event_id: private_event.clone(),
             participating_agent_ids: Vec::new(),
-            private_request_event_id: private_event,
+            private_request_event_id: private_event.clone(),
             user_facing_response_event_ids: Vec::new(),
             status: AgentSidecarExchangeStatus::Delivered,
             failure_code: None,
-            updated_hlc: Hlc::new("01970e589d21-0002-a13f9c2e").unwrap(),
+            terminal_event_id: None,
+            folded_frontier: AgentSidecarExchangeFoldedFrontier {
+                event_ids: vec![private_event.clone()],
+                event_set_digest: agent_sidecar_exchange_event_set_digest(&[private_event])
+                    .unwrap(),
+                max_hlc: Hlc::new("01970e589d21-0002-a13f9c2e").unwrap(),
+            },
         }
     }
 
@@ -358,6 +370,7 @@ mod tests {
         let mut projection = projection(anchor.clone(), private_id.clone());
         projection.user_facing_response_event_ids = vec![response_id.clone()];
         projection.status = AgentSidecarExchangeStatus::Complete;
+        projection.terminal_event_id = Some(event_id("38"));
         let shared = vec![event("34", "01970e589d21-0001-a13f9c2e", "shared")];
         let private = vec![
             event("35", "01970e589d21-0002-a13f9c2e", "echo"),
@@ -434,19 +447,32 @@ mod tests {
     }
 
     #[test]
-    fn exchange_fold_uses_client_order_key_to_break_equal_hlc_ties() {
+    fn folded_exchange_replaces_wholesale_without_lww() {
         let mut fold = SidecarProjectionFold::default();
-        let mut initial = projection(event_id("34"), event_id("35"));
-        initial.client_order_key = NonEmptyString::new("device-1-b").unwrap();
-        assert!(fold.apply_exchange(initial.clone()).unwrap());
+        let initial = projection(event_id("34"), event_id("35"));
+        fold.apply_folded_exchange(initial.clone()).unwrap();
 
-        let mut lower = initial.clone();
-        lower.client_order_key = NonEmptyString::new("device-1-a").unwrap();
-        assert!(!fold.apply_exchange(lower).unwrap());
+        // A refold of the same exchange always wins: there is no HLC or
+        // client_order_key race between devices because the cache is local.
+        let mut refolded = initial.clone();
+        refolded.participating_agent_ids =
+            vec![Did::new("did:webvh:z6mkfixture:assistant.agents.example").unwrap()];
+        fold.apply_folded_exchange(refolded.clone()).unwrap();
+        let realm_id = RealmId::new("ak:realm:01964137-0000-7000-8000-000000000030").unwrap();
+        let strand_id = StrandId::new("ak:strand:01964137-0000-7000-8000-000000000031").unwrap();
+        let stored = fold
+            .exchanges_for_track(&realm_id, &strand_id, "discussion")
+            .next()
+            .unwrap();
+        assert_eq!(stored.participating_agent_ids.len(), 1);
 
-        let mut higher = initial;
-        higher.client_order_key = NonEmptyString::new("device-1-c").unwrap();
-        assert!(fold.apply_exchange(higher).unwrap());
+        let mut invalid = initial;
+        invalid.status = AgentSidecarExchangeStatus::Complete;
+        assert!(fold.apply_folded_exchange(invalid).is_err());
+        assert!(
+            fold.remove_exchange("Abcdefghijklmnopqrstuv").is_some(),
+            "cache entries are disposable"
+        );
     }
 
     #[test]

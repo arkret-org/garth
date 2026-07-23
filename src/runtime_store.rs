@@ -358,7 +358,7 @@ mod tests {
     use super::*;
     use crate::protocol::resolver::SnapshotRestoreSource;
     use crate::protocol::{
-        BLOB_SCHEMA, BlobRef, DeviceId, Did, EventId, Hlc, ObjectState, RealmId,
+        BLOB_SCHEMA, BlobRef, DeviceId, Did, EventId, Hash, Hlc, ObjectState, RealmId,
     };
 
     fn morph_event(event_id: &str, title: &str) -> Event {
@@ -411,9 +411,12 @@ mod tests {
             schema: BLOB_SCHEMA.to_owned(),
             realm_id: None,
             blob_ref,
-            content_digest:
-                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_owned(),
+            content_digest: Hash::new(
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            )
+            .unwrap(),
             size_bytes,
+            thumbnail_blob_ref: None,
             media_type: "text/plain".to_owned(),
             filename: Some("note.txt".to_owned()),
             encryption: None,
