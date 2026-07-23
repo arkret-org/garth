@@ -352,6 +352,7 @@ where
 mod tests {
     use std::collections::BTreeMap;
 
+    use arkret_wire::Hash;
     use chrono::Utc;
     use serde_json::json;
 
@@ -420,6 +421,7 @@ mod tests {
             media_type: "text/plain".to_owned(),
             filename: Some("note.txt".to_owned()),
             encryption: None,
+            thumbnail_blob_ref: None,
             created_by: Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
             created_at: Utc::now(),
             updated_by: None,

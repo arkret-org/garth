@@ -1005,6 +1005,7 @@ fn welcome_envelope(payload: &MlsWelcomePayload) -> Result<MlsWelcomeEnvelope> {
 
 #[cfg(test)]
 mod tests {
+    use std::future::Future;
     use std::num::NonZeroU64;
 
     use arkret_models_collaboration::events_payloads::list_message_mimi_mls::{
@@ -1015,6 +1016,7 @@ mod tests {
     use arkret_wire::{Base64UrlString, MlsGroupId, NonEmptyString, RealmId};
     use chrono::Duration;
     use ed25519_dalek::SigningKey;
+    use proptest::prelude::*;
 
     use super::*;
     use crate::MemorySecureKeyStore;
@@ -1070,6 +1072,173 @@ mod tests {
                 .to_bytes()
                 .to_vec(),
             expires_at: Some(Utc::now() + Duration::days(1)),
+        }
+    }
+
+    fn property_suffix(value: u32) -> String {
+        format!("{value:012}")
+    }
+
+    fn block_on_property<T>(future: impl Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    proptest! {
+        #[test]
+        fn persisted_keypackage_pool_replays_for_arbitrary_authorized_keys(
+            seed in any::<[u8; 32]>(),
+            watermark in 0_usize..5,
+            endpoint in 1_u32..100_000,
+        ) {
+            let now = Utc::now();
+            let binding = binding(seed, &property_suffix(endpoint));
+            let store = MemorySecureKeyStore::new();
+            let initialized = block_on_property(AgentMlsRuntime::initialize(
+                store.clone(),
+                "agent-mls-property-replay",
+                binding.clone(),
+                seed,
+                watermark,
+                now,
+            ));
+            prop_assert!(initialized.is_ok());
+            let runtime = initialized.unwrap();
+            let first = runtime.pending_upload_request(&binding, now);
+            prop_assert!(first.is_ok());
+            let first = first.unwrap();
+            prop_assert_eq!(
+                first.as_ref().map(|request| request.key_packages.len()),
+                (watermark > 0).then_some(watermark),
+            );
+            if let Some(request) = &first {
+                prop_assert_eq!(&request.principal_id, &binding.principal_id);
+                prop_assert_eq!(&request.device_id, &binding.device_id);
+            }
+
+            let restored = AgentMlsRuntime::restore(
+                store,
+                "agent-mls-property-replay",
+                &binding,
+                now,
+            );
+            prop_assert!(restored.is_ok());
+            let replay = restored.unwrap().pending_upload_request(&binding, now);
+            prop_assert!(replay.is_ok());
+            prop_assert_eq!(
+                serde_json::to_value(first).unwrap(),
+                serde_json::to_value(replay.unwrap()).unwrap(),
+            );
+        }
+
+        #[test]
+        fn restore_rejects_every_authorization_binding_dimension_drift(
+            seed in any::<[u8; 32]>(),
+            endpoint in 1_u32..100_000,
+            drift_kind in 0_u8..5,
+        ) {
+            let now = Utc::now();
+            let binding = binding(seed, &property_suffix(endpoint));
+            let store = MemorySecureKeyStore::new();
+            let initialized = block_on_property(AgentMlsRuntime::initialize(
+                store.clone(),
+                "agent-mls-property-binding",
+                binding.clone(),
+                seed,
+                1,
+                now,
+            ));
+            prop_assert!(initialized.is_ok());
+            drop(initialized);
+
+            let mut drifted = binding.clone();
+            match drift_kind {
+                0 => {
+                    drifted.device_id = device(&property_suffix(endpoint + 100_000));
+                }
+                1 => {
+                    drifted.authorization_event_id = event(&property_suffix(endpoint + 100_000));
+                }
+                2 => {
+                    drifted.verification_method.push_str("-replaced");
+                }
+                3 => {
+                    drifted.signing_public_key[0] ^= 0x80;
+                }
+                _ => {
+                    drifted.expires_at = Some(now);
+                }
+            }
+
+            prop_assert!(
+                AgentMlsRuntime::restore(
+                    store,
+                    "agent-mls-property-binding",
+                    &drifted,
+                    now,
+                )
+                .is_err()
+            );
+        }
+
+        #[test]
+        fn replacement_requires_complete_revoke_for_arbitrary_pool_sizes(
+            seed in any::<[u8; 32]>(),
+            watermark in 1_usize..5,
+            endpoint in 1_u32..100_000,
+        ) {
+            let now = Utc::now();
+            let binding = binding(seed, &property_suffix(endpoint));
+            let result = block_on_property(async {
+                let store = MemorySecureKeyStore::new();
+                let mut runtime = AgentMlsRuntime::initialize(
+                    store,
+                    "agent-mls-property-revoke",
+                    binding.clone(),
+                    seed,
+                    watermark,
+                    now,
+                )
+                .await?;
+                let upload = runtime
+                    .pending_upload_request(&binding, now)?
+                    .ok_or_else(|| protocol_error("property upload is missing"))?;
+                let accepted_refs = upload
+                    .key_packages
+                    .iter()
+                    .map(|entry| entry.keypackage_ref.as_str().to_owned())
+                    .collect::<Vec<_>>();
+                runtime
+                    .mark_upload_accepted(&binding, &accepted_refs, now)
+                    .await?;
+                let revoke = runtime
+                    .prepare_authorization_replacement(&binding, now)
+                    .await?
+                    .ok_or_else(|| protocol_error("property revoke is missing"))?;
+                let incomplete = KeyPackagesRevokeOutcome {
+                    revoked: revoke.key_package_refs[..revoke.key_package_refs.len() - 1].to_vec(),
+                    failures: Vec::new(),
+                };
+                let incomplete_result = runtime.mark_revoke_accepted(&incomplete).await;
+                let phase_after_incomplete = runtime.phase();
+                let complete = KeyPackagesRevokeOutcome {
+                    revoked: revoke.key_package_refs,
+                    failures: Vec::new(),
+                };
+                runtime.mark_revoke_accepted(&complete).await?;
+                Ok::<_, Error>((
+                    incomplete_result.is_err(),
+                    phase_after_incomplete,
+                    runtime.phase(),
+                ))
+            });
+            prop_assert!(result.is_ok());
+            let (incomplete_rejected, intermediate_phase, final_phase) = result.unwrap();
+            prop_assert!(incomplete_rejected);
+            prop_assert_eq!(intermediate_phase, AgentMlsRuntimePhase::Quiescing);
+            prop_assert_eq!(final_phase, AgentMlsRuntimePhase::ReadyForReplacement);
         }
     }
 
