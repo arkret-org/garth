@@ -45,7 +45,7 @@ arkret-models-integration = {version = "0.3.0",path = "../arkret-rust-sdk/crates
 arkret-policy = {version = "0.3.0",path = "../arkret-rust-sdk/crates/policy",default-features = false}
 arkret-http-client = {version = "0.3.0",path = "../arkret-rust-sdk/crates/http-client",default-features = false}
 arkret-schema = {version = "0.3.0",path = "../arkret-rust-sdk/crates/schema",default-features = false}
-arkret-signatures = {version = "0.3.0",path = "../arkret-rust-sdk/crates/signatures",default-features = false}
+arkret-signatures = {version = "0.3.0",path = "../arkret-rust-sdk/crates/signatures",default-features = false,features = ["collaboration"]}
 arkret-state = {version = "0.3.0",path = "../arkret-rust-sdk/crates/state",default-features = false}
 arkret-wire = {version = "0.3.0",path = "../arkret-rust-sdk/crates/wire",default-features = false}
 ed25519-dalek = {version = "2.2.0",default-features = false,features = ["std", "rand_core"]}
