@@ -17,8 +17,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::protocol::models::{
     AgentSidecarEventExchangeBinding, AgentSidecarExchangeBindingRole,
     AgentSidecarExchangeCompletionPolicy, AgentSidecarExchangeControl,
-    AgentSidecarExchangeControlAction, AgentSidecarExchangeFoldedFrontier,
-    AgentSidecarExchangeId, AgentSidecarExchangeOrigin, AgentSidecarExchangeProjection,
+    AgentSidecarExchangeControlAction, AgentSidecarExchangeFoldedFrontier, AgentSidecarExchangeId,
+    AgentSidecarExchangeOrigin, AgentSidecarExchangeProjection,
     AgentSidecarExchangeProjectionSchema, AgentSidecarExchangeRequestContext,
     AgentSidecarExchangeStatus, agent_sidecar_exchange_event_set_digest,
 };
@@ -250,7 +250,11 @@ pub fn fold_sidecar_exchange(
     for (_, mut group) in control_groups {
         // Same-sequence siblings resolve to the bytewise-max event digest;
         // the losers stay auditable but never fold.
-        group.sort_by(|left, right| left.event_digest.as_bytes().cmp(right.event_digest.as_bytes()));
+        group.sort_by(|left, right| {
+            left.event_digest
+                .as_bytes()
+                .cmp(right.event_digest.as_bytes())
+        });
         let fact = group.pop().expect("group is non-empty");
         if terminal.is_some() {
             continue;
@@ -289,8 +293,7 @@ pub fn fold_sidecar_exchange(
                     .to_owned(),
             ));
         }
-        let closure =
-            basis_causal_closure(fact, &accepted_agent_facts, &accepted_controls);
+        let closure = basis_causal_closure(fact, &accepted_agent_facts, &accepted_controls);
         if !closure.contains(request.event_id.as_str()) {
             // §7.2.3: the canonical request MUST be causally covered.
             continue;
@@ -404,7 +407,9 @@ pub fn fold_sidecar_exchange(
                     .map(NonEmptyString::new)
                     .transpose()
                     .map_err(|_| {
-                        Error::Protocol("Sidecar terminal failure code must be non-empty".to_owned())
+                        Error::Protocol(
+                            "Sidecar terminal failure code must be non-empty".to_owned(),
+                        )
                     })?,
                 Some(terminal_fact.event_id.clone()),
             )
@@ -538,9 +543,9 @@ fn build_frontier(
 
 #[cfg(test)]
 mod tests {
+    use crate::protocol::RealmId;
     use crate::protocol::models::AgentSidecarExchangeControlSchema;
     use crate::protocol::models::AgentSidecarSourceTrackRef;
-    use crate::protocol::RealmId;
 
     use super::*;
 
@@ -567,8 +572,7 @@ mod tests {
     fn scope() -> SidecarExchangeFoldScope {
         SidecarExchangeFoldScope {
             controller_id: controller(),
-            sidecar_id: SidecarId::new("ak:sidecar:01964137-0000-7000-8000-000000000032")
-                .unwrap(),
+            sidecar_id: SidecarId::new("ak:sidecar:01964137-0000-7000-8000-000000000032").unwrap(),
             private_strand_id: StrandId::new("ak:strand:01964137-0000-7000-8000-000000000033")
                 .unwrap(),
         }
@@ -578,12 +582,14 @@ mod tests {
         AgentSidecarExchangeId::new("Abcdefghijklmnopqrstuv").unwrap()
     }
 
-    fn context(addressed: Vec<Did>, coordinator: Option<Did>) -> AgentSidecarExchangeRequestContext {
+    fn context(
+        addressed: Vec<Did>,
+        coordinator: Option<Did>,
+    ) -> AgentSidecarExchangeRequestContext {
         AgentSidecarExchangeRequestContext {
             source_track_ref: AgentSidecarSourceTrackRef {
                 realm_id: RealmId::new("ak:realm:01964137-0000-7000-8000-000000000030").unwrap(),
-                strand_id: StrandId::new("ak:strand:01964137-0000-7000-8000-000000000031")
-                    .unwrap(),
+                strand_id: StrandId::new("ak:strand:01964137-0000-7000-8000-000000000031").unwrap(),
                 track_name: "discussion".to_owned(),
             },
             source_hlc: hlc(1),
@@ -693,10 +699,9 @@ mod tests {
             request_fact(0x41, 5, "aa"),
             request_fact(0x42, 5, "bb"),
         ];
-        let projection =
-            fold_sidecar_exchange(&scope(), &exchange_id(), &requests, &[], &[])
-                .unwrap()
-                .unwrap();
+        let projection = fold_sidecar_exchange(&scope(), &exchange_id(), &requests, &[], &[])
+            .unwrap()
+            .unwrap();
         assert_eq!(
             projection.private_request_event_id,
             event_id(0x42),
@@ -976,15 +981,10 @@ mod tests {
             0x34,
         );
         missing_ref.refs_after = Vec::new();
-        let projection = fold_sidecar_exchange(
-            &scope(),
-            &exchange_id(),
-            &[request],
-            &[missing_ref],
-            &[],
-        )
-        .unwrap()
-        .unwrap();
+        let projection =
+            fold_sidecar_exchange(&scope(), &exchange_id(), &[request], &[missing_ref], &[])
+                .unwrap()
+                .unwrap();
         assert_eq!(
             projection.participating_agent_ids,
             vec![agent_s()],
@@ -1010,12 +1010,8 @@ mod tests {
         // Empty close whose basis covers a validated response: invalid in
         // §7.2.3 ("exactly the basis-covered validated set"), so the
         // exchange stays responding instead of forking to failed.
-        let invalid_empty_close = control_fact(
-            0x36,
-            3,
-            "cc",
-            close_control(vec![event_id(0x35)], vec![]),
-        );
+        let invalid_empty_close =
+            control_fact(0x36, 3, "cc", close_control(vec![event_id(0x35)], vec![]));
         let projection = fold_sidecar_exchange(
             &scope(),
             &exchange_id(),
@@ -1053,12 +1049,8 @@ mod tests {
     #[test]
     fn control_without_after_refs_for_basis_is_invalid() {
         let request = request_fact(0x34, 1, "aa");
-        let mut missing_refs = control_fact(
-            0x36,
-            2,
-            "cc",
-            close_control(vec![event_id(0x34)], vec![]),
-        );
+        let mut missing_refs =
+            control_fact(0x36, 2, "cc", close_control(vec![event_id(0x34)], vec![]));
         missing_refs.refs_after = Vec::new();
         let projection = fold_sidecar_exchange(
             &scope(),
@@ -1121,12 +1113,7 @@ mod tests {
     #[test]
     fn terminal_with_uncovered_basis_demands_backfill() {
         let request = request_fact(0x34, 1, "aa");
-        let control = control_fact(
-            0x36,
-            2,
-            "cc",
-            close_control(vec![event_id(0x99)], vec![]),
-        );
+        let control = control_fact(0x36, 2, "cc", close_control(vec![event_id(0x99)], vec![]));
         assert!(
             fold_sidecar_exchange(&scope(), &exchange_id(), &[request], &[], &[control]).is_err(),
             "unknown basis heads mean incomparable history: backfill, never guess"
@@ -1186,22 +1173,15 @@ mod tests {
     #[test]
     fn cache_decisions_never_use_lww() {
         let request = request_fact(0x34, 1, "aa");
-        let projection = fold_sidecar_exchange(
-            &scope(),
-            &exchange_id(),
-            &[request],
-            &[],
-            &[],
-        )
-        .unwrap()
-        .unwrap();
+        let projection = fold_sidecar_exchange(&scope(), &exchange_id(), &[request], &[], &[])
+            .unwrap()
+            .unwrap();
         let local: BTreeSet<EventId> = [event_id(0x34)].into_iter().collect();
         assert_eq!(
             evaluate_sidecar_exchange_cache(&projection.folded_frontier, &local).unwrap(),
             SidecarExchangeCacheDecision::Fresh
         );
-        let advanced: BTreeSet<EventId> =
-            [event_id(0x34), event_id(0x35)].into_iter().collect();
+        let advanced: BTreeSet<EventId> = [event_id(0x34), event_id(0x35)].into_iter().collect();
         assert_eq!(
             evaluate_sidecar_exchange_cache(&projection.folded_frontier, &advanced).unwrap(),
             SidecarExchangeCacheDecision::Refold

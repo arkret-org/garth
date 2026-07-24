@@ -316,8 +316,7 @@ mod tests {
     }
 
     fn projection(anchor: EventId, private_event: EventId) -> AgentSidecarExchangeProjection {
-        let addressed_agent =
-            Did::new("did:webvh:z6mkfixture:assistant.agents.example").unwrap();
+        let addressed_agent = Did::new("did:webvh:z6mkfixture:assistant.agents.example").unwrap();
         AgentSidecarExchangeProjection {
             schema: AgentSidecarExchangeProjectionSchema::V1,
             controller_id: Did::new("did:web:example.com:users:alice").unwrap(),
