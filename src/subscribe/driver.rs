@@ -3,6 +3,7 @@ use std::future::Future;
 use crate::protocol::Result;
 use crate::sync_client::{AsyncSyncTransport, SyncLoop, SyncLoopControl, SyncLoopStep};
 
+use super::account::account_updates_to_events_with_origin;
 use super::{ProjectedRunError, ProjectedRunResult, account_updates_to_events};
 use crate::{ClientProjector, CursorScope, DurableInboxStore, Executor};
 
@@ -72,6 +73,7 @@ where
         S: DurableInboxStore,
     {
         loop {
+            let initial_catchup = sync_loop.token().is_none();
             match sync_loop
                 .step_async_with_control(transport, &self.control)
                 .await
@@ -81,7 +83,7 @@ where
                         .commit(
                             scope.clone(),
                             sync_loop.token().map(str::to_owned),
-                            account_updates_to_events(*updates),
+                            account_updates_to_events_with_origin(*updates, initial_catchup),
                         )
                         .await?;
                 }

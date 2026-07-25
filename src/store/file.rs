@@ -28,8 +28,8 @@ use crate::{ClientEvent, OutboundQueueStore};
 /// structured [`CursorScope`] for the on-disk map.
 const SEP: char = '\u{1f}';
 
-/// File-backed durable store. Cheap to clone (shared handle); every mutation
-/// persists the whole state to the backing file.
+/// File-backed durable store. Cheap to clone (shared handle); mutations that
+/// actually change state persist the whole state to the backing file.
 #[derive(Clone, Debug)]
 pub struct FileStore {
     inner: Arc<Mutex<FileStoreInner>>,
@@ -111,6 +111,18 @@ impl FileStore {
         self.mutate(|_| ()).await
     }
 
+    /// Return whether the durable outbound queue contains non-terminal work.
+    ///
+    /// This is a read-only preflight for hosts that periodically drain both
+    /// the durable inbox and outbound queue. It deliberately excludes terminal
+    /// history (`sent`, `cancelled`, and `superseded`) so an idle host does not
+    /// need to build a transport client just to discover `Idle`.
+    pub fn has_active_outbound(&self) -> Result<bool> {
+        let snapshot = self.read(|inner| inner.state.outbound.clone())?;
+        let queue = crate::sync_client::SendQueue::from_snapshot(snapshot)?;
+        Ok(!queue.active_items().is_empty())
+    }
+
     /// Synchronous stamp-floor transition for host builders that cannot await.
     /// The same sidecar OS lock and atomic file replace used by async mutations
     /// preserve cross-handle and cross-process uniqueness.
@@ -149,7 +161,9 @@ impl FileStore {
         // Keep the OS lock alive through the complete durable commit. This is
         // intentionally synchronous: cancelling the async caller must not
         // detach a background writer after the cross-process lock is dropped.
-        self.persist_snapshot(snapshot)?;
+        if let Some(snapshot) = snapshot {
+            self.persist_snapshot(snapshot)?;
+        }
         let mut guard = self
             .inner
             .lock()
@@ -168,7 +182,7 @@ impl FileStore {
     fn stage_mutation<T>(
         &self,
         f: impl FnOnce(&mut FileStoreInner) -> T,
-    ) -> Result<(T, FileStoreInner, PersistSnapshot)> {
+    ) -> Result<(T, FileStoreInner, Option<PersistSnapshot>)> {
         let guard = self
             .inner
             .lock()
@@ -177,10 +191,13 @@ impl FileStore {
         let capacity = guard.seen_window.capacity();
         let generation = guard.generation;
         drop(guard);
+        let path_exists = path.exists();
         let mut state = load_state(&path)?;
         let seen_events = std::mem::take(&mut state.seen_events);
         let seen_window = BoundedSeenWindow::from_entries(seen_events, capacity);
         state.seen_events = seen_window.entries().clone();
+        let before = serde_json::to_vec(&state)
+            .map_err(|err| Error::Protocol(format!("serialize file store: {err}")))?;
         let mut candidate = FileStoreInner {
             path,
             state,
@@ -188,6 +205,11 @@ impl FileStore {
             generation,
         };
         let out = f(&mut candidate);
+        let after = serde_json::to_vec(&candidate.state)
+            .map_err(|err| Error::Protocol(format!("serialize file store: {err}")))?;
+        if path_exists && before == after {
+            return Ok((out, candidate, None));
+        }
         candidate.generation = candidate
             .generation
             .checked_add(1)
@@ -197,7 +219,7 @@ impl FileStore {
             state: candidate.state.clone(),
             generation: candidate.generation,
         };
-        Ok((out, candidate, snapshot))
+        Ok((out, candidate, Some(snapshot)))
     }
 
     fn persist_snapshot(&self, snapshot: PersistSnapshot) -> Result<()> {
@@ -685,6 +707,40 @@ mod tests {
         }
         let reopened = FileStore::open(&path).unwrap();
         assert!(reopened.seen(event).await.unwrap());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
+    async fn no_op_mutations_do_not_replace_the_state_file() {
+        let path = temp_path("no-op-mutations");
+        let _ = std::fs::remove_file(&path);
+        let store = FileStore::open(&path).unwrap();
+        let scope = account_scope();
+        let cursor = "ak:cursor:stable".to_owned();
+        let event = event_id(77);
+
+        store.save(scope.clone(), cursor.clone()).await.unwrap();
+        store.remember(event.clone()).await.unwrap();
+        let before_bytes = std::fs::read(&path).unwrap();
+        let before_modified = std::fs::metadata(&path).unwrap().modified().unwrap();
+        let before_generation = store.persist.lock().unwrap().generation;
+
+        // Ensure a replacement would be observable even on filesystems with a
+        // relatively coarse modification-time clock.
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        store.save(scope.clone(), cursor.clone()).await.unwrap();
+        store.commit(scope, Some(cursor), Vec::new()).await.unwrap();
+        store.remember(event).await.unwrap();
+        store.mutate_outbound(|_| Ok::<_, Error>(())).await.unwrap();
+        assert!(!store.ack(DeliveryId::new(999)).await.unwrap());
+
+        assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().modified().unwrap(),
+            before_modified
+        );
+        assert_eq!(store.persist.lock().unwrap().generation, before_generation);
+        assert!(!store.has_active_outbound().unwrap());
         let _ = std::fs::remove_file(&path);
     }
 

@@ -27,7 +27,8 @@ use crate::subscribe::{
 };
 use crate::{
     ArkretClient, Backoff, ClientProjector, CursorStore, DurableInboxStore, EventCacheStore,
-    Executor, subscribe::account::account_updates_to_events,
+    Executor,
+    subscribe::account::{account_updates_to_events, account_updates_to_events_with_origin},
 };
 
 /// Host seam that yields a ready-to-use transport (SDK http-client) with
@@ -766,6 +767,7 @@ where
                     return Err(Self::fail(provider, classify_error(&error), error));
                 }
             };
+            let initial_catchup = sync_loop.token().is_none();
             match sync_loop.step_async_with_control(&transport, control).await {
                 SyncLoopStep::Updates(updates) => {
                     let delivery_id = self
@@ -773,7 +775,7 @@ where
                         .commit(
                             scope.clone(),
                             sync_loop.token().map(str::to_owned),
-                            account_updates_to_events(*updates),
+                            account_updates_to_events_with_origin(*updates, initial_catchup),
                         )
                         .await
                         .map_err(|error| {

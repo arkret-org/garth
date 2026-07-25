@@ -177,7 +177,7 @@ impl AgentMlsRuntimeSnapshot {
                 || intent.authorization_event_id != self.binding.authorization_event_id
                 || intent.request.consumer_device_id != self.binding.device_id
                 || intent.request.claim_ids != [claim_id.clone()]
-                || intent.request.key_package_refs != [intent.keypackage_id.clone()]
+                || intent.request.key_package_refs != [intent.keypackage_ref.clone()]
                 || !key_package_matches
                 || self.consumed_claims.contains(claim_id)
             {
@@ -471,7 +471,7 @@ where
             .export_state_record()
             .map_err(|error| map_protocol_error("export joined Agent MLS group", error))?;
         let unsigned = KeyPackagesConsumeUnsignedRequest {
-            key_package_refs: vec![input.key_package_id.clone()],
+            key_package_refs: vec![input.payload.keypackage_ref.as_str().to_owned()],
             consumer_device_id: self.snapshot.binding.device_id.clone(),
             claim_ids: vec![claim_id.clone()],
             welcome_ref: Some(envelope.welcome_hash.as_str().to_owned()),
@@ -540,7 +540,7 @@ where
             .ok_or_else(|| protocol_error("Agent MLS consume intent is missing"))?;
         if !consumed_refs
             .iter()
-            .any(|value| value == &intent.keypackage_id)
+            .any(|value| value == &intent.keypackage_ref)
         {
             return Err(protocol_error(
                 "Agent MLS consume outcome omitted the intended KeyPackage",
@@ -660,7 +660,7 @@ where
                 stored.upload_accepted
                     && stored.record.state == arkret_models_crypto::MlsKeyPackageState::Published
             })
-            .map(|stored| stored.record.keypackage_id.clone())
+            .map(|stored| stored.record.keypackage_ref.as_str().to_owned())
             .collect::<Vec<_>>();
         let mut next = self.snapshot.clone();
         if refs.is_empty() {
@@ -708,12 +708,8 @@ where
             ));
         }
         let mut next = self.snapshot.clone();
-        for keypackage_id in &request.key_package_refs {
-            if let Some(stored) = next
-                .key_packages
-                .values_mut()
-                .find(|stored| stored.record.keypackage_id == *keypackage_id)
-            {
+        for keypackage_ref in &request.key_package_refs {
+            if let Some(stored) = next.key_packages.get_mut(keypackage_ref) {
                 stored.record.state = arkret_models_crypto::MlsKeyPackageState::Revoked;
             }
         }
@@ -1394,6 +1390,7 @@ mod tests {
             governance_binding,
             expires_at: now + Duration::hours(1),
         };
+        let expected_keypackage_ref = record.keypackage_ref.as_str().to_owned();
         let welcome_input = AgentMlsWelcomeInput {
             message_id: DeviceMessageId::new(
                 "ak:device_message:01904100-0000-7000-8000-000000000205",
@@ -1420,6 +1417,7 @@ mod tests {
             AgentMlsWelcomeOutcome::ConsumeRequired(request) => request,
             other => panic!("unexpected Welcome outcome: {other:?}"),
         };
+        assert_eq!(request.key_package_refs, [expected_keypackage_ref]);
         assert!(matches!(
             runtime
                 .process_welcome(&binding, welcome_input.clone(), &TestVerifier, now)

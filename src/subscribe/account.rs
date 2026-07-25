@@ -6,6 +6,13 @@ use crate::{AccountUpdateContext, ClientEvent};
 /// [`ClientEvent`] batch a host consumes: non-repeated batch context first,
 /// then the granular realm / to-device / notification deltas.
 pub fn account_updates_to_events(updates: SyncUpdates) -> Vec<ClientEvent> {
+    account_updates_to_events_with_origin(updates, false)
+}
+
+pub(crate) fn account_updates_to_events_with_origin(
+    updates: SyncUpdates,
+    initial_catchup: bool,
+) -> Vec<ClientEvent> {
     let SyncUpdates {
         realm_updates,
         malformed_realms,
@@ -21,6 +28,7 @@ pub fn account_updates_to_events(updates: SyncUpdates) -> Vec<ClientEvent> {
         partial,
     } = updates;
     let mut batch = vec![ClientEvent::AccountUpdates(AccountUpdateContext {
+        initial_catchup,
         malformed_realms,
         to_device_ack_token,
         to_device_limited,
@@ -109,6 +117,7 @@ mod tests {
             panic!("first event must carry account batch context");
         };
         assert!(context.account_data.is_empty());
+        assert!(!context.initial_catchup);
         assert_eq!(
             events
                 .iter()
@@ -123,5 +132,14 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn account_update_fanout_preserves_initial_catchup_origin() {
+        let events = account_updates_to_events_with_origin(updates(), true);
+        let ClientEvent::AccountUpdates(context) = &events[0] else {
+            panic!("first event must carry account batch context");
+        };
+        assert!(context.initial_catchup);
     }
 }

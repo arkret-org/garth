@@ -32,6 +32,12 @@ pub enum ClientEvent {
 /// variant, keeping durable inbox records free of duplicate payloads.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AccountUpdateContext {
+    /// True when this batch came from a request without a continuation cursor.
+    ///
+    /// Hosts can use this to build a local history baseline without treating
+    /// an initial or recovery catch-up as newly arrived user activity.
+    #[serde(default)]
+    pub initial_catchup: bool,
     pub malformed_realms: Vec<String>,
     pub to_device_ack_token: Option<String>,
     pub to_device_limited: bool,
