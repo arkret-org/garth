@@ -352,7 +352,6 @@ where
 mod tests {
     use std::collections::BTreeMap;
 
-    use arkret_wire::Hash;
     use chrono::Utc;
     use serde_json::json;
 
@@ -417,7 +416,6 @@ mod tests {
             )
             .unwrap(),
             size_bytes,
-            thumbnail_blob_ref: None,
             media_type: "text/plain".to_owned(),
             filename: Some("note.txt".to_owned()),
             encryption: None,

@@ -45,6 +45,8 @@ pub struct AgentMlsAuthorizationBinding {
     pub authorization_event_id: EventId,
     pub verification_method: String,
     pub signing_public_key: Vec<u8>,
+    pub public_key_digest: Hash,
+    pub signing_key_binding_digest: Hash,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<DateTime<Utc>>,
 }
@@ -59,6 +61,19 @@ impl AgentMlsAuthorizationBinding {
         if self.signing_public_key.len() != 32 {
             return Err(protocol_error(
                 "Agent MLS authorization Ed25519 public key must be 32 bytes",
+            ));
+        }
+        let expected_public_key_digest =
+            arkret_signatures::agent::agent_runtime_public_key_digest(&serde_json::json!({
+                "kty": "OKP",
+                "kid": self.verification_method,
+                "alg": "Ed25519",
+                "key": arkret_canonical::base64url_encode(&self.signing_public_key),
+            }))
+            .map_err(|error| map_protocol_error("Agent MLS authorization public key", error))?;
+        if self.public_key_digest != expected_public_key_digest {
+            return Err(protocol_error(
+                "Agent MLS authorization public key digest mismatch",
             ));
         }
         if self.expires_at.is_some_and(|expires_at| expires_at <= now) {
@@ -1058,15 +1073,27 @@ mod tests {
 
     fn binding(seed: [u8; 32], suffix: &str) -> AgentMlsAuthorizationBinding {
         let principal_id = did("native-agent");
+        let verification_method = format!("{principal_id}#runtime-{suffix}");
+        let signing_public_key = SigningKey::from_bytes(&seed)
+            .verifying_key()
+            .to_bytes()
+            .to_vec();
+        let public_key_digest =
+            arkret_signatures::agent::agent_runtime_public_key_digest(&serde_json::json!({
+                "kty": "OKP",
+                "kid": &verification_method,
+                "alg": "Ed25519",
+                "key": arkret_canonical::base64url_encode(&signing_public_key),
+            }))
+            .unwrap();
         AgentMlsAuthorizationBinding {
             principal_id: principal_id.clone(),
             device_id: device(suffix),
             authorization_event_id: event(suffix),
-            verification_method: format!("{principal_id}#runtime-{suffix}"),
-            signing_public_key: SigningKey::from_bytes(&seed)
-                .verifying_key()
-                .to_bytes()
-                .to_vec(),
+            verification_method,
+            signing_public_key,
+            public_key_digest,
+            signing_key_binding_digest: hash('b'),
             expires_at: Some(Utc::now() + Duration::days(1)),
         }
     }
