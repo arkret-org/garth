@@ -46,6 +46,7 @@ pub struct AccountUpdateContext {
     pub device_lists: AccountSubscribeDeviceListChanges,
     pub presence: Vec<EphemeralEnvelope>,
     pub account_data: Vec<Event>,
+    pub agent_signer_evidence: Vec<crate::protocol::AgentSignerEvidence>,
     pub partial: bool,
 }
 

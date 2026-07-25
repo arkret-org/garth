@@ -109,6 +109,7 @@ impl SyncResponseProcessor {
         let mut presence = Vec::new();
         let mut account_data = Vec::new();
         let mut notifications = Vec::new();
+        let mut agent_signer_evidence = Vec::new();
         let mut partial = false;
 
         for frame in batch.frames {
@@ -213,6 +214,9 @@ impl SyncResponseProcessor {
                     notifications.push(notification);
                 }
             }
+            if let Some(bundle) = frame.agent_signer_evidence_bundle {
+                agent_signer_evidence.extend(bundle.evidence);
+            }
             partial |= frame.partial.unwrap_or(false);
         }
 
@@ -236,6 +240,7 @@ impl SyncResponseProcessor {
             presence,
             account_data,
             notifications,
+            agent_signer_evidence,
             partial,
         })
     }

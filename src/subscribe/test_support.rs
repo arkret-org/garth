@@ -48,6 +48,7 @@ pub(crate) fn sync_response(cursor: &str) -> AccountSubscribeBatch {
             account_data: None,
             presence: None,
             notifications: None,
+            agent_signer_evidence_bundle: None,
             partial: None,
             priority: None,
             reconnect_after_ms: None,
