@@ -545,12 +545,6 @@ impl ProfileCreateBuilder {
         self
     }
 
-    pub fn with_event_external_ref(mut self, external_ref: Value) -> Self {
-        self.profile_fields
-            .insert("external_ref".to_owned(), external_ref);
-        self
-    }
-
     pub fn with_expected_state_digest(mut self, expected_state_digest: Hash) -> Self {
         self.expected_state_digest = Some(expected_state_digest);
         self

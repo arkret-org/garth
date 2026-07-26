@@ -10,7 +10,6 @@
 #![allow(clippy::manual_async_fn)]
 
 mod crypto_box;
-pub mod discovery;
 mod error;
 mod protocol;
 
@@ -31,7 +30,6 @@ pub use arkret_state::resolver;
 pub use arkret_state::resolver::RealmState;
 pub use arkret_wire::GrantId;
 pub use arkret_wire::{MorphId, Proof};
-pub use discovery::{DirectoryService, RealmSearchEntry};
 pub use error::{Error, Result};
 pub use protocol::{
     ACTOR_PROFILE_SCHEMA, ActorKind, ActorProfile, ActorProfileId, ActorStatus, AppletId, BlobRef,
@@ -49,8 +47,6 @@ pub mod events {
 pub mod cursor {
     pub use arkret_hlc::*;
 }
-
-pub mod media;
 
 #[allow(ambiguous_glob_reexports, unused_imports)]
 pub mod models {
@@ -87,12 +83,10 @@ pub mod sync {
     pub use arkret_models_discovery::PresenceStatus;
 }
 
-pub mod account;
 pub mod account_handoff;
 #[cfg(feature = "mls")]
 pub mod agent_mls;
 pub mod backoff;
-pub mod base;
 pub mod crypto_state_store;
 pub mod event;
 pub mod executor;
@@ -101,26 +95,14 @@ pub mod inbound;
 pub mod maybe_send;
 pub mod orchestrator;
 pub mod outbound;
-pub mod presence;
 pub mod profile;
 pub mod projection;
-pub mod realm;
-pub mod receipts;
 pub mod runtime_store;
 pub mod session;
-pub mod settings;
 pub mod stamp;
 pub mod store;
 pub mod subscribe;
 pub mod sync_client;
-pub mod timeline;
-pub mod typing;
-
-pub use account::{
-    ACCOUNT_DATA_BLOCKLIST, AccountBlocklistPayload, AccountBlocklistPayloadEntry,
-    AccountBlocklistTarget, AccountDataManager, AccountDataSetPayload, ContactRemark,
-    ContactRemarkSubject, RealmRemark, RealmRemarkSubject,
-};
 pub use account_handoff::{
     AccountHandoffDisposition, OidcAccountHandoffInput, account_handoff_disposition,
     identity_binding_challenge_request, identity_creation_register_request,
@@ -133,10 +115,6 @@ pub use agent_mls::{
 };
 pub use arkret_event_draft::MessageEventPayload;
 pub use backoff::Backoff;
-pub use base::{
-    BaseClient, BootstrapSequence, BootstrapStep, BootstrapStepKind, BootstrapStepStatus,
-    ClientRealm, RealmMembershipState, SessionMeta, SessionRestore,
-};
 pub use crypto_state_store::{
     CRYPTO_STORE_BACKUP_VERSION, CryptoStore, CryptoStoreBackupEnvelope, CryptoStoreKeyRotation,
     EncryptedMemoryCryptoStore, MemoryCryptoStore, MlsCommitSource, MlsEpochSecretRecord,
@@ -162,14 +140,8 @@ pub use outbound::{
     OutboundGenerationFenceDecision, OutboundPostAcceptHook, OutboundQueueStore,
     OutboundSubmitOutcome, OutboundSubmitter,
 };
-pub use presence::{Presence, PresenceManager};
 pub use profile::*;
 pub use projection::{ProjectionMount, RealmStateReducer};
-pub use realm::{
-    BatchCreateMorph, BatchUpdateMorph, GraphTraversal, MorphAggregation, MorphQuery, MorphVersion,
-    MorphVersionDiff, Realm, RelationOperationInput,
-};
-pub use receipts::*;
 pub use runtime_store::{
     AccountSessionStore, AuditAction, AuditEntry, AuditLogStore, BlobMetadataStore,
     EventCacheStore as EventBodyCacheStore, MemoryPersistenceStore, StateSnapshotStore, StoreCache,
@@ -184,7 +156,6 @@ pub use session::{
     SessionGrantTransport, SessionHandle, SessionProofFields, SessionRefreshOptions,
     SessionTransportProvider, grant_due_for_rotation, grant_is_dead, refresh_decision,
 };
-pub use settings::*;
 pub use stamp::{
     MonotonicStampStore, RemoteStamp, SigningStamp, SigningStampAllocator, StampFloor,
     StampFloorUpdate, StampScope, hlc_from_floor,
@@ -208,16 +179,7 @@ pub use subscribe::{
 pub use sync_client::{
     AsyncSyncTransport, BackoffConfig, BackpressureConfig, BoxSyncFuture, CancellationToken,
     EphemeralDeviceKeyResolver, EventsSubscribeTransport, ExponentialBackoff, LocalEcho,
-    ProcessedRealm, RealmListChange, RealmListEntry, RealmListFilter, RealmListService,
-    RealmListSnapshot, RealmListSort, SendQueue, SendQueueItem, SendQueueItemKind,
-    SendQueueSnapshot, SendQueueStatus, SlidingSync, SlidingWindow, SyncGapStrategy, SyncLoop,
-    SyncLoopControl, SyncLoopSnapshot, SyncLoopStep, SyncRecoveryAction, SyncResponseProcessor,
-    SyncTransport,
+    ProcessedRealm, SendQueue, SendQueueItem, SendQueueItemKind, SendQueueSnapshot,
+    SendQueueStatus, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot, SyncLoopStep,
+    SyncRecoveryAction, SyncResponseProcessor, SyncTransport,
 };
-pub use timeline::{
-    CachedEvent, EventCache, EventCacheInsert, EventCacheUpdate, FocusedTimeline,
-    TimelineDirection, TimelineEvent, TimelineFrom, TimelineGap, TimelineItem, TimelineItemKind,
-    TimelineOptions, TimelineReactionSummary, TimelineReadReceipt, TimelineStore,
-    TimelineTypingUpdate,
-};
-pub use typing::{TypingManager, TypingNotification};

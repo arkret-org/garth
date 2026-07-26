@@ -1,8 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
-use std::sync::Arc;
+use std::collections::BTreeMap;
 
+use garth::StoreCache;
 use garth::cursor::Cursor as SyncCursor;
-use garth::{BaseClient, Realm, SessionMeta, StoreCache};
 use garth::{canonical, *};
 use serde_json::json;
 
@@ -20,87 +19,6 @@ fn device(id: &str) -> DeviceId {
         acc & 0x0000_ffff_ffff_ffff
     ))
     .unwrap()
-}
-
-fn event(kind: &str, seq: u64, realm_id: &RealmId, content: serde_json::Value) -> Event {
-    Event {
-        event_id: EventId::new(format!("ak:event:01904100-0000-7000-8000-{seq:012x}")).unwrap(),
-        kind: kind.into(),
-        realm_id: realm_id.clone(),
-        actor_id: did("alice"),
-        actor_seq: seq,
-        created_at: chrono::Utc::now(),
-        hlc: Some(Hlc::new(format!("01970e589d21-{seq:04x}-a13f9c2e")).unwrap()),
-        prev_refs: vec![],
-        effective_scope: None,
-        refs: vec![],
-        causal_refs: vec![],
-        preconditions: vec![],
-        effects: vec![],
-        seal_ref: None,
-        conflict_keys_digest: None,
-        auth_context: None,
-        seal_basis: None,
-        requirements: EventRequirements::default(),
-        redacts: None,
-        payload: serde_json::from_value(content).unwrap(),
-        executed_by: None,
-        authorization_ref: None,
-        applet_id: None,
-        external_ref: None,
-        actor_kind: None,
-        unsigned: BTreeMap::new(),
-        proofs: vec![],
-    }
-}
-
-#[test]
-fn end_to_end_auth_session_and_realm_query() {
-    let alice = did("alice");
-    let mut auth = AuthManager::default();
-    auth.register_password_user("alice", "secret", alice.clone())
-        .unwrap();
-    let session = auth
-        .login_password("alice", "secret", device("desktop"))
-        .unwrap();
-
-    let base = Arc::new(BaseClient::new());
-    base.set_session_meta(SessionMeta {
-        user_id: session.user_id,
-        device_id: session.device_id,
-        session_credential: Some(session.session_credential),
-        expires_at: Some(session.expires_at),
-    })
-    .unwrap();
-
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
-    let morph_id = MorphId::new("ak:morph:01904100-0000-7000-8000-d48c478ecd0b").unwrap();
-    base.process_events(
-        &realm_id,
-        vec![event(
-            garth::events::EventKind::MORPH_CREATE,
-            1,
-            &realm_id,
-            json!({
-                "object": {
-                    "id": morph_id.as_str(),
-                    "schema": MORPH_SCHEMA,
-                    "realm_id": realm_id.as_str(),
-                    "schema_refs": [MORPH_SCHEMA],
-                    "morph_type": "task",
-                    "metadata": {"title": "Ship SDK"},
-                    "fields": {"status": "todo"},
-                    "stage": "draft",
-                    "created_by": "did:webvh:z6mkfixture:alice.example",
-                    "created_at": "2026-05-02T00:00:00.000Z"
-                }
-            }),
-        )],
-    )
-    .unwrap();
-
-    let realm = Realm::new(realm_id.clone(), base);
-    assert_eq!(realm.search_morphs("ship").len(), 1);
 }
 
 #[test]
@@ -162,25 +80,7 @@ fn interoperability_serialization_roundtrips() {
 }
 
 #[test]
-fn stress_smoke_processes_many_index_and_cache_entries() {
-    let mut directory = DirectoryService::new();
-    for index in 0..250 {
-        let mut entry = RealmSearchEntry::new(
-            RealmId::new(format!("ak:realm:01904100-0000-7000-8000-{index:012x}")).unwrap(),
-            format!("Realm {index}"),
-        );
-        entry
-            .tags
-            .insert(if index % 2 == 0 { "even" } else { "odd" }.to_owned());
-        directory.publish_realm(entry);
-    }
-    assert_eq!(
-        directory
-            .recommend_realms(BTreeSet::from(["even".to_owned()]), BTreeSet::new(), 10)
-            .len(),
-        10
-    );
-
+fn stress_smoke_bounds_cache_entries() {
     let mut cache = StoreCache::new(128);
     for index in 0..1000 {
         cache.insert(index, index);

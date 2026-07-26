@@ -34,9 +34,9 @@ pub use arkret_models_collaboration::sync_frames::{
 pub use arkret_models_collaboration::{
     account_lifecycle::*, agent_operations::*, agent_signer_evidence::*, applet_service::*,
     event_query::*, event_sync::*, events_payloads::*, federation::*, governance::*,
-    governance_payloads::*, http_bodies::*, http_params::*, object_lifecycle::*, object_patch::*,
-    objects::*, resolved_state::*, runtime_identity::*, seal_transparency::*,
-    session_grant_bodies::*, sync_frames::*,
+    governance_payloads::*, http_bodies::*, object_lifecycle::*, object_patch::*, objects::*,
+    resolved_state::*, runtime_identity::*, seal_transparency::*, session_grant_bodies::*,
+    sync_frames::*,
 };
 pub use arkret_models_crypto::*;
 pub use arkret_models_discovery::*;
@@ -97,9 +97,9 @@ pub(crate) mod models {
     pub use arkret_models_collaboration::{
         account_lifecycle::*, agent_operations::*, agent_signer_evidence::*, applet_service::*,
         event_query::*, event_sync::*, events_payloads::*, federation::*, governance::*,
-        governance_payloads::*, http_bodies::*, http_params::*, object_lifecycle::*,
-        object_patch::*, objects::*, resolved_state::*, runtime_identity::*, seal_transparency::*,
-        session_grant_bodies::*, sync_frames::*,
+        governance_payloads::*, http_bodies::*, object_lifecycle::*, object_patch::*, objects::*,
+        resolved_state::*, runtime_identity::*, seal_transparency::*, session_grant_bodies::*,
+        sync_frames::*,
     };
     pub use arkret_models_crypto::*;
     pub use arkret_models_discovery::*;

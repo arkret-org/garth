@@ -19,26 +19,23 @@ use serde_json::Value;
 #[cfg(test)]
 use crate::protocol::AccountSubscribeFrame;
 use crate::protocol::sync::{
-    LimitedTimelineState, MembershipBucket, RealmSubscription, RealmUpdate, SubscriptionConfig,
-    SyncFilter, SyncRequestBody, SyncUpdates, TimelineFilter, TimelineOrderKey, ToDeviceAck,
-    ToDeviceAckStatus, WaitForFrontier,
+    LimitedTimelineState, RealmUpdate, SubscriptionConfig, SyncFilter, SyncRequestBody,
+    SyncUpdates, ToDeviceAck, ToDeviceAckStatus, WaitForFrontier,
 };
 use crate::protocol::{
     AccountStreamInterrupt, AccountSubscribeBatch, AccountSubscribeDeviceListChanges,
-    AccountSubscribeFrameKind, AccountSubscribeRealmSummary, CollaborationRealmRole, DeviceId,
-    DeviceMessageEnvelope, Did, EphemeralEnvelope, Error, Event, EventId, NotificationDelta,
-    NotificationDeltaAction, PresenceStatus, RealmId, Result, Timeline, aggregate_presence_states,
-    canonical, validate_last_active_at, validate_status_message,
+    AccountSubscribeFrameKind, AccountSubscribeRealmSummary, DeviceId, DeviceMessageEnvelope, Did,
+    EphemeralEnvelope, Error, Event, EventId, NotificationDelta, NotificationDeltaAction,
+    PresenceStatus, RealmId, Result, Timeline, aggregate_presence_states, canonical,
+    validate_last_active_at, validate_status_message,
 };
 
 mod loop_control;
 mod processor;
-mod realm_list;
 mod send_queue;
 #[cfg(test)]
 mod tests;
 
 pub use loop_control::*;
 pub use processor::*;
-pub use realm_list::*;
 pub use send_queue::*;
