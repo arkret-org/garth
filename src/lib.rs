@@ -95,7 +95,6 @@ pub mod inbound;
 pub mod maybe_send;
 pub mod orchestrator;
 pub mod outbound;
-pub mod profile;
 pub mod projection;
 pub mod runtime_store;
 pub mod session;
@@ -116,10 +115,9 @@ pub use agent_mls::{
 pub use arkret_event_draft::MessageEventPayload;
 pub use backoff::Backoff;
 pub use crypto_state_store::{
-    CRYPTO_STORE_BACKUP_VERSION, CryptoStore, CryptoStoreBackupEnvelope, CryptoStoreKeyRotation,
-    EncryptedMemoryCryptoStore, MemoryCryptoStore, MlsCommitSource, MlsEpochSecretRecord,
-    MlsGroupStateRecord, MlsGroupStateSink, MlsRecoveryAction, MlsRecoveryPlan,
-    PlatformKeyStoreDescriptor, PlatformKeyStoreKind, StoredDeviceVerification,
+    CRYPTO_STORE_BACKUP_VERSION, CryptoStore, CryptoStoreBackupEnvelope, MemoryCryptoStore,
+    MlsCommitSource, MlsEpochSecretRecord, MlsGroupStateRecord, MlsGroupStateSink,
+    MlsRecoveryAction, MlsRecoveryPlan, StoredDeviceVerification,
 };
 pub use event::{AccountUpdateContext, ClientEvent, ClientProjector};
 #[cfg(feature = "native")]
@@ -140,7 +138,6 @@ pub use outbound::{
     OutboundGenerationFenceDecision, OutboundPostAcceptHook, OutboundQueueStore,
     OutboundSubmitOutcome, OutboundSubmitter,
 };
-pub use profile::*;
 pub use projection::{ProjectionMount, RealmStateReducer};
 pub use runtime_store::{
     AccountSessionStore, AuditAction, AuditEntry, AuditLogStore, BlobMetadataStore,
