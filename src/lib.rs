@@ -16,8 +16,6 @@ mod protocol;
 pub use error::{Error, Result};
 
 pub mod account_handoff;
-#[cfg(feature = "mls")]
-pub mod agent_mls;
 pub mod backoff;
 pub mod crypto_state_store;
 pub mod event;
@@ -38,11 +36,6 @@ pub use account_handoff::{
     AccountHandoffDisposition, OidcAccountHandoffInput, account_handoff_disposition,
     identity_binding_challenge_request, identity_creation_register_request,
     oidc_account_handoff_request, pre_registration_session_grant_request, validate_binding_receipt,
-};
-#[cfg(feature = "mls")]
-pub use agent_mls::{
-    AgentMlsAuthorizationBinding, AgentMlsConsumeIntent, AgentMlsRuntime, AgentMlsRuntimePhase,
-    AgentMlsWelcomeInput, AgentMlsWelcomeOutcome, AgentMlsWelcomeVerifier,
 };
 pub use backoff::Backoff;
 pub use crypto_state_store::{

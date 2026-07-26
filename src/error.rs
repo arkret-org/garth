@@ -35,9 +35,6 @@ pub enum Error {
     InsecureUrl(String),
     #[error("HTTP request failed: {0}")]
     Http(String),
-    #[cfg(feature = "mls")]
-    #[error("MLS operation failed: {0}")]
-    Mls(String),
     #[error("Arkret API returned {status}: {error}")]
     Api {
         status: u16,
@@ -158,9 +155,6 @@ impl From<arkret_models_collaboration::sync_frames::stream_trace::StreamTraceErr
         Self::Protocol(format!("{}: {error}", error.violation()))
     }
 }
-
-#[cfg(feature = "mls")]
-protocol_error_from!(arkret_mls::MlsError);
 
 impl From<arkret_http_client::Error> for Error {
     fn from(error: arkret_http_client::Error) -> Self {

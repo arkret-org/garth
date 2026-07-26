@@ -233,8 +233,6 @@ fn classify_error(error: &crate::protocol::Error) -> RunErrorClass {
         Error::Protocol(_) | Error::Api { .. } | Error::AccountStreamInterrupt(_) => {
             RunErrorClass::ProtocolViolation
         }
-        #[cfg(feature = "mls")]
-        Error::Mls(_) => RunErrorClass::ProtocolViolation,
     }
 }
 
