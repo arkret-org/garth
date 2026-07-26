@@ -1,127 +1,146 @@
-//! Private import panel over the focused SDK semantic crates.
+//! Private, explicit imports from the focused SDK semantic crates.
 //!
-//! This module is deliberately private: it keeps runtime implementation files
-//! readable without creating another public protocol facade.
+//! Runtime code imports protocol-owned types through this module so the
+//! implementation remains readable without publishing a second protocol API.
 
-#![allow(unused_imports, hidden_glob_reexports)]
+pub(crate) use crate::{Error, Result};
+pub(crate) use arkret_keystore::{KeyBytes, KeyStore, KeyStoreError};
+pub(crate) use arkret_models_collaboration::account_lifecycle::AccountRegisterRequestBody;
+pub(crate) use arkret_models_collaboration::agent_signer_evidence::AgentSignerEvidence;
+pub(crate) use arkret_models_collaboration::event_query::EventsQueryOrder;
+pub(crate) use arkret_models_collaboration::events_payloads::ephemeral::EphemeralEnvelope;
+pub(crate) use arkret_models_collaboration::http_bodies::{
+    EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind,
+};
+pub(crate) use arkret_models_collaboration::session_grant_bodies::{
+    SessionGrantAgentScopeRequest, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
+    SessionGrantOutcome, SessionGrantRefreshOutcome, SessionGrantRefreshProof,
+    SessionGrantRefreshRequestBody, SessionGrantRequestBody,
+};
+pub(crate) use arkret_models_collaboration::sync_frames::account_subscribe::{
+    AccountStreamInterrupt, AccountSubscribeBatch, AccountSubscribeFrameKind,
+};
+pub(crate) use arkret_models_collaboration::sync_frames::account_sync::{
+    AccountSubscribeDeviceListChanges, AccountSubscribeRealmSummary, DeviceMessageEnvelope,
+    NotificationDelta, NotificationDeltaAction, Timeline,
+};
+pub(crate) use arkret_models_collaboration::sync_frames::client_sync::{RealmUpdate, SyncUpdates};
+pub(crate) use arkret_models_collaboration::sync_frames::stream_trace::StreamTraceValidator;
+pub(crate) use arkret_models_crypto::{MlsCommitEnvelope, MlsKeyPackageRecord, MlsWelcomeEnvelope};
+pub(crate) use arkret_models_discovery::{
+    PresenceStatus, aggregate_presence_states, validate_last_active_at, validate_status_message,
+};
+pub(crate) use arkret_models_identity::{
+    AccountBindingReceipt, AccountHandoffAuthenticationProof,
+    AccountHandoffAuthenticationProofKind, AccountHandoffBinding, AccountHandoffOutcome,
+    AccountHandoffRequestBody, DeviceVerificationState, DidOperationSubmitRequestBody,
+    IdentityBindingChallengeOutcome, IdentityBindingChallengeRequestBody, IdentityBindingPurpose,
+    IdentityCreationControlProof, IdentityCreationControlProofKind, IdentityCreationLease,
+    IdentityCreationRegistration, ReservedIdentityCreation, SessionGrantProofKind,
+};
+pub(crate) use arkret_state::resolver::RealmState;
+pub(crate) use arkret_wire::{
+    BlobRef, DeviceId, Did, Event, EventId, GrantId, Hash, Hlc, NonEmptyString, RealmId, RequestId,
+    SidecarId, StrandId,
+};
 
-pub use crate::{Error, Result};
-pub use arkret_event_draft::*;
-pub use arkret_keystore::{KeyBytes, KeyStore, KeyStoreError};
-pub use arkret_models_collaboration::events_payloads::{
-    account_misc::*, agent::*, call::*, capability_circle_consent_contact::*,
-    content_block_poll::*, device_identity::*, ephemeral::*, event_wire::*,
-    list_message_mimi_mls::*, mention::*, moderation::*, moderation_morph_misc::*,
-    morph_message::*, object_create::*, preview_realm_reaction::*, redaction::*,
-    strand_history_join::*, strand_ops::*,
+#[cfg(test)]
+pub(crate) use arkret_models_collaboration::session_grant_bodies::SessionGrantScopeDetails;
+#[cfg(test)]
+pub(crate) use arkret_models_collaboration::sync_frames::account_subscribe::{
+    AccountSubscribeFrame, AccountSubscribeRealms,
 };
-pub use arkret_models_collaboration::governance::{
-    accountability::*, agent_artifacts::*, agent_participation::*, audit::*, authorization::*,
-    circle::*, delivery_binding::*, erasure::*, grant_constraint::*, handle_claim::*,
-    history_visibility::*, invite_addressing::*, member_delivery_binding_candidate::*,
-    membership_invite::*, moderation::*, moderation_appeal::*, moderation_queue::*,
-    operation_wire::*, peer_contact::*, plaintext_visibility::*, policy_check::*,
-    realm_governance::*, realm_lifecycle::*, resource_selector::*, third_party_invite::*,
+#[cfg(test)]
+pub(crate) use arkret_models_collaboration::sync_frames::account_sync::{
+    AccountNotificationDataKind, AccountSubscribeUnreadCounts,
+    AgentRuntimeApprovalNotificationData, AgentRuntimeApprovalNotificationRemovalData,
+    AgentRuntimeApprovalRemovalReason, DeviceMessageContainer, EphemeralEventContainer,
+    EventContainer, NotificationContainer, NotificationData, RealmSyncEntry,
 };
-pub use arkret_models_collaboration::objects::{
-    account_status::*, blob::*, direct_conversation::*, interop::*, media::*, mimi::*,
-    object_facets::*, productivity::*, profiles::*, queries::*, query_projection::*,
-    read_receipts::*, realm::*, realm_alias::*, relation::*, space::*, strand::*, view::*,
+#[cfg(test)]
+pub(crate) use arkret_models_collaboration::sync_frames::client_sync::SyncRequestBody;
+#[cfg(test)]
+pub(crate) use arkret_models_crypto::MlsKeyPackageState;
+#[cfg(test)]
+pub(crate) use arkret_models_identity::{ACCOUNT_HANDOFF_ALLOWED_OPERATIONS, Handle};
+#[cfg(test)]
+pub(crate) use arkret_wire::{
+    BLOB_SCHEMA, DeviceMessageId, ErrorEnvelope, EventRequirements, MORPH_SCHEMA, NotificationId,
+    NotificationType, ObjectState, Proof, ProtocolKind,
 };
-pub use arkret_models_collaboration::sync_frames::{
-    account_subscribe::*, account_sync::*, client_sync::*, snapshot::*, stream_trace::*,
-};
-pub use arkret_models_collaboration::{
-    account_lifecycle::*, agent_operations::*, agent_signer_evidence::*, applet_service::*,
-    event_query::*, event_sync::*, events_payloads::*, federation::*, governance::*,
-    governance_payloads::*, http_bodies::*, object_lifecycle::*, object_patch::*, objects::*,
-    resolved_state::*, runtime_identity::*, seal_transparency::*, session_grant_bodies::*,
-    sync_frames::*,
-};
-pub use arkret_models_crypto::*;
-pub use arkret_models_discovery::*;
-pub use arkret_models_identity::*;
-pub use arkret_models_integration::*;
-pub use arkret_state::resolver::*;
-pub use arkret_state::*;
-pub use arkret_wire::*;
 
 pub(crate) mod auth {
-    pub use arkret_auth::*;
+    pub(crate) use arkret_auth::AuthSession;
 }
+
 pub(crate) mod canonical {
-    pub use arkret_canonical::*;
+    pub(crate) use arkret_canonical::{
+        canonical_json_bytes, canonical_sha256, sha256_bytes_from_slices, sha256_digest,
+    };
 }
-pub(crate) mod crypto {
-    pub use arkret_crypto::*;
-}
-pub(crate) mod cursor {
-    pub use arkret_hlc::*;
-}
+
 pub(crate) mod dpop {
-    pub use arkret_signatures::dpop::*;
+    pub(crate) use arkret_signatures::dpop::build_dpop_proof;
 }
+
+#[cfg(test)]
 pub(crate) mod events {
-    pub use arkret_wire::EventKind;
-    pub use arkret_wire::events::*;
+    pub(crate) use arkret_wire::EventKind;
 }
+
 pub(crate) mod hlc {
-    pub use arkret_hlc::*;
-    pub use arkret_identifiers::hlc::*;
+    pub(crate) use arkret_hlc::HlcGenerator;
+    pub(crate) use arkret_identifiers::hlc::{HLC_MAX_LOGICAL, HLC_MAX_PHYSICAL_MS, parse_hlc};
 }
+
+#[cfg(test)]
 pub(crate) mod identifiers {
-    pub use arkret_identifiers::*;
+    pub(crate) use arkret_identifiers::Cursor;
 }
+
 pub(crate) mod models {
-    pub use arkret_event_draft::*;
-    pub use arkret_models_collaboration::events_payloads::{
-        account_misc::*, agent::*, call::*, capability_circle_consent_contact::*,
-        content_block_poll::*, device_identity::*, ephemeral::*, event_wire::*,
-        list_message_mimi_mls::*, mention::*, moderation::*, moderation_morph_misc::*,
-        morph_message::*, object_create::*, preview_realm_reaction::*, redaction::*,
-        strand_history_join::*, strand_ops::*,
+    pub(crate) use arkret_models_collaboration::agent_operations::{
+        AgentSidecarDisplayMode, AgentSidecarEventExchangeBinding, AgentSidecarExchangeBindingRole,
+        AgentSidecarExchangeCompletionPolicy, AgentSidecarExchangeControl,
+        AgentSidecarExchangeControlAction, AgentSidecarExchangeFoldedFrontier,
+        AgentSidecarExchangeId, AgentSidecarExchangeOrigin, AgentSidecarExchangeProjection,
+        AgentSidecarExchangeProjectionSchema, AgentSidecarExchangeRequestContext,
+        AgentSidecarExchangeStatus, AgentSidecarProjectionProvenance, AgentSidecarViewState,
+        agent_sidecar_exchange_event_set_digest,
     };
-    pub use arkret_models_collaboration::governance::{
-        accountability::*, agent_artifacts::*, agent_participation::*, audit::*, authorization::*,
-        circle::*, delivery_binding::*, erasure::*, grant_constraint::*, handle_claim::*,
-        history_visibility::*, invite_addressing::*, member_delivery_binding_candidate::*,
-        membership_invite::*, moderation::*, moderation_appeal::*, moderation_queue::*,
-        operation_wire::*, peer_contact::*, plaintext_visibility::*, policy_check::*,
-        realm_governance::*, realm_lifecycle::*, resource_selector::*, third_party_invite::*,
+    #[cfg(test)]
+    pub(crate) use arkret_models_collaboration::agent_operations::{
+        AgentSidecarExchangeControlSchema, AgentSidecarSourceTrackRef,
     };
-    pub use arkret_models_collaboration::objects::{
-        account_status::*, blob::*, direct_conversation::*, interop::*, media::*, mimi::*,
-        object_facets::*, productivity::*, profiles::*, queries::*, query_projection::*,
-        read_receipts::*, realm::*, realm_alias::*, relation::*, space::*, strand::*, view::*,
-    };
-    pub use arkret_models_collaboration::{
-        account_lifecycle::*, agent_operations::*, agent_signer_evidence::*, applet_service::*,
-        event_query::*, event_sync::*, events_payloads::*, federation::*, governance::*,
-        governance_payloads::*, http_bodies::*, object_lifecycle::*, object_patch::*, objects::*,
-        resolved_state::*, runtime_identity::*, seal_transparency::*, session_grant_bodies::*,
-        sync_frames::*,
-    };
-    pub use arkret_models_crypto::*;
-    pub use arkret_models_discovery::*;
-    pub use arkret_models_identity::*;
-    pub use arkret_models_integration::*;
+    pub(crate) use arkret_models_collaboration::objects::blob::BlobMetadata;
 }
+
 pub(crate) mod resolver {
-    pub use arkret_state::resolver::*;
-    pub use arkret_state::snapshot::*;
-    pub use arkret_state::state::*;
+    #[cfg(test)]
+    pub(crate) use arkret_state::resolver::SnapshotRestoreSource;
+    pub(crate) use arkret_state::resolver::{RealmState, SnapshotRestore, StateSnapshot};
 }
+
 pub(crate) mod session_grant {
-    pub use arkret_auth::session_grant::*;
-}
-pub(crate) mod signatures {
-    pub use arkret_signatures::*;
-}
-pub(crate) mod sync {
-    pub use arkret_models_collaboration::event_sync::*;
-    pub use arkret_models_collaboration::sync_frames::*;
-    pub use arkret_models_collaboration::sync_frames::{
-        account_subscribe::*, account_sync::*, client_sync::*, snapshot::*, stream_trace::*,
+    pub use arkret_auth::session_grant::SessionGrantProofFields;
+    pub(crate) use arkret_auth::session_grant::{
+        agent_key_proof_session_grant_request, did_proof_session_grant_request,
+        holder_proof_session_grant_request, oidc_session_grant_request,
+        pre_registration_handoff_session_grant_request,
     };
-    pub use arkret_models_discovery::PresenceStatus;
+}
+
+pub(crate) mod signatures {
+    pub(crate) use arkret_signatures::webvh;
+    #[cfg(test)]
+    pub(crate) use arkret_signatures::{PublicKeyMaterial, sign_eddsa_detached_jws};
+}
+
+pub(crate) mod sync {
+    #[cfg(test)]
+    pub(crate) use arkret_models_collaboration::sync_frames::client_sync::SyncStreamPosition;
+    pub(crate) use arkret_models_collaboration::sync_frames::client_sync::{
+        LimitedTimelineState, RealmUpdate, SubscriptionConfig, SyncFilter, SyncGap,
+        SyncRequestBody, SyncUpdates, ToDeviceAck, ToDeviceAckStatus, WaitForFrontier,
+    };
 }

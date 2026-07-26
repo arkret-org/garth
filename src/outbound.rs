@@ -171,7 +171,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         &self,
         transaction_id: Option<String>,
         realm_id: RealmId,
-        actor_id: crate::Did,
+        actor_id: crate::protocol::Did,
         kind: SendQueueItemKind,
         content: Value,
         depends_on: Vec<String>,
@@ -573,7 +573,7 @@ mod tests {
             .enqueue_scoped(
                 Some("local-operation-1".to_owned()),
                 realm_id(),
-                crate::Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+                crate::protocol::Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
                 SendQueueItemKind::Message,
                 serde_json::json!({"intent": "unsigned"}),
                 Vec::new(),

@@ -2,9 +2,9 @@
 
 use std::time::Duration;
 
+use arkret_wire::{DeviceId, Did, EventId};
 use garth::{
-    CursorScope, CursorStore, DeviceId, Did, DurableInboxStore, EventCacheStore, EventId,
-    FileStore, OutboundQueueStore,
+    CursorScope, CursorStore, DurableInboxStore, EventCacheStore, FileStore, OutboundQueueStore,
 };
 
 fn account_scope() -> CursorScope {
