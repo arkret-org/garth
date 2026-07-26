@@ -912,7 +912,7 @@ mod tests {
     use crate::protocol::{AccountStreamInterrupt, AccountSubscribeBatch, Error, SyncRequestBody};
     use crate::protocol::{
         ErrorEnvelope, EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind, Hlc,
-        NotificationDelta, NotificationDeltaAction, NotificationId, NotificationType, RealmId,
+        NotificationDelta, NotificationDeltaAction, NotificationId, NotificationKind, RealmId,
     };
     use serde_json::{Value, json};
 
@@ -1323,7 +1323,7 @@ mod tests {
                 vec![ClientEvent::Notification(NotificationDelta {
                     id: NotificationId::new("ak:notification:01964137-0000-7000-8000-000000000011")
                         .unwrap(),
-                    notification_type: NotificationType::Agent,
+                    notification_kind: NotificationKind::Agent,
                     action: NotificationDeltaAction::Remove,
                     data: None,
                 })],

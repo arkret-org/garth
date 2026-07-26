@@ -66,7 +66,7 @@ pub(crate) use arkret_models_identity::{ACCOUNT_HANDOFF_ALLOWED_OPERATIONS, Hand
 #[cfg(test)]
 pub(crate) use arkret_wire::{
     BLOB_SCHEMA, DeviceMessageId, ErrorEnvelope, EventRequirements, MORPH_SCHEMA, NotificationId,
-    NotificationType, ObjectState, Proof, ProtocolKind,
+    NotificationKind, ObjectState, Proof, ProtocolKind,
 };
 
 pub(crate) mod auth {

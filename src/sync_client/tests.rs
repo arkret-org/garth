@@ -13,7 +13,7 @@ use crate::protocol::{
     AccountNotificationDataKind, AgentRuntimeApprovalNotificationData,
     AgentRuntimeApprovalNotificationRemovalData, AgentRuntimeApprovalRemovalReason,
     DeviceMessageId, Did, EphemeralEnvelope, Hash, NotificationContainer, NotificationData,
-    NotificationId, NotificationType, Proof, RealmId,
+    NotificationId, NotificationKind, Proof, RealmId,
 };
 
 fn sync_response(cursor: &str) -> AccountSubscribeBatch {
@@ -44,7 +44,7 @@ fn approval_notifications(notification_id: &str, expires_at: &str) -> Notificati
     NotificationContainer {
         items: vec![NotificationDelta {
             id: NotificationId::new(notification_id).unwrap(),
-            notification_type: NotificationType::Agent,
+            notification_kind: NotificationKind::Agent,
             action: NotificationDeltaAction::Add,
             data: Some(NotificationData::AgentRuntimeApproval(
                 AgentRuntimeApprovalNotificationData {
@@ -670,7 +670,7 @@ fn processor_applies_notification_add_update_and_remove_deltas() {
     delta_mut(&mut remove).notifications = Some(NotificationContainer {
         items: vec![NotificationDelta {
             id: NotificationId::new(notification_id).unwrap(),
-            notification_type: NotificationType::Agent,
+            notification_kind: NotificationKind::Agent,
             action: NotificationDeltaAction::Remove,
             data: Some(NotificationData::AgentRuntimeApprovalRemoval(
                 AgentRuntimeApprovalNotificationRemovalData {

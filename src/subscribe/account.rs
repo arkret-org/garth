@@ -63,7 +63,7 @@ mod tests {
 
     use crate::protocol::{
         AccountSubscribeDeviceListChanges, NotificationDelta, NotificationDeltaAction,
-        NotificationId, NotificationType, RealmId, RealmSyncEntry, RealmUpdate, SyncUpdates,
+        NotificationId, NotificationKind, RealmId, RealmSyncEntry, RealmUpdate, SyncUpdates,
     };
 
     use super::*;
@@ -89,7 +89,7 @@ mod tests {
             notifications: vec![NotificationDelta {
                 id: NotificationId::new("ak:notification:01964137-0000-7000-8000-000000000010")
                     .unwrap(),
-                notification_type: NotificationType::Agent,
+                notification_kind: NotificationKind::Agent,
                 action: NotificationDeltaAction::Remove,
                 data: None,
             }],

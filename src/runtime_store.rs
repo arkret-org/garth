@@ -54,7 +54,7 @@ pub trait EventCacheStore: Send + Sync {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StoredAccountData {
     pub principal_id: Did,
-    pub data_type: String,
+    pub account_data_key: String,
     pub content: Value,
     pub updated_at: DateTime<Utc>,
 }
@@ -65,7 +65,11 @@ pub trait AccountSessionStore: Send + Sync {
     fn sessions_for_principal(&self, principal_id: &Did) -> Vec<&AuthSession>;
     fn revoke_session(&mut self, session_id: &str) -> Result<()>;
     fn put_account_data(&mut self, data: StoredAccountData) -> Result<()>;
-    fn account_data(&self, principal_id: &Did, data_type: &str) -> Option<&StoredAccountData>;
+    fn account_data(
+        &self,
+        principal_id: &Did,
+        account_data_key: &str,
+    ) -> Option<&StoredAccountData>;
 }
 
 pub trait BlobMetadataStore: Send + Sync {
@@ -216,14 +220,20 @@ impl AccountSessionStore for MemoryPersistenceStore {
     }
 
     fn put_account_data(&mut self, data: StoredAccountData) -> Result<()> {
-        self.account_data
-            .insert((data.principal_id.clone(), data.data_type.clone()), data);
+        self.account_data.insert(
+            (data.principal_id.clone(), data.account_data_key.clone()),
+            data,
+        );
         Ok(())
     }
 
-    fn account_data(&self, principal_id: &Did, data_type: &str) -> Option<&StoredAccountData> {
+    fn account_data(
+        &self,
+        principal_id: &Did,
+        account_data_key: &str,
+    ) -> Option<&StoredAccountData> {
         self.account_data
-            .get(&(principal_id.clone(), data_type.to_owned()))
+            .get(&(principal_id.clone(), account_data_key.to_owned()))
     }
 }
 
@@ -388,7 +398,7 @@ mod tests {
                     "schema": crate::protocol::MORPH_SCHEMA,
                     "realm_id": "ak:realm:01904100-0000-7000-8000-9b64700c6ee8",
                     "schema_refs": [crate::protocol::MORPH_SCHEMA],
-                    "morph_type": "task",
+                    "morph_kind": "task",
                     "metadata": {"title": title},
                     "stage": "draft",
                     "created_by": "did:webvh:z6mkfixture:alice.example.com",
@@ -445,7 +455,7 @@ mod tests {
                 "schema": crate::protocol::MORPH_SCHEMA,
                 "realm_id": "ak:realm:01904100-0000-7000-8000-9b64700c6ee8",
                 "schema_refs": [crate::protocol::MORPH_SCHEMA],
-                "morph_type": "task",
+                "morph_kind": "task",
                 "metadata": {"title": "Changed"},
                 "stage": "draft",
                 "created_by": "did:webvh:z6mkfixture:alice.example.com",
@@ -500,7 +510,7 @@ mod tests {
         store
             .put_account_data(StoredAccountData {
                 principal_id: principal_id.clone(),
-                data_type: "settings".to_owned(),
+                account_data_key: "settings".to_owned(),
                 content: json!({"theme": "dark"}),
                 updated_at: Utc::now(),
             })

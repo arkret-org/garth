@@ -394,7 +394,7 @@ pub fn fold_sidecar_exchange(
         .map(|fact| fact.event_id.clone())
         .collect();
 
-    let (status, failure_code, terminal_event_id) = match terminal {
+    let (status, failure_reason_code, terminal_event_id) = match terminal {
         Some(terminal_fact) => {
             let outcome = terminal_fact
                 .control
@@ -403,7 +403,7 @@ pub fn fold_sidecar_exchange(
             (
                 outcome.status,
                 outcome
-                    .failure_code
+                    .failure_reason_code
                     .map(NonEmptyString::new)
                     .transpose()
                     .map_err(|_| {
@@ -445,7 +445,7 @@ pub fn fold_sidecar_exchange(
         private_request_event_id: request.event_id.clone(),
         user_facing_response_event_ids,
         status,
-        failure_code,
+        failure_reason_code,
         terminal_event_id,
         folded_frontier,
     };
@@ -668,7 +668,7 @@ mod tests {
             basis_event_ids: basis,
             action: AgentSidecarExchangeControlAction::Close,
             response_event_ids: Some(responses),
-            failure_code: None,
+            failure_reason_code: None,
             expected_coordinator_agent_id: None,
             coordinator_agent_id: None,
         }
@@ -852,7 +852,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_terminal_actions_map_to_spec_failure_codes() {
+    fn empty_terminal_actions_map_to_spec_failure_reason_codes() {
         let request = request_fact(0x34, 1, "aa");
         let cases = [
             (
@@ -874,7 +874,7 @@ mod tests {
         for (action, fail_code, expected) in cases {
             let mut control = close_control(vec![event_id(0x34)], vec![]);
             control.action = action;
-            control.failure_code = fail_code.map(|code| NonEmptyString::new(code).unwrap());
+            control.failure_reason_code = fail_code.map(|code| NonEmptyString::new(code).unwrap());
             let projection = fold_sidecar_exchange(
                 &scope(),
                 &exchange_id(),
@@ -886,7 +886,10 @@ mod tests {
             .unwrap();
             assert_eq!(projection.status, AgentSidecarExchangeStatus::Failed);
             assert_eq!(
-                projection.failure_code.as_ref().map(|code| code.as_str()),
+                projection
+                    .failure_reason_code
+                    .as_ref()
+                    .map(|code| code.as_str()),
                 Some(expected)
             );
             assert!(projection.user_facing_response_event_ids.is_empty());

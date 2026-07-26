@@ -350,7 +350,7 @@ mod tests {
             private_request_event_id: private_event.clone(),
             user_facing_response_event_ids: Vec::new(),
             status: AgentSidecarExchangeStatus::Delivered,
-            failure_code: None,
+            failure_reason_code: None,
             terminal_event_id: None,
             folded_frontier: AgentSidecarExchangeFoldedFrontier {
                 event_ids: vec![private_event.clone()],
