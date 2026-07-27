@@ -5,6 +5,7 @@ use crate::protocol::{
     EphemeralEventContainer, ErrorEnvelope, EventContainer, ProtocolKind, RealmSyncEntry,
 };
 use arkret_signatures::{PublicKeyMaterial, sign_eddsa_detached_jws};
+use arkret_wire::OpaqueLocalId;
 use ed25519_dalek::SigningKey;
 use serde_json::json;
 
@@ -49,8 +50,10 @@ fn approval_notifications(notification_id: &str, expires_at: &str) -> Notificati
             data: Some(NotificationData::AgentRuntimeApproval(
                 AgentRuntimeApprovalNotificationData {
                     kind: AccountNotificationDataKind::AgentRuntimeApproval,
-                    approval_request_id:
-                        "agent_runtime_approval:01964137-0000-7000-8000-000000000001".to_owned(),
+                    approval_request_id: OpaqueLocalId::new(
+                        "agent_runtime_approval:01964137-0000-7000-8000-000000000001",
+                    )
+                    .unwrap(),
                     agent_id: Did::new("did:webvh:z6mkfixture:agent.example").unwrap(),
                     requested_at: DateTime::parse_from_rfc3339("2026-07-13T10:00:00.000Z")
                         .unwrap()
@@ -289,6 +292,7 @@ fn sync_loop_can_reset_token_on_limited_timeline_gap() {
             limited: true,
             prev_cursor: Some("prev".to_owned()),
             preview_only: None,
+            ordered_log_conflicts: Vec::new(),
             extra: BTreeMap::new(),
         }),
         ..Default::default()
@@ -617,6 +621,7 @@ fn processor_tracks_limited_timelines_and_to_device_ack() {
             limited: true,
             prev_cursor: Some("prev".to_owned()),
             preview_only: None,
+            ordered_log_conflicts: Vec::new(),
             extra: BTreeMap::new(),
         }),
         ..Default::default()
