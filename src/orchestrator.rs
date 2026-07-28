@@ -1238,7 +1238,9 @@ mod tests {
     fn event_frame() -> EventsSubscribeFrame {
         let event = crate::protocol::Event::new(
             crate::protocol::events::EventKind::MESSAGE_CREATE,
-            realm_id(),
+            crate::protocol::ScopeRef::Realm {
+                realm_id: realm_id(),
+            },
             actor_id(),
             1,
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),

@@ -2,7 +2,7 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::{future::Future, pin::Pin, time::Duration};
 
-use crate::protocol::{Error, EventId, RealmId, Result};
+use crate::protocol::{Error, EventId, IngressReceipt, RealmId, Result};
 use crate::sync_client::{SendQueue, SendQueueItem, SendQueueItemKind, SendQueueSnapshot};
 use chrono::{DateTime, Utc};
 use serde_json::Value;
@@ -79,18 +79,33 @@ impl OutboundPostAcceptHook for NoopPostAcceptHook {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OutboundSubmitOutcome {
     /// Host prepared and signed the queued unsigned intent. Persist it before
     /// beginning transport.
     Prepared {
         content: Value,
     },
+    /// The ingress admitted the Event and issued its receipts.
+    ///
+    /// `ingress_receipts` are the receipts the service returned in
+    /// `EventsSubmitOutcome.ingress_receipts[]`; they are the only evidence
+    /// that this Event arrived inside its lease window, so the queue refuses
+    /// an acceptance that carries none.
     Accepted {
         event_id: EventId,
+        ingress_receipts: Vec<IngressReceipt>,
     },
+    /// The same canonical Event was already admitted.
+    ///
+    /// The service MUST return the *original* receipts here rather than
+    /// re-signing with a later `received_at`
+    /// (`offline-publication.md` §2.1). The queue keeps whatever it already
+    /// stored, so a service that violates that cannot silently extend the
+    /// revocation window of a locally persisted item.
     Duplicate {
         event_id: EventId,
+        ingress_receipts: Vec<IngressReceipt>,
     },
     Rejected {
         reason: String,
@@ -297,24 +312,32 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
                     .await?;
                 Ok(OutboundEngineOutcome::Prepared(item))
             }
-            OutboundSubmitOutcome::Accepted { event_id } => {
+            OutboundSubmitOutcome::Accepted {
+                event_id,
+                ingress_receipts,
+            } => {
                 if let Err(error) = hook.post_accept(&hook_item, &event_id, false).await {
                     return self
                         .retry_local_or_terminal(transaction_id, error.to_string())
                         .await;
                 }
                 Ok(OutboundEngineOutcome::Accepted(
-                    self.mark_sent(transaction_id, event_id).await?,
+                    self.mark_sent(transaction_id, event_id, ingress_receipts)
+                        .await?,
                 ))
             }
-            OutboundSubmitOutcome::Duplicate { event_id } => {
+            OutboundSubmitOutcome::Duplicate {
+                event_id,
+                ingress_receipts,
+            } => {
                 if let Err(error) = hook.post_accept(&hook_item, &event_id, true).await {
                     return self
                         .retry_local_or_terminal(transaction_id, error.to_string())
                         .await;
                 }
                 Ok(OutboundEngineOutcome::Duplicate(
-                    self.mark_sent(transaction_id, event_id).await?,
+                    self.mark_sent(transaction_id, event_id, ingress_receipts)
+                        .await?,
                 ))
             }
             OutboundSubmitOutcome::RetryAfter { delay, .. } => {
@@ -361,10 +384,15 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         }
     }
 
-    async fn mark_sent(&self, id: String, event_id: EventId) -> Result<SendQueueItem> {
+    async fn mark_sent(
+        &self,
+        id: String,
+        event_id: EventId,
+        ingress_receipts: Vec<IngressReceipt>,
+    ) -> Result<SendQueueItem> {
         self.store
             .mutate_outbound(move |queue| {
-                queue.mark_sent(&id, event_id)?;
+                queue.mark_sent(&id, event_id, ingress_receipts)?;
                 owned_item(queue, &id)
             })
             .await
@@ -519,6 +547,21 @@ mod tests {
         RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap()
     }
 
+    /// The receipt a policy-accepted ingress returns alongside an
+    /// accepted submission (`offline-publication.md` §2.1).
+    fn accepted_receipt() -> crate::protocol::IngressReceipt {
+        let issued_at = Utc::now() - chrono::Duration::minutes(5);
+        let lease = crate::sync_client::test_publication::lease(
+            realm_id(),
+            issued_at,
+            issued_at + chrono::Duration::hours(1),
+        );
+        crate::sync_client::test_publication::receipt(
+            &lease,
+            issued_at + chrono::Duration::minutes(1),
+        )
+    }
+
     fn event_id() -> EventId {
         EventId::new("ak:event:01904100-0000-7000-8000-000000000001").unwrap()
     }
@@ -552,6 +595,7 @@ mod tests {
             outcomes: Arc::new(Mutex::new(VecDeque::from([
                 OutboundSubmitOutcome::Accepted {
                     event_id: event_id(),
+                    ingress_receipts: vec![accepted_receipt()],
                 },
             ]))),
         };
@@ -587,6 +631,7 @@ mod tests {
                 },
                 OutboundSubmitOutcome::Accepted {
                     event_id: event_id(),
+                    ingress_receipts: vec![accepted_receipt()],
                 },
             ]))),
         };
@@ -675,9 +720,11 @@ mod tests {
             outcomes: Arc::new(Mutex::new(VecDeque::from([
                 OutboundSubmitOutcome::Accepted {
                     event_id: event_id(),
+                    ingress_receipts: vec![accepted_receipt()],
                 },
                 OutboundSubmitOutcome::Duplicate {
                     event_id: event_id(),
+                    ingress_receipts: vec![accepted_receipt()],
                 },
             ]))),
         };
@@ -783,6 +830,7 @@ mod tests {
             outcomes: Arc::new(Mutex::new(VecDeque::from([
                 OutboundSubmitOutcome::Duplicate {
                     event_id: event_id(),
+                    ingress_receipts: vec![accepted_receipt()],
                 },
             ]))),
         };

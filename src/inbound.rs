@@ -49,7 +49,7 @@ impl InboundDecoder {
 
 #[cfg(test)]
 mod tests {
-    use arkret_wire::{Did, Hlc, RealmId};
+    use arkret_wire::{Did, Hlc, RealmId, ScopeRef};
     use serde_json::{Value, json};
 
     use super::*;
@@ -57,7 +57,9 @@ mod tests {
     fn event(kind: &str, payload: Value) -> Event {
         Event::new(
             kind,
-            RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap(),
+            ScopeRef::Realm {
+                realm_id: RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap(),
+            },
             Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
             1,
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),

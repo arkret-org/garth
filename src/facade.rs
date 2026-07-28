@@ -1,7 +1,3 @@
-use std::sync::Arc;
-
-use crate::EphemeralDeviceKeyResolver;
-
 use crate::{CursorStore, EventCacheStore, Executor, SubscriptionEngine};
 
 /// Root handle for shared client runtime components.
@@ -15,7 +11,6 @@ pub struct ArkretClient<E, C, D> {
     pub cursor_store: C,
     pub event_cache_store: D,
     pub(crate) backoff_seed: u64,
-    ephemeral_device_key_resolver: Option<Arc<dyn EphemeralDeviceKeyResolver>>,
 }
 
 impl<E, C, D> std::fmt::Debug for ArkretClient<E, C, D>
@@ -31,10 +26,6 @@ where
             .field("cursor_store", &self.cursor_store)
             .field("event_cache_store", &self.event_cache_store)
             .field("backoff_seed", &self.backoff_seed)
-            .field(
-                "has_ephemeral_device_key_resolver",
-                &self.ephemeral_device_key_resolver.is_some(),
-            )
             .finish()
     }
 }
@@ -66,33 +57,17 @@ where
             cursor_store,
             event_cache_store,
             backoff_seed,
-            ephemeral_device_key_resolver: None,
         }
-    }
-
-    /// Configure the authoritative active-device key resolver used by every
-    /// account loop created by this client. Without one the Arkret SDK drops
-    /// ephemeral presence updates fail-closed.
-    pub fn with_ephemeral_device_key_resolver(
-        mut self,
-        resolver: Arc<dyn EphemeralDeviceKeyResolver>,
-    ) -> Self {
-        self.ephemeral_device_key_resolver = Some(resolver);
-        self
     }
 
     pub fn subscription_engine(&self) -> SubscriptionEngine<E, C, D>
     where
         E: Clone,
     {
-        let mut engine = SubscriptionEngine::new(
+        SubscriptionEngine::new(
             self.executor.clone(),
             self.cursor_store.clone(),
             self.event_cache_store.clone(),
-        );
-        if let Some(resolver) = self.ephemeral_device_key_resolver.clone() {
-            engine = engine.with_ephemeral_device_key_resolver(resolver);
-        }
-        engine
+        )
     }
 }

@@ -1,20 +1,18 @@
 use std::collections::BTreeMap;
 
 use crate::protocol::{
-    AccountSubscribeRealms, AccountSubscribeUnreadCounts, DeviceMessageContainer,
-    EphemeralEventContainer, ErrorEnvelope, EventContainer, ProtocolKind, RealmSyncEntry,
+    AccountSubscribeRealms, AccountSubscribeUnreadCounts, DeviceMessageContainer, ErrorEnvelope,
+    EventContainer, ProtocolKind, RealmSyncEntry,
 };
-use arkret_signatures::{PublicKeyMaterial, sign_eddsa_detached_jws};
 use arkret_wire::OpaqueLocalId;
-use ed25519_dalek::SigningKey;
 use serde_json::json;
 
 use super::*;
 use crate::protocol::{
     AccountNotificationDataKind, AgentRuntimeApprovalNotificationData,
     AgentRuntimeApprovalNotificationRemovalData, AgentRuntimeApprovalRemovalReason,
-    DeviceMessageId, Did, EphemeralEnvelope, Hash, NotificationContainer, NotificationData,
-    NotificationId, NotificationKind, Proof, RealmId,
+    DeviceMessageId, Did, NotificationContainer, NotificationData, NotificationId,
+    NotificationKind, RealmId,
 };
 
 fn sync_response(cursor: &str) -> AccountSubscribeBatch {
@@ -27,7 +25,6 @@ fn sync_response(cursor: &str) -> AccountSubscribeBatch {
             to_device: None,
             device_lists: None,
             account_data: None,
-            presence: None,
             notifications: None,
             agent_signer_evidence_bundle: None,
             partial: None,
@@ -67,51 +64,22 @@ fn approval_notifications(notification_id: &str, expires_at: &str) -> Notificati
     }
 }
 
-fn signed_presence(
-    realm_id: RealmId,
-    actor_id: Did,
-    device_id: DeviceId,
-    sent_at: DateTime<Utc>,
-    expires_at: DateTime<Utc>,
-    state: &str,
-    seed: [u8; 32],
-) -> (EphemeralEnvelope, PublicKeyMaterial) {
-    let signing_key = SigningKey::from_bytes(&seed);
-    let verification_method = format!("{actor_id}#{device_id}");
-    let mut envelope = EphemeralEnvelope::new(
-        "ak.presence",
+fn publication_lease(realm_id: RealmId) -> arkret_wire::AuthorizationLease {
+    let issued_at = Utc::now() - chrono::Duration::minutes(5);
+    super::send_queue::test_publication::lease(
         realm_id,
-        actor_id.clone(),
-        device_id,
-        sent_at,
-        expires_at,
-        serde_json::from_value(json!({"state":state})).unwrap(),
-        Proof {
-            kind: "detached_jws".to_owned(),
-            alg: "EdDSA".to_owned(),
-            verification_method,
-            event_digest: Hash::new(format!("sha256:{}", "0".repeat(64))).unwrap(),
-            created_at: sent_at,
-            domain: None,
-            audience: None,
-            proof_purpose: None,
-            jws: "header..signature".to_owned(),
-        },
+        issued_at,
+        issued_at + chrono::Duration::hours(1),
     )
-    .unwrap();
-    envelope.proof.event_digest = Hash::new(canonical::sha256_digest(
-        envelope.canonical_bytes_without_proof().unwrap(),
-    ))
-    .unwrap();
-    let binding = envelope
-        .proof
-        .canonical_ephemeral_binding_bytes(&actor_id)
-        .unwrap();
-    envelope.proof.jws = sign_eddsa_detached_jws(&signing_key, &binding).unwrap();
-    let public_key = PublicKeyMaterial::Ed25519Raw {
-        bytes: signing_key.verifying_key().to_bytes().to_vec(),
-    };
-    (envelope, public_key)
+}
+
+/// The receipt a policy-accepted ingress returns in
+/// `EventsSubmitOutcome.ingress_receipts[]`.
+fn accepted_receipt() -> arkret_wire::IngressReceipt {
+    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let lease = publication_lease(realm_id);
+    let received_at = lease.issued_at + chrono::Duration::minutes(1);
+    super::send_queue::test_publication::receipt(&lease, received_at)
 }
 
 #[test]
@@ -351,21 +319,9 @@ fn processor_dispatches_all_update_categories() {
     let sender = Did::new("did:webvh:z6mkfixture:alice.example").unwrap();
     let recipient = Did::new("did:webvh:z6mkfixture:bob.example").unwrap();
     let realm = RealmId::new(realm_id).unwrap();
-    let presence_device_id =
-        DeviceId::new("ak:device:01904100-0000-7000-8000-000000000005").unwrap();
-    let presence_sent_at = Utc::now();
-    let (presence_event, presence_public_key) = signed_presence(
-        realm.clone(),
-        sender.clone(),
-        presence_device_id.clone(),
-        presence_sent_at,
-        presence_sent_at + chrono::Duration::seconds(30),
-        "online",
-        [7; 32],
-    );
     let account_data_event = Event::new(
         "ak.account_data.set",
-        realm,
+        crate::protocol::ScopeRef::Realm { realm_id: realm },
         sender.clone(),
         2,
         crate::protocol::Hlc::new("01970e589d22-0000-a13f9c2e").unwrap(),
@@ -405,9 +361,6 @@ fn processor_dispatches_all_update_categories() {
         changed: vec![sender.clone()],
         left: Vec::new(),
     });
-    frame.presence = Some(EphemeralEventContainer {
-        events: vec![presence_event],
-    });
     frame.account_data = Some(EventContainer {
         events: vec![account_data_event],
         extra: BTreeMap::new(),
@@ -419,15 +372,7 @@ fn processor_dispatches_all_update_categories() {
     ));
 
     let mut processor = SyncResponseProcessor::new();
-    let resolver_actor = sender.clone();
-    let resolver_device = presence_device_id.clone();
-    let resolver = move |actor: &Did, device: &DeviceId| {
-        (actor == &resolver_actor && device == &resolver_device)
-            .then(|| presence_public_key.clone())
-    };
-    let updates = processor
-        .process_with_ephemeral_key_resolver(response, &resolver)
-        .unwrap();
+    let updates = processor.process(response).unwrap();
     let parsed_realm_id = RealmId::new(realm_id).unwrap();
 
     assert_eq!(updates.realm_updates.len(), 1);
@@ -454,18 +399,16 @@ fn processor_dispatches_all_update_categories() {
     assert_eq!(processor.recovery_actions(), expected_recovery_actions);
     assert_eq!(processor.take_recovery_actions(), expected_recovery_actions);
     assert!(processor.recovery_actions().is_empty());
-    assert_eq!(processor.presence(&sender).len(), 1);
-    assert_eq!(
-        processor.aggregated_presence(&sender),
-        PresenceStatus::Online
-    );
     assert!(processor.account_data("ak.settings").is_some());
     assert!(processor.notification(notification_id).is_some());
     assert_eq!(processor.device_lists().changed.len(), 1);
 }
 
+/// A per-stream Realm delta that reports only, say, unread counts carries no
+/// `summary`. That absence is not a retraction: the last durable summary must
+/// survive it.
 #[test]
-fn ephemeral_only_realm_delta_preserves_durable_processor_summary() {
+fn summary_less_realm_delta_preserves_durable_processor_summary() {
     let realm_id = "ak:realm:01904100-0000-7000-8000-9b64700c6ee8";
     let parsed_realm_id = RealmId::new(realm_id).unwrap();
     let mut processor = SyncResponseProcessor::new();
@@ -486,17 +429,20 @@ fn ephemeral_only_realm_delta_preserves_durable_processor_summary() {
     });
     processor.process(baseline).unwrap();
 
-    let mut ephemeral = sync_response("s-summary-2");
-    delta_mut(&mut ephemeral).realms = Some(AccountSubscribeRealms {
+    let mut unread_only = sync_response("s-summary-2");
+    delta_mut(&mut unread_only).realms = Some(AccountSubscribeRealms {
         entries: BTreeMap::from([(
             realm_id.to_owned(),
             RealmSyncEntry {
-                ephemeral: Some(EphemeralEventContainer { events: Vec::new() }),
+                unread_notifications: Some(AccountSubscribeUnreadCounts {
+                    notification_count: Some(4),
+                    highlight_count: Some(0),
+                }),
                 ..Default::default()
             },
         )]),
     });
-    processor.process(ephemeral).unwrap();
+    processor.process(unread_only).unwrap();
 
     assert_eq!(
         processor
@@ -507,99 +453,10 @@ fn ephemeral_only_realm_delta_preserves_durable_processor_summary() {
     );
 }
 
-#[test]
-fn processor_authenticates_retains_and_aggregates_per_device_presence() {
-    let realm = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
-    let actor = Did::new("did:webvh:z6mkfixture:alice.example").unwrap();
-    let device_a = DeviceId::new("ak:device:01904100-0000-7000-8000-000000000005").unwrap();
-    let device_b = DeviceId::new("ak:device:01904100-0000-7000-8000-000000000006").unwrap();
-    let now = Utc::now();
-    let (online, key_a) = signed_presence(
-        realm.clone(),
-        actor.clone(),
-        device_a.clone(),
-        now,
-        now + chrono::Duration::seconds(30),
-        "online",
-        [11; 32],
-    );
-    let (dnd, key_b) = signed_presence(
-        realm,
-        actor.clone(),
-        device_b.clone(),
-        now,
-        now + chrono::Duration::seconds(30),
-        "dnd",
-        [12; 32],
-    );
-    let keys = BTreeMap::from([
-        ((actor.clone(), device_a), key_a),
-        ((actor.clone(), device_b), key_b),
-    ]);
-    let resolver =
-        move |actor: &Did, device: &DeviceId| keys.get(&(actor.clone(), device.clone())).cloned();
-    let mut batch = sync_response("presence-multi-device");
-    delta_mut(&mut batch).presence = Some(EphemeralEventContainer {
-        events: vec![online, dnd],
-    });
-
-    let mut processor = SyncResponseProcessor::new();
-    let updates = processor
-        .process_with_ephemeral_key_resolver(batch, &resolver)
-        .unwrap();
-
-    assert_eq!(updates.presence.len(), 2);
-    assert_eq!(processor.presence(&actor).len(), 2);
-    assert_eq!(processor.aggregated_presence(&actor), PresenceStatus::Dnd);
-    assert_eq!(
-        processor.expire_presence(now + chrono::Duration::seconds(30)),
-        2
-    );
-    assert!(processor.presence(&actor).is_empty());
-    assert_eq!(
-        processor.aggregated_presence(&actor),
-        PresenceStatus::Offline
-    );
-}
-
-#[test]
-fn processor_drops_unverified_and_expired_presence() {
-    let realm = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
-    let actor = Did::new("did:webvh:z6mkfixture:alice.example").unwrap();
-    let device = DeviceId::new("ak:device:01904100-0000-7000-8000-000000000005").unwrap();
-    let now = Utc::now();
-    let (unverified, _) = signed_presence(
-        realm.clone(),
-        actor.clone(),
-        device.clone(),
-        now,
-        now + chrono::Duration::seconds(30),
-        "online",
-        [21; 32],
-    );
-    let (expired, expired_key) = signed_presence(
-        realm,
-        actor.clone(),
-        device,
-        now - chrono::Duration::seconds(60),
-        now - chrono::Duration::seconds(30),
-        "online",
-        [22; 32],
-    );
-    let resolver = move |_actor: &Did, _device: &DeviceId| Some(expired_key.clone());
-    let mut batch = sync_response("presence-reject");
-    delta_mut(&mut batch).presence = Some(EphemeralEventContainer {
-        events: vec![unverified, expired],
-    });
-
-    let mut processor = SyncResponseProcessor::new();
-    let updates = processor
-        .process_with_ephemeral_key_resolver(batch, &resolver)
-        .unwrap();
-
-    assert!(updates.presence.is_empty());
-    assert!(processor.presence(&actor).is_empty());
-}
+// Account subscribe carries durable account state only. Per-device signal
+// authentication, deterministic presence aggregation, expiry and the refusal
+// of unverified signals belong to the encrypted rail and are covered in
+// `crate::signal`.
 
 #[test]
 fn processor_tracks_limited_timelines_and_to_device_ack() {
@@ -607,7 +464,9 @@ fn processor_tracks_limited_timelines_and_to_device_ack() {
     let parsed_realm_id = RealmId::new(realm_id).unwrap();
     let event = Event::new(
         "ak.message.create",
-        parsed_realm_id.clone(),
+        crate::protocol::ScopeRef::Realm {
+            realm_id: parsed_realm_id.clone(),
+        },
         Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
         1,
         crate::protocol::Hlc::new("01970e589d21-0000-a13f9c2e").unwrap(),
@@ -725,6 +584,7 @@ fn send_queue_is_idempotent_orders_dependencies_and_snapshots() {
         .mark_sent(
             "txn1",
             EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap(),
+            vec![accepted_receipt()],
         )
         .unwrap();
     assert_eq!(queue.ready_batch(Utc::now(), 10), vec![edit]);
@@ -776,6 +636,7 @@ fn send_queue_prunes_unreferenced_terminal_work_at_capacity() {
         .mark_sent(
             "prunable-0",
             EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap(),
+            vec![accepted_receipt()],
         )
         .unwrap();
 
@@ -824,12 +685,14 @@ fn send_queue_preserves_transitive_dependencies_during_capacity_pruning() {
         .mark_sent(
             "dependency-root",
             EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap(),
+            vec![accepted_receipt()],
         )
         .unwrap();
     queue
         .mark_sent(
             "dependency-middle",
             EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f438").unwrap(),
+            vec![accepted_receipt()],
         )
         .unwrap();
     for index in queue.len()..MAX_SEND_QUEUE_ITEMS {
@@ -894,6 +757,7 @@ fn send_queue_serializes_unsigned_intents_per_realm_actor_scope() {
         .mark_sent(
             "scope-a-1",
             EventId::new("ak:event:01904100-0000-7000-8000-000000000001").unwrap(),
+            vec![accepted_receipt()],
         )
         .unwrap();
     assert!(
@@ -1005,4 +869,139 @@ fn send_queue_cancels_dependent_edit_redaction_and_reaction() {
         queue.get("txn3").unwrap().status,
         SendQueueStatus::Cancelled
     );
+}
+
+#[test]
+fn send_queue_refuses_acceptance_without_an_ingress_receipt() {
+    // A receipt is the only evidence that the Event reached a policy-accepted
+    // ingress inside its lease window (`offline-publication.md` §2). Recording
+    // an acceptance without one would leave a locally "sent" item that no peer
+    // can ever be made to accept.
+    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let mut queue = SendQueue::new();
+    queue
+        .enqueue_message(Some("txn1".to_owned()), realm_id, json!({"body": "hi"}))
+        .unwrap();
+
+    let error = queue
+        .mark_sent(
+            "txn1",
+            EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap(),
+            Vec::new(),
+        )
+        .unwrap_err();
+
+    assert!(format!("{error}").contains("at least one ingress receipt"));
+    assert_eq!(queue.get("txn1").unwrap().status, SendQueueStatus::Queued);
+}
+
+#[test]
+fn send_queue_keeps_the_original_receipt_across_an_idempotent_retry() {
+    // `offline-publication.md` §2.1: an idempotent retry must return the
+    // original receipt. A later `received_at` would extend an already fixed
+    // revocation window, so the durable copy wins over whatever the retry
+    // reported.
+    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let mut queue = SendQueue::new();
+    queue
+        .enqueue_message(Some("txn1".to_owned()), realm_id.clone(), json!({"a": 1}))
+        .unwrap();
+    let lease = publication_lease(realm_id);
+    queue
+        .bind_authorization_lease("txn1", lease.clone())
+        .unwrap();
+    let original = super::send_queue::test_publication::receipt(
+        &lease,
+        lease.issued_at + chrono::Duration::minutes(1),
+    );
+    let re_signed = super::send_queue::test_publication::receipt(
+        &lease,
+        lease.issued_at + chrono::Duration::minutes(30),
+    );
+    let event_id = EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap();
+
+    queue
+        .mark_sent("txn1", event_id.clone(), vec![original.clone()])
+        .unwrap();
+    queue.mark_sent("txn1", event_id, vec![re_signed]).unwrap();
+
+    let item = queue.get("txn1").unwrap();
+    assert_eq!(item.status, SendQueueStatus::Sent);
+    assert_eq!(item.ingress_receipts, vec![original]);
+}
+
+#[test]
+fn send_queue_rejects_a_receipt_for_another_lease() {
+    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let mut queue = SendQueue::new();
+    queue
+        .enqueue_message(Some("txn1".to_owned()), realm_id.clone(), json!({"a": 1}))
+        .unwrap();
+    let lease = publication_lease(realm_id.clone());
+    queue
+        .bind_authorization_lease("txn1", lease.clone())
+        .unwrap();
+    let mut other_lease = publication_lease(realm_id);
+    other_lease.authorization_lease_id = arkret_wire::AuthorizationLeaseId::new(
+        "ak:authorization_lease:01904100-0000-7000-8000-dddddddddddd",
+    )
+    .unwrap();
+    let foreign = super::send_queue::test_publication::receipt(
+        &other_lease,
+        lease.issued_at + chrono::Duration::minutes(1),
+    );
+
+    let error = queue
+        .mark_sent(
+            "txn1",
+            EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap(),
+            vec![foreign],
+        )
+        .unwrap_err();
+
+    assert!(format!("{error}").contains("does not cite the bound authorization lease"));
+}
+
+#[test]
+fn send_queue_retires_unreceipted_work_once_its_lease_expires() {
+    // An Event that first appears after its lease expired without a receipt is
+    // permanently rejected (`offline-publication.md` §2), so it stops being
+    // schedulable work rather than retrying forever.
+    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let mut queue = SendQueue::new();
+    queue
+        .enqueue_message(Some("txn1".to_owned()), realm_id.clone(), json!({"a": 1}))
+        .unwrap();
+    let lease = publication_lease(realm_id);
+    let expires_at = lease.expires_at;
+    queue.bind_authorization_lease("txn1", lease).unwrap();
+
+    assert_eq!(
+        queue
+            .ready_batch(expires_at - chrono::Duration::minutes(1), 10)
+            .len(),
+        1
+    );
+    assert!(queue.ready_batch(expires_at, 10).is_empty());
+    assert_eq!(queue.expire_unreceipted_leases(expires_at), vec!["txn1"]);
+    assert_eq!(
+        queue.get("txn1").unwrap().status,
+        SendQueueStatus::LeaseExpired
+    );
+}
+
+#[test]
+fn send_queue_refuses_a_lease_scoped_to_another_realm() {
+    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let other_realm = RealmId::new("ak:realm:01904100-0000-7000-8000-000000000099").unwrap();
+    let mut queue = SendQueue::new();
+    queue
+        .enqueue_message(Some("txn1".to_owned()), realm_id, json!({"a": 1}))
+        .unwrap();
+
+    let error = queue
+        .bind_authorization_lease("txn1", publication_lease(other_realm))
+        .unwrap_err();
+
+    assert!(format!("{error}").contains("different Realm"));
 }

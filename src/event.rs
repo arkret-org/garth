@@ -1,6 +1,6 @@
 use crate::protocol::{
-    AccountSubscribeDeviceListChanges, DeviceMessageEnvelope, EphemeralEnvelope, Event,
-    EventsQueryOutcome, NotificationDelta, RealmId, RealmUpdate,
+    AccountSubscribeDeviceListChanges, DeviceMessageEnvelope, Event, EventsQueryOutcome,
+    NotificationDelta, RealmId, RealmUpdate,
 };
 use serde::{Deserialize, Serialize};
 
@@ -30,6 +30,11 @@ pub enum ClientEvent {
 /// Realm updates, to-device messages, and notifications deliberately do not
 /// live here: each is emitted once through its dedicated [`ClientEvent`]
 /// variant, keeping durable inbox records free of duplicate payloads.
+///
+/// Signals are not here either, and never will be: the account-subscribe
+/// stream carries durable account state only. Momentary announcements ride the
+/// separate encrypted Signal rail (`zh/sync/signal.md` §4) and are consumed
+/// through [`crate::signal::SignalReceiver`].
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AccountUpdateContext {
     /// True when this batch came from a request without a continuation cursor.
@@ -44,7 +49,6 @@ pub struct AccountUpdateContext {
     pub to_device_next_cursor: Option<String>,
     pub to_device_lost: bool,
     pub device_lists: AccountSubscribeDeviceListChanges,
-    pub presence: Vec<EphemeralEnvelope>,
     pub account_data: Vec<Event>,
     pub agent_signer_evidence: Vec<crate::protocol::AgentSignerEvidence>,
     pub partial: bool,

@@ -34,22 +34,33 @@ impl SendQueueItemKind {
 }
 
 /// Send queue item lifecycle.
+///
+/// The receipted / un-receipted boundary is the one that matters for a bounded
+/// offline write (`offline-publication.md` §2): before [`Self::Sent`] the
+/// Event has no [`IngressReceipt`] and may only be first-published while its
+/// [`AuthorizationLease`] is still valid; from [`Self::Sent`] on, the same
+/// digest may be cached, retransmitted and federated with no further deadline.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SendQueueStatus {
-    /// Waiting for connectivity or dependencies.
+    /// Waiting for connectivity or dependencies. Not receipted.
     Queued,
-    /// Currently being sent.
+    /// Currently being sent. Not receipted.
     Sending,
-    /// Server accepted the transaction.
+    /// A policy-accepted ingress receipted the Event. Awaiting propagation.
     Sent,
-    /// Send failed and may be retried after `next_retry_at`.
+    /// Send failed and may be retried after `next_retry_at`. Not receipted.
     Failed,
     /// User or dependency cancellation.
     Cancelled,
     /// Replaced by a newly-authored immutable attempt for the same local
     /// operation after an explicit `accepted=false` CAS response.
     Superseded,
+    /// The bound authorization lease expired before any ingress receipted the
+    /// Event. `offline-publication.md` §2 makes this permanent: an Event that
+    /// first appears after its lease expired without a qualifying receipt is
+    /// rejected forever, so the item is retired instead of retried.
+    LeaseExpired,
 }
 
 /// Local echo projected before a queued item is sent.
@@ -106,6 +117,22 @@ pub struct SendQueueItem {
     /// Next retry time after a transient failure.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub next_retry_at: Option<DateTime<Utc>>,
+    /// Basis-bound offline publication authorization for this attempt.
+    ///
+    /// It is not an Event field and never enters the Event digest
+    /// (`offline-publication.md` §2.1); it is persisted here because the first
+    /// submission must carry it and because its `expires_at` is the deadline
+    /// past which an un-receipted item can never be published at all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub authorization_lease: Option<AuthorizationLease>,
+    /// Receipts an ingress issued for this Event, persisted verbatim.
+    ///
+    /// Once stored they are never replaced: an idempotent retry must return
+    /// the original receipt, and re-signing it with a later `received_at`
+    /// would extend a revocation window that is already fixed
+    /// (`offline-publication.md` §2.1).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ingress_receipts: Vec<IngressReceipt>,
     /// Server event ID once sent.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remote_event_id: Option<EventId>,
@@ -358,6 +385,8 @@ impl SendQueue {
             status: SendQueueStatus::Queued,
             attempts: 0,
             next_retry_at: None,
+            authorization_lease: None,
+            ingress_receipts: Vec::new(),
             remote_event_id: None,
             sequence,
             enqueued_at: now,
@@ -458,6 +487,7 @@ impl SendQueue {
                     SendQueueStatus::Sent
                         | SendQueueStatus::Cancelled
                         | SendQueueStatus::Superseded
+                        | SendQueueStatus::LeaseExpired
                 ) && item.updated_at < cutoff
             })
             .map(|item| item.transaction_id.clone())
@@ -510,6 +540,7 @@ impl SendQueue {
                     SendQueueStatus::Sent
                         | SendQueueStatus::Cancelled
                         | SendQueueStatus::Superseded
+                        | SendQueueStatus::LeaseExpired
                 ) && !protected.contains(&item.transaction_id)
             })
             .map(|item| item.transaction_id.clone())
@@ -533,15 +564,105 @@ impl SendQueue {
         Ok(())
     }
 
-    /// Mark an item as accepted by the server.
-    pub fn mark_sent(&mut self, transaction_id: &str, remote_event_id: EventId) -> Result<()> {
+    /// Bind the authorization lease this attempt will be published under.
+    ///
+    /// A lease may only narrow authorization that already exists in its basis,
+    /// so one whose scope belongs to another Realm is refused outright
+    /// (`offline-publication.md` §1).
+    pub fn bind_authorization_lease(
+        &mut self,
+        transaction_id: &str,
+        lease: AuthorizationLease,
+    ) -> Result<()> {
+        lease.validate_structural()?;
         let item = self.item_mut(transaction_id)?;
+        if lease.scope_ref.realm_id() != &item.realm_id {
+            return Err(Error::Protocol(
+                "authorization lease scope belongs to a different Realm than the queued item"
+                    .to_owned(),
+            ));
+        }
+        item.authorization_lease = Some(lease);
+        item.updated_at = Utc::now();
+        Ok(())
+    }
+
+    /// Mark an item as receipted by a policy-accepted ingress.
+    ///
+    /// At least one receipt is required: acceptance without one leaves the
+    /// Event with no proof that it arrived inside its lease window, which is
+    /// exactly what a later peer cannot reconstruct. Already-stored receipts
+    /// win over the supplied ones so an idempotent retry cannot overwrite the
+    /// original `received_at`.
+    pub fn mark_sent(
+        &mut self,
+        transaction_id: &str,
+        remote_event_id: EventId,
+        ingress_receipts: Vec<IngressReceipt>,
+    ) -> Result<()> {
+        let expected_lease_id = self
+            .get(transaction_id)
+            .and_then(|item| item.authorization_lease.as_ref())
+            .map(|lease| lease.authorization_lease_id.clone());
+        for receipt in &ingress_receipts {
+            receipt.validate_structural()?;
+            if let Some(lease_id) = &expected_lease_id
+                && &receipt.authorization_lease_id != lease_id
+            {
+                return Err(Error::Protocol(
+                    "ingress receipt does not cite the bound authorization lease".to_owned(),
+                ));
+            }
+        }
+        let item = self.item_mut(transaction_id)?;
+        if item.ingress_receipts.is_empty() {
+            if ingress_receipts.is_empty() {
+                return Err(Error::Protocol(
+                    "an accepted submission must carry at least one ingress receipt".to_owned(),
+                ));
+            }
+            item.ingress_receipts = ingress_receipts;
+        }
         item.status = SendQueueStatus::Sent;
         item.remote_event_id = Some(remote_event_id);
         item.next_retry_at = None;
         item.updated_at = Utc::now();
         item.local_echo.status = item.status;
         Ok(())
+    }
+
+    /// Retire every un-receipted item whose lease has expired, returning the
+    /// retired transaction ids.
+    ///
+    /// Retrying them could never succeed: a first publication after
+    /// `expires_at` with no qualifying receipt is permanently rejected
+    /// (`offline-publication.md` §2), and a client that kept retrying would
+    /// only mislead the user about the write's fate.
+    pub fn expire_unreceipted_leases(&mut self, now: DateTime<Utc>) -> Vec<String> {
+        let expired: Vec<String> = self
+            .items
+            .values()
+            .filter(|item| {
+                matches!(
+                    item.status,
+                    SendQueueStatus::Queued | SendQueueStatus::Sending | SendQueueStatus::Failed
+                ) && item.ingress_receipts.is_empty()
+                    && item
+                        .authorization_lease
+                        .as_ref()
+                        .is_some_and(|lease| lease.expires_at <= now)
+            })
+            .map(|item| item.transaction_id.clone())
+            .collect();
+        for transaction_id in &expired {
+            if let Ok(item) = self.item_mut(transaction_id) {
+                item.status = SendQueueStatus::LeaseExpired;
+                item.next_retry_at = None;
+                item.updated_at = now;
+                item.local_echo.status = item.status;
+            }
+        }
+        expired
     }
 
     /// Mark an item as failed and schedule retry.
@@ -587,6 +708,16 @@ impl SendQueue {
             .next_retry_at
             .map(|retry_at| retry_at > now)
             .unwrap_or(false)
+        {
+            return false;
+        }
+        // An un-receipted Event past its lease window can never be admitted
+        // (`offline-publication.md` §2), so it is not schedulable work.
+        if item.ingress_receipts.is_empty()
+            && item
+                .authorization_lease
+                .as_ref()
+                .is_some_and(|lease| lease.expires_at <= now)
         {
             return false;
         }
@@ -645,4 +776,100 @@ fn queue_payload_digest(
         "content": content,
         "depends_on": depends_on,
     }))?)
+}
+
+/// Publication-evidence fixtures shared by the outbound and queue tests.
+///
+/// They build the exact shapes `offline-publication.md` §1 / §2 define, so a
+/// test that binds a lease or records a receipt exercises the same structural
+/// gate production code runs.
+#[cfg(test)]
+pub(crate) mod test_publication {
+    use chrono::{DateTime, Utc};
+
+    use arkret_wire::{
+        AuthoritySetRef, AuthorizationLease, AuthorizationLeaseId, DeviceId, Did, Hash,
+        IngressReceipt, LeaseBasisRef, Proof, ReceiptId, RiskTier, ScopeRef, SealId,
+    };
+
+    use crate::protocol::RealmId;
+
+    pub(crate) fn lease(
+        realm_id: RealmId,
+        issued_at: DateTime<Utc>,
+        expires_at: DateTime<Utc>,
+    ) -> AuthorizationLease {
+        let mut lease = AuthorizationLease {
+            authorization_lease_id: AuthorizationLeaseId::new(
+                "ak:authorization_lease:01904100-0000-7000-8000-aaaaaaaaaaaa",
+            )
+            .unwrap(),
+            basis_ref: LeaseBasisRef::Seal(
+                SealId::new(format!("ak:seal:sha256:{}", "a".repeat(64))).unwrap(),
+            ),
+            actor_id: Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-bbbbbbbbbbbb").unwrap(),
+            scope_ref: ScopeRef::Realm { realm_id },
+            action: "ak.message.create".to_owned(),
+            risk_tier: RiskTier::Low,
+            issued_at,
+            expires_at,
+            authority_set_ref: authority_set("ak.authority_set.realm_admission.v1"),
+            proofs: Vec::new(),
+        };
+        let digest = lease.lease_digest().unwrap();
+        lease.proofs = vec![issuer_proof(
+            "did:webvh:z6mkfixture:authority.example#key-1",
+            digest,
+            issued_at,
+        )];
+        lease
+    }
+
+    pub(crate) fn receipt(
+        lease: &AuthorizationLease,
+        received_at: DateTime<Utc>,
+    ) -> IngressReceipt {
+        let mut receipt = IngressReceipt {
+            receipt_id: ReceiptId::new("ak:receipt:01904100-0000-7000-8000-cccccccccccc").unwrap(),
+            event_digest: Hash::new(format!("sha256:{}", "d".repeat(64))).unwrap(),
+            authorization_lease_id: lease.authorization_lease_id.clone(),
+            received_at,
+            service_id: Did::new("did:webvh:z6mkfixture:ingress.example").unwrap(),
+            authority_set_ref: authority_set("ak.authority_set.realm_ingress.v1"),
+            proofs: Vec::new(),
+        };
+        let digest = receipt.receipt_digest().unwrap();
+        receipt.proofs = vec![issuer_proof(
+            "did:webvh:z6mkfixture:ingress.example#key-1",
+            digest,
+            received_at,
+        )];
+        receipt
+    }
+
+    fn authority_set(id: &str) -> AuthoritySetRef {
+        AuthoritySetRef {
+            authority_set_id: id.to_owned(),
+            authority_set_digest: Hash::new(format!("sha256:{}", "e".repeat(64))).unwrap(),
+        }
+    }
+
+    fn issuer_proof(
+        verification_method: &str,
+        payload_digest: Hash,
+        created_at: DateTime<Utc>,
+    ) -> Proof {
+        Proof {
+            kind: "detached_jws".to_owned(),
+            alg: "EdDSA".to_owned(),
+            verification_method: verification_method.to_owned(),
+            event_digest: payload_digest,
+            created_at,
+            domain: None,
+            audience: None,
+            proof_purpose: None,
+            jws: "a..b".to_owned(),
+        }
+    }
 }

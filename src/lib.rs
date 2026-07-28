@@ -28,6 +28,7 @@ pub mod outbound;
 pub mod projection;
 pub mod runtime_store;
 pub mod session;
+pub mod signal;
 pub mod stamp;
 pub mod store;
 pub mod subscribe;
@@ -77,6 +78,11 @@ pub use session::{
     SessionGrantTransport, SessionHandle, SessionProofFields, SessionRefreshOptions,
     SessionTransportProvider, grant_due_for_rotation, grant_is_dead, refresh_decision,
 };
+pub use signal::{
+    PresenceObservation, PresenceProjection, PresenceStatus, SIGNAL_PLAINTEXT_KIND_PRESENCE,
+    SignalDecryptor, SignalPlaintext, SignalReceiver, SignalSenderKeyResolver,
+    aggregate_presence_states,
+};
 pub use stamp::{
     MonotonicStampStore, RemoteStamp, SigningStamp, SigningStampAllocator, StampFloor,
     StampFloorUpdate, StampScope, hlc_from_floor,
@@ -99,8 +105,8 @@ pub use subscribe::{
 };
 pub use sync_client::{
     AsyncSyncTransport, BackoffConfig, BackpressureConfig, BoxSyncFuture, CancellationToken,
-    EphemeralDeviceKeyResolver, EventsSubscribeTransport, ExponentialBackoff, LocalEcho,
-    ProcessedRealm, SendQueue, SendQueueItem, SendQueueItemKind, SendQueueSnapshot,
-    SendQueueStatus, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot, SyncLoopStep,
-    SyncRecoveryAction, SyncResponseProcessor, SyncTransport,
+    EventsSubscribeTransport, ExponentialBackoff, LocalEcho, ProcessedRealm, SendQueue,
+    SendQueueItem, SendQueueItemKind, SendQueueSnapshot, SendQueueStatus, SyncGapStrategy,
+    SyncLoop, SyncLoopControl, SyncLoopSnapshot, SyncLoopStep, SyncRecoveryAction,
+    SyncResponseProcessor, SyncTransport,
 };

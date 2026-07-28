@@ -6,7 +6,6 @@ pub mod scan;
 pub(crate) mod test_support;
 
 pub use account::account_updates_to_events;
-use std::sync::Arc;
 
 use crate::protocol::{DeviceId, Did, Error, RealmId, Result};
 use crate::sync_client::{
@@ -48,7 +47,6 @@ pub struct SubscriptionEngine<E, C, D> {
     event_cache_store: D,
     control: SyncLoopControl,
     service_id: Option<Did>,
-    ephemeral_device_key_resolver: Option<Arc<dyn crate::EphemeralDeviceKeyResolver>>,
 }
 
 impl<E, C, D> std::fmt::Debug for SubscriptionEngine<E, C, D>
@@ -65,10 +63,6 @@ where
             .field("event_cache_store", &self.event_cache_store)
             .field("control", &self.control)
             .field("service_id", &self.service_id)
-            .field(
-                "has_ephemeral_device_key_resolver",
-                &self.ephemeral_device_key_resolver.is_some(),
-            )
             .finish()
     }
 }
@@ -86,20 +80,11 @@ where
             event_cache_store,
             control: SyncLoopControl::new(),
             service_id: None,
-            ephemeral_device_key_resolver: None,
         }
     }
 
     pub fn with_service_id(mut self, service_id: Did) -> Self {
         self.service_id = Some(service_id);
-        self
-    }
-
-    pub fn with_ephemeral_device_key_resolver(
-        mut self,
-        resolver: Arc<dyn crate::EphemeralDeviceKeyResolver>,
-    ) -> Self {
-        self.ephemeral_device_key_resolver = Some(resolver);
         self
     }
 
@@ -359,15 +344,11 @@ where
 
     pub(crate) async fn restore_account_loop(&self, scope: CursorScope) -> Result<SyncLoop> {
         let token = self.cursor_store.load(scope).await?;
-        let mut sync_loop = SyncLoop::from_snapshot(SyncLoopSnapshot {
+        Ok(SyncLoop::from_snapshot(SyncLoopSnapshot {
             token,
             timeout_ms: 30_000,
             gap_strategy: SyncGapStrategy::PreserveTokenAndBackfill,
-        });
-        if let Some(resolver) = self.ephemeral_device_key_resolver.clone() {
-            sync_loop = sync_loop.with_ephemeral_device_key_resolver(resolver);
-        }
-        Ok(sync_loop)
+        }))
     }
 
     pub(crate) async fn checkpoint_account_cursor(
@@ -420,22 +401,13 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use crate::protocol::identifiers::Cursor;
-    use crate::protocol::{
-        AccountStreamInterrupt, EphemeralEnvelope, EphemeralEventContainer, Error, Hash, Proof,
-        SyncRequestBody, canonical,
-        signatures::{PublicKeyMaterial, sign_eddsa_detached_jws},
-    };
-    use crate::protocol::{EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind};
-    use chrono::Utc;
-    use ed25519_dalek::SigningKey;
-    use serde_json::json;
-
     use super::realm::BoxRealmStreamFuture;
     use super::scan::BoxScanFuture;
     use super::test_support::{RecordingExecutor, queued_transport, sync_response};
     use super::*;
-    use crate::SyncLoopStep;
+    use crate::protocol::identifiers::Cursor;
+    use crate::protocol::{AccountStreamInterrupt, Error, SyncRequestBody};
+    use crate::protocol::{EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind};
     use crate::{ClientEvent, MemoryStore};
 
     fn actor_id() -> Did {
@@ -456,47 +428,6 @@ mod tests {
             actor_id: actor_id(),
             device_id: device_id(),
         }
-    }
-
-    fn signed_presence() -> (EphemeralEnvelope, PublicKeyMaterial) {
-        let actor = actor_id();
-        let device = device_id();
-        let now = Utc::now();
-        let signing_key = SigningKey::from_bytes(&[29; 32]);
-        let mut envelope = EphemeralEnvelope::new(
-            "ak.presence",
-            realm_id(),
-            actor.clone(),
-            device.clone(),
-            now,
-            now + chrono::Duration::seconds(30),
-            serde_json::from_value(json!({"state": "online"})).unwrap(),
-            Proof {
-                kind: "detached_jws".to_owned(),
-                alg: "EdDSA".to_owned(),
-                verification_method: format!("{actor}#{device}"),
-                event_digest: Hash::new(format!("sha256:{}", "0".repeat(64))).unwrap(),
-                created_at: now,
-                domain: None,
-                audience: None,
-                proof_purpose: None,
-                jws: "header..signature".to_owned(),
-            },
-        )
-        .unwrap();
-        envelope.proof.event_digest = Hash::new(canonical::sha256_digest(
-            envelope.canonical_bytes_without_proof().unwrap(),
-        ))
-        .unwrap();
-        let binding = envelope
-            .proof
-            .canonical_ephemeral_binding_bytes(&actor)
-            .unwrap();
-        envelope.proof.jws = sign_eddsa_detached_jws(&signing_key, &binding).unwrap();
-        let public_key = PublicKeyMaterial::Ed25519Raw {
-            bytes: signing_key.verifying_key().to_bytes().to_vec(),
-        };
-        (envelope, public_key)
     }
 
     fn realm_scope() -> CursorScope {
@@ -565,33 +496,9 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn restored_account_loop_uses_configured_ephemeral_key_resolver() {
-        let store = MemoryStore::new();
-        let (presence, public_key) = signed_presence();
-        let expected_actor = presence.actor_id.clone();
-        let expected_device = presence.device_id.clone();
-        let mut response = sync_response("ak:cursor:verified-presence");
-        response.frames[0].presence = Some(EphemeralEventContainer {
-            events: vec![presence],
-        });
-        let resolver = move |actor: &Did, device: &DeviceId| {
-            (actor == &expected_actor && device == &expected_device).then(|| public_key.clone())
-        };
-        let engine = SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store)
-            .with_ephemeral_device_key_resolver(Arc::new(resolver));
-        let mut sync_loop = engine.restore_account_loop(account_scope()).await.unwrap();
-        let transport = move |_request: SyncRequestBody| {
-            let response = response.clone();
-            async move { Ok(response) }
-        };
-
-        let step = sync_loop.step_async(&transport).await;
-        let SyncLoopStep::Updates(updates) = step else {
-            panic!("configured resolver should produce an update step");
-        };
-        assert_eq!(updates.presence.len(), 1);
-    }
+    // The account loop carries no signal bucket and therefore no device-key
+    // seam: signal receiver verification is covered by
+    // `crate::signal::SignalReceiver`.
 
     #[tokio::test]
     async fn engine_commits_account_cursor_and_delivery_to_inbox() {

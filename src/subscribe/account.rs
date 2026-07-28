@@ -22,7 +22,6 @@ pub(crate) fn account_updates_to_events_with_origin(
         to_device_next_cursor,
         to_device_lost,
         device_lists,
-        presence,
         account_data,
         notifications,
         agent_signer_evidence,
@@ -36,7 +35,6 @@ pub(crate) fn account_updates_to_events_with_origin(
         to_device_next_cursor,
         to_device_lost,
         device_lists,
-        presence,
         account_data,
         agent_signer_evidence,
         partial,
@@ -84,7 +82,6 @@ mod tests {
                 changed: Vec::new(),
                 left: Vec::new(),
             },
-            presence: Vec::new(),
             account_data: Vec::new(),
             notifications: vec![NotificationDelta {
                 id: NotificationId::new("ak:notification:01964137-0000-7000-8000-000000000010")

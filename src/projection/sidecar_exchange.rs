@@ -398,7 +398,7 @@ pub fn fold_sidecar_exchange(
         Some(terminal_fact) => {
             let outcome = terminal_fact
                 .control
-                .terminal_outcome()?
+                .terminal_result()?
                 .expect("terminal action");
             (
                 outcome.status,

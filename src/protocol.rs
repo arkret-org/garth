@@ -8,7 +8,6 @@ pub(crate) use arkret_keystore::{KeyBytes, KeyStore, KeyStoreError};
 pub(crate) use arkret_models_collaboration::account_lifecycle::AccountRegisterRequestBody;
 pub(crate) use arkret_models_collaboration::agent_signer_evidence::AgentSignerEvidence;
 pub(crate) use arkret_models_collaboration::event_query::EventsQueryOrder;
-pub(crate) use arkret_models_collaboration::events_payloads::ephemeral::EphemeralEnvelope;
 pub(crate) use arkret_models_collaboration::http_bodies::{
     EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind,
 };
@@ -27,7 +26,7 @@ pub(crate) use arkret_models_collaboration::sync_frames::account_sync::{
 pub(crate) use arkret_models_collaboration::sync_frames::client_sync::{RealmUpdate, SyncUpdates};
 pub(crate) use arkret_models_collaboration::sync_frames::stream_trace::StreamTraceValidator;
 pub(crate) use arkret_models_crypto::{MlsCommitEnvelope, MlsKeyPackageRecord, MlsWelcomeEnvelope};
-pub(crate) use arkret_models_discovery::{
+pub use arkret_models_discovery::{
     PresenceStatus, aggregate_presence_states, validate_last_active_at, validate_status_message,
 };
 pub(crate) use arkret_models_identity::{
@@ -39,10 +38,19 @@ pub(crate) use arkret_models_identity::{
     IdentityCreationRegistration, ReservedIdentityCreation, SessionGrantProofKind,
 };
 pub(crate) use arkret_state::resolver::RealmState;
+pub use arkret_wire::{AuthorizationLease, IngressReceipt};
 pub(crate) use arkret_wire::{
     BlobRef, DeviceId, Did, Event, EventId, GrantId, Hash, Hlc, NonEmptyString, RealmId, RequestId,
-    SidecarId, StrandId,
+    ScopeRef, SidecarId, SignalEnvelope, StrandId,
 };
+
+#[cfg(test)]
+pub(crate) mod signal {
+    pub(crate) use arkret_wire::signal::{
+        SIGNAL_AEAD_PURPOSE, SIGNAL_AEAD_SCHEME, SignalClass, SignalEncryptedPayload, SignalKeyRef,
+        SignalProof,
+    };
+}
 
 #[cfg(test)]
 pub(crate) use arkret_models_collaboration::session_grant_bodies::SessionGrantScopeDetails;
@@ -54,8 +62,8 @@ pub(crate) use arkret_models_collaboration::sync_frames::account_subscribe::{
 pub(crate) use arkret_models_collaboration::sync_frames::account_sync::{
     AccountNotificationDataKind, AccountSubscribeUnreadCounts,
     AgentRuntimeApprovalNotificationData, AgentRuntimeApprovalNotificationRemovalData,
-    AgentRuntimeApprovalRemovalReason, DeviceMessageContainer, EphemeralEventContainer,
-    EventContainer, NotificationContainer, NotificationData, RealmSyncEntry,
+    AgentRuntimeApprovalRemovalReason, DeviceMessageContainer, EventContainer,
+    NotificationContainer, NotificationData, RealmSyncEntry,
 };
 #[cfg(test)]
 pub(crate) use arkret_models_collaboration::sync_frames::client_sync::SyncRequestBody;
@@ -66,7 +74,7 @@ pub(crate) use arkret_models_identity::{ACCOUNT_HANDOFF_ALLOWED_OPERATIONS, Hand
 #[cfg(test)]
 pub(crate) use arkret_wire::{
     BLOB_SCHEMA, DeviceMessageId, ErrorEnvelope, EventRequirements, MORPH_SCHEMA, NotificationId,
-    NotificationKind, ObjectState, Proof, ProtocolKind,
+    NotificationKind, ObjectState, ProtocolKind,
 };
 
 pub(crate) mod auth {
@@ -75,7 +83,8 @@ pub(crate) mod auth {
 
 pub(crate) mod canonical {
     pub(crate) use arkret_canonical::{
-        canonical_json_bytes, canonical_sha256, sha256_bytes_from_slices, sha256_digest,
+        canonical_json_bytes, canonical_sha256, parse_canonical_json, sha256_bytes_from_slices,
+        sha256_digest,
     };
 }
 
@@ -131,9 +140,11 @@ pub(crate) mod session_grant {
 }
 
 pub(crate) mod signatures {
-    pub(crate) use arkret_signatures::webvh;
+    pub(crate) use arkret_signatures::PublicKeyMaterial;
+    pub(crate) use arkret_signatures::proof::verify_eddsa_signal_proof;
     #[cfg(test)]
-    pub(crate) use arkret_signatures::{PublicKeyMaterial, sign_eddsa_detached_jws};
+    pub(crate) use arkret_signatures::sign_eddsa_detached_jws;
+    pub(crate) use arkret_signatures::webvh;
 }
 
 pub(crate) mod sync {

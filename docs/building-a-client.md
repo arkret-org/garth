@@ -51,7 +51,7 @@ impl ClientProjector for MyProjector {
         async move {
             for event in batch {
                 match event {
-                    ClientEvent::AccountUpdates(updates) => { /* to-device, presence, ack token, ... */ }
+                    ClientEvent::AccountUpdates(updates) => { /* device lists, ack token, ... */ }
                     ClientEvent::RealmDelta { realm_id, update } => { /* project realm timeline/state */ }
                     ClientEvent::Message(message) => { /* decoded chat message */ }
                     ClientEvent::Backfill { realm_id, outcome } => { /* catch-up after a drop */ }

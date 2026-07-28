@@ -1,29 +1,11 @@
 use super::*;
 
-/// Resolver for an active, authorized device signing key. Implementations
-/// normally read a previously validated `keys/query` device directory.
-pub trait EphemeralDeviceKeyResolver: Send + Sync {
-    fn resolve_active_device_key(
-        &self,
-        actor_id: &Did,
-        device_id: &DeviceId,
-    ) -> Option<PublicKeyMaterial>;
-}
-
-impl<F> EphemeralDeviceKeyResolver for F
-where
-    F: Fn(&Did, &DeviceId) -> Option<PublicKeyMaterial> + Send + Sync,
-{
-    fn resolve_active_device_key(
-        &self,
-        actor_id: &Did,
-        device_id: &DeviceId,
-    ) -> Option<PublicKeyMaterial> {
-        self(actor_id, device_id)
-    }
-}
-
 /// Processed account-subscribe state and ordered delivery queues.
+///
+/// The account-subscribe stream carries durable account state only. Momentary
+/// announcements (presence, typing, receipts, call setup) are not part of it:
+/// they ride the encrypted-only Signal rail (`zh/sync/signal.md` §4) and are
+/// consumed through [`crate::signal::SignalReceiver`].
 #[derive(Clone, Debug, Default)]
 pub struct SyncResponseProcessor {
     realms: BTreeMap<RealmId, ProcessedRealm>,
@@ -33,7 +15,6 @@ pub struct SyncResponseProcessor {
     changed_device_lists: BTreeSet<Did>,
     left_device_lists: BTreeSet<Did>,
     pending_recovery_actions: BTreeSet<SyncRecoveryAction>,
-    presence: BTreeMap<Did, BTreeMap<DeviceId, EphemeralEnvelope>>,
     account_data: BTreeMap<String, Event>,
     notifications: BTreeMap<String, NotificationDelta>,
     last_token: Option<String>,
@@ -66,36 +47,13 @@ impl SyncResponseProcessor {
 
     /// Process an ordered, validated account-subscribe catch-up batch without
     /// folding its canonical frames through an alternate wire model.
-    /// Process a batch without an authorized device-key resolver. Presence is
-    /// fail-closed and omitted; all non-ephemeral update categories continue
-    /// to be processed.
     pub fn process(&mut self, batch: AccountSubscribeBatch) -> Result<SyncUpdates> {
-        self.process_at(batch, Utc::now(), None)
-    }
-
-    /// Process a batch and authenticate every presence signal against the
-    /// active device key returned by `resolver`.
-    pub fn process_with_ephemeral_key_resolver(
-        &mut self,
-        batch: AccountSubscribeBatch,
-        resolver: &dyn EphemeralDeviceKeyResolver,
-    ) -> Result<SyncUpdates> {
-        self.process_at(batch, Utc::now(), Some(resolver))
-    }
-
-    fn process_at(
-        &mut self,
-        batch: AccountSubscribeBatch,
-        now: DateTime<Utc>,
-        resolver: Option<&dyn EphemeralDeviceKeyResolver>,
-    ) -> Result<SyncUpdates> {
         if batch.cursor.trim().is_empty() {
             return Err(Error::Protocol(
                 "account subscribe batch requires a non-empty cursor".to_owned(),
             ));
         }
         self.last_token = Some(batch.cursor);
-        self.expire_presence(now);
 
         let mut realm_updates = Vec::new();
         let mut malformed_realms = Vec::new();
@@ -106,7 +64,6 @@ impl SyncResponseProcessor {
         let mut to_device_lost = false;
         let mut changed_device_lists = BTreeSet::new();
         let mut left_device_lists = BTreeSet::new();
-        let mut presence = Vec::new();
         let mut account_data = Vec::new();
         let mut notifications = Vec::new();
         let mut agent_signer_evidence = Vec::new();
@@ -144,9 +101,10 @@ impl SyncResponseProcessor {
                         .state
                         .as_ref()
                         .map_or(0, |container| container.events.len());
-                    // Realm entries are per-stream deltas. An
-                    // ephemeral-only entry legitimately omits `summary`; do
-                    // not erase the last durable summary in that case.
+                    // Realm entries are per-stream deltas: a delta that only
+                    // reports, say, unread counts or event states legitimately
+                    // omits `summary`. Do not erase the last durable summary
+                    // in that case.
                     if let Some(summary) = &entry.summary {
                         processed.summary = Some(summary.clone());
                     }
@@ -179,18 +137,6 @@ impl SyncResponseProcessor {
                 left_device_lists.extend(changes.left.iter().cloned());
                 self.changed_device_lists.extend(changes.changed);
                 self.left_device_lists.extend(changes.left);
-            }
-            if let Some(container) = frame.presence {
-                for event in container.events {
-                    if !self.verify_presence(&event, now, resolver) {
-                        continue;
-                    }
-                    self.presence
-                        .entry(event.actor_id.clone())
-                        .or_default()
-                        .insert(event.device_id.clone(), event.clone());
-                    presence.push(event);
-                }
             }
             if let Some(container) = frame.account_data {
                 for event in container.events {
@@ -237,7 +183,6 @@ impl SyncResponseProcessor {
                 changed: changed_device_lists.into_iter().collect(),
                 left: left_device_lists.into_iter().collect(),
             },
-            presence,
             account_data,
             notifications,
             agent_signer_evidence,
@@ -282,35 +227,6 @@ impl SyncResponseProcessor {
         self.last_token.as_deref()
     }
 
-    /// Return all currently cached, authenticated per-device broadcasts for
-    /// an actor in deterministic device-id order.
-    pub fn presence(&self, actor_id: &Did) -> Vec<&EphemeralEnvelope> {
-        self.presence
-            .get(actor_id)
-            .map(|devices| devices.values().collect())
-            .unwrap_or_default()
-    }
-
-    /// Aggregate the authenticated per-device presence states using the
-    /// canonical protocol priority (`dnd > online > idle > offline`).
-    pub fn aggregated_presence(&self, actor_id: &Did) -> PresenceStatus {
-        aggregate_presence_states(
-            self.presence(actor_id)
-                .into_iter()
-                .filter_map(presence_state),
-        )
-    }
-
-    /// Drop cached broadcasts at or past their authoritative expiry.
-    pub fn expire_presence(&mut self, now: DateTime<Utc>) -> usize {
-        let before = self.presence.values().map(BTreeMap::len).sum::<usize>();
-        self.presence.retain(|_, devices| {
-            devices.retain(|_, event| event.expires_at > now);
-            !devices.is_empty()
-        });
-        before - self.presence.values().map(BTreeMap::len).sum::<usize>()
-    }
-
     pub fn account_data(&self, key: &str) -> Option<&Event> {
         self.account_data.get(key)
     }
@@ -339,48 +255,6 @@ impl SyncResponseProcessor {
     pub fn clear(&mut self) {
         *self = Self::default();
     }
-
-    fn verify_presence(
-        &self,
-        event: &EphemeralEnvelope,
-        now: DateTime<Utc>,
-        resolver: Option<&dyn EphemeralDeviceKeyResolver>,
-    ) -> bool {
-        if event.kind != "ak.presence"
-            || event.expires_at <= now
-            || event.validate().is_err()
-            || presence_state(event).is_none()
-        {
-            return false;
-        }
-        let Some(public_key) = resolver.and_then(|resolver| {
-            resolver.resolve_active_device_key(&event.actor_id, &event.device_id)
-        }) else {
-            return false;
-        };
-        verify_eddsa_detached_jws_ephemeral_proof(event, &public_key).is_ok()
-    }
-}
-
-fn presence_state(event: &EphemeralEnvelope) -> Option<PresenceStatus> {
-    let state = PresenceStatus::parse_wire(event.payload.get("state")?.as_str()?)?;
-    if event
-        .payload
-        .get("last_active_at")
-        .and_then(Value::as_str)
-        .is_some_and(|value| validate_last_active_at(value).is_err())
-    {
-        return None;
-    }
-    if event
-        .payload
-        .get("status_message")
-        .and_then(Value::as_str)
-        .is_some_and(|value| validate_status_message(value).is_err())
-    {
-        return None;
-    }
-    Some(state)
 }
 
 #[derive(Clone, Debug, Default)]

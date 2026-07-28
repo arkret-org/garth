@@ -46,7 +46,6 @@ pub(crate) fn sync_response(cursor: &str) -> AccountSubscribeBatch {
             to_device: None,
             device_lists: None,
             account_data: None,
-            presence: None,
             notifications: None,
             agent_signer_evidence_bundle: None,
             partial: None,

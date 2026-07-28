@@ -475,7 +475,9 @@ mod tests {
     fn message_event() -> Event {
         Event::new(
             crate::protocol::events::EventKind::MESSAGE_CREATE,
-            realm_id(),
+            crate::protocol::ScopeRef::Realm {
+                realm_id: realm_id(),
+            },
             Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
             1,
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
@@ -990,7 +992,9 @@ mod tests {
         let store = MemoryStore::new();
         let event = Event::new(
             crate::protocol::events::EventKind::MESSAGE_CREATE,
-            realm_id(),
+            crate::protocol::ScopeRef::Realm {
+                realm_id: realm_id(),
+            },
             Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
             1,
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
