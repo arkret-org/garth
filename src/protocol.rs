@@ -8,6 +8,7 @@ pub(crate) use arkret_keystore::{KeyBytes, KeyStore, KeyStoreError};
 pub(crate) use arkret_models_collaboration::account_lifecycle::AccountRegisterRequestBody;
 pub(crate) use arkret_models_collaboration::agent_signer_evidence::AgentSignerEvidence;
 pub(crate) use arkret_models_collaboration::event_query::EventsQueryOrder;
+pub(crate) use arkret_models_collaboration::events_payloads::MessageCreatePayload;
 pub(crate) use arkret_models_collaboration::http_bodies::{
     EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind,
 };
@@ -15,6 +16,11 @@ pub(crate) use arkret_models_collaboration::session_grant_bodies::{
     SessionGrantAgentScopeRequest, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
     SessionGrantOutcome, SessionGrantRefreshOutcome, SessionGrantRefreshProof,
     SessionGrantRefreshRequestBody, SessionGrantRequestBody,
+};
+pub(crate) use arkret_models_collaboration::signal_message_stream::{
+    MAX_MESSAGE_STREAM_LIFETIME_SECONDS, MAX_MESSAGE_STREAM_PREVIEW_BYTES,
+    MAX_MESSAGE_STREAMS_PER_DEVICE, MESSAGE_STREAM_STALLED_AFTER_SECONDS, MessageStreamFormat,
+    MessageStreamFrame,
 };
 pub(crate) use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountStreamInterrupt, AccountSubscribeBatch, AccountSubscribeFrameKind,
@@ -40,8 +46,9 @@ pub(crate) use arkret_models_identity::{
 pub(crate) use arkret_state::resolver::RealmState;
 pub use arkret_wire::{AuthorizationLease, IngressReceipt};
 pub(crate) use arkret_wire::{
-    BlobRef, DeviceId, Did, Event, EventId, GrantId, Hash, Hlc, NonEmptyString, RealmId, RequestId,
-    ScopeRef, SidecarId, SignalEnvelope, StrandId,
+    BlobRef, DeviceId, Did, Event, EventId, EventKind, GrantId, Hash, Hlc, MessageId,
+    MessageStreamId, NonEmptyString, RealmId, RequestId, ScopeRef, SealId, SidecarId,
+    SignalEnvelope, StrandId,
 };
 
 #[cfg(test)]

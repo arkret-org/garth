@@ -29,6 +29,7 @@ pub mod projection;
 pub mod runtime_store;
 pub mod session;
 pub mod signal;
+pub mod signal_message_stream;
 pub mod stamp;
 pub mod store;
 pub mod subscribe;
@@ -82,6 +83,11 @@ pub use signal::{
     PresenceObservation, PresenceProjection, PresenceStatus, SIGNAL_PLAINTEXT_KIND_PRESENCE,
     SignalDecryptor, SignalPlaintext, SignalReceiver, SignalSenderKeyResolver,
     aggregate_presence_states,
+};
+pub use signal_message_stream::{
+    MessageStreamApplyOutcome, MessageStreamAuthorizer, MessageStreamIgnoreReason,
+    MessageStreamPreview, MessageStreamPreviewStatus, MessageStreamProjection,
+    SIGNAL_PLAINTEXT_KIND_MESSAGE_STREAM,
 };
 pub use stamp::{
     MonotonicStampStore, RemoteStamp, SigningStamp, SigningStampAllocator, StampFloor,

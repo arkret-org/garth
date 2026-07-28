@@ -78,23 +78,27 @@ pub trait SignalDecryptor: MaybeSendSync {
 
 /// Decrypted, sender-bound Signal payload.
 ///
-/// `kind`, `actor_id`, `payload_sequence` and `ttl_ms` are the closed minimum
-/// every Signal plaintext carries; `body` keeps the whole decoded object so a
-/// domain projection can read its own further fields without a second parse.
+/// `kind` and `payload_sequence` are the common minimum. Product profiles may
+/// additionally carry `actor_id` and an inner `ttl_ms`; when present they are
+/// checked against the authenticated envelope. `body` keeps the whole decoded
+/// object so a domain projection can read its own further fields without a
+/// second parse.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SignalPlaintext {
     pub kind: String,
     pub actor_id: Did,
     pub payload_sequence: u64,
-    pub ttl_ms: u64,
+    pub ttl_ms: Option<u64>,
     pub body: BTreeMap<String, Value>,
     /// Outer `sent_at`, the reference instant for the plaintext TTL and the
     /// tie-breaker for `status_message` selection (`profiles-presence.md`
     /// §3.3).
     pub sent_at: DateTime<Utc>,
-    /// The earlier of the outer `expires_at` and `sent_at + ttl_ms`.
+    /// The earlier of the outer `expires_at` and `sent_at + ttl_ms` when the
+    /// product profile carries an inner TTL.
     pub expires_at: DateTime<Utc>,
     pub scope_ref: ScopeRef,
+    pub seal_ref: crate::protocol::SealId,
     pub sender_device_id: crate::protocol::DeviceId,
 }
 
@@ -112,20 +116,20 @@ impl SignalPlaintext {
             .filter(|kind| !kind.is_empty())
             .ok_or_else(|| Error::Protocol("signal plaintext requires kind".to_owned()))?
             .to_owned();
-        let actor_id = map
-            .get("actor_id")
-            .and_then(Value::as_str)
-            .ok_or_else(|| Error::Protocol("signal plaintext requires actor_id".to_owned()))
-            .and_then(|actor| {
-                Did::new(actor).map_err(|error| Error::Protocol(error.to_string()))
+        if let Some(actor_value) = map.get("actor_id") {
+            let actor = actor_value.as_str().ok_or_else(|| {
+                Error::Protocol("signal plaintext actor_id must be a DID string".to_owned())
             })?;
-        // The outer proof authenticates `sender_actor_id` only. A plaintext
-        // that named a different actor would be an unauthenticated claim about
-        // a third party, so it is refused rather than projected.
-        if actor_id != envelope.sender_actor_id {
-            return Err(Error::Protocol(
-                "signal plaintext actor_id must equal the authenticated sender_actor_id".to_owned(),
-            ));
+            let actor_id = Did::new(actor).map_err(|error| Error::Protocol(error.to_string()))?;
+            // The outer proof authenticates `sender_actor_id` only. A
+            // plaintext that names a different actor is an unauthenticated
+            // claim about a third party.
+            if actor_id != envelope.sender_actor_id {
+                return Err(Error::Protocol(
+                    "signal plaintext actor_id must equal the authenticated sender_actor_id"
+                        .to_owned(),
+                ));
+            }
         }
         let payload_sequence = map
             .get("payload_sequence")
@@ -133,26 +137,35 @@ impl SignalPlaintext {
             .ok_or_else(|| {
                 Error::Protocol("signal plaintext requires payload_sequence".to_owned())
             })?;
-        let ttl_ms = map
-            .get("ttl_ms")
-            .and_then(Value::as_u64)
-            .filter(|ttl| *ttl > 0)
-            .ok_or_else(|| {
-                Error::Protocol("signal plaintext requires a positive ttl_ms".to_owned())
-            })?;
-        let inner_expiry = envelope.sent_at
-            + Duration::try_milliseconds(ttl_ms as i64).ok_or_else(|| {
-                Error::Protocol("signal plaintext ttl_ms is out of range".to_owned())
-            })?;
+        let ttl_ms = match map.get("ttl_ms") {
+            Some(value) => Some(value.as_u64().filter(|ttl| *ttl > 0).ok_or_else(|| {
+                Error::Protocol("signal plaintext ttl_ms must be a positive integer".to_owned())
+            })?),
+            None => None,
+        };
+        let expires_at = match ttl_ms {
+            Some(ttl_ms) => {
+                let milliseconds = i64::try_from(ttl_ms).map_err(|_| {
+                    Error::Protocol("signal plaintext ttl_ms is out of range".to_owned())
+                })?;
+                let inner_expiry = envelope.sent_at
+                    + Duration::try_milliseconds(milliseconds).ok_or_else(|| {
+                        Error::Protocol("signal plaintext ttl_ms is out of range".to_owned())
+                    })?;
+                inner_expiry.min(envelope.expires_at)
+            }
+            None => envelope.expires_at,
+        };
         Ok(Self {
             kind,
-            actor_id,
+            actor_id: envelope.sender_actor_id.clone(),
             payload_sequence,
             ttl_ms,
             body: map.into_iter().collect(),
             sent_at: envelope.sent_at,
-            expires_at: inner_expiry.min(envelope.expires_at),
+            expires_at,
             scope_ref: envelope.scope_ref.clone(),
+            seal_ref: envelope.seal_ref.clone(),
             sender_device_id: envelope.sender_device_id.clone(),
         })
     }
@@ -532,6 +545,43 @@ mod tests {
             projection.aggregated(&actor(), sent_at()),
             PresenceStatus::Online
         );
+    }
+
+    #[test]
+    fn receiver_accepts_a_profile_without_plaintext_actor_or_ttl() {
+        let plaintext_value = json!({
+            "kind": "ak.message.stream",
+            "payload_sequence": 2,
+            "strand_id": "ak:strand:01904100-0000-7000-8000-000000000006",
+            "track_name": "discussion",
+            "message_id": "ak:message:01904100-0000-7000-8000-000000000007",
+            "attempt": 0,
+            "stream_id": "ak:message_stream:01904100-0000-7000-8000-000000000008",
+            "seq": 0,
+            "frame_kind": "keyframe",
+            "format": "plain",
+            "text": "hello",
+            "truncated": false
+        });
+        let (envelope, public_key, plaintext) = signed_signal(
+            device("000000000005"),
+            plaintext_value,
+            SignalClass::Session,
+            30,
+            [26; 32],
+        );
+        let accepted = SignalReceiver::new()
+            .accept(
+                &envelope,
+                &key_of(public_key),
+                &FixedDecryptor(plaintext),
+                sent_at(),
+            )
+            .unwrap();
+
+        assert_eq!(accepted.actor_id, actor());
+        assert_eq!(accepted.ttl_ms, None);
+        assert_eq!(accepted.expires_at, envelope.expires_at);
     }
 
     #[test]
