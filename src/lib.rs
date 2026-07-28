@@ -27,6 +27,7 @@ pub mod orchestrator;
 pub mod outbound;
 pub mod projection;
 pub mod runtime_store;
+pub mod security_transaction;
 pub mod session;
 pub mod signal;
 pub mod signal_message_stream;
@@ -70,6 +71,11 @@ pub use runtime_store::{
     EventCacheStore as EventBodyCacheStore, MemoryPersistenceStore, StateSnapshotStore, StoreCache,
     StoreEncryptionKey, StoredAccountData, rebuild_realm_state_from_events,
     restore_realm_state_from_persistence,
+};
+pub use security_transaction::{
+    BoxSecurityTransactionFuture, DurableSecurityTransaction, MemorySecurityTransactionStore,
+    PendingSecurityTransactionContinue, SecurityTransactionEngine, SecurityTransactionProgress,
+    SecurityTransactionStore, SecurityTransactionTransport,
 };
 pub use session::{
     AgentKeyProofLogin, AuthenticatedTransportFactory, DidProofLogin, GRANT_ROTATION_SKEW_SECS,
