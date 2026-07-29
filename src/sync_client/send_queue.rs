@@ -817,6 +817,7 @@ pub(crate) mod test_publication {
             device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-bbbbbbbbbbbb").unwrap(),
             scope_ref,
             action: "ak.message.create".to_owned(),
+            authorization_rule_id: "realm_admission".to_owned(),
             risk_tier: RiskTier::Low,
             issued_at,
             expires_at,
