@@ -203,6 +203,27 @@ where
         Ok(true)
     }
 
+    /// Force an issuer round-trip before a security-sensitive action.
+    ///
+    /// Unlike normal `provide`, this does not trust local expiry metadata or
+    /// the post-success cooldown. The issuer therefore re-evaluates current
+    /// principal lifecycle, runtime-key authorization, and scopes before the
+    /// returned transport can be used.
+    pub async fn refresh_for_sensitive_action(&self) -> Result<F::Transport> {
+        let previous_state = self.session.current_state().ok_or_else(|| {
+            crate::protocol::Error::Protocol("no active session grant".to_owned())
+        })?;
+        let refresh_options = self
+            .factory
+            .refresh_options(&previous_state, &self.refresh_options)?;
+        self.session
+            .refresh_once(refresh_options, self.clock.now())
+            .await?;
+        self.persist_current_state().await?;
+        self.clear_cached_transport();
+        self.provide_authenticated().await
+    }
+
     async fn provide_authenticated(&self) -> Result<F::Transport> {
         let current = self.session.current_state().ok_or_else(|| {
             crate::protocol::Error::Protocol("no active session grant".to_owned())
