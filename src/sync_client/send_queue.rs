@@ -788,8 +788,11 @@ pub(crate) mod test_publication {
     use chrono::{DateTime, Utc};
 
     use arkret_wire::{
-        AuthoritySetRef, AuthorizationLease, AuthorizationLeaseId, DeviceId, Did, Hash,
-        IngressReceipt, LeaseBasisRef, Proof, ReceiptId, RiskTier, ScopeRef, SealId,
+        AUTHORITY_SET_POLICY_SCHEMA, AuthoritySetAuthorizationRule, AuthoritySetIssuer,
+        AuthoritySetIssuerRole, AuthoritySetPolicy, AuthoritySetPolicyKind,
+        AuthoritySetPolicySource, AuthoritySetRef, AuthoritySetSourceKind, AuthorizationLease,
+        AuthorizationLeaseId, DeviceId, Did, DidUrl, Hash, IngressReceipt, LeaseBasisRef,
+        PayloadProof, ReceiptId, RiskTier, ScopeRef, SealId,
     };
 
     use crate::protocol::RealmId;
@@ -799,6 +802,10 @@ pub(crate) mod test_publication {
         issued_at: DateTime<Utc>,
         expires_at: DateTime<Utc>,
     ) -> AuthorizationLease {
+        let scope_ref = ScopeRef::Realm { realm_id };
+        let authority_set_policy =
+            realm_admission_policy(scope_ref.clone(), "ak.message.create");
+        let authority_set_ref = policy_ref(&authority_set_policy);
         let mut lease = AuthorizationLease {
             authorization_lease_id: AuthorizationLeaseId::new(
                 "ak:authorization_lease:01904100-0000-7000-8000-aaaaaaaaaaaa",
@@ -809,12 +816,13 @@ pub(crate) mod test_publication {
             ),
             actor_id: Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
             device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-bbbbbbbbbbbb").unwrap(),
-            scope_ref: ScopeRef::Realm { realm_id },
+            scope_ref,
             action: "ak.message.create".to_owned(),
             risk_tier: RiskTier::Low,
             issued_at,
             expires_at,
-            authority_set_ref: authority_set("ak.authority_set.realm_admission.v1"),
+            authority_set_ref,
+            authority_set_policy,
             proofs: Vec::new(),
         };
         let digest = lease.lease_digest().unwrap();
@@ -855,16 +863,50 @@ pub(crate) mod test_publication {
         }
     }
 
+    fn realm_admission_policy(scope_ref: ScopeRef, action: &str) -> AuthoritySetPolicy {
+        AuthoritySetPolicy {
+            schema: AUTHORITY_SET_POLICY_SCHEMA.to_owned(),
+            authority_set_id: "ak.authority_set.realm_admission.v1".to_owned(),
+            policy_kind: AuthoritySetPolicyKind::RealmAdmission,
+            scope_ref,
+            source: AuthoritySetPolicySource {
+                source_kind: AuthoritySetSourceKind::RealmControl,
+                source_ref: format!("ak:seal:sha256:{}", "a".repeat(64)),
+                source_digest: Hash::new(format!("sha256:{}", "b".repeat(64))).unwrap(),
+                generation_ref: "1".to_owned(),
+            },
+            authorization_rules: vec![AuthoritySetAuthorizationRule {
+                rule_id: "realm_admission".to_owned(),
+                issuer_role: AuthoritySetIssuerRole::RealmAdmission,
+                allowed_actions: vec![action.to_owned()],
+                issuers: vec![AuthoritySetIssuer {
+                    verification_method: DidUrl::new(
+                        "did:webvh:z6mkfixture:authority.example#key-1",
+                    )
+                    .unwrap(),
+                }],
+                threshold: 1,
+            }],
+        }
+    }
+
+    fn policy_ref(policy: &AuthoritySetPolicy) -> AuthoritySetRef {
+        AuthoritySetRef {
+            authority_set_id: policy.authority_set_id.clone(),
+            authority_set_digest: policy.digest().unwrap(),
+        }
+    }
+
     fn issuer_proof(
         verification_method: &str,
         payload_digest: Hash,
         created_at: DateTime<Utc>,
-    ) -> Proof {
-        Proof {
+    ) -> PayloadProof {
+        PayloadProof {
             kind: "detached_jws".to_owned(),
             alg: "EdDSA".to_owned(),
             verification_method: verification_method.to_owned(),
-            event_digest: payload_digest,
+            payload_digest,
             created_at,
             domain: None,
             audience: None,
