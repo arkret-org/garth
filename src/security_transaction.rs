@@ -11,6 +11,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 
 use arkret_models_crypto::TypedSecurityTransactionContinueRequest;
+use arkret_models_crypto::{BackupSeriesEraseOutcome, BackupSeriesEraseRequestBody};
 use arkret_wire::{
     Hash, SecurityTransaction, SecurityTransactionCreateRequest, SecurityTransactionState,
     SecurityTransactionStep, TransactionId,
@@ -41,6 +42,11 @@ pub trait SecurityTransactionTransport: MaybeSendSync {
         transaction_id: &'a TransactionId,
         request: &'a TypedSecurityTransactionContinueRequest,
     ) -> BoxSecurityTransactionFuture<'a, SecurityTransaction>;
+
+    fn erase_backup_series<'a>(
+        &'a self,
+        request: &'a BackupSeriesEraseRequestBody,
+    ) -> BoxSecurityTransactionFuture<'a, BackupSeriesEraseOutcome>;
 }
 
 impl SecurityTransactionTransport for arkret_http_client::Client {
@@ -77,6 +83,13 @@ impl SecurityTransactionTransport for arkret_http_client::Client {
                 .map_err(Error::from)
         })
     }
+
+    fn erase_backup_series<'a>(
+        &'a self,
+        request: &'a BackupSeriesEraseRequestBody,
+    ) -> BoxSecurityTransactionFuture<'a, BackupSeriesEraseOutcome> {
+        Box::pin(async move { self.erase_backup_series(request).await.map_err(Error::from) })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -92,6 +105,8 @@ pub struct DurableSecurityTransaction {
     /// Reference into a host-owned encrypted store. Never plaintext material.
     pub staged_secret_ref: Option<String>,
     pub pending_continue: Option<PendingSecurityTransactionContinue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_erase_request: Option<Vec<u8>>,
     /// Cached UI projection only; GET remains authoritative.
     pub last_observed_resource: Option<SecurityTransaction>,
 }
@@ -208,6 +223,7 @@ where
         request: &SecurityTransactionCreateRequest,
         staged_secret_ref: Option<String>,
     ) -> Result<SecurityTransaction> {
+        validate_staged_secret_ref(staged_secret_ref.as_deref())?;
         let transaction_id = create_request_transaction_id(request);
         let canonical_request = arkret_canonical::canonical_json_bytes(request)?;
         let mut local = match self.store.load(transaction_id)? {
@@ -227,6 +243,7 @@ where
                     canonical_create_request: canonical_request,
                     staged_secret_ref,
                     pending_continue: None,
+                    pending_erase_request: None,
                     last_observed_resource: None,
                 };
                 self.store.save(&state).await?;
@@ -334,6 +351,93 @@ where
             .await
             .map(Some)
     }
+
+    pub async fn erase_backup_series(
+        &self,
+        transaction_id: &TransactionId,
+        request: &BackupSeriesEraseRequestBody,
+    ) -> Result<BackupSeriesEraseOutcome> {
+        let mut local = self.store.load(transaction_id)?.ok_or_else(|| {
+            Error::Protocol(format!(
+                "security transaction {} has no local public plan",
+                transaction_id.as_str()
+            ))
+        })?;
+        if &request.transaction_id != transaction_id {
+            return Err(Error::Protocol(
+                "backup-series erase request belongs to a different transaction".to_owned(),
+            ));
+        }
+        let canonical = arkret_canonical::canonical_json_bytes(request)?;
+        if local
+            .pending_erase_request
+            .as_ref()
+            .is_some_and(|existing| existing != &canonical)
+        {
+            return Err(Error::IdempotencyConflict(format!(
+                "{}:erase_old_material",
+                transaction_id.as_str()
+            )));
+        }
+        local.pending_erase_request = Some(canonical);
+        self.store.save(&local).await?;
+        let outcome = self.transport.erase_backup_series(request).await?;
+        outcome.validate_for_request(request).map_err(Error::from)?;
+        if outcome.status == arkret_models_crypto::BackupSeriesEraseStatus::Complete {
+            local.pending_erase_request = None;
+            local.last_observed_resource = Some(
+                self.transport
+                    .get_security_transaction(transaction_id)
+                    .await?,
+            );
+            self.store.save(&local).await?;
+        }
+        Ok(outcome)
+    }
+
+    pub async fn retry_pending_erase(
+        &self,
+        transaction_id: &TransactionId,
+    ) -> Result<Option<BackupSeriesEraseOutcome>> {
+        let local = self.store.load(transaction_id)?.ok_or_else(|| {
+            Error::Protocol(format!(
+                "security transaction {} has no local public plan",
+                transaction_id.as_str()
+            ))
+        })?;
+        let Some(canonical) = local.pending_erase_request else {
+            return Ok(None);
+        };
+        let request: BackupSeriesEraseRequestBody = serde_json::from_value(
+            arkret_canonical::parse_canonical_json(&canonical)?,
+        )
+        .map_err(|error| {
+            Error::Protocol(format!(
+                "stored backup-series erase request is invalid: {error}"
+            ))
+        })?;
+        self.erase_backup_series(transaction_id, &request)
+            .await
+            .map(Some)
+    }
+}
+
+fn validate_staged_secret_ref(reference: Option<&str>) -> Result<()> {
+    let Some(reference) = reference else {
+        return Ok(());
+    };
+    if !reference.starts_with("secure-store://")
+        || reference.len() > 512
+        || reference.chars().any(char::is_whitespace)
+        || reference.contains('?')
+        || reference.contains('#')
+    {
+        return Err(Error::Protocol(
+            "staged_secret_ref must be an opaque secure-store reference without query or fragment"
+                .to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn create_request_transaction_id(request: &SecurityTransactionCreateRequest) -> &TransactionId {
@@ -374,6 +478,7 @@ mod tests {
             canonical_create_request: br#"{"public_plan":true}"#.to_vec(),
             staged_secret_ref: Some("secure-store://recovery/staged-1".to_owned()),
             pending_continue: None,
+            pending_erase_request: None,
             last_observed_resource: None,
         };
         store.save(&state).await.unwrap();
@@ -398,6 +503,7 @@ mod tests {
             canonical_create_request: Vec::new(),
             staged_secret_ref: None,
             pending_continue: None,
+            pending_erase_request: None,
             last_observed_resource: None,
         };
         let progress = state.progress();
@@ -405,5 +511,17 @@ mod tests {
         assert_eq!(progress.next_required_step, None);
         assert_eq!(progress.accepted_step_count, 0);
         assert!(!progress.terminal);
+    }
+
+    #[test]
+    fn staged_secret_reference_cannot_embed_secret_material() {
+        assert!(validate_staged_secret_ref(Some("secure-store://recovery/staged-1")).is_ok());
+        for invalid in [
+            "recovery phrase words",
+            "secure-store://recovery/staged-1?mnemonic=secret",
+            "secure-store://recovery/staged-1#private-key",
+        ] {
+            assert!(validate_staged_secret_ref(Some(invalid)).is_err());
+        }
     }
 }
