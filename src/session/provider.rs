@@ -454,6 +454,19 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sensitive_action_forces_issuer_refresh_while_grant_is_locally_fresh() {
+        let (provider, refresh_calls, factory_calls) = provider();
+        assert_eq!(provider.provide().await.unwrap(), "grant-1");
+
+        assert_eq!(
+            provider.refresh_for_sensitive_action().await.unwrap(),
+            "grant-2"
+        );
+        assert_eq!(*refresh_calls.lock().unwrap(), 1);
+        assert_eq!(*factory_calls.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
     async fn secure_store_restores_and_tracks_rotated_grant() {
         use crate::{MemorySecureKeyStore, SecureSessionGrantStore};
 
