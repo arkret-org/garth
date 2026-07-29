@@ -803,8 +803,7 @@ pub(crate) mod test_publication {
         expires_at: DateTime<Utc>,
     ) -> AuthorizationLease {
         let scope_ref = ScopeRef::Realm { realm_id };
-        let authority_set_policy =
-            realm_admission_policy(scope_ref.clone(), "ak.message.create");
+        let authority_set_policy = realm_admission_policy(scope_ref.clone(), "ak.message.create");
         let authority_set_ref = policy_ref(&authority_set_policy);
         let mut lease = AuthorizationLease {
             authorization_lease_id: AuthorizationLeaseId::new(
