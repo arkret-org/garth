@@ -613,6 +613,85 @@ mod tests {
         }
     }
 
+    fn canonical_event_digest(
+        suffix: u32,
+        actor_seq: u64,
+        counter: u32,
+        kind: &str,
+        payload: serde_json::Value,
+        refs_after: &[EventId],
+    ) -> String {
+        let created_at = chrono::DateTime::parse_from_rfc3339("2026-07-29T00:00:00.000Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let mut event = arkret_wire::Event::new_with_id_at(
+            event_id(suffix),
+            kind,
+            arkret_wire::ScopeRef::Realm {
+                realm_id: RealmId::new("ak:realm:01964137-0000-7000-8000-000000000030".to_owned())
+                    .unwrap(),
+            },
+            controller(),
+            actor_seq,
+            hlc(counter),
+            payload,
+            created_at,
+        )
+        .unwrap();
+        event.refs.extend(
+            refs_after
+                .iter()
+                .map(|event_id| arkret_wire::EventRef::new(event_id.to_string(), "after")),
+        );
+        event.event_digest().unwrap()
+    }
+
+    fn canonical_request_fact(
+        suffix: u32,
+        actor_seq: u64,
+        body: &str,
+    ) -> SidecarExchangeRequestFact {
+        let mut fact = request_fact(suffix, actor_seq, "");
+        fact.event_digest = canonical_event_digest(
+            suffix,
+            actor_seq,
+            1,
+            arkret_wire::events::EventKind::MESSAGE_CREATE,
+            serde_json::json!({
+                "strand_id": scope().private_strand_id,
+                "track_name": "discussion",
+                "content": {"kind": "ak.content.text", "body": body},
+                "exchange_binding": AgentSidecarEventExchangeBinding::request(
+                    exchange_id(),
+                    fact.context.clone(),
+                )
+                .unwrap()
+            }),
+            &[],
+        );
+        fact
+    }
+
+    fn canonical_control_fact(
+        suffix: u32,
+        actor_seq: u64,
+        control: AgentSidecarExchangeControl,
+    ) -> SidecarExchangeControlFact {
+        let mut fact = control_fact(suffix, actor_seq, "", control.clone());
+        fact.event_digest = canonical_event_digest(
+            suffix,
+            actor_seq,
+            0x40 + suffix,
+            arkret_wire::events::EventKind::AGENT_SIDECAR_EXCHANGE_CONTROL,
+            serde_json::json!({
+                "strand_id": scope().private_strand_id,
+                "control": control
+            }),
+            &fact.refs_after,
+        );
+        fact
+    }
+
     fn agent_fact(
         suffix: u32,
         counter: u32,
@@ -695,17 +774,40 @@ mod tests {
     #[test]
     fn canonical_request_prefers_lowest_actor_seq_then_max_digest() {
         let requests = vec![
-            request_fact(0x40, 7, "aa"),
-            request_fact(0x41, 5, "aa"),
-            request_fact(0x42, 5, "bb"),
+            canonical_request_fact(0x40, 7, "higher sequence retry"),
+            canonical_request_fact(0x41, 5, "same sequence left"),
+            canonical_request_fact(0x42, 5, "same sequence right"),
         ];
+        let expected = requests[1..]
+            .iter()
+            .max_by(|left, right| {
+                left.event_digest
+                    .as_bytes()
+                    .cmp(right.event_digest.as_bytes())
+            })
+            .unwrap()
+            .event_id
+            .clone();
         let projection = fold_sidecar_exchange(&scope(), &exchange_id(), &requests, &[], &[])
             .unwrap()
             .unwrap();
         assert_eq!(
-            projection.private_request_event_id,
-            event_id(0x42),
+            projection.private_request_event_id, expected,
             "same-sequence sibling resolves to bytewise-max digest; higher seq is a retry duplicate"
+        );
+        let reversed = fold_sidecar_exchange(
+            &scope(),
+            &exchange_id(),
+            &requests.iter().cloned().rev().collect::<Vec<_>>(),
+            &[],
+            &[],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            serde_json::to_vec(&projection).unwrap(),
+            serde_json::to_vec(&reversed).unwrap(),
+            "request sibling resolution must be byte-identical across arrival order"
         );
     }
 
@@ -898,7 +1000,7 @@ mod tests {
 
     #[test]
     fn first_valid_terminal_absorbs_later_controls_and_siblings_resolve_by_digest() {
-        let request = request_fact(0x34, 1, "aa");
+        let request = canonical_request_fact(0x34, 1, "request");
         let response = agent_fact(
             0x35,
             2,
@@ -906,32 +1008,43 @@ mod tests {
             AgentSidecarExchangeBindingRole::UserFacingResponse,
             0x34,
         );
-        let winner = control_fact(
+        let sibling_left = canonical_control_fact(
             0x36,
             2,
-            "ff",
             close_control(vec![event_id(0x35)], vec![event_id(0x35)]),
         );
-        let mut cancel = close_control(vec![event_id(0x35)], vec![]);
-        cancel.action = AgentSidecarExchangeControlAction::Cancel;
-        let sibling_loser = control_fact(0x37, 2, "aa", cancel);
+        let sibling_right = canonical_control_fact(
+            0x37,
+            2,
+            close_control(vec![event_id(0x35)], vec![event_id(0x35)]),
+        );
+        let expected_terminal = [&sibling_left, &sibling_right]
+            .into_iter()
+            .max_by(|left, right| {
+                left.event_digest
+                    .as_bytes()
+                    .cmp(right.event_digest.as_bytes())
+            })
+            .unwrap()
+            .event_id
+            .clone();
         let mut reassign = close_control(vec![event_id(0x35)], vec![]);
         reassign.action = AgentSidecarExchangeControlAction::ReassignCoordinator;
         reassign.response_event_ids = None;
         reassign.expected_coordinator_agent_id = Some(agent_s());
         reassign.coordinator_agent_id = Some(agent_t());
-        let post_terminal = control_fact(0x38, 3, "bb", reassign);
+        let post_terminal = canonical_control_fact(0x38, 3, reassign);
         let projection = fold_sidecar_exchange(
             &scope(),
             &exchange_id(),
             &[request],
             &[response],
-            &[post_terminal, sibling_loser, winner],
+            &[post_terminal, sibling_right, sibling_left],
         )
         .unwrap()
         .unwrap();
         assert_eq!(projection.status, AgentSidecarExchangeStatus::Complete);
-        assert_eq!(projection.terminal_event_id, Some(event_id(0x36)));
+        assert_eq!(projection.terminal_event_id, Some(expected_terminal));
         assert_eq!(
             projection.coordinator_agent_id,
             agent_s(),
@@ -1125,7 +1238,7 @@ mod tests {
 
     #[test]
     fn fold_is_deterministic_across_input_permutations() {
-        let request = request_fact(0x34, 1, "aa");
+        let request = canonical_request_fact(0x34, 1, "canonical request");
         let response_a = agent_fact(
             0x35,
             3,
@@ -1165,11 +1278,27 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert_eq!(forward, reversed, "device replay must be bit-identical");
+        assert_eq!(
+            serde_json::to_vec(&forward).unwrap(),
+            serde_json::to_vec(&reversed).unwrap(),
+            "device replay must be bit-identical"
+        );
         assert_eq!(
             forward.user_facing_response_event_ids,
             vec![event_id(0x36), event_id(0x35)],
             "responses order by (HLC, Event id) bytes, not arrival"
+        );
+        assert_eq!(forward.folded_frontier, reversed.folded_frontier);
+        let union_ids = [
+            event_id(0x34),
+            event_id(0x35),
+            event_id(0x36),
+            event_id(0x37),
+        ];
+        assert_eq!(
+            forward.folded_frontier.event_set_digest,
+            agent_sidecar_exchange_event_set_digest(&union_ids).unwrap(),
+            "frontier digest must cover the complete union history"
         );
     }
 
