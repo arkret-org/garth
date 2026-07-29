@@ -154,12 +154,18 @@ pub trait SecurityTransactionStore: Clone + MaybeSendSync + 'static {
         &'a self,
         state: &'a DurableSecurityTransaction,
     ) -> impl Future<Output = Result<()>> + crate::MaybeSend + 'a;
+    /// Idempotently destroys host-owned staged secret material.
+    ///
+    /// The engine calls this before removing the opaque reference from durable
+    /// public state so a crash cannot leave an unreachable secret behind.
+    fn clear_staged_secret(&self, reference: &str) -> Result<()>;
     fn remove(&self, transaction_id: &TransactionId) -> Result<()>;
 }
 
 #[derive(Clone, Default)]
 pub struct MemorySecurityTransactionStore {
     transactions: Arc<Mutex<BTreeMap<String, DurableSecurityTransaction>>>,
+    cleared_staged_secret_refs: Arc<Mutex<Vec<String>>>,
 }
 
 impl SecurityTransactionStore for MemorySecurityTransactionStore {
@@ -187,6 +193,14 @@ impl SecurityTransactionStore for MemorySecurityTransactionStore {
         }
     }
 
+    fn clear_staged_secret(&self, reference: &str) -> Result<()> {
+        self.cleared_staged_secret_refs
+            .lock()
+            .map_err(|_| Error::Protocol("security transaction store lock poisoned".to_owned()))?
+            .push(reference.to_owned());
+        Ok(())
+    }
+
     fn remove(&self, transaction_id: &TransactionId) -> Result<()> {
         self.transactions
             .lock()
@@ -200,6 +214,20 @@ impl SecurityTransactionStore for MemorySecurityTransactionStore {
 pub struct SecurityTransactionEngine<T, S> {
     transport: T,
     store: S,
+}
+
+fn clear_terminal_staged_secret<S: SecurityTransactionStore>(
+    store: &S,
+    local: &mut DurableSecurityTransaction,
+    state: SecurityTransactionState,
+) -> Result<()> {
+    if state.is_terminal()
+        && let Some(reference) = local.staged_secret_ref.as_deref()
+    {
+        store.clear_staged_secret(reference)?;
+        local.staged_secret_ref = None;
+    }
+    Ok(())
 }
 
 impl<T, S> SecurityTransactionEngine<T, S>
@@ -216,6 +244,18 @@ where
         transaction_id: &TransactionId,
     ) -> Result<Option<DurableSecurityTransaction>> {
         self.store.load(transaction_id)
+    }
+
+    async fn observe_resource(
+        &self,
+        local: &mut DurableSecurityTransaction,
+        resource: SecurityTransaction,
+    ) -> Result<SecurityTransaction> {
+        validate_resource_binding(local, &resource)?;
+        clear_terminal_staged_secret(&self.store, local, resource.state)?;
+        local.last_observed_resource = Some(resource.clone());
+        self.store.save(local).await?;
+        Ok(resource)
     }
 
     pub async fn create_or_resume(
@@ -257,10 +297,7 @@ where
         } else {
             self.transport.create_security_transaction(request).await?
         };
-        validate_resource_binding(&local, &resource)?;
-        local.last_observed_resource = Some(resource.clone());
-        self.store.save(&local).await?;
-        Ok(resource)
+        self.observe_resource(&mut local, resource).await
     }
 
     pub async fn refresh(&self, transaction_id: &TransactionId) -> Result<SecurityTransaction> {
@@ -274,10 +311,7 @@ where
             .transport
             .get_security_transaction(transaction_id)
             .await?;
-        validate_resource_binding(&local, &resource)?;
-        local.last_observed_resource = Some(resource.clone());
-        self.store.save(&local).await?;
-        Ok(resource)
+        self.observe_resource(&mut local, resource).await
     }
 
     pub async fn continue_transaction(
@@ -314,11 +348,8 @@ where
             .transport
             .continue_security_transaction(transaction_id, request)
             .await?;
-        validate_resource_binding(&local, &resource)?;
         local.pending_continue = None;
-        local.last_observed_resource = Some(resource.clone());
-        self.store.save(&local).await?;
-        Ok(resource)
+        self.observe_resource(&mut local, resource).await
     }
 
     pub async fn retry_pending(
@@ -385,12 +416,11 @@ where
         outcome.validate_for_request(request).map_err(Error::from)?;
         if outcome.status == arkret_models_crypto::BackupSeriesEraseStatus::Complete {
             local.pending_erase_request = None;
-            local.last_observed_resource = Some(
-                self.transport
-                    .get_security_transaction(transaction_id)
-                    .await?,
-            );
-            self.store.save(&local).await?;
+            let resource = self
+                .transport
+                .get_security_transaction(transaction_id)
+                .await?;
+            self.observe_resource(&mut local, resource).await?;
         }
         Ok(outcome)
     }
@@ -523,5 +553,31 @@ mod tests {
         ] {
             assert!(validate_staged_secret_ref(Some(invalid)).is_err());
         }
+    }
+
+    #[test]
+    fn terminal_observation_destroys_staged_secret_before_clearing_reference() {
+        let store = MemorySecurityTransactionStore::default();
+        let mut state = DurableSecurityTransaction {
+            transaction_id: transaction_id(),
+            canonical_create_request: br#"{"public_plan":true}"#.to_vec(),
+            staged_secret_ref: Some("secure-store://recovery/staged-1".to_owned()),
+            pending_continue: None,
+            pending_erase_request: None,
+            last_observed_resource: None,
+        };
+
+        clear_terminal_staged_secret(&store, &mut state, SecurityTransactionState::Running)
+            .unwrap();
+        assert!(state.staged_secret_ref.is_some());
+        assert!(store.cleared_staged_secret_refs.lock().unwrap().is_empty());
+
+        clear_terminal_staged_secret(&store, &mut state, SecurityTransactionState::Completed)
+            .unwrap();
+        assert!(state.staged_secret_ref.is_none());
+        assert_eq!(
+            store.cleared_staged_secret_refs.lock().unwrap().as_slice(),
+            ["secure-store://recovery/staged-1"]
+        );
     }
 }
