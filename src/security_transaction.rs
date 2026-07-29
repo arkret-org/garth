@@ -13,7 +13,8 @@ use std::sync::{Arc, Mutex};
 use arkret_models_crypto::TypedSecurityTransactionContinueRequest;
 use arkret_models_crypto::{BackupSeriesEraseOutcome, BackupSeriesEraseRequestBody};
 use arkret_wire::{
-    Hash, SecurityTransaction, SecurityTransactionCreateRequest, SecurityTransactionState,
+    Hash, PromoteRecoverySessionGrantOutcome, PromoteRecoverySessionGrantRequest,
+    SecurityTransaction, SecurityTransactionCreateRequest, SecurityTransactionState,
     SecurityTransactionStep, TransactionId,
 };
 use serde::{Deserialize, Serialize};
@@ -47,6 +48,11 @@ pub trait SecurityTransactionTransport: MaybeSendSync {
         &'a self,
         request: &'a BackupSeriesEraseRequestBody,
     ) -> BoxSecurityTransactionFuture<'a, BackupSeriesEraseOutcome>;
+
+    fn promote_recovery_session_grant<'a>(
+        &'a self,
+        request: &'a PromoteRecoverySessionGrantRequest,
+    ) -> BoxSecurityTransactionFuture<'a, PromoteRecoverySessionGrantOutcome>;
 }
 
 impl SecurityTransactionTransport for arkret_http_client::Client {
@@ -90,6 +96,17 @@ impl SecurityTransactionTransport for arkret_http_client::Client {
     ) -> BoxSecurityTransactionFuture<'a, BackupSeriesEraseOutcome> {
         Box::pin(async move { self.erase_backup_series(request).await.map_err(Error::from) })
     }
+
+    fn promote_recovery_session_grant<'a>(
+        &'a self,
+        request: &'a PromoteRecoverySessionGrantRequest,
+    ) -> BoxSecurityTransactionFuture<'a, PromoteRecoverySessionGrantOutcome> {
+        Box::pin(async move {
+            self.promote_recovery_session_grant(request)
+                .await
+                .map_err(Error::from)
+        })
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -106,7 +123,11 @@ pub struct DurableSecurityTransaction {
     pub staged_secret_ref: Option<String>,
     pub pending_continue: Option<PendingSecurityTransactionContinue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_terminal_continue: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_erase_request: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pending_promotion_request: Option<Vec<u8>>,
     /// Cached UI projection only; GET remains authoritative.
     pub last_observed_resource: Option<SecurityTransaction>,
 }
@@ -154,12 +175,18 @@ pub trait SecurityTransactionStore: Clone + MaybeSendSync + 'static {
         &'a self,
         state: &'a DurableSecurityTransaction,
     ) -> impl Future<Output = Result<()>> + crate::MaybeSend + 'a;
+    /// Idempotently destroys host-owned staged secret material.
+    ///
+    /// The engine calls this before removing the opaque reference from durable
+    /// public state so a crash cannot leave an unreachable secret behind.
+    fn clear_staged_secret(&self, reference: &str) -> Result<()>;
     fn remove(&self, transaction_id: &TransactionId) -> Result<()>;
 }
 
 #[derive(Clone, Default)]
 pub struct MemorySecurityTransactionStore {
     transactions: Arc<Mutex<BTreeMap<String, DurableSecurityTransaction>>>,
+    cleared_staged_secret_refs: Arc<Mutex<Vec<String>>>,
 }
 
 impl SecurityTransactionStore for MemorySecurityTransactionStore {
@@ -187,6 +214,14 @@ impl SecurityTransactionStore for MemorySecurityTransactionStore {
         }
     }
 
+    fn clear_staged_secret(&self, reference: &str) -> Result<()> {
+        self.cleared_staged_secret_refs
+            .lock()
+            .map_err(|_| Error::Protocol("security transaction store lock poisoned".to_owned()))?
+            .push(reference.to_owned());
+        Ok(())
+    }
+
     fn remove(&self, transaction_id: &TransactionId) -> Result<()> {
         self.transactions
             .lock()
@@ -200,6 +235,66 @@ impl SecurityTransactionStore for MemorySecurityTransactionStore {
 pub struct SecurityTransactionEngine<T, S> {
     transport: T,
     store: S,
+}
+
+fn clear_terminal_staged_secret<S: SecurityTransactionStore>(
+    store: &S,
+    local: &mut DurableSecurityTransaction,
+    state: SecurityTransactionState,
+) -> Result<()> {
+    if state.is_terminal()
+        && let Some(reference) = local.staged_secret_ref.as_deref()
+    {
+        store.clear_staged_secret(reference)?;
+        local.staged_secret_ref = None;
+    }
+    Ok(())
+}
+
+fn reconcile_terminal_continue(
+    local: &mut DurableSecurityTransaction,
+    resource: &SecurityTransaction,
+) -> Result<()> {
+    if resource.state != SecurityTransactionState::Completed
+        || local
+            .pending_continue
+            .as_ref()
+            .is_none_or(|pending| pending.step != SecurityTransactionStep::IssueTerminalReceipt)
+    {
+        return Ok(());
+    }
+    let pending = local
+        .pending_continue
+        .as_ref()
+        .expect("terminal pending continuation was checked");
+    let request: TypedSecurityTransactionContinueRequest = serde_json::from_value(
+        arkret_canonical::parse_canonical_json(&pending.canonical_request)?,
+    )
+    .map_err(|error| {
+        Error::Protocol(format!("stored terminal continuation is invalid: {error}"))
+    })?;
+    let attestation = request.client_attestation.as_ref().ok_or_else(|| {
+        Error::Protocol("stored terminal continuation omitted its attestation".to_owned())
+    })?;
+    let completion = resource
+        .terminal_result
+        .as_ref()
+        .and_then(|result| result.completion_attestation.as_ref())
+        .ok_or_else(|| {
+            Error::Protocol(
+                "completed recovery transaction omitted its completion attestation".to_owned(),
+            )
+        })?;
+    if attestation.output_ref != completion.terminal_receipt_id.as_str()
+        || attestation.attestation_digest != completion.terminal_receipt_digest
+    {
+        return Err(Error::Protocol(
+            "authoritative terminal resource does not match the durable signed receipt".to_owned(),
+        ));
+    }
+    local.accepted_terminal_continue = Some(pending.canonical_request.clone());
+    local.pending_continue = None;
+    Ok(())
 }
 
 impl<T, S> SecurityTransactionEngine<T, S>
@@ -216,6 +311,19 @@ where
         transaction_id: &TransactionId,
     ) -> Result<Option<DurableSecurityTransaction>> {
         self.store.load(transaction_id)
+    }
+
+    async fn observe_resource(
+        &self,
+        local: &mut DurableSecurityTransaction,
+        resource: SecurityTransaction,
+    ) -> Result<SecurityTransaction> {
+        validate_resource_binding(local, &resource)?;
+        reconcile_terminal_continue(local, &resource)?;
+        clear_terminal_staged_secret(&self.store, local, resource.state)?;
+        local.last_observed_resource = Some(resource.clone());
+        self.store.save(local).await?;
+        Ok(resource)
     }
 
     pub async fn create_or_resume(
@@ -243,7 +351,9 @@ where
                     canonical_create_request: canonical_request,
                     staged_secret_ref,
                     pending_continue: None,
+                    accepted_terminal_continue: None,
                     pending_erase_request: None,
+                    pending_promotion_request: None,
                     last_observed_resource: None,
                 };
                 self.store.save(&state).await?;
@@ -257,10 +367,7 @@ where
         } else {
             self.transport.create_security_transaction(request).await?
         };
-        validate_resource_binding(&local, &resource)?;
-        local.last_observed_resource = Some(resource.clone());
-        self.store.save(&local).await?;
-        Ok(resource)
+        self.observe_resource(&mut local, resource).await
     }
 
     pub async fn refresh(&self, transaction_id: &TransactionId) -> Result<SecurityTransaction> {
@@ -274,10 +381,7 @@ where
             .transport
             .get_security_transaction(transaction_id)
             .await?;
-        validate_resource_binding(&local, &resource)?;
-        local.last_observed_resource = Some(resource.clone());
-        self.store.save(&local).await?;
-        Ok(resource)
+        self.observe_resource(&mut local, resource).await
     }
 
     pub async fn continue_transaction(
@@ -314,11 +418,13 @@ where
             .transport
             .continue_security_transaction(transaction_id, request)
             .await?;
-        validate_resource_binding(&local, &resource)?;
+        if request.expected_next_step == SecurityTransactionStep::IssueTerminalReceipt
+            && resource.state == SecurityTransactionState::Completed
+        {
+            local.accepted_terminal_continue = Some(canonical_request);
+        }
         local.pending_continue = None;
-        local.last_observed_resource = Some(resource.clone());
-        self.store.save(&local).await?;
-        Ok(resource)
+        self.observe_resource(&mut local, resource).await
     }
 
     pub async fn retry_pending(
@@ -385,12 +491,11 @@ where
         outcome.validate_for_request(request).map_err(Error::from)?;
         if outcome.status == arkret_models_crypto::BackupSeriesEraseStatus::Complete {
             local.pending_erase_request = None;
-            local.last_observed_resource = Some(
-                self.transport
-                    .get_security_transaction(transaction_id)
-                    .await?,
-            );
-            self.store.save(&local).await?;
+            let resource = self
+                .transport
+                .get_security_transaction(transaction_id)
+                .await?;
+            self.observe_resource(&mut local, resource).await?;
         }
         Ok(outcome)
     }
@@ -417,6 +522,95 @@ where
             ))
         })?;
         self.erase_backup_series(transaction_id, &request)
+            .await
+            .map(Some)
+    }
+
+    pub async fn promote_recovery_session_grant(
+        &self,
+        transaction_id: &TransactionId,
+        request: &PromoteRecoverySessionGrantRequest,
+    ) -> Result<PromoteRecoverySessionGrantOutcome> {
+        let mut local = self.store.load(transaction_id)?.ok_or_else(|| {
+            Error::Protocol(format!(
+                "security transaction {} has no local public plan",
+                transaction_id.as_str()
+            ))
+        })?;
+        if &request.transaction_id != transaction_id {
+            return Err(Error::Protocol(
+                "recovery grant promotion belongs to a different transaction".to_owned(),
+            ));
+        }
+        let resource = local.last_observed_resource.as_ref().ok_or_else(|| {
+            Error::Protocol(
+                "recovery grant promotion requires an authoritative terminal resource".to_owned(),
+            )
+        })?;
+        if resource.state != SecurityTransactionState::Completed
+            || resource
+                .terminal_result
+                .as_ref()
+                .and_then(|result| result.completion_attestation.as_ref())
+                != Some(&request.completion_attestation)
+        {
+            return Err(Error::Protocol(
+                "recovery grant promotion does not match the completed transaction attestation"
+                    .to_owned(),
+            ));
+        }
+        request.validate_structural().map_err(Error::from)?;
+        let canonical = arkret_canonical::canonical_json_bytes(request)?;
+        if local
+            .pending_promotion_request
+            .as_ref()
+            .is_some_and(|existing| existing != &canonical)
+        {
+            return Err(Error::IdempotencyConflict(format!(
+                "{}:promote_recovery_session_grant",
+                transaction_id.as_str()
+            )));
+        }
+        local.pending_promotion_request = Some(canonical);
+        self.store.save(&local).await?;
+        let outcome = self
+            .transport
+            .promote_recovery_session_grant(request)
+            .await?;
+        if outcome.transaction_id != *transaction_id
+            || outcome.consumed_grant_id != request.old_grant_id
+        {
+            return Err(Error::Protocol(
+                "recovery grant promotion outcome changed its transaction binding".to_owned(),
+            ));
+        }
+        local.pending_promotion_request = None;
+        self.store.save(&local).await?;
+        Ok(outcome)
+    }
+
+    pub async fn retry_pending_promotion(
+        &self,
+        transaction_id: &TransactionId,
+    ) -> Result<Option<PromoteRecoverySessionGrantOutcome>> {
+        let local = self.store.load(transaction_id)?.ok_or_else(|| {
+            Error::Protocol(format!(
+                "security transaction {} has no local public plan",
+                transaction_id.as_str()
+            ))
+        })?;
+        let Some(canonical) = local.pending_promotion_request else {
+            return Ok(None);
+        };
+        let request: PromoteRecoverySessionGrantRequest = serde_json::from_value(
+            arkret_canonical::parse_canonical_json(&canonical)?,
+        )
+        .map_err(|error| {
+            Error::Protocol(format!(
+                "stored recovery grant promotion request is invalid: {error}"
+            ))
+        })?;
+        self.promote_recovery_session_grant(transaction_id, &request)
             .await
             .map(Some)
     }
@@ -478,7 +672,9 @@ mod tests {
             canonical_create_request: br#"{"public_plan":true}"#.to_vec(),
             staged_secret_ref: Some("secure-store://recovery/staged-1".to_owned()),
             pending_continue: None,
+            accepted_terminal_continue: None,
             pending_erase_request: None,
+            pending_promotion_request: None,
             last_observed_resource: None,
         };
         store.save(&state).await.unwrap();
@@ -503,7 +699,9 @@ mod tests {
             canonical_create_request: Vec::new(),
             staged_secret_ref: None,
             pending_continue: None,
+            accepted_terminal_continue: None,
             pending_erase_request: None,
+            pending_promotion_request: None,
             last_observed_resource: None,
         };
         let progress = state.progress();
@@ -523,5 +721,33 @@ mod tests {
         ] {
             assert!(validate_staged_secret_ref(Some(invalid)).is_err());
         }
+    }
+
+    #[test]
+    fn terminal_observation_destroys_staged_secret_before_clearing_reference() {
+        let store = MemorySecurityTransactionStore::default();
+        let mut state = DurableSecurityTransaction {
+            transaction_id: transaction_id(),
+            canonical_create_request: br#"{"public_plan":true}"#.to_vec(),
+            staged_secret_ref: Some("secure-store://recovery/staged-1".to_owned()),
+            pending_continue: None,
+            accepted_terminal_continue: None,
+            pending_erase_request: None,
+            pending_promotion_request: None,
+            last_observed_resource: None,
+        };
+
+        clear_terminal_staged_secret(&store, &mut state, SecurityTransactionState::Running)
+            .unwrap();
+        assert!(state.staged_secret_ref.is_some());
+        assert!(store.cleared_staged_secret_refs.lock().unwrap().is_empty());
+
+        clear_terminal_staged_secret(&store, &mut state, SecurityTransactionState::Completed)
+            .unwrap();
+        assert!(state.staged_secret_ref.is_none());
+        assert_eq!(
+            store.cleared_staged_secret_refs.lock().unwrap().as_slice(),
+            ["secure-store://recovery/staged-1"]
+        );
     }
 }
