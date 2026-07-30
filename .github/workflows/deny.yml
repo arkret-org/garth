@@ -1,0 +1,31 @@
+name: cargo-deny
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout garth
+        uses: actions/checkout@v6
+        with:
+          path: garth
+      - name: Checkout arkret-rust-sdk
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository_owner }}/arkret-rust-sdk
+          path: arkret-rust-sdk
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+      - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          command: check
+          manifest-path: garth/Cargo.toml
