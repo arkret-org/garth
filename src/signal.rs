@@ -24,7 +24,9 @@ use serde_json::Value;
 
 use crate::MaybeSendSync;
 use crate::protocol::signatures::{PublicKeyMaterial, verify_eddsa_signal_proof};
-use crate::protocol::{Did, Error, Result, ScopeRef, SignalEnvelope, canonical};
+use crate::protocol::{
+    CallSignalPlaintext, Did, Error, Result, ScopeRef, SignalEnvelope, canonical,
+};
 use crate::store::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
 
 pub use crate::protocol::{PresenceStatus, aggregate_presence_states};
@@ -116,6 +118,15 @@ impl SignalPlaintext {
             .filter(|kind| !kind.is_empty())
             .ok_or_else(|| Error::Protocol("signal plaintext requires kind".to_owned()))?
             .to_owned();
+        let call_sequence = if kind == "ak.call.signal" {
+            Some(
+                CallSignalPlaintext::from_plaintext(plaintext)
+                    .map_err(|error| Error::Protocol(error.to_string()))?
+                    .seq,
+            )
+        } else {
+            None
+        };
         if let Some(actor_value) = map.get("actor_id") {
             let actor = actor_value.as_str().ok_or_else(|| {
                 Error::Protocol("signal plaintext actor_id must be a DID string".to_owned())
@@ -131,11 +142,13 @@ impl SignalPlaintext {
                 ));
             }
         }
-        let payload_sequence = map
-            .get("payload_sequence")
-            .and_then(Value::as_u64)
+        let payload_sequence = call_sequence
+            .or_else(|| map.get("payload_sequence").and_then(Value::as_u64))
             .ok_or_else(|| {
-                Error::Protocol("signal plaintext requires payload_sequence".to_owned())
+                Error::Protocol(
+                    "signal plaintext requires seq for calls or payload_sequence for its product"
+                        .to_owned(),
+                )
             })?;
         let ttl_ms = match map.get("ttl_ms") {
             Some(value) => Some(value.as_u64().filter(|ttl| *ttl > 0).ok_or_else(|| {

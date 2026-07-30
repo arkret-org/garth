@@ -127,15 +127,26 @@ pub enum SyncLoopStep {
 /// Minimal transport abstraction used by [`SyncLoop`].
 pub trait SyncTransport {
     /// Execute one sync request.
-    fn sync(&mut self, request: SyncRequestBody) -> Result<AccountSubscribeBatch>;
+    fn sync(
+        &mut self,
+        request: SyncRequestBody,
+        options: arkret_http_client::ClientRequestOptions,
+    ) -> Result<AccountSubscribeBatch>;
 }
 
 impl<F> SyncTransport for F
 where
-    F: FnMut(SyncRequestBody) -> Result<AccountSubscribeBatch>,
+    F: FnMut(
+        SyncRequestBody,
+        arkret_http_client::ClientRequestOptions,
+    ) -> Result<AccountSubscribeBatch>,
 {
-    fn sync(&mut self, request: SyncRequestBody) -> Result<AccountSubscribeBatch> {
-        self(request)
+    fn sync(
+        &mut self,
+        request: SyncRequestBody,
+        options: arkret_http_client::ClientRequestOptions,
+    ) -> Result<AccountSubscribeBatch> {
+        self(request, options)
     }
 }
 
@@ -150,34 +161,37 @@ pub trait AsyncSyncTransport {
     fn sync_async<'a>(
         &'a self,
         request: SyncRequestBody,
+        options: arkret_http_client::ClientRequestOptions,
     ) -> BoxSyncFuture<'a, AccountSubscribeBatch>;
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 impl<F, Fut> AsyncSyncTransport for F
 where
-    F: Fn(SyncRequestBody) -> Fut + Send + Sync,
+    F: Fn(SyncRequestBody, arkret_http_client::ClientRequestOptions) -> Fut + Send + Sync,
     Fut: Future<Output = Result<AccountSubscribeBatch>> + Send + 'static,
 {
     fn sync_async<'a>(
         &'a self,
         request: SyncRequestBody,
+        options: arkret_http_client::ClientRequestOptions,
     ) -> BoxSyncFuture<'a, AccountSubscribeBatch> {
-        Box::pin(self(request))
+        Box::pin(self(request, options))
     }
 }
 
 #[cfg(target_arch = "wasm32")]
 impl<F, Fut> AsyncSyncTransport for F
 where
-    F: Fn(SyncRequestBody) -> Fut,
+    F: Fn(SyncRequestBody, arkret_http_client::ClientRequestOptions) -> Fut,
     Fut: Future<Output = Result<AccountSubscribeBatch>> + 'static,
 {
     fn sync_async<'a>(
         &'a self,
         request: SyncRequestBody,
+        options: arkret_http_client::ClientRequestOptions,
     ) -> BoxSyncFuture<'a, AccountSubscribeBatch> {
-        Box::pin(self(request))
+        Box::pin(self(request, options))
     }
 }
 
@@ -207,9 +221,10 @@ impl AsyncSyncTransport for arkret_http_client::Client {
     fn sync_async<'a>(
         &'a self,
         request: SyncRequestBody,
+        options: arkret_http_client::ClientRequestOptions,
     ) -> BoxSyncFuture<'a, AccountSubscribeBatch> {
         Box::pin(async move {
-            self.account_subscribe_batch(&request)
+            self.account_subscribe_batch_with_options(&request, &options)
                 .await
                 .map_err(Error::from)
         })
@@ -400,7 +415,7 @@ pub struct SyncLoop {
     timeout: Duration,
     filter: Option<SyncFilter>,
     subscriptions: Option<SubscriptionConfig>,
-    wait_for: Option<WaitForFrontier>,
+    wait_for: Option<String>,
     backoff: ExponentialBackoff,
     processor: SyncResponseProcessor,
     gap_strategy: SyncGapStrategy,
@@ -449,8 +464,8 @@ impl SyncLoop {
     }
 
     /// Set a frontier the server should wait for before returning.
-    pub fn with_wait_for(mut self, wait_for: WaitForFrontier) -> Self {
-        self.wait_for = Some(wait_for);
+    pub fn with_wait_for(mut self, wait_for: impl Into<String>) -> Self {
+        self.wait_for = Some(wait_for.into());
         self
     }
 
@@ -479,8 +494,16 @@ impl SyncLoop {
             catchup: Some(true),
             filter: self.filter.clone(),
             subscriptions: self.subscriptions.clone(),
-            wait_for: self.wait_for.clone(),
         }
+    }
+
+    /// Build HTTP options for the next account-subscribe request.
+    pub fn next_request_options(&self) -> arkret_http_client::ClientRequestOptions {
+        self.wait_for
+            .as_ref()
+            .map_or_else(arkret_http_client::ClientRequestOptions::new, |barrier| {
+                arkret_http_client::ClientRequestOptions::new().wait_for(barrier.clone())
+            })
     }
 
     fn handle_response(&mut self, batch: AccountSubscribeBatch) -> SyncLoopStep {
@@ -613,7 +636,8 @@ impl SyncLoop {
         T: SyncTransport,
     {
         let request = self.next_request();
-        match transport.sync(request) {
+        let options = self.next_request_options();
+        match transport.sync(request, options) {
             Ok(response) => self.handle_response(response),
             Err(error) => self.handle_transport_error(error),
         }
@@ -646,7 +670,8 @@ impl SyncLoop {
             };
         };
         let request = self.next_request();
-        match transport.sync_async(request).await {
+        let options = self.next_request_options();
+        match transport.sync_async(request, options).await {
             Ok(response) => self.handle_response(response),
             Err(error) => self.handle_transport_error(error),
         }

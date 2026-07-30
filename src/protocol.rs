@@ -7,6 +7,7 @@ pub(crate) use crate::{Error, Result};
 pub(crate) use arkret_keystore::{KeyBytes, KeyStore, KeyStoreError};
 pub(crate) use arkret_models_collaboration::account_lifecycle::AccountRegisterRequestBody;
 pub(crate) use arkret_models_collaboration::agent_signer_evidence::AgentSignerEvidence;
+pub(crate) use arkret_models_collaboration::call_signal::CallSignalPlaintext;
 pub(crate) use arkret_models_collaboration::event_query::EventsQueryOrder;
 pub(crate) use arkret_models_collaboration::events_payloads::MessageCreatePayload;
 pub(crate) use arkret_models_collaboration::http_bodies::{
@@ -155,10 +156,8 @@ pub(crate) mod signatures {
 }
 
 pub(crate) mod sync {
-    #[cfg(test)]
-    pub(crate) use arkret_models_collaboration::sync_frames::client_sync::SyncStreamPosition;
     pub(crate) use arkret_models_collaboration::sync_frames::client_sync::{
         LimitedTimelineState, RealmUpdate, SubscriptionConfig, SyncFilter, SyncGap,
-        SyncRequestBody, SyncUpdates, ToDeviceAck, ToDeviceAckStatus, WaitForFrontier,
+        SyncRequestBody, SyncUpdates, ToDeviceAck, ToDeviceAckStatus,
     };
 }

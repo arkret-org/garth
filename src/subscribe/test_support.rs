@@ -57,9 +57,11 @@ pub(crate) fn sync_response(cursor: &str) -> AccountSubscribeBatch {
 
 pub(crate) fn queued_transport(
     responses: Arc<Mutex<VecDeque<Result<AccountSubscribeBatch>>>>,
-) -> impl Fn(SyncRequestBody) -> Pin<Box<dyn Future<Output = Result<AccountSubscribeBatch>> + Send>>
-{
-    move |_request| {
+) -> impl Fn(
+    SyncRequestBody,
+    arkret_http_client::ClientRequestOptions,
+) -> Pin<Box<dyn Future<Output = Result<AccountSubscribeBatch>> + Send>> {
+    move |_request, _options| {
         let responses = Arc::clone(&responses);
         Box::pin(async move {
             responses

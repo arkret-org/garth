@@ -102,7 +102,7 @@ fn backoff_grows_until_capped() {
 #[test]
 fn sync_loop_recovers_after_failure() {
     let mut calls = 0;
-    let mut transport = |request: SyncRequestBody| {
+    let mut transport = |request: SyncRequestBody, _options| {
         calls += 1;
         if calls == 1 {
             assert_eq!(request.catchup, Some(true));
@@ -131,7 +131,7 @@ fn sync_loop_recovers_after_failure() {
 
 #[test]
 fn sync_loop_rejects_empty_cursor_without_advancing_position() {
-    let mut transport = |_request: SyncRequestBody| Ok(sync_response(""));
+    let mut transport = |_request: SyncRequestBody, _options| Ok(sync_response(""));
     let mut sync_loop = SyncLoop::new();
 
     assert!(matches!(
@@ -149,7 +149,7 @@ fn sync_loop_discards_rejected_cursor_before_retry() {
         timeout_ms: 30_000,
         gap_strategy: SyncGapStrategy::PreserveTokenAndBackfill,
     });
-    let mut transport = |request: SyncRequestBody| {
+    let mut transport = |request: SyncRequestBody, _options| {
         assert_eq!(request.after.as_deref(), Some("ak:cursor:expired"));
         Err(Error::Api {
             status: 410,
@@ -167,7 +167,7 @@ fn sync_loop_discards_rejected_cursor_before_retry() {
 
 #[test]
 fn sync_loop_exposes_to_device_loss_recovery_actions() {
-    let mut transport = |_request: SyncRequestBody| {
+    let mut transport = |_request: SyncRequestBody, _options| {
         let mut response = sync_response("loss1");
         delta_mut(&mut response).to_device = Some(DeviceMessageContainer {
             messages: Vec::new(),
@@ -197,7 +197,7 @@ fn sync_loop_exposes_to_device_loss_recovery_actions() {
 
 #[tokio::test]
 async fn async_sync_loop_uses_transport_and_persists_token() {
-    let transport = |request: SyncRequestBody| async move {
+    let transport = |request: SyncRequestBody, _options| async move {
         assert_eq!(request.catchup, Some(true));
         assert!(request.after.is_none());
         Ok(sync_response("async1"))
@@ -217,7 +217,7 @@ async fn async_sync_loop_uses_transport_and_persists_token() {
 
 #[tokio::test]
 async fn async_sync_loop_honors_cancellation() {
-    let transport = |_request: SyncRequestBody| async { Ok(sync_response("unused")) };
+    let transport = |_request: SyncRequestBody, _options| async { Ok(sync_response("unused")) };
     let control = SyncLoopControl::new();
     control.cancel();
 
@@ -268,7 +268,7 @@ fn sync_loop_can_reset_token_on_limited_timeline_gap() {
     delta_mut(&mut response).realms = Some(AccountSubscribeRealms {
         entries: BTreeMap::from([(realm_id.to_owned(), entry)]),
     });
-    let mut transport = |_request: SyncRequestBody| Ok(response.clone());
+    let mut transport = |_request: SyncRequestBody, _options| Ok(response.clone());
     let mut sync_loop =
         SyncLoop::new().with_gap_strategy(SyncGapStrategy::ResetTokenOnLimitedTimeline);
 
@@ -280,24 +280,15 @@ fn sync_loop_can_reset_token_on_limited_timeline_gap() {
 }
 
 #[test]
-fn sync_loop_includes_wait_for_frontier() {
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
-    let wait_for = WaitForFrontier {
-        positions: vec![crate::protocol::sync::SyncStreamPosition {
-            realm_id,
-            frontier: Vec::new(),
-            timeline_order: crate::protocol::Hlc::new("01970e589d21-0000-a13f9c2e").unwrap(),
-            state_digest: "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-                .to_owned(),
-        }],
-        timeout_ms: 5000,
-    };
+fn sync_loop_sends_wait_for_as_header_option() {
+    let barrier = "ak:cursor:01904100-0000-7000-8000-9b64700c6ee8";
+    let sync_loop = SyncLoop::new().with_wait_for(barrier);
 
-    let request = SyncLoop::new()
-        .with_wait_for(wait_for.clone())
-        .next_request();
+    let request = sync_loop.next_request();
+    let options = sync_loop.next_request_options();
 
-    assert_eq!(request.wait_for, Some(wait_for));
+    assert_eq!(request.after, None);
+    assert_eq!(options.wait_for.as_deref(), Some(barrier));
 }
 
 #[test]

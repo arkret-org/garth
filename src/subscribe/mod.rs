@@ -467,7 +467,7 @@ mod tests {
             .unwrap();
         let seen_after = Arc::new(Mutex::new(Vec::new()));
         let seen_after_for_transport = Arc::clone(&seen_after);
-        let transport = move |request: SyncRequestBody| {
+        let transport = move |request: SyncRequestBody, _options| {
             seen_after_for_transport.lock().unwrap().push(request.after);
             async { Ok(sync_response("ak:cursor:next")) }
         };
