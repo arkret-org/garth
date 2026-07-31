@@ -57,14 +57,12 @@ pub const SIGNAL_PLAINTEXT_KIND_CALL: &str = "ak.call.signal";
 ///
 /// Implementations return `None` — failing the Signal closed — when the
 /// directory has no entry, the device is revoked or non-active, its generation
-/// is fenced or conflicted, or the trust chain is incomplete. String equality
-/// between the verification-method fragment and the device id is never a
-/// substitute for the directory lookup.
-///
-/// The split is adjudicated in `arkret-work/review/spec-open/`
-/// `2026-07-31-signal-receiver-seal-basis-device-authorization.md`; `signal.md`
-/// §1 still reads as if the lookup were Seal-relative and has not been
-/// rewritten yet.
+/// is fenced or conflicted, or the trust chain is incomplete. `signal.md` §1
+/// does require `proof.verification_method` to equal
+/// `{sender_actor_id}#{sender_device_id}` verbatim, but that is only the
+/// completeness condition of the lookup key and is already enforced by
+/// [`SignalEnvelope::validate_structural`]; it is never a substitute for the
+/// directory lookup.
 pub trait SignalSenderKeyResolver: MaybeSendSync {
     fn resolve_sender_key(&self, envelope: &SignalEnvelope) -> Option<PublicKeyMaterial>;
 }
