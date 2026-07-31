@@ -1248,6 +1248,7 @@ mod tests {
         fn sync_async<'a>(
             &'a self,
             _request: SyncRequestBody,
+            _options: arkret_http_client::ClientRequestOptions,
         ) -> BoxSyncFuture<'a, AccountSubscribeBatch> {
             let response = self
                 .response

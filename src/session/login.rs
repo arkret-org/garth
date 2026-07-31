@@ -3,8 +3,8 @@ use crate::protocol::session_grant::{
     holder_proof_session_grant_request, oidc_session_grant_request,
 };
 use crate::protocol::{
-    DeviceId, Did, Hash, Result, SessionGrantAgentScopeRequest, SessionGrantAppletDelegation,
-    SessionGrantDpopBindingProof, SessionGrantRequestBody,
+    DeviceId, Did, DidUrl, Hash, Result, SessionGrantAgentScopeRequest,
+    SessionGrantAppletDelegation, SessionGrantDpopBindingProof, SessionGrantRequestBody,
 };
 use chrono::{DateTime, Utc};
 
@@ -18,7 +18,7 @@ pub struct AgentKeyProofLogin {
     pub agent_key_authorization_ref: String,
     pub agent_scope_request: SessionGrantAgentScopeRequest,
     pub dpop_binding_proof: SessionGrantDpopBindingProof,
-    pub verification_method: String,
+    pub verification_method: DidUrl,
     pub challenge: String,
     pub nonce: String,
     pub audience: Did,
@@ -197,7 +197,9 @@ mod tests {
             audience: Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
             expires_at: Some(expires_at()),
             signature: "proof-signature".to_owned(),
-            verification_method: Some("did:webvh:z6mkfixture:alice.example#device-1".to_owned()),
+            verification_method: Some(
+                DidUrl::new("did:webvh:z6mkfixture:alice.example#device-1").unwrap(),
+            ),
         }
     }
 
@@ -300,7 +302,8 @@ mod tests {
             dpop_binding_proof: SessionGrantDpopBindingProof {
                 proof_jwt: "dpop-proof".to_owned(),
             },
-            verification_method: "did:webvh:z6mkfixture:agent.example#runtime-key-1".to_owned(),
+            verification_method: DidUrl::new("did:webvh:z6mkfixture:agent.example#runtime-key-1")
+                .unwrap(),
             challenge: "agent-challenge".to_owned(),
             nonce: "agent-nonce".to_owned(),
             audience: Did::new("did:webvh:z6mkfixture:service.example").unwrap(),

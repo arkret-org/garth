@@ -302,7 +302,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::protocol::{
-        DeviceId, Did, Error, Hash, SessionGrantOutcome, SessionGrantProofKind,
+        DeviceId, Did, DidUrl, Error, Hash, SessionGrantOutcome, SessionGrantProofKind,
         SessionGrantRefreshOutcome, SessionGrantRefreshProof, SessionGrantRefreshRequestBody,
         SessionGrantRequestBody,
     };
@@ -421,7 +421,7 @@ mod tests {
                         expires_at: Some(Utc::now() + Duration::minutes(5)),
                         signature: Some("refresh-proof-signature".to_owned()),
                         verification_method: Some(
-                            "did:webvh:z6mkfixture:alice.example#device-1".to_owned(),
+                            DidUrl::new("did:webvh:z6mkfixture:alice.example#device-1").unwrap(),
                         ),
                     }),
                     expected_dpop_jkt: Some("jkt-1".to_owned()),
@@ -497,7 +497,7 @@ mod tests {
                 expires_at: Some(Utc::now() + chrono::Duration::minutes(5)),
                 signature: Some("refresh-proof-signature".to_owned()),
                 verification_method: Some(
-                    "did:webvh:z6mkfixture:alice.example#device-1".to_owned(),
+                    DidUrl::new("did:webvh:z6mkfixture:alice.example#device-1").unwrap(),
                 ),
             }),
             expected_dpop_jkt: Some("jkt-1".to_owned()),

@@ -437,7 +437,7 @@ impl PresenceProjection {
 
 #[cfg(test)]
 mod tests {
-    use arkret_wire::{DeviceId, Hash, RealmId, SealId};
+    use arkret_wire::{DeviceId, DidUrl, Hash, RealmId, SealId};
     use chrono::TimeZone;
     use ed25519_dalek::SigningKey;
     use serde_json::json;
@@ -475,7 +475,7 @@ mod tests {
     ) -> (SignalEnvelope, PublicKeyMaterial, Vec<u8>) {
         let plaintext_bytes = canonical::canonical_json_bytes(&plaintext).unwrap();
         let signing_key = SigningKey::from_bytes(&seed);
-        let verification_method = format!("{}#{}", actor(), device_id);
+        let verification_method = DidUrl::new(format!("{}#{}", actor(), device_id)).unwrap();
         let mut envelope = SignalEnvelope {
             realm_id: realm(),
             scope_ref: ScopeRef::Realm { realm_id: realm() },

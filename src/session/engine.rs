@@ -457,7 +457,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::protocol::{
-        Hash, RealmId, SessionGrantAgentScopeRequest, SessionGrantDpopBindingProof,
+        DidUrl, Hash, RealmId, SessionGrantAgentScopeRequest, SessionGrantDpopBindingProof,
         SessionGrantProofKind, SessionGrantScopeDetails,
     };
     use chrono::Duration;
@@ -559,7 +559,9 @@ mod tests {
             audience: audience(),
             expires_at: Some(now() + Duration::minutes(5)),
             signature: "proof-signature".to_owned(),
-            verification_method: Some("did:webvh:z6mkfixture:alice.example#device-1".to_owned()),
+            verification_method: Some(
+                DidUrl::new("did:webvh:z6mkfixture:alice.example#device-1").unwrap(),
+            ),
         }
     }
 
@@ -623,7 +625,8 @@ mod tests {
             dpop_binding_proof: SessionGrantDpopBindingProof {
                 proof_jwt: "agent-dpop-proof".to_owned(),
             },
-            verification_method: "did:webvh:z6mkfixture:agent.example#runtime-key-1".to_owned(),
+            verification_method: DidUrl::new("did:webvh:z6mkfixture:agent.example#runtime-key-1")
+                .unwrap(),
             challenge: "agent-challenge".to_owned(),
             nonce: "agent-nonce".to_owned(),
             audience: audience(),
@@ -687,7 +690,9 @@ mod tests {
             issued_at: Some(now()),
             expires_at: Some(now() + Duration::minutes(5)),
             signature: Some("refresh-proof-signature".to_owned()),
-            verification_method: Some("did:webvh:z6mkfixture:alice.example#device-1".to_owned()),
+            verification_method: Some(
+                DidUrl::new("did:webvh:z6mkfixture:alice.example#device-1").unwrap(),
+            ),
         }
     }
 

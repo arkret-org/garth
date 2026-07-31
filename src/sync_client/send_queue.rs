@@ -905,7 +905,7 @@ pub(crate) mod test_publication {
         PayloadProof {
             kind: "detached_jws".to_owned(),
             alg: "EdDSA".to_owned(),
-            verification_method: verification_method.to_owned(),
+            verification_method: DidUrl::new(verification_method).unwrap(),
             payload_digest,
             created_at,
             domain: None,

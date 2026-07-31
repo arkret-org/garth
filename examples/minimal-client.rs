@@ -82,6 +82,7 @@ impl AsyncSyncTransport for ReferenceTransport {
     fn sync_async<'a>(
         &'a self,
         _request: SyncRequestBody,
+        _options: arkret_http_client::ClientRequestOptions,
     ) -> BoxSyncFuture<'a, AccountSubscribeBatch> {
         Box::pin(async {
             Err(garth::Error::Protocol(
