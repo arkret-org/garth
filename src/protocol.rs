@@ -81,8 +81,8 @@ pub(crate) use arkret_models_crypto::MlsKeyPackageState;
 pub(crate) use arkret_models_identity::{ACCOUNT_HANDOFF_ALLOWED_OPERATIONS, Handle};
 #[cfg(test)]
 pub(crate) use arkret_wire::{
-    BLOB_SCHEMA, DeviceMessageId, ErrorEnvelope, EventRequirements, MORPH_SCHEMA, NotificationId,
-    NotificationKind, ObjectState, ProtocolKind,
+    DeviceMessageId, ErrorEnvelope, EventRequirements, NotificationId, NotificationKind,
+    ObjectState, ProtocolKind,
 };
 
 pub(crate) mod auth {
@@ -98,11 +98,6 @@ pub(crate) mod canonical {
 
 pub(crate) mod dpop {
     pub(crate) use arkret_signatures::dpop::build_dpop_proof;
-}
-
-#[cfg(test)]
-pub(crate) mod events {
-    pub(crate) use arkret_wire::EventKind;
 }
 
 pub(crate) mod hlc {

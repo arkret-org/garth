@@ -405,6 +405,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use arkret_wire::EventKind;
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
@@ -474,7 +475,7 @@ mod tests {
 
     fn message_event() -> Event {
         Event::new(
-            crate::protocol::events::EventKind::MESSAGE_CREATE,
+            EventKind::MESSAGE_CREATE,
             crate::protocol::ScopeRef::Realm {
                 realm_id: realm_id(),
             },
@@ -991,7 +992,7 @@ mod tests {
         // `ClientEvent::Event` instead of erroring the loop.
         let store = MemoryStore::new();
         let event = Event::new(
-            crate::protocol::events::EventKind::MESSAGE_CREATE,
+            EventKind::MESSAGE_CREATE,
             crate::protocol::ScopeRef::Realm {
                 realm_id: realm_id(),
             },

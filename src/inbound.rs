@@ -31,11 +31,11 @@ impl InboundDecoder {
 
     pub fn try_decode_event(&self, event: Event) -> Result<DecodedInbound> {
         match event.kind.as_str() {
-            arkret_wire::events::kinds::EventKind::MESSAGE_CREATE
-            | arkret_wire::events::kinds::EventKind::MESSAGE_REVISE
-            | arkret_wire::events::kinds::EventKind::MESSAGE_REDACT
-            | arkret_wire::events::kinds::EventKind::REACTION_ADD
-            | arkret_wire::events::kinds::EventKind::REACTION_REMOVE => {
+            arkret_wire::EventKind::MESSAGE_CREATE
+            | arkret_wire::EventKind::MESSAGE_REVISE
+            | arkret_wire::EventKind::MESSAGE_REDACT
+            | arkret_wire::EventKind::REACTION_ADD
+            | arkret_wire::EventKind::REACTION_REMOVE => {
                 let payload = event.as_message_event_payload()?;
                 Ok(DecodedInbound::Message(Box::new(DecodedMessage {
                     event,

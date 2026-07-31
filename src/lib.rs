@@ -40,6 +40,7 @@ pub use account_handoff::{
     identity_binding_challenge_request, identity_creation_register_request,
     oidc_account_handoff_request, pre_registration_session_grant_request, validate_binding_receipt,
 };
+pub use arkret_models_collaboration::signal_message_stream::MESSAGE_STREAM_KIND;
 pub use backoff::Backoff;
 pub use crypto_state_store::{
     CRYPTO_STORE_BACKUP_VERSION, CryptoStore, CryptoStoreBackupEnvelope, MemoryCryptoStore,
@@ -93,7 +94,6 @@ pub use signal::{
 pub use signal_message_stream::{
     MessageStreamApplyOutcome, MessageStreamAuthorizer, MessageStreamIgnoreReason,
     MessageStreamPreview, MessageStreamPreviewStatus, MessageStreamProjection,
-    SIGNAL_PLAINTEXT_KIND_MESSAGE_STREAM,
 };
 pub use stamp::{
     MonotonicStampStore, RemoteStamp, SigningStamp, SigningStampAllocator, StampFloor,

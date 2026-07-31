@@ -785,14 +785,14 @@ fn queue_payload_digest(
 /// gate production code runs.
 #[cfg(test)]
 pub(crate) mod test_publication {
+    use arkret_wire::SchemaId;
     use chrono::{DateTime, Utc};
 
     use arkret_wire::{
-        AUTHORITY_SET_POLICY_SCHEMA, AuthoritySetAuthorizationRule, AuthoritySetIssuer,
-        AuthoritySetIssuerRole, AuthoritySetPolicy, AuthoritySetPolicyKind,
-        AuthoritySetPolicySource, AuthoritySetRef, AuthoritySetSourceKind, AuthorizationLease,
-        AuthorizationLeaseId, DeviceId, Did, DidUrl, Hash, IngressReceipt, LeaseBasisRef,
-        PayloadProof, ReceiptId, RiskTier, ScopeRef, SealId,
+        AuthoritySetAuthorizationRule, AuthoritySetIssuer, AuthoritySetIssuerRole,
+        AuthoritySetPolicy, AuthoritySetPolicyKind, AuthoritySetPolicySource, AuthoritySetRef,
+        AuthoritySetSourceKind, AuthorizationLease, AuthorizationLeaseId, DeviceId, Did, DidUrl,
+        Hash, IngressReceipt, LeaseBasisRef, PayloadProof, ReceiptId, RiskTier, ScopeRef, SealId,
     };
 
     use crate::protocol::RealmId;
@@ -865,7 +865,7 @@ pub(crate) mod test_publication {
 
     fn realm_admission_policy(scope_ref: ScopeRef, action: &str) -> AuthoritySetPolicy {
         AuthoritySetPolicy {
-            schema: AUTHORITY_SET_POLICY_SCHEMA.to_owned(),
+            schema: SchemaId::AUTHORITY_SET_POLICY_V1.to_owned(),
             authority_set_id: "ak.authority_set.realm_admission.v1".to_owned(),
             policy_kind: AuthoritySetPolicyKind::RealmAdmission,
             scope_ref,

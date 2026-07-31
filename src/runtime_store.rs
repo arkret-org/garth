@@ -360,6 +360,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use arkret_wire::EventKind;
+    use arkret_wire::SchemaId;
     use std::collections::BTreeMap;
 
     use chrono::Utc;
@@ -367,14 +369,12 @@ mod tests {
 
     use super::*;
     use crate::protocol::resolver::SnapshotRestoreSource;
-    use crate::protocol::{
-        BLOB_SCHEMA, BlobRef, DeviceId, Did, EventId, Hash, Hlc, ObjectState, RealmId,
-    };
+    use crate::protocol::{BlobRef, DeviceId, Did, EventId, Hash, Hlc, ObjectState, RealmId};
 
     fn morph_event(event_id: &str, title: &str) -> Event {
         Event {
             event_id: EventId::new(event_id).unwrap(),
-            kind: crate::protocol::events::EventKind::MORPH_CREATE.into(),
+            kind: EventKind::MORPH_CREATE.into(),
             realm_id: RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap(),
             scope_ref: crate::protocol::ScopeRef::Realm {
                 realm_id: RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap(),
@@ -395,9 +395,9 @@ mod tests {
             payload: serde_json::from_value(json!({
                 "object": {
                     "id": "ak:morph:01904100-0000-7000-8000-b7a4e10c8c77",
-                    "schema": crate::protocol::MORPH_SCHEMA,
+                    "schema": SchemaId::MORPH_V1,
                     "realm_id": "ak:realm:01904100-0000-7000-8000-9b64700c6ee8",
-                    "schema_refs": [crate::protocol::MORPH_SCHEMA],
+                    "schema_refs": [SchemaId::MORPH_V1],
                     "morph_kind": "task",
                     "metadata": {"title": title},
                     "stage": "draft",
@@ -418,7 +418,7 @@ mod tests {
 
     fn blob_metadata(blob_ref: BlobRef, size_bytes: u64) -> BlobMetadata {
         BlobMetadata {
-            schema: BLOB_SCHEMA.to_owned(),
+            schema: SchemaId::BLOB_V1.to_owned(),
             realm_id: None,
             blob_ref,
             content_digest: Hash::new(
@@ -452,9 +452,9 @@ mod tests {
         conflicting.payload = serde_json::from_value(json!({
             "object": {
                 "id": "ak:morph:01904100-0000-7000-8000-b7a4e10c8c77",
-                "schema": crate::protocol::MORPH_SCHEMA,
+                "schema": SchemaId::MORPH_V1,
                 "realm_id": "ak:realm:01904100-0000-7000-8000-9b64700c6ee8",
-                "schema_refs": [crate::protocol::MORPH_SCHEMA],
+                "schema_refs": [SchemaId::MORPH_V1],
                 "morph_kind": "task",
                 "metadata": {"title": "Changed"},
                 "stage": "draft",

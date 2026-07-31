@@ -3,18 +3,20 @@
 use std::collections::BTreeMap;
 
 use chrono::{DateTime, Duration, Utc};
+
 use serde_json::Value;
 
 use crate::MaybeSendSync;
+
 use crate::protocol::{
     DeviceId, Did, Error, Event, EventKind, MAX_MESSAGE_STREAM_LIFETIME_SECONDS,
     MAX_MESSAGE_STREAM_PREVIEW_BYTES, MAX_MESSAGE_STREAMS_PER_DEVICE,
     MESSAGE_STREAM_STALLED_AFTER_SECONDS, MessageCreatePayload, MessageId, MessageStreamFormat,
     MessageStreamFrame, MessageStreamId, Result, ScopeRef, StrandId,
 };
-use crate::signal::SignalPlaintext;
 
-pub const SIGNAL_PLAINTEXT_KIND_MESSAGE_STREAM: &str = "ak.message.stream";
+use crate::signal::SignalPlaintext;
+use arkret_models_collaboration::signal_message_stream::MESSAGE_STREAM_KIND;
 
 pub trait MessageStreamAuthorizer: MaybeSendSync {
     fn can_display(&self, plaintext: &SignalPlaintext, frame: &MessageStreamFrame) -> bool;
@@ -100,7 +102,7 @@ impl MessageStreamProjection {
         authorizer: &dyn MessageStreamAuthorizer,
         observed_at: DateTime<Utc>,
     ) -> Result<MessageStreamApplyOutcome> {
-        if plaintext.kind != SIGNAL_PLAINTEXT_KIND_MESSAGE_STREAM {
+        if plaintext.kind != MESSAGE_STREAM_KIND {
             return Err(Error::Protocol(format!(
                 "message stream projection received plaintext kind '{}'",
                 plaintext.kind
@@ -376,6 +378,7 @@ mod tests {
     use arkret_models_collaboration::signal_message_stream::{
         MessageStreamAbort, MessageStreamAbortReason, MessageStreamDelta, MessageStreamKeyframe,
     };
+
     use arkret_wire::{RealmId, SealId};
 
     use super::*;
@@ -412,7 +415,7 @@ mod tests {
 
     fn plaintext(frame: MessageStreamFrame) -> SignalPlaintext {
         let payload_sequence = frame.payload_sequence();
-        let kind = SIGNAL_PLAINTEXT_KIND_MESSAGE_STREAM.to_owned();
+        let kind = MESSAGE_STREAM_KIND.to_owned();
         let Value::Object(body) = serde_json::to_value(frame).unwrap() else {
             unreachable!()
         };

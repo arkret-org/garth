@@ -656,7 +656,7 @@ mod tests {
             suffix,
             actor_seq,
             1,
-            arkret_wire::events::EventKind::MESSAGE_CREATE,
+            arkret_wire::EventKind::MESSAGE_CREATE,
             serde_json::json!({
                 "strand_id": scope().private_strand_id,
                 "track_name": "discussion",
@@ -682,7 +682,7 @@ mod tests {
             suffix,
             actor_seq,
             0x40 + suffix,
-            arkret_wire::events::EventKind::AGENT_SIDECAR_EXCHANGE_CONTROL,
+            arkret_wire::EventKind::AGENT_SIDECAR_EXCHANGE_CONTROL,
             serde_json::json!({
                 "strand_id": scope().private_strand_id,
                 "control": control
