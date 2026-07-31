@@ -2,6 +2,7 @@ pub mod account;
 pub mod driver;
 pub mod realm;
 pub mod scan;
+pub mod signal;
 #[cfg(test)]
 pub(crate) mod test_support;
 
@@ -17,6 +18,11 @@ pub use realm::{
     RealmStreamStopReason,
 };
 pub use scan::{EventsScanRequest, EventsScanTransport, ScanCatchup, ScanCatchupOptions};
+pub use signal::{
+    BoxSignalStreamFuture, SignalReceiveHandlers, SignalRejection, SignalRunError, SignalRunResult,
+    SignalSink, SignalStreamDriver, SignalStreamFrameSource, SignalStreamStopReason,
+    SignalStreamTransport,
+};
 
 use crate::{
     ClientEvent, ClientProjector, CursorScope, CursorStore, DurableInboxStore, EventCacheStore,

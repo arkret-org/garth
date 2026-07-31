@@ -86,9 +86,9 @@ pub use session::{
     SessionTransportProvider, grant_due_for_rotation, grant_is_dead, refresh_decision,
 };
 pub use signal::{
-    PresenceObservation, PresenceProjection, PresenceStatus, SIGNAL_PLAINTEXT_KIND_PRESENCE,
-    SignalDecryptor, SignalPlaintext, SignalReceiver, SignalSenderKeyResolver,
-    aggregate_presence_states,
+    PresenceObservation, PresenceProjection, PresenceStatus, SIGNAL_PLAINTEXT_KIND_CALL,
+    SIGNAL_PLAINTEXT_KIND_PRESENCE, SignalDecryptor, SignalPlaintext, SignalReceiver,
+    SignalSenderKeyResolver, aggregate_presence_states,
 };
 pub use signal_message_stream::{
     MessageStreamApplyOutcome, MessageStreamAuthorizer, MessageStreamIgnoreReason,
@@ -110,10 +110,12 @@ pub use store::{
     SecureKeyStoreBackendInfo, SecureKeyStoreError,
 };
 pub use subscribe::{
-    BoxRealmStreamFuture, EventsScanRequest, EventsScanTransport, RealmEventsDriver,
-    RealmEventsFrameSource, RealmEventsTransport, RealmStreamStopReason, ScanCatchup,
-    ScanCatchupOptions, SubscriptionEngine, SubscriptionLoopDriver, SubscriptionStopReason,
-    account_updates_to_events,
+    BoxRealmStreamFuture, BoxSignalStreamFuture, EventsScanRequest, EventsScanTransport,
+    RealmEventsDriver, RealmEventsFrameSource, RealmEventsTransport, RealmStreamStopReason,
+    ScanCatchup, ScanCatchupOptions, SignalReceiveHandlers, SignalRejection, SignalRunError,
+    SignalRunResult, SignalSink, SignalStreamDriver, SignalStreamFrameSource,
+    SignalStreamStopReason, SignalStreamTransport, SubscriptionEngine, SubscriptionLoopDriver,
+    SubscriptionStopReason, account_updates_to_events,
 };
 pub use sync_client::{
     AsyncSyncTransport, BackoffConfig, BackpressureConfig, BoxSyncFuture, CancellationToken,

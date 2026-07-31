@@ -11,11 +11,12 @@
 //! encrypted signals for a scope MUST withdraw the scope capability rather
 //! than fall back (§3), so every seam here fails closed.
 //!
-//! This crate holds no MLS group state, so the two checks that need it are
-//! host seams: [`SignalSenderKeyResolver`] resolves the sending device's
-//! active signing method *under `seal_ref`*, and [`SignalDecryptor`] opens the
-//! AEAD with the scope's MLS-exporter content key. Everything a receiver can
-//! decide from the envelope alone is decided here.
+//! This crate holds no MLS group state or device directory, so the two checks
+//! that need them are host seams: [`SignalSenderKeyResolver`] resolves the
+//! sending device's active signing method from the host's *current* accepted
+//! device directory, and [`SignalDecryptor`] opens the AEAD with the scope's
+//! MLS-exporter content key. Everything a receiver can decide from the
+//! envelope alone is decided here.
 
 use std::collections::BTreeMap;
 
@@ -35,17 +36,35 @@ use crate::protocol::{validate_last_active_at, validate_status_message};
 /// Decrypted payload kind of a presence Signal (`profiles-presence.md` §3.3).
 pub const SIGNAL_PLAINTEXT_KIND_PRESENCE: &str = "ak.presence";
 
+/// Decrypted payload kind of a call signalling Signal
+/// (`webrtc-signaling.md`; the closed body is
+/// [`crate::protocol::CallSignalPlaintext`]).
+pub const SIGNAL_PLAINTEXT_KIND_CALL: &str = "ak.call.signal";
+
 /// Resolver for the sending device's active signing key.
 ///
-/// The contract is deliberately stated over the whole envelope rather than
-/// over `(actor_id, device_id)`: `signal.md` §1 requires
-/// `proof.verification_method` to resolve, **at `seal_ref`**, to an active
-/// device signing method that `sender_actor_id` authorized for
-/// `sender_device_id`, and forbids substituting string equality between the
-/// verification-method fragment and the device id for that lookup.
-/// Implementations therefore read accepted device-authorization state at the
-/// Seal basis, and return `None` — failing the Signal closed — whenever the
-/// device is not authorized to send into `scope_ref` at that basis.
+/// The contract is stated over the whole envelope rather than over
+/// `(actor_id, device_id)` so an implementation can also check
+/// `proof.verification_method` itself. Two separate state domains meet here
+/// and must not be collapsed:
+///
+/// * the **Realm/scope** basis is `envelope.seal_ref` — membership, capability
+///   and product actions are re-evaluated there;
+/// * **device authorization** is read from the verifier's *current* accepted
+///   principal-control / device-directory frontier. It cannot be Seal-relative:
+///   a target-Realm Seal does not locate another principal's device frontier,
+///   and `keys_query_request_body` carries no as-of basis by design.
+///
+/// Implementations return `None` — failing the Signal closed — when the
+/// directory has no entry, the device is revoked or non-active, its generation
+/// is fenced or conflicted, or the trust chain is incomplete. String equality
+/// between the verification-method fragment and the device id is never a
+/// substitute for the directory lookup.
+///
+/// The split is adjudicated in `arkret-work/review/spec-open/`
+/// `2026-07-31-signal-receiver-seal-basis-device-authorization.md`; `signal.md`
+/// §1 still reads as if the lookup were Seal-relative and has not been
+/// rewritten yet.
 pub trait SignalSenderKeyResolver: MaybeSendSync {
     fn resolve_sender_key(&self, envelope: &SignalEnvelope) -> Option<PublicKeyMaterial>;
 }
@@ -118,7 +137,7 @@ impl SignalPlaintext {
             .filter(|kind| !kind.is_empty())
             .ok_or_else(|| Error::Protocol("signal plaintext requires kind".to_owned()))?
             .to_owned();
-        let call_sequence = if kind == "ak.call.signal" {
+        let call_sequence = if kind == SIGNAL_PLAINTEXT_KIND_CALL {
             Some(
                 CallSignalPlaintext::from_plaintext(plaintext)
                     .map_err(|error| Error::Protocol(error.to_string()))?
@@ -219,7 +238,7 @@ impl SignalReceiver {
     /// ceiling, the recomputed `aad_digest` over the immutable header, the
     /// `proof.created_at == sent_at` equality, the recomputed
     /// `envelope_digest` and the canonical size bound); wall-clock expiry;
-    /// the Seal-relative device authorization lookup; the device proof
+    /// the current-directory device authorization lookup; the device proof
     /// signature; the AEAD open; the closed plaintext shape; and finally the
     /// `(sender_device_id, scope_ref, payload_sequence)` de-duplication of
     /// `signal.md` §2.
@@ -238,7 +257,8 @@ impl SignalReceiver {
         }
         let public_key = resolver.resolve_sender_key(envelope).ok_or_else(|| {
             Error::Protocol(
-                "signal sender device is not an authorized active signer at seal_ref".to_owned(),
+                "signal sender device is not an active authorized signer in the current \n                 accepted device directory"
+                    .to_owned(),
             )
         })?;
         verify_eddsa_signal_proof(envelope, &public_key)
@@ -598,7 +618,7 @@ mod tests {
     }
 
     #[test]
-    fn receiver_rejects_a_signal_whose_sender_device_is_not_authorized_at_seal_ref() {
+    fn receiver_rejects_a_signal_whose_sender_device_is_not_in_the_current_directory() {
         let (envelope, _public_key, plaintext) = signed_signal(
             device("000000000005"),
             presence_plaintext("online", 1),
@@ -618,7 +638,7 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(format!("{error}").contains("authorized active signer"));
+        assert!(format!("{error}").contains("active authorized signer"));
     }
 
     #[test]

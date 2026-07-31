@@ -21,13 +21,15 @@ use std::{
 use crate::protocol::{DeviceId, Did, RealmId, Result, SyncUpdates};
 use crate::sync_client::{AsyncSyncTransport, SyncLoopControl, SyncLoopStep};
 
+use crate::signal::{SignalDecryptor, SignalSenderKeyResolver};
 use crate::subscribe::{
     EventsScanTransport, ProjectedRunError, RealmEventsTransport, RealmStreamStopReason,
-    ScanCatchupOptions,
+    ScanCatchupOptions, SignalReceiveHandlers, SignalRunError, SignalSink, SignalStreamDriver,
+    SignalStreamStopReason, SignalStreamTransport,
 };
 use crate::{
     ArkretClient, Backoff, ClientProjector, CursorStore, DurableInboxStore, EventCacheStore,
-    Executor,
+    Executor, HostClock,
     subscribe::account::{account_updates_to_events, account_updates_to_events_with_origin},
 };
 
@@ -823,6 +825,108 @@ where
                         UnauthorizedRecovery::Unavailable => {}
                     }
                     return Ok(Self::stop(provider, RunStopReason::Unauthorized { reason }));
+                }
+            }
+        }
+    }
+
+    /// Resilient Signal receive rail: subscribe -> admit -> deliver, reconnect
+    /// with backoff after every clean or drained connection, stop on
+    /// cancellation or `Unauthorized`.
+    ///
+    /// There is no cursor, checkpoint or catch-up here and there must not be
+    /// one: `signal.md` §4.1 gives the rail no durable position, so a reconnect
+    /// re-establishes live fanout and nothing else. The only state carried
+    /// across connections is the driver's §2 de-duplication window.
+    pub async fn run_signal<TP, R, DEC, S, K>(
+        &self,
+        provider: &TP,
+        handlers: SignalReceiveHandlers<'_, R, DEC, S>,
+        clock: &K,
+        control: &SyncLoopControl,
+        options: RunOptions,
+    ) -> RunResult<RunStopReason>
+    where
+        TP: TransportProvider,
+        TP::Transport: SignalStreamTransport,
+        R: SignalSenderKeyResolver,
+        DEC: SignalDecryptor,
+        S: SignalSink + ?Sized,
+        K: HostClock,
+    {
+        let mut driver = SignalStreamDriver::new();
+        // Tagged so the Signal rail's reconnect jitter does not move in
+        // lockstep with the account and realm rails of the same client.
+        let mut backoff = Backoff::new(options.min_backoff, options.max_backoff).with_jitter(
+            options.jitter_ratio,
+            stable_backoff_seed(self.backoff_seed, 0x5169_4E41, "signal"),
+        );
+        loop {
+            if !provider.is_active() {
+                return Ok(Self::stop(provider, RunStopReason::LifecycleEnded));
+            }
+            if control.is_cancelled() {
+                return Ok(Self::stop(provider, RunStopReason::Cancelled));
+            }
+            provider.observe(RunEvent::Connecting);
+            let transport = match provider.provide().await {
+                Ok(transport) => {
+                    provider.observe(RunEvent::Online);
+                    transport
+                }
+                Err(error) if retryable(classify_error(&error)) => {
+                    let delay = backoff.next_delay();
+                    provider.observe(RunEvent::Backoff { delay });
+                    if let Some(reason) = self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
+                    }
+                    continue;
+                }
+                Err(error) => return Err(Self::fail(provider, classify_error(&error), error)),
+            };
+            match driver.run(&transport, handlers, clock).await {
+                Ok(SignalStreamStopReason::StreamEnded) => {
+                    backoff.reset();
+                    if let Some(reason) = self.wait_guarded(options.beat, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
+                    }
+                }
+                // A drain bounds only how soon the same session/device may
+                // re-open the Signal rail. It is not a delivery receipt and it
+                // never gates account/events reconnect.
+                Ok(SignalStreamStopReason::Drain {
+                    reconnect_after_ms, ..
+                }) => {
+                    let delay =
+                        backoff.next_delay_with_hint(reconnect_after_ms.map(Duration::from_millis));
+                    provider.observe(RunEvent::Backoff { delay });
+                    if let Some(reason) = self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
+                    }
+                }
+                Ok(SignalStreamStopReason::Unauthorized { reason }) => {
+                    match self
+                        .recover_unauthorized(provider, control, &mut backoff)
+                        .await?
+                    {
+                        UnauthorizedRecovery::Recovered | UnauthorizedRecovery::Retry => continue,
+                        UnauthorizedRecovery::GuardedStop(reason) => return Ok(reason),
+                        UnauthorizedRecovery::Unavailable => {}
+                    }
+                    return Ok(Self::stop(provider, RunStopReason::Unauthorized { reason }));
+                }
+                Err(SignalRunError::Transport(error)) if retryable(classify_error(&error)) => {
+                    let delay = backoff.next_delay();
+                    provider.observe(RunEvent::Backoff { delay });
+                    if let Some(reason) = self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
+                    }
+                }
+                Err(SignalRunError::Transport(error)) => {
+                    return Err(Self::fail(provider, classify_error(&error), error));
+                }
+                Err(SignalRunError::Sink(error)) => {
+                    return Err(Self::fail(provider, RunErrorClass::ProjectorFailure, error));
                 }
             }
         }
