@@ -299,7 +299,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
-    use arkret_wire::{DeviceId, Hash, RealmId, SealId};
+    use arkret_wire::{DeviceId, DidUrl, Hash, RealmId, SealId};
     use chrono::{Duration, TimeZone};
     use ed25519_dalek::SigningKey;
     use serde_json::{Value, json};
@@ -374,7 +374,7 @@ mod tests {
             },
             proof: SignalProof {
                 kind: "detached_jws".to_owned(),
-                verification_method: format!("{}#{}", actor(), device()),
+                verification_method: DidUrl::new(format!("{}#{}", actor(), device())).unwrap(),
                 alg: "EdDSA".to_owned(),
                 envelope_digest: Hash::new(format!("sha256:{}", "0".repeat(64))).unwrap(),
                 created_at: sent_at(),
