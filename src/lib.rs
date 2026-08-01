@@ -35,6 +35,7 @@ pub mod stamp;
 pub mod store;
 pub mod subscribe;
 pub mod sync_client;
+pub mod websocket;
 pub use account_handoff::{
     AccountHandoffDisposition, OidcAccountHandoffInput, account_handoff_disposition,
     identity_binding_challenge_request, identity_creation_register_request,
