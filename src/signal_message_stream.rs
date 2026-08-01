@@ -416,7 +416,7 @@ mod tests {
     fn plaintext(frame: MessageStreamFrame) -> SignalPlaintext {
         let payload_sequence = frame.payload_sequence();
         let kind = MESSAGE_STREAM_KIND.to_owned();
-        let Value::Object(body) = serde_json::to_value(frame).unwrap() else {
+        let Value::Object(body) = serde_json::to_value(&frame).unwrap() else {
             unreachable!()
         };
         SignalPlaintext {
@@ -424,6 +424,7 @@ mod tests {
             actor_id: actor(),
             payload_sequence,
             ttl_ms: None,
+            payload: crate::protocol::SdkSignalPlaintext::MessageStream(frame),
             body: body.into_iter().collect(),
             sent_at: at(0),
             expires_at: at(30),

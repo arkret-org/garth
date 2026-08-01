@@ -67,6 +67,15 @@ pub use outbound::{
     OutboundSubmitOutcome, OutboundSubmitter,
 };
 pub use projection::{ProjectionMount, RealmStateReducer};
+/// The Signal plaintext family (`sync/signal.md` §1.1).
+///
+/// Published because [`SignalPlaintext::payload`] carries the typed profile:
+/// a consumer has to be able to name the variant it matches, and
+/// `open_signal_plaintext` is the only admitted way to turn decrypted bytes
+/// into one.
+pub use protocol::{
+    PresencePlaintext, ReadReceipt, SdkSignalPlaintext, TypingPlaintext, open_signal_plaintext,
+};
 pub use runtime_store::{
     AccountSessionStore, AuditAction, AuditEntry, AuditLogStore, BlobMetadataStore,
     EventCacheStore as EventBodyCacheStore, MemoryPersistenceStore, StateSnapshotStore, StoreCache,

@@ -20,13 +20,14 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, Duration, Utc};
+use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use crate::MaybeSendSync;
 use crate::protocol::signatures::{PublicKeyMaterial, verify_eddsa_signal_proof};
 use crate::protocol::{
-    CallSignalPlaintext, Did, Error, Result, ScopeRef, SignalEnvelope, canonical,
+    Did, Error, Result, ScopeRef, SdkSignalPlaintext, SignalEnvelope, canonical,
+    open_signal_plaintext,
 };
 use crate::store::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
 
@@ -97,17 +98,28 @@ pub trait SignalDecryptor: MaybeSendSync {
 
 /// Decrypted, sender-bound Signal payload.
 ///
-/// `kind` and `payload_sequence` are the common minimum. Product profiles may
-/// additionally carry `actor_id` and an inner `ttl_ms`; when present they are
-/// checked against the authenticated envelope. `body` keeps the whole decoded
-/// object so a domain projection can read its own further fields without a
-/// second parse.
+/// `kind` and `payload_sequence` are the §1.1 common minimum, lifted out of the
+/// [`payload`] so the dedupe triple and the product route can be read without
+/// matching the union. `payload` is the typed profile the SDK selected by
+/// `kind`; `body` is the same object as JSON for projections that read further
+/// profile fields.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SignalPlaintext {
     pub kind: String,
     pub actor_id: Did,
     pub payload_sequence: u64,
     pub ttl_ms: Option<u64>,
+    /// The registered closed profile this plaintext parsed as.
+    ///
+    /// This is the only admitted parse: `signal.md` §1.1 requires a receiver to
+    /// select the corresponding closed schema by `kind` and drop anything else
+    /// as `schema_violation`, and forbids hand-parsing a plaintext by field
+    /// name. Consumers match on this rather than reading [`Self::body`] keys.
+    pub payload: SdkSignalPlaintext,
+    /// The whole decoded object, for projections that need a further field of
+    /// the profile they already selected. Never a substitute for `payload`:
+    /// reading a field out of here without knowing the profile is exactly the
+    /// hand-parse §1.1 forbids.
     pub body: BTreeMap<String, Value>,
     /// Outer `sent_at`, the reference instant for the plaintext TTL and the
     /// tie-breaker for `status_message` selection (`profiles-presence.md`
@@ -123,81 +135,67 @@ pub struct SignalPlaintext {
 
 impl SignalPlaintext {
     fn parse(envelope: &SignalEnvelope, plaintext: &[u8]) -> Result<Self> {
-        let value = canonical::parse_canonical_json(plaintext)?;
-        let Value::Object(map) = value else {
-            return Err(Error::Protocol(
-                "signal plaintext must be a canonical JSON object".to_owned(),
-            ));
-        };
-        let kind = map
-            .get("kind")
-            .and_then(Value::as_str)
-            .filter(|kind| !kind.is_empty())
-            .ok_or_else(|| Error::Protocol("signal plaintext requires kind".to_owned()))?
-            .to_owned();
-        let call_sequence = if kind == SIGNAL_PLAINTEXT_KIND_CALL {
-            Some(
-                CallSignalPlaintext::from_plaintext(plaintext)
-                    .map_err(|error| Error::Protocol(error.to_string()))?
-                    .seq,
+        // One entry for the whole family: dispatch on `kind`, validate against
+        // the selected closed profile, reject an unregistered `kind`. Nothing
+        // below reconstructs the common minimum by field name.
+        let payload =
+            open_signal_plaintext(plaintext).map_err(|error| Error::Protocol(error.to_string()))?;
+        // §1.1 cross-boundary rules: an in-ciphertext `actor_id` MUST equal the
+        // authenticated `sender_actor_id` (the outer proof authenticates only
+        // that, so a plaintext naming a third party is an unauthenticated
+        // claim), and a plaintext `ttl_ms` may only tighten the envelope.
+        payload
+            .bind_to_envelope(
+                &envelope.sender_actor_id,
+                envelope.sent_at,
+                envelope.expires_at,
             )
-        } else {
-            None
-        };
-        if let Some(actor_value) = map.get("actor_id") {
-            let actor = actor_value.as_str().ok_or_else(|| {
-                Error::Protocol("signal plaintext actor_id must be a DID string".to_owned())
-            })?;
-            let actor_id = Did::new(actor).map_err(|error| Error::Protocol(error.to_string()))?;
-            // The outer proof authenticates `sender_actor_id` only. A
-            // plaintext that names a different actor is an unauthenticated
-            // claim about a third party.
-            if actor_id != envelope.sender_actor_id {
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+        let body = match canonical::parse_canonical_json(plaintext)? {
+            Value::Object(map) => map.into_iter().collect(),
+            _ => {
                 return Err(Error::Protocol(
-                    "signal plaintext actor_id must equal the authenticated sender_actor_id"
-                        .to_owned(),
+                    "signal plaintext must be a canonical JSON object".to_owned(),
                 ));
             }
-        }
-        let payload_sequence = call_sequence
-            .or_else(|| map.get("payload_sequence").and_then(Value::as_u64))
-            .ok_or_else(|| {
-                Error::Protocol(
-                    "signal plaintext requires seq for calls or payload_sequence for its product"
-                        .to_owned(),
-                )
-            })?;
-        let ttl_ms = match map.get("ttl_ms") {
-            Some(value) => Some(value.as_u64().filter(|ttl| *ttl > 0).ok_or_else(|| {
-                Error::Protocol("signal plaintext ttl_ms must be a positive integer".to_owned())
-            })?),
-            None => None,
-        };
-        let expires_at = match ttl_ms {
-            Some(ttl_ms) => {
-                let milliseconds = i64::try_from(ttl_ms).map_err(|_| {
-                    Error::Protocol("signal plaintext ttl_ms is out of range".to_owned())
-                })?;
-                let inner_expiry = envelope.sent_at
-                    + Duration::try_milliseconds(milliseconds).ok_or_else(|| {
-                        Error::Protocol("signal plaintext ttl_ms is out of range".to_owned())
-                    })?;
-                inner_expiry.min(envelope.expires_at)
-            }
-            None => envelope.expires_at,
         };
         Ok(Self {
-            kind,
+            kind: payload.kind().as_str().to_owned(),
             actor_id: envelope.sender_actor_id.clone(),
-            payload_sequence,
-            ttl_ms,
-            body: map.into_iter().collect(),
+            payload_sequence: payload.payload_sequence(),
+            ttl_ms: payload.ttl_ms(),
+            expires_at: payload.effective_expires_at(envelope.sent_at, envelope.expires_at),
+            payload,
+            body,
             sent_at: envelope.sent_at,
-            expires_at,
             scope_ref: envelope.scope_ref.clone(),
             seal_ref: envelope.seal_ref.clone(),
             sender_device_id: envelope.sender_device_id.clone(),
         })
+    }
+
+    /// The decrypted `ak.receipt.read` profile, if this is one.
+    pub fn read_receipt(&self) -> Option<&crate::protocol::ReadReceipt> {
+        match &self.payload {
+            SdkSignalPlaintext::ReadReceipt(receipt) => Some(receipt),
+            _ => None,
+        }
+    }
+
+    /// The decrypted `ak.presence` profile, if this is one.
+    pub fn presence(&self) -> Option<&crate::protocol::PresencePlaintext> {
+        match &self.payload {
+            SdkSignalPlaintext::Presence(presence) => Some(presence),
+            _ => None,
+        }
+    }
+
+    /// The decrypted `ak.typing` profile, if this is one.
+    pub fn typing(&self) -> Option<&crate::protocol::TypingPlaintext> {
+        match &self.payload {
+            SdkSignalPlaintext::Typing(typing) => Some(typing),
+            _ => None,
+        }
     }
 }
 
@@ -435,6 +433,8 @@ impl PresenceProjection {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Duration;
+
     use arkret_wire::{DeviceId, DidUrl, Hash, RealmId, SealId};
     use chrono::TimeZone;
     use ed25519_dalek::SigningKey;
@@ -764,7 +764,7 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(format!("{error}").contains("must equal the authenticated sender_actor_id"));
+        assert!(format!("{error}").contains("must equal the envelope sender_actor_id"));
     }
 
     #[test]
@@ -870,7 +870,10 @@ mod tests {
         );
 
         // `unavailable` is a pre-v1 leftover, not a v1 wire value: it is
-        // dropped, never mapped onto a nearby state.
+        // dropped, never mapped onto a nearby state. It now fails at admission
+        // rather than at projection — `signal.md` §1.1 makes the closed profile
+        // schema the admission gate, so a payload carrying an unregistered
+        // enum value never reaches a product projection at all.
         let (unknown_envelope, unknown_key, unknown_plaintext) = signed_signal(
             device_id,
             presence_plaintext("unavailable", 5),
@@ -878,14 +881,14 @@ mod tests {
             30,
             [25; 32],
         );
-        let unknown = SignalReceiver::new()
+        let error = SignalReceiver::new()
             .accept(
                 &unknown_envelope,
                 &key_of(unknown_key),
                 &FixedDecryptor(unknown_plaintext),
                 sent_at(),
             )
-            .unwrap();
-        assert!(projection.apply(&unknown).is_err());
+            .unwrap_err();
+        assert!(format!("{error}").contains("schema_violation"), "{error}");
     }
 }
