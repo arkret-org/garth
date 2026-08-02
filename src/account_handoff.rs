@@ -257,6 +257,7 @@ mod tests {
             )
             .unwrap(),
             account_handle: crate::protocol::Handle::parse("alice:example.com").unwrap(),
+            preferred_locale: None,
             account_handoff_grant: "g".repeat(32),
             expires_at: Utc::now(),
             allowed_operations: crate::protocol::ACCOUNT_HANDOFF_ALLOWED_OPERATIONS,
