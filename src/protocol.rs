@@ -7,10 +7,17 @@ pub(crate) use crate::{Error, Result};
 pub(crate) use arkret_keystore::{KeyBytes, KeyStore, KeyStoreError};
 pub(crate) use arkret_models_collaboration::account_lifecycle::AccountRegisterRequestBody;
 pub(crate) use arkret_models_collaboration::agent_signer_evidence::AgentSignerEvidence;
+pub(crate) use arkret_models_collaboration::agent_signer_evidence::{
+    AgentAuthorizationStatus, AgentSignerEvidenceQuerySelector,
+};
 pub(crate) use arkret_models_collaboration::event_query::EventsQueryOrder;
 pub(crate) use arkret_models_collaboration::events_payloads::MessageCreatePayload;
 pub(crate) use arkret_models_collaboration::http_bodies::{
     EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind,
+};
+pub(crate) use arkret_models_collaboration::protocol_journey::{
+    DeploymentCeilingSignedHead, ParticipationBits, ParticipationReplaceReceipt,
+    ParticipationReplacementBatch, ProtocolOpaqueId, ProtocolOperationId,
 };
 pub(crate) use arkret_models_collaboration::session_grant_bodies::{
     SessionGrantAgentScopeRequest, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,

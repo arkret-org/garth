@@ -10,7 +10,7 @@ pub use sidecar::{
 pub use sidecar_exchange::{
     SidecarExchangeAgentFact, SidecarExchangeCacheDecision, SidecarExchangeControlFact,
     SidecarExchangeFoldScope, SidecarExchangeRequestFact, evaluate_sidecar_exchange_cache,
-    fold_sidecar_exchange,
+    fold_sidecar_exchange, fold_sidecar_exchange_for_current_admission,
 };
 
 pub trait RealmStateReducer {

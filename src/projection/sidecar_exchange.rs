@@ -453,6 +453,27 @@ pub fn fold_sidecar_exchange(
     Ok(Some(projection))
 }
 
+/// Apply the current authorization gate before using historical Sidecar facts
+/// for a new Agent action. The deterministic history fold itself deliberately
+/// remains usable for audit/display after later revocation; it must never be
+/// mistaken for current admission authority.
+pub fn fold_sidecar_exchange_for_current_admission(
+    admission: &crate::runtime_journey::ParticipationAdmissionFacts<'_>,
+    required_action: crate::runtime_journey::ParticipationAction,
+    scope: &SidecarExchangeFoldScope,
+    exchange_id: &AgentSidecarExchangeId,
+    requests: &[SidecarExchangeRequestFact],
+    agent_facts: &[SidecarExchangeAgentFact],
+    controls: &[SidecarExchangeControlFact],
+) -> Result<Option<AgentSidecarExchangeProjection>> {
+    if !admission.allows(required_action)? {
+        return Err(Error::Protocol(
+            "current participation admission denies the Sidecar action".to_owned(),
+        ));
+    }
+    fold_sidecar_exchange(scope, exchange_id, requests, agent_facts, controls)
+}
+
 /// Walk the causal edges of known exchange facts starting from a control's
 /// basis heads: Agent facts contribute their `refs[role=after]` targets and
 /// previously accepted controls contribute their own `basis_event_ids`.

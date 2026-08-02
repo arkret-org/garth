@@ -13,7 +13,60 @@ use serde_json::Value;
 use crate::protocol::auth::AuthSession;
 use crate::protocol::models::BlobMetadata;
 use crate::protocol::resolver::{RealmState, SnapshotRestore, StateSnapshot};
-use crate::protocol::{BlobRef, Did, Error, Event, EventId, RealmId, Result};
+use crate::protocol::{
+    BlobRef, Did, Error, Event, EventId, Hash, ProtocolOpaqueId, ProtocolOperationId, RealmId,
+    Result,
+};
+
+/// Controller-authored canonical bytes retained for exact retry.
+///
+/// This is controller-private durable state. It is intentionally not
+/// serializable or printable: a digest cannot reconstruct signed Event or
+/// request bytes and logs must not disclose them.
+#[derive(Clone, PartialEq, Eq)]
+pub struct AuthoringBytes {
+    pub operation_id: ProtocolOperationId,
+    pub idempotency_key: ProtocolOpaqueId,
+    pub digest: Hash,
+    bytes: Vec<u8>,
+}
+
+impl std::fmt::Debug for AuthoringBytes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AuthoringBytes")
+            .field("operation_id", &self.operation_id)
+            .field("idempotency_key", &self.idempotency_key)
+            .field("digest", &self.digest)
+            .field("bytes", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl AuthoringBytes {
+    pub fn from_typed<T: Serialize>(
+        operation_id: ProtocolOperationId,
+        idempotency_key: ProtocolOpaqueId,
+        value: &T,
+    ) -> Result<Self> {
+        let bytes = crate::protocol::canonical::canonical_json_bytes(value)?;
+        let digest = Hash::new(crate::protocol::canonical::sha256_digest(&bytes))?;
+        Ok(Self {
+            operation_id,
+            idempotency_key,
+            digest,
+            bytes,
+        })
+    }
+
+    pub fn exact_bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+pub trait AuthoringBytesStore: Send + Sync {
+    fn put_authoring_bytes(&mut self, record: AuthoringBytes) -> Result<()>;
+    fn authoring_bytes(&self, operation_id: &ProtocolOperationId) -> Option<&AuthoringBytes>;
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -112,6 +165,39 @@ pub struct MemoryPersistenceStore {
     account_data: BTreeMap<(Did, String), StoredAccountData>,
     blob_metadata: BTreeMap<BlobRef, (String, BlobMetadata)>,
     audit_entries: Vec<AuditEntry>,
+    authoring_bytes: BTreeMap<ProtocolOperationId, AuthoringBytes>,
+    authoring_idempotency: BTreeMap<ProtocolOpaqueId, ProtocolOperationId>,
+}
+
+impl AuthoringBytesStore for MemoryPersistenceStore {
+    fn put_authoring_bytes(&mut self, record: AuthoringBytes) -> Result<()> {
+        if let Some(existing_operation) = self.authoring_idempotency.get(&record.idempotency_key)
+            && existing_operation != &record.operation_id
+        {
+            return Err(Error::IdempotencyConflict(
+                record.idempotency_key.to_string(),
+            ));
+        }
+        if let Some(existing) = self.authoring_bytes.get(&record.operation_id) {
+            return if existing.idempotency_key == record.idempotency_key
+                && existing.digest == record.digest
+                && existing.exact_bytes() == record.exact_bytes()
+            {
+                Ok(())
+            } else {
+                Err(Error::IdempotencyConflict(record.operation_id.to_string()))
+            };
+        }
+        self.authoring_idempotency
+            .insert(record.idempotency_key.clone(), record.operation_id.clone());
+        self.authoring_bytes
+            .insert(record.operation_id.clone(), record);
+        Ok(())
+    }
+
+    fn authoring_bytes(&self, operation_id: &ProtocolOperationId) -> Option<&AuthoringBytes> {
+        self.authoring_bytes.get(operation_id)
+    }
 }
 
 impl MemoryPersistenceStore {
@@ -559,5 +645,36 @@ mod tests {
         assert!(cache.get(&"a").is_none());
         assert_eq!(cache.get(&"b"), Some(&2));
         assert_eq!(cache.len(), 2);
+    }
+
+    #[test]
+    fn authoring_store_replays_exact_bytes_and_rejects_conflicts() {
+        let operation_id = ProtocolOperationId::new("ak:operation:provision-1").unwrap();
+        let idempotency_key = ProtocolOpaqueId::new("idem-1").unwrap();
+        let record = AuthoringBytes::from_typed(
+            operation_id.clone(),
+            idempotency_key.clone(),
+            &json!({"phase":"commit","value":1}),
+        )
+        .unwrap();
+        let exact = record.exact_bytes().to_vec();
+        let mut store = MemoryPersistenceStore::new();
+        store.put_authoring_bytes(record.clone()).unwrap();
+        store.put_authoring_bytes(record).unwrap();
+        assert_eq!(
+            store.authoring_bytes(&operation_id).unwrap().exact_bytes(),
+            exact
+        );
+
+        let conflict = AuthoringBytes::from_typed(
+            operation_id,
+            idempotency_key,
+            &json!({"phase":"commit","value":2}),
+        )
+        .unwrap();
+        assert!(matches!(
+            store.put_authoring_bytes(conflict),
+            Err(Error::IdempotencyConflict(_))
+        ));
     }
 }

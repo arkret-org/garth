@@ -1,10 +1,10 @@
 use crate::crypto_state_store::{
     CryptoStore, CryptoStoreBackupEnvelope, MemoryCryptoStore, MlsCommitSource,
-    MlsEpochSecretRecord, MlsGroupStateRecord, MlsGroupStateSink, MlsRecoveryPlan,
+    MlsEpochSecretRecord, MlsGroupStateRecord, MlsGroupStateSink, MlsRecoveryPlan, MlsWelcomeState,
     StoredDeviceVerification,
 };
 use crate::protocol::{
-    DeviceId, Did, MlsCommitEnvelope, MlsKeyPackageRecord, MlsWelcomeEnvelope, Result,
+    DeviceId, Did, Hash, MlsCommitEnvelope, MlsKeyPackageRecord, MlsWelcomeEnvelope, Result,
 };
 use arkret_wire::WireError;
 use zeroize::Zeroizing;
@@ -116,6 +116,14 @@ where
         self.inner.key_package(principal_id, device_id)
     }
 
+    fn key_packages_for_device(
+        &self,
+        principal_id: &Did,
+        device_id: &DeviceId,
+    ) -> Vec<&MlsKeyPackageRecord> {
+        self.inner.key_packages_for_device(principal_id, device_id)
+    }
+
     fn put_welcome(&mut self, record: MlsWelcomeEnvelope) -> Result<()> {
         self.inner.put_welcome(record)?;
         self.persist()
@@ -127,6 +135,20 @@ where
         device_id: &DeviceId,
     ) -> Vec<&MlsWelcomeEnvelope> {
         self.inner.welcomes_for_device(principal_id, device_id)
+    }
+
+    fn mark_welcome_accepted(&mut self, welcome_hash: &Hash) -> Result<()> {
+        self.inner.mark_welcome_accepted(welcome_hash)?;
+        self.persist()
+    }
+
+    fn mark_welcome_consumed(&mut self, welcome_hash: &Hash) -> Result<()> {
+        self.inner.mark_welcome_consumed(welcome_hash)?;
+        self.persist()
+    }
+
+    fn welcome_state(&self, welcome_hash: &Hash) -> Option<MlsWelcomeState> {
+        self.inner.welcome_state(welcome_hash)
     }
 
     fn put_commit(&mut self, record: MlsCommitEnvelope) -> Result<()> {

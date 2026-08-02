@@ -26,6 +26,7 @@ pub mod maybe_send;
 pub mod orchestrator;
 pub mod outbound;
 pub mod projection;
+pub mod runtime_journey;
 pub mod runtime_store;
 pub mod security_transaction;
 pub mod session;
@@ -46,7 +47,7 @@ pub use backoff::Backoff;
 pub use crypto_state_store::{
     CRYPTO_STORE_BACKUP_VERSION, CryptoStore, CryptoStoreBackupEnvelope, MemoryCryptoStore,
     MlsCommitSource, MlsEpochSecretRecord, MlsGroupStateRecord, MlsGroupStateSink,
-    MlsRecoveryAction, MlsRecoveryPlan, StoredDeviceVerification,
+    MlsRecoveryAction, MlsRecoveryPlan, MlsWelcomeState, StoredDeviceVerification,
 };
 pub use event::{AccountUpdateContext, ClientEvent, ClientProjector};
 #[cfg(feature = "native")]
@@ -77,11 +78,16 @@ pub use projection::{ProjectionMount, RealmStateReducer};
 pub use protocol::{
     PresencePlaintext, ReadReceipt, SdkSignalPlaintext, TypingPlaintext, open_signal_plaintext,
 };
+pub use runtime_journey::{
+    ParticipationAction, ParticipationAdmissionFacts, RuntimeActorView, RuntimeBlocker,
+    RuntimePlan, RuntimePlanFacts, RuntimeReadyAction, SignerEvidenceUse,
+    VerifiedParticipationDisclosure, admit_signer_evidence, plan_runtime, signer_evidence_selector,
+};
 pub use runtime_store::{
-    AccountSessionStore, AuditAction, AuditEntry, AuditLogStore, BlobMetadataStore,
-    EventCacheStore as EventBodyCacheStore, MemoryPersistenceStore, StateSnapshotStore, StoreCache,
-    StoreEncryptionKey, StoredAccountData, rebuild_realm_state_from_events,
-    restore_realm_state_from_persistence,
+    AccountSessionStore, AuditAction, AuditEntry, AuditLogStore, AuthoringBytes,
+    AuthoringBytesStore, BlobMetadataStore, EventCacheStore as EventBodyCacheStore,
+    MemoryPersistenceStore, StateSnapshotStore, StoreCache, StoreEncryptionKey, StoredAccountData,
+    rebuild_realm_state_from_events, restore_realm_state_from_persistence,
 };
 pub use security_transaction::{
     BoxSecurityTransactionFuture, DurableSecurityTransaction, MemorySecurityTransactionStore,

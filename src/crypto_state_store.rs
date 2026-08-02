@@ -64,6 +64,19 @@ pub enum MlsRecoveryAction {
     RequestEpochRecovery { missing_from_epoch: u64 },
 }
 
+/// Local processing state for an exact Welcome envelope.
+///
+/// Receipt, admission, and successful MLS consumption are deliberately
+/// separate. Merely observing an old Welcome must never authorize a join or
+/// make recovery choose it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MlsWelcomeState {
+    Received,
+    Accepted,
+    Consumed,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MlsRecoveryPlan {
     pub group_id: String,
@@ -106,12 +119,20 @@ pub trait CryptoStore: Send + Sync + MlsGroupStateSink + MlsCommitSource {
     fn put_key_package(&mut self, record: MlsKeyPackageRecord) -> Result<()>;
     fn key_package(&self, principal_id: &Did, device_id: &DeviceId)
     -> Option<&MlsKeyPackageRecord>;
+    fn key_packages_for_device(
+        &self,
+        principal_id: &Did,
+        device_id: &DeviceId,
+    ) -> Vec<&MlsKeyPackageRecord>;
     fn put_welcome(&mut self, record: MlsWelcomeEnvelope) -> Result<()>;
     fn welcomes_for_device(
         &self,
         principal_id: &Did,
         device_id: &DeviceId,
     ) -> Vec<&MlsWelcomeEnvelope>;
+    fn mark_welcome_accepted(&mut self, welcome_hash: &crate::protocol::Hash) -> Result<()>;
+    fn mark_welcome_consumed(&mut self, welcome_hash: &crate::protocol::Hash) -> Result<()>;
+    fn welcome_state(&self, welcome_hash: &crate::protocol::Hash) -> Option<MlsWelcomeState>;
     fn put_commit(&mut self, record: MlsCommitEnvelope) -> Result<()>;
     fn put_epoch_secret(&mut self, record: MlsEpochSecretRecord) -> Result<()>;
     fn epoch_secret(&self, group_id: &str, epoch: u64) -> Option<&MlsEpochSecretRecord>;
@@ -143,8 +164,10 @@ pub trait CryptoStore: Send + Sync + MlsGroupStateSink + MlsCommitSource {
 #[derive(Clone, Default, Serialize, Deserialize)]
 pub struct MemoryCryptoStore {
     group_states: BTreeMap<String, MlsGroupStateRecord>,
-    key_packages: BTreeMap<(Did, DeviceId), MlsKeyPackageRecord>,
+    key_packages: BTreeMap<crate::protocol::Hash, MlsKeyPackageRecord>,
     welcomes: Vec<MlsWelcomeEnvelope>,
+    #[serde(default)]
+    welcome_states: BTreeMap<crate::protocol::Hash, MlsWelcomeState>,
     commits: BTreeMap<String, Vec<MlsCommitEnvelope>>,
     epoch_secrets: BTreeMap<(String, u64), MlsEpochSecretRecord>,
     device_verifications: BTreeMap<(Did, DeviceId), StoredDeviceVerification>,
@@ -203,11 +226,22 @@ impl CryptoStore for MemoryCryptoStore {
     }
 
     fn put_key_package(&mut self, record: MlsKeyPackageRecord) -> Result<()> {
-        self.key_packages.insert(
-            (record.principal_id.clone(), record.device_id.clone()),
-            record,
-        );
-        Ok(())
+        let key = record.keypackage_ref.clone();
+        match self.key_packages.get(&key) {
+            Some(existing)
+                if crate::protocol::canonical::canonical_sha256(existing)?
+                    == crate::protocol::canonical::canonical_sha256(&record)? =>
+            {
+                Ok(())
+            }
+            Some(_) => Err(Error::IdempotencyConflict(
+                record.keypackage_ref.to_string(),
+            )),
+            None => {
+                self.key_packages.insert(key, record);
+                Ok(())
+            }
+        }
     }
 
     fn key_package(
@@ -215,8 +249,23 @@ impl CryptoStore for MemoryCryptoStore {
         principal_id: &Did,
         device_id: &DeviceId,
     ) -> Option<&MlsKeyPackageRecord> {
+        self.key_packages_for_device(principal_id, device_id)
+            .into_iter()
+            .find(|record| record.is_usable())
+    }
+
+    fn key_packages_for_device(
+        &self,
+        principal_id: &Did,
+        device_id: &DeviceId,
+    ) -> Vec<&MlsKeyPackageRecord> {
         self.key_packages
-            .get(&(principal_id.clone(), device_id.clone()))
+            .iter()
+            .filter_map(|(_, record)| {
+                (&record.principal_id == principal_id && &record.device_id == device_id)
+                    .then_some(record)
+            })
+            .collect()
     }
 
     fn put_welcome(&mut self, record: MlsWelcomeEnvelope) -> Result<()> {
@@ -238,6 +287,8 @@ impl CryptoStore for MemoryCryptoStore {
                 )))
             };
         }
+        self.welcome_states
+            .insert(record.welcome_hash.clone(), MlsWelcomeState::Received);
         self.welcomes.push(record);
         Ok(())
     }
@@ -254,6 +305,40 @@ impl CryptoStore for MemoryCryptoStore {
                     && &welcome.recipient_device_id == device_id
             })
             .collect()
+    }
+
+    fn mark_welcome_accepted(&mut self, welcome_hash: &crate::protocol::Hash) -> Result<()> {
+        let state = self
+            .welcome_states
+            .get_mut(welcome_hash)
+            .ok_or_else(|| Error::Protocol(format!("MLS welcome not found: {welcome_hash}")))?;
+        match state {
+            MlsWelcomeState::Received | MlsWelcomeState::Accepted => {
+                *state = MlsWelcomeState::Accepted;
+                Ok(())
+            }
+            MlsWelcomeState::Consumed => Ok(()),
+        }
+    }
+
+    fn mark_welcome_consumed(&mut self, welcome_hash: &crate::protocol::Hash) -> Result<()> {
+        let state = self
+            .welcome_states
+            .get_mut(welcome_hash)
+            .ok_or_else(|| Error::Protocol(format!("MLS welcome not found: {welcome_hash}")))?;
+        match state {
+            MlsWelcomeState::Accepted | MlsWelcomeState::Consumed => {
+                *state = MlsWelcomeState::Consumed;
+                Ok(())
+            }
+            MlsWelcomeState::Received => Err(Error::Protocol(
+                "MLS welcome must be accepted before consumption".to_owned(),
+            )),
+        }
+    }
+
+    fn welcome_state(&self, welcome_hash: &crate::protocol::Hash) -> Option<MlsWelcomeState> {
+        self.welcome_states.get(welcome_hash).copied()
     }
 
     fn put_commit(&mut self, record: MlsCommitEnvelope) -> Result<()> {
@@ -315,17 +400,27 @@ impl CryptoStore for MemoryCryptoStore {
         let action = match local_epoch {
             Some(epoch) if epoch >= required_epoch => MlsRecoveryAction::UseLocalState,
             Some(epoch)
-                if self
-                    .commits_for_group(group_id)
-                    .iter()
-                    .any(|commit| commit.epoch > epoch && commit.epoch <= required_epoch) =>
+                if (epoch.saturating_add(1)..=required_epoch).all(|next_epoch| {
+                    self.commits_for_group(group_id)
+                        .iter()
+                        .any(|commit| commit.epoch == next_epoch)
+                }) =>
             {
                 MlsRecoveryAction::ApplyCommits {
                     from_epoch: epoch.saturating_add(1),
                     to_epoch: required_epoch,
                 }
             }
-            _ if !self.welcomes_for_device(principal_id, device_id).is_empty() => {
+            _ if self
+                .welcomes_for_device(principal_id, device_id)
+                .into_iter()
+                .any(|welcome| {
+                    welcome.group_id == group_id
+                        && welcome.epoch == required_epoch
+                        && self.welcome_state(&welcome.welcome_hash)
+                            == Some(MlsWelcomeState::Accepted)
+                }) =>
+            {
                 MlsRecoveryAction::ConsumeWelcome
             }
             Some(epoch) => MlsRecoveryAction::RequestEpochRecovery {
@@ -347,6 +442,11 @@ impl CryptoStore for MemoryCryptoStore {
 
     fn import_backup_json(&mut self, backup: &str) -> Result<()> {
         *self = serde_json::from_str(backup)?;
+        for welcome in &self.welcomes {
+            self.welcome_states
+                .entry(welcome.welcome_hash.clone())
+                .or_insert(MlsWelcomeState::Received);
+        }
         Ok(())
     }
 }
@@ -476,6 +576,16 @@ mod tests {
             })
             .unwrap();
 
+        let welcome_hash = store.welcomes_for_device(&alice, &device_id)[0]
+            .welcome_hash
+            .clone();
+        let before_acceptance = store.plan_mls_recovery("group1", None, 1, &alice, &device_id);
+        assert!(matches!(
+            before_acceptance.action,
+            MlsRecoveryAction::RequestEpochRecovery { .. }
+        ));
+        store.mark_welcome_accepted(&welcome_hash).unwrap();
+
         let plan = store.plan_mls_recovery("group1", None, 1, &alice, &device_id);
         assert!(matches!(plan.action, MlsRecoveryAction::ConsumeWelcome));
 
@@ -506,6 +616,14 @@ mod tests {
         store.put_welcome(welcome.clone()).unwrap();
         store.put_welcome(welcome.clone()).unwrap();
         assert_eq!(store.welcomes_for_device(&alice, &device_id).len(), 1);
+        assert!(store.mark_welcome_consumed(&welcome.welcome_hash).is_err());
+        store.mark_welcome_accepted(&welcome.welcome_hash).unwrap();
+        store.mark_welcome_consumed(&welcome.welcome_hash).unwrap();
+        store.mark_welcome_consumed(&welcome.welcome_hash).unwrap();
+        assert_eq!(
+            store.welcome_state(&welcome.welcome_hash),
+            Some(MlsWelcomeState::Consumed)
+        );
 
         let mut conflicting_welcome = welcome;
         conflicting_welcome.welcome_hash =
@@ -525,7 +643,6 @@ mod tests {
             )
             .unwrap(),
             ratchet_tree: None,
-            app_state_ref: None,
         };
         store.put_commit(commit.clone()).unwrap();
         store.put_commit(commit.clone()).unwrap();
