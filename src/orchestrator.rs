@@ -1015,8 +1015,9 @@ mod tests {
 
     use crate::protocol::{AccountStreamInterrupt, AccountSubscribeBatch, Error, SyncRequestBody};
     use crate::protocol::{
-        ErrorEnvelope, EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind, Hlc,
-        NotificationDelta, NotificationDeltaAction, NotificationId, NotificationKind, RealmId,
+        ErrorEnvelope, EventKind, EventsQueryOutcome, EventsSubscribeFrame,
+        EventsSubscribeFrameKind, Hlc, NotificationDelta, NotificationDeltaAction, NotificationId,
+        NotificationKind, RealmId,
     };
     use serde_json::{Value, json};
 
