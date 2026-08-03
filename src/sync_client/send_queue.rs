@@ -584,12 +584,14 @@ impl SendQueue {
         Ok(())
     }
 
-    /// Mark an item as receipted by a policy-accepted ingress.
+    /// Mark an item as accepted by a policy-accepted ingress.
     ///
-    /// At least one receipt is required: acceptance without one leaves the
-    /// Event with no proof that it arrived inside its lease window, which is
-    /// exactly what a later peer cannot reconstruct. Already-stored receipts
-    /// win over the supplied ones so an idempotent retry cannot overwrite the
+    /// A delayed/offline item that is bound to an authorization lease requires
+    /// at least one receipt: acceptance without one leaves the Event with no
+    /// proof that it arrived inside its lease window, which is exactly what a
+    /// later peer cannot reconstruct. An ordinary online submission has no
+    /// lease and therefore no lease-bound receipt. Already-stored receipts win
+    /// over the supplied ones so an idempotent retry cannot overwrite the
     /// original `received_at`.
     pub fn mark_sent(
         &mut self,
@@ -613,7 +615,7 @@ impl SendQueue {
         }
         let item = self.item_mut(transaction_id)?;
         if item.ingress_receipts.is_empty() {
-            if ingress_receipts.is_empty() {
+            if expected_lease_id.is_some() && ingress_receipts.is_empty() {
                 return Err(Error::Protocol(
                     "an accepted submission must carry at least one ingress receipt".to_owned(),
                 ));

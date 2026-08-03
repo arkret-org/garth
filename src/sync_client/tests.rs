@@ -863,7 +863,7 @@ fn send_queue_cancels_dependent_edit_redaction_and_reaction() {
 }
 
 #[test]
-fn send_queue_refuses_acceptance_without_an_ingress_receipt() {
+fn send_queue_refuses_delayed_acceptance_without_an_ingress_receipt() {
     // A receipt is the only evidence that the Event reached a policy-accepted
     // ingress inside its lease window (`offline-publication.md` §2). Recording
     // an acceptance without one would leave a locally "sent" item that no peer
@@ -871,7 +871,14 @@ fn send_queue_refuses_acceptance_without_an_ingress_receipt() {
     let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
     let mut queue = SendQueue::new();
     queue
-        .enqueue_message(Some("txn1".to_owned()), realm_id, json!({"body": "hi"}))
+        .enqueue_message(
+            Some("txn1".to_owned()),
+            realm_id.clone(),
+            json!({"body": "hi"}),
+        )
+        .unwrap();
+    queue
+        .bind_authorization_lease("txn1", publication_lease(realm_id))
         .unwrap();
 
     let error = queue
@@ -884,6 +891,28 @@ fn send_queue_refuses_acceptance_without_an_ingress_receipt() {
 
     assert!(format!("{error}").contains("at least one ingress receipt"));
     assert_eq!(queue.get("txn1").unwrap().status, SendQueueStatus::Queued);
+}
+
+#[test]
+fn send_queue_accepts_online_submission_without_an_ingress_receipt() {
+    // Online publication has no authorization lease, so there is no lease
+    // window for an ingress receipt to bind (`event_submission.rs`).
+    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let mut queue = SendQueue::new();
+    queue
+        .enqueue_message(Some("txn1".to_owned()), realm_id, json!({"body": "hi"}))
+        .unwrap();
+
+    queue
+        .mark_sent(
+            "txn1",
+            EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap(),
+            Vec::new(),
+        )
+        .unwrap();
+
+    assert_eq!(queue.get("txn1").unwrap().status, SendQueueStatus::Sent);
+    assert!(queue.get("txn1").unwrap().ingress_receipts.is_empty());
 }
 
 #[test]
