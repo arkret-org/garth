@@ -60,19 +60,12 @@ struct PersistSnapshot {
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct FileState {
-    #[serde(default)]
     cursors: BTreeMap<String, OpaqueCursor>,
-    /// Insertion-ordered dedupe window, oldest first. Reads legacy files that
-    /// persisted a sorted set (any JSON array of strings deserializes here).
-    #[serde(default)]
+    /// Insertion-ordered dedupe window, oldest first.
     seen_events: VecDeque<String>,
-    #[serde(default)]
     next_delivery_id: u64,
-    #[serde(default)]
     deliveries: VecDeque<PendingDelivery>,
-    #[serde(default)]
     outbound: crate::sync_client::SendQueueSnapshot,
-    #[serde(default)]
     stamp_floors: BTreeMap<String, StampFloor>,
 }
 

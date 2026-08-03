@@ -7,9 +7,10 @@
 use chrono::{DateTime, Utc};
 
 use crate::protocol::{
-    AgentAuthorizationStatus, AgentSignerEvidence, AgentSignerEvidenceQuerySelector,
-    DeploymentCeilingSignedHead, Did, Error, EventId, Hash, ParticipationBits,
-    ParticipationReplaceReceipt, ParticipationReplacementBatch, Result,
+    AgentAdmissionEvidence, AgentAuthorizationStatus, AgentLifecycleStatus, AgentSignerEvidence,
+    AgentSignerEvidenceQuerySelector, ControllerAccountEligibility, ControllerAccountStatus,
+    DeploymentCeilingSignedHead, Did, Error, EventId, Hash, NonEmptyString, ParticipationBits,
+    ParticipationReplaceReceipt, ParticipationReplacementBatch, ProtocolOperationId, Result,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -263,78 +264,252 @@ fn canonical_hash<T: serde::Serialize>(value: &T) -> Result<Hash> {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SignerEvidenceUse {
-    CurrentAdmission { now: DateTime<Utc> },
-    HistoricalVerification { event_accepted_frontier: String },
+    CurrentAdmission {
+        agent_id: Did,
+        verification_method: arkret_wire::DidUrl,
+        now: DateTime<Utc>,
+        operation_id: ProtocolOperationId,
+        request_digest: Hash,
+        verifier_id: Did,
+        audience: Did,
+        challenge: NonEmptyString,
+    },
+    HistoricalVerification {
+        agent_id: Did,
+        verification_method: arkret_wire::DidUrl,
+        now: DateTime<Utc>,
+        event_id: EventId,
+        event_digest: Hash,
+        receiver_service_id: Did,
+    },
 }
 
 pub fn signer_evidence_selector(
-    agent_id: Did,
-    verification_method: arkret_wire::DidUrl,
-    authorization_event_id: Option<EventId>,
     usage: &SignerEvidenceUse,
 ) -> Result<AgentSignerEvidenceQuerySelector> {
-    let event_accepted_frontier = match usage {
-        SignerEvidenceUse::CurrentAdmission { .. } => None,
+    if let SignerEvidenceUse::CurrentAdmission { challenge, .. } = usage
+        && !(16..=512).contains(&challenge.as_str().chars().count())
+    {
+        return Err(Error::Protocol(
+            "signer evidence challenge must contain 16..=512 characters".to_owned(),
+        ));
+    }
+    Ok(match usage {
+        SignerEvidenceUse::CurrentAdmission {
+            operation_id,
+            request_digest,
+            verifier_id,
+            audience,
+            challenge,
+            agent_id,
+            verification_method,
+            ..
+        } => AgentSignerEvidenceQuerySelector::CurrentAdmission {
+            agent_id: agent_id.clone(),
+            verification_method: verification_method.clone(),
+            operation_id: operation_id.clone(),
+            request_digest: request_digest.clone(),
+            verifier_id: verifier_id.clone(),
+            audience: audience.clone(),
+            challenge: challenge.clone(),
+        },
         SignerEvidenceUse::HistoricalVerification {
-            event_accepted_frontier,
-        } => Some(
-            arkret_wire::NonEmptyString::new(event_accepted_frontier.clone())
-                .map_err(|error| Error::Protocol(error.to_owned()))?,
-        ),
-    };
-    Ok(AgentSignerEvidenceQuerySelector {
-        agent_id,
-        verification_method,
-        agent_key_authorize_event_id: authorization_event_id,
-        event_accepted_frontier,
+            event_id,
+            event_digest,
+            receiver_service_id,
+            agent_id,
+            verification_method,
+            ..
+        } => AgentSignerEvidenceQuerySelector::HistoricalEvent {
+            agent_id: agent_id.clone(),
+            verification_method: verification_method.clone(),
+            event_id: event_id.clone(),
+            event_digest: event_digest.clone(),
+            receiver_service_id: receiver_service_id.clone(),
+        },
     })
 }
 
-/// Validate only the evidence-use boundary available in the current SDK DTO.
-/// Parent Agent/controller lifecycle remains a separate mandatory current gate
-/// until those typed witnesses are carried by the SDK evidence object.
+/// Enforce the current-only Agent signer-evidence branch and all local
+/// cross-object bindings after the SDK cryptographic verifier has checked the
+/// underlying signatures, Seals and inclusion proofs.
+///
+/// Historical verification is authorized solely by the destination-signed
+/// Event admission receipt. It never consults or reconstructs a later current
+/// Agent/controller snapshot.
 pub fn admit_signer_evidence(
     evidence: &AgentSignerEvidence,
     usage: &SignerEvidenceUse,
-    agent_lifecycle_valid_at_usage_frontier: bool,
-    controller_account_lifecycle_valid_at_usage_frontier: bool,
 ) -> Result<()> {
-    if !agent_lifecycle_valid_at_usage_frontier
-        || !controller_account_lifecycle_valid_at_usage_frontier
+    signer_evidence_selector(usage)?;
+    match (evidence, usage) {
+        (
+            AgentSignerEvidence::CurrentAdmission {
+                admission_evidence,
+                current_observation,
+                outer_attestation,
+                ..
+            },
+            SignerEvidenceUse::CurrentAdmission {
+                now,
+                operation_id,
+                request_digest,
+                verifier_id,
+                audience,
+                challenge,
+                agent_id,
+                verification_method,
+            },
+        ) => {
+            validate_admission_evidence(admission_evidence, *now)?;
+            let snapshot = &admission_evidence.agent_authority_snapshot;
+            let binding = &snapshot.core.signing_key_binding;
+            let gate_digest =
+                canonical_hash(&admission_evidence.controller_account_gate_attestation)?;
+            if &binding.agent_id != agent_id
+                || &binding.verification_method != verification_method
+                || &current_observation.operation_id != operation_id
+                || &current_observation.request_digest != request_digest
+                || &current_observation.verifier_id != verifier_id
+                || &current_observation.audience != audience
+                || &current_observation.challenge != challenge
+                || current_observation.agent_snapshot_digest != snapshot.snapshot_digest
+                || current_observation.agent_key_seal_id != snapshot.core.key_state_witness.seal_id
+                || current_observation.agent_status_seal_id
+                    != snapshot.core.agent_lifecycle_witness.seal_id
+                || current_observation.controller_gate_attestation_digest != gate_digest
+                || current_observation.evaluated_at > *now
+                || current_observation.expires_at <= *now
+            {
+                return Err(Error::Protocol(
+                    "current signer evidence does not bind the exact admission request".to_owned(),
+                ));
+            }
+            validate_outer_attestation(evidence, outer_attestation, *now)
+        }
+        (
+            AgentSignerEvidence::HistoricalEvent {
+                admission_evidence,
+                event_admission_receipt,
+                outer_attestation,
+                ..
+            },
+            SignerEvidenceUse::HistoricalVerification {
+                now,
+                event_id,
+                event_digest,
+                receiver_service_id,
+                agent_id,
+                verification_method,
+            },
+        ) => {
+            validate_admission_evidence(admission_evidence, event_admission_receipt.accepted_at)?;
+            let snapshot = &admission_evidence.agent_authority_snapshot;
+            let binding = &snapshot.core.signing_key_binding;
+            let gate_digest =
+                canonical_hash(&admission_evidence.controller_account_gate_attestation)?;
+            if &binding.agent_id != agent_id
+                || &binding.verification_method != verification_method
+                || &event_admission_receipt.event_id != event_id
+                || &event_admission_receipt.event_digest != event_digest
+                || &event_admission_receipt.receiver_service_id != receiver_service_id
+                || event_admission_receipt.agent_id != binding.agent_id
+                || event_admission_receipt.verification_method != binding.verification_method
+                || event_admission_receipt.agent_key_authorize_event_id
+                    != binding.agent_key_authorize_event_id
+                || event_admission_receipt.admission_evidence_digest
+                    != admission_evidence.admission_evidence_digest
+                || event_admission_receipt.agent_snapshot_digest != snapshot.snapshot_digest
+                || event_admission_receipt.agent_key_seal_id
+                    != snapshot.core.key_state_witness.seal_id
+                || event_admission_receipt.agent_status_seal_id
+                    != snapshot.core.agent_lifecycle_witness.seal_id
+                || event_admission_receipt.controller_gate_attestation_digest != gate_digest
+            {
+                return Err(Error::Protocol(
+                    "historical signer evidence does not bind the destination receipt".to_owned(),
+                ));
+            }
+            validate_outer_attestation(evidence, outer_attestation, *now)
+        }
+        _ => Err(Error::Protocol(
+            "signer evidence verification_mode does not match its requested use".to_owned(),
+        )),
+    }
+}
+
+fn validate_admission_evidence(
+    evidence: &AgentAdmissionEvidence,
+    evaluated_at: DateTime<Utc>,
+) -> Result<()> {
+    let snapshot = &evidence.agent_authority_snapshot;
+    let core = &snapshot.core;
+    let binding = &core.signing_key_binding;
+    let authorization = &core.authorization;
+    let key_witness = &core.key_state_witness;
+    let lifecycle = &core.agent_lifecycle_witness;
+    let gate = &evidence.controller_account_gate_attestation;
+
+    let snapshot_digest = canonical_hash(core)?;
+    let admission_digest = canonical_hash(&serde_json::json!({
+        "agent_authority_snapshot": snapshot,
+        "controller_account_gate_attestation": gate,
+    }))?;
+    if snapshot.snapshot_digest != snapshot_digest
+        || snapshot.lease.snapshot_digest != snapshot.snapshot_digest
+        || snapshot.lease.authority_service_id != core.authority_service_id
+        || snapshot.lease.issued_at > evaluated_at
+        || snapshot.lease.expires_at <= evaluated_at
+        || evidence.admission_evidence_digest != admission_digest
+        || binding.issued_at > evaluated_at
+        || binding
+            .expires_at
+            .is_some_and(|expires_at| expires_at <= evaluated_at)
+        || authorization.status != AgentAuthorizationStatus::Active
+        || authorization.authorized_event_id != binding.agent_key_authorize_event_id
+        || authorization.accepted_at > evaluated_at
+        || authorization.not_before > evaluated_at
+        || authorization
+            .expires_at
+            .is_some_and(|expires_at| expires_at <= evaluated_at)
+        || key_witness.agent_id != binding.agent_id
+        || key_witness.authorization_event_id != binding.agent_key_authorize_event_id
+        || key_witness.seal_id != authorization.accepted_seal_id
+        || lifecycle.agent_id != binding.agent_id
+        || lifecycle.controller_id != binding.controller_id
+        || lifecycle.status != AgentLifecycleStatus::Active
+        || lifecycle.cell_value != AgentLifecycleStatus::Active
+        || gate.principal_id != binding.controller_id
+        || gate.eligibility != ControllerAccountEligibility::Active
+        || gate.status != ControllerAccountStatus::Active
+        || gate.issued_at > evaluated_at
+        || gate.expires_at <= evaluated_at
     {
         return Err(Error::Protocol(
-            "Agent/controller lifecycle witness denies signer evidence".to_owned(),
+            "Agent authority snapshot or controller gate is stale or inconsistent".to_owned(),
         ));
     }
-    match usage {
-        SignerEvidenceUse::CurrentAdmission { now } => {
-            if evidence.authorization.status != AgentAuthorizationStatus::Active
-                || evidence.freshness_attestation.issued_at > *now
-                || evidence.freshness_attestation.expires_at <= *now
-            {
-                return Err(Error::Protocol(
-                    "current admission requires fresh active signer evidence".to_owned(),
-                ));
-            }
-        }
-        SignerEvidenceUse::HistoricalVerification {
-            event_accepted_frontier,
-        } => {
-            if evidence.authorization.accepted_frontier.as_str() != event_accepted_frontier
-                && evidence.authorization.valid_from_frontier.as_str() != event_accepted_frontier
-            {
-                return Err(Error::Protocol(
-                    "historical signer evidence does not bind the Event frontier".to_owned(),
-                ));
-            }
-            if evidence.authorization.status != AgentAuthorizationStatus::Active
-                && evidence.transition_witness.is_none()
-            {
-                return Err(Error::Protocol(
-                    "inactive historical signer evidence requires a transition boundary".to_owned(),
-                ));
-            }
-        }
+    Ok(())
+}
+
+fn validate_outer_attestation(
+    evidence: &AgentSignerEvidence,
+    outer: &arkret_models_collaboration::agent_signer_evidence::AgentEvidenceOuterAttestation,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let mut core = serde_json::to_value(evidence)?;
+    core.as_object_mut()
+        .ok_or_else(|| Error::Protocol("signer evidence must serialize as an object".to_owned()))?
+        .remove("outer_attestation");
+    if outer.domain.as_str() != "ak.agent-signer-evidence.v1"
+        || outer.core_digest != canonical_hash(&core)?
+        || outer.issued_at > now
+        || outer.expires_at <= now
+    {
+        return Err(Error::Protocol(
+            "signer evidence outer attestation is stale or does not bind the evidence core"
+                .to_owned(),
+        ));
     }
     Ok(())
 }
@@ -383,28 +558,46 @@ mod tests {
         let agent = Did::new("did:webvh:z6mkfixture:agent.example").unwrap();
         let method =
             arkret_wire::DidUrl::new("did:webvh:z6mkfixture:agent.example#runtime-key-1").unwrap();
-        let current = signer_evidence_selector(
-            agent.clone(),
-            method.clone(),
-            None,
-            &SignerEvidenceUse::CurrentAdmission { now: Utc::now() },
-        )
+        let request_digest =
+            Hash::new("sha256:1111111111111111111111111111111111111111111111111111111111111111")
+                .unwrap();
+        let current = signer_evidence_selector(&SignerEvidenceUse::CurrentAdmission {
+            agent_id: agent.clone(),
+            verification_method: method.clone(),
+            now: Utc::now(),
+            operation_id: ProtocolOperationId::new("ak:operation:signer-current-1").unwrap(),
+            request_digest: request_digest.clone(),
+            verifier_id: Did::new("did:webvh:z6mkfixture:verifier.example").unwrap(),
+            audience: Did::new("did:webvh:z6mkfixture:audience.example").unwrap(),
+            challenge: NonEmptyString::new("0123456789abcdef").unwrap(),
+        })
         .unwrap();
-        assert!(current.event_accepted_frontier.is_none());
+        assert!(matches!(
+            current,
+            AgentSignerEvidenceQuerySelector::CurrentAdmission { request_digest: digest, .. }
+                if digest == request_digest
+        ));
 
-        let historical = signer_evidence_selector(
-            agent,
-            method,
-            None,
-            &SignerEvidenceUse::HistoricalVerification {
-                event_accepted_frontier: "frontier-1".to_owned(),
-            },
-        )
+        let event_id = EventId::new("ak:event:01904100-0000-7000-8000-000000000007").unwrap();
+        let event_digest =
+            Hash::new("sha256:2222222222222222222222222222222222222222222222222222222222222222")
+                .unwrap();
+        let historical = signer_evidence_selector(&SignerEvidenceUse::HistoricalVerification {
+            agent_id: agent,
+            verification_method: method,
+            now: Utc::now(),
+            event_id: event_id.clone(),
+            event_digest,
+            receiver_service_id: Did::new("did:webvh:z6mkfixture:receiver.example").unwrap(),
+        })
         .unwrap();
-        assert_eq!(
-            historical.event_accepted_frontier.unwrap().as_str(),
-            "frontier-1"
-        );
+        assert!(matches!(
+            historical,
+            AgentSignerEvidenceQuerySelector::HistoricalEvent {
+                event_id: selected_event_id,
+                ..
+            } if selected_event_id == event_id
+        ));
     }
 
     #[test]

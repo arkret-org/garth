@@ -90,13 +90,13 @@ pub struct SendQueueItem {
     /// Stable host operation identity shared by semantic replacements.
     pub local_operation_id: String,
     /// Previous immutable attempt replaced by this item, when any.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub supersedes_transaction_id: Option<String>,
     /// Target Realm.
     pub realm_id: RealmId,
     /// Actor partition for ordinary Event authoring. Generic non-Event queue
     /// items leave this unset.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub actor_id: Option<Did>,
     /// Operation kind.
     pub kind: SendQueueItemKind,
@@ -105,10 +105,8 @@ pub struct SendQueueItem {
     /// Canonical hash of the idempotent payload.
     pub payload_digest: String,
     /// Exact canonical payload persisted for deterministic transport replay.
-    #[serde(default)]
     pub canonical_payload_bytes: Vec<u8>,
     /// Other transaction IDs that must be sent first.
-    #[serde(default)]
     pub depends_on: Vec<String>,
     /// Lifecycle status.
     pub status: SendQueueStatus,
@@ -123,7 +121,7 @@ pub struct SendQueueItem {
     /// (`offline-publication.md` §2.1); it is persisted here because the first
     /// submission must carry it and because its `expires_at` is the deadline
     /// past which an un-receipted item can never be published at all.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub authorization_lease: Option<AuthorizationLease>,
     /// Receipts an ingress issued for this Event, persisted verbatim.
     ///
@@ -150,7 +148,6 @@ pub struct SendQueueItem {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct SendQueueSnapshot {
     /// Items in queue order.
-    #[serde(default)]
     pub items: Vec<SendQueueItem>,
     /// Next insertion sequence.
     pub next_sequence: u64,

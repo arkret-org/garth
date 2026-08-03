@@ -166,7 +166,6 @@ pub struct MemoryCryptoStore {
     group_states: BTreeMap<String, MlsGroupStateRecord>,
     key_packages: BTreeMap<crate::protocol::Hash, MlsKeyPackageRecord>,
     welcomes: Vec<MlsWelcomeEnvelope>,
-    #[serde(default)]
     welcome_states: BTreeMap<crate::protocol::Hash, MlsWelcomeState>,
     commits: BTreeMap<String, Vec<MlsCommitEnvelope>>,
     epoch_secrets: BTreeMap<(String, u64), MlsEpochSecretRecord>,
@@ -442,11 +441,6 @@ impl CryptoStore for MemoryCryptoStore {
 
     fn import_backup_json(&mut self, backup: &str) -> Result<()> {
         *self = serde_json::from_str(backup)?;
-        for welcome in &self.welcomes {
-            self.welcome_states
-                .entry(welcome.welcome_hash.clone())
-                .or_insert(MlsWelcomeState::Received);
-        }
         Ok(())
     }
 }

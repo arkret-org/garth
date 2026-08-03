@@ -41,7 +41,6 @@ pub struct AccountUpdateContext {
     ///
     /// Hosts can use this to build a local history baseline without treating
     /// an initial or recovery catch-up as newly arrived user activity.
-    #[serde(default)]
     pub initial_catchup: bool,
     pub malformed_realms: Vec<String>,
     pub to_device_ack_token: Option<String>,
