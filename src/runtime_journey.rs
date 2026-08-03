@@ -7,8 +7,7 @@
 use chrono::{DateTime, Utc};
 
 use crate::protocol::{
-    AgentSignerEvidenceQuerySelector, DeploymentCeilingSignedHead, Did, Error, EventId, Hash,
-    NonEmptyString, ParticipationBits, ParticipationReplaceReceipt, ParticipationReplacementBatch,
+    AgentSignerEvidenceQuerySelector, Did, Error, EventId, Hash, NonEmptyString, ParticipationBits,
     ProtocolOperationId, Result,
 };
 
@@ -24,7 +23,6 @@ pub enum RuntimeActorView {
 pub enum RuntimeReadyAction {
     ContinuePairing,
     RequestSessionGrant,
-    PrepareParticipationEvidence,
     SubmitParticipationReplacement,
     ConsumeAcceptedWelcome,
     SendReply,
@@ -40,8 +38,6 @@ pub enum RuntimeBlocker {
     ActiveKeyMissing,
     SessionMissing,
     RecoveryStale,
-    ParticipationEvidenceMissing,
-    ParticipationReceiptStale,
     CurrentLifecycleInactive,
     CurrentMembershipInactive,
     CurrentGrantInactive,
@@ -64,7 +60,6 @@ pub struct RuntimePlanFacts {
     pub session_available: bool,
     pub recovery_stale: bool,
     pub accepted_welcome_available: bool,
-    pub participation_admitted: bool,
 }
 
 pub fn plan_runtime(facts: RuntimePlanFacts) -> RuntimePlan {
@@ -72,12 +67,7 @@ pub fn plan_runtime(facts: RuntimePlanFacts) -> RuntimePlan {
     let mut blockers = Vec::new();
     match facts.actor_view {
         RuntimeActorView::Controller => {
-            if facts.participation_admitted {
-                ready_actions.push(RuntimeReadyAction::SubmitParticipationReplacement);
-            } else {
-                ready_actions.push(RuntimeReadyAction::PrepareParticipationEvidence);
-                blockers.push(RuntimeBlocker::ParticipationEvidenceMissing);
-            }
+            ready_actions.push(RuntimeReadyAction::SubmitParticipationReplacement);
         }
         RuntimeActorView::PairingHandle => {
             if facts.pairing_handle_open {
@@ -119,23 +109,6 @@ pub fn plan_runtime(facts: RuntimePlanFacts) -> RuntimePlan {
     }
 }
 
-/// Controller-private disclosure after its SDK wire object, proof, commitment,
-/// verifier, audience, and expiry have already been validated.
-///
-/// It intentionally has no serde derives: this is a verified local fact, not a
-/// second requested-scope disclosure DTO.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VerifiedParticipationDisclosure {
-    pub agent_id: Did,
-    pub target_scope: arkret_models_collaboration::protocol_journey::ParticipationScope,
-    pub ceiling: ParticipationBits,
-    pub commitment: Hash,
-    pub target_service_id: Did,
-    pub verifier_id: Did,
-    pub audience: arkret_wire::ProtocolOpaqueId,
-    pub expires_at: DateTime<Utc>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParticipationAction {
     ReplyMessage,
@@ -146,85 +119,21 @@ pub enum ParticipationAction {
 }
 
 #[derive(Clone, Debug)]
-pub struct ParticipationAdmissionFacts<'a> {
-    pub batch: &'a ParticipationReplacementBatch,
-    pub receipt: &'a ParticipationReplaceReceipt,
-    pub deployment_ceiling: &'a DeploymentCeilingSignedHead,
-    pub disclosure: &'a VerifiedParticipationDisclosure,
-    pub now: DateTime<Utc>,
+pub struct ParticipationAdmissionFacts {
+    pub selection: ParticipationBits,
+    pub target_policy: ParticipationBits,
+    pub target_policy_resolved: bool,
     pub agent_active: bool,
     pub controller_account_active: bool,
     pub membership_active: bool,
     pub grant_active: bool,
 }
 
-impl ParticipationAdmissionFacts<'_> {
+impl ParticipationAdmissionFacts {
     pub fn effective_bits(&self) -> Result<ParticipationBits> {
-        self.batch.validate().map_err(Error::from)?;
-        self.receipt.validate().map_err(Error::from)?;
-        self.deployment_ceiling.validate().map_err(Error::from)?;
-
-        let batch_digest = canonical_hash(self.batch)?;
-        let evidence_digest = canonical_hash(&self.batch.scope_evidence)?;
-        if self.receipt.batch_digest != batch_digest
-            || self.receipt.scope_evidence_digest != evidence_digest
-            || self.receipt.deployment_ceiling_digest != self.deployment_ceiling.head_digest
-            || self.receipt.deployment_ceiling_version != self.deployment_ceiling.core.version
-            || self.receipt.target_service_id != self.deployment_ceiling.core.target_service_id
-            || self.batch.agent_id != self.disclosure.agent_id
-            || self.batch.target_scope != self.disclosure.target_scope
-            || self.disclosure.target_service_id != self.receipt.target_service_id
-            || self.deployment_ceiling.core.issued_at > self.now
-            || self.deployment_ceiling.core.expires_at <= self.now
-            || self.now >= self.disclosure.expires_at
-            || self.receipt.accepted_version != self.batch.expected_version.saturating_add(1)
-        {
+        if !self.target_policy_resolved {
             return Err(Error::Protocol(
-                "participation receipt, target evidence, or private disclosure mismatch".to_owned(),
-            ));
-        }
-        match &self.batch.scope_evidence {
-            arkret_models_collaboration::protocol_journey::ParticipationScopeEvidence::InlineEncrypted {
-                challenge,
-                ..
-            } if challenge.target_service_id != self.disclosure.target_service_id
-                || challenge.verifier_id != self.disclosure.verifier_id
-                || challenge.audience != self.disclosure.audience
-                || challenge.expires_at <= self.now =>
-            {
-                return Err(Error::Protocol(
-                    "inline participation evidence target binding is stale or mismatched"
-                        .to_owned(),
-                ));
-            }
-            arkret_models_collaboration::protocol_journey::ParticipationScopeEvidence::AcceptedTargetReceipt {
-                commitment,
-                target_service_id,
-                verifier_id,
-                audience,
-                expires_at,
-                ..
-            } if commitment != &self.disclosure.commitment
-                || target_service_id != &self.disclosure.target_service_id
-                || verifier_id != &self.disclosure.verifier_id
-                || audience != &self.disclosure.audience
-                || expires_at <= &self.now =>
-            {
-                return Err(Error::Protocol(
-                    "accepted participation evidence does not bind the private disclosure"
-                        .to_owned(),
-                ));
-            }
-            _ => {}
-        }
-        if !self.batch.selection.is_subset_of(self.disclosure.ceiling)
-            || !self
-                .batch
-                .selection
-                .is_subset_of(self.deployment_ceiling.core.ceiling)
-        {
-            return Err(Error::Protocol(
-                "participation selection widens a current ceiling".to_owned(),
+                "current target participation policy is unresolved".to_owned(),
             ));
         }
         if !self.agent_active || !self.controller_account_active {
@@ -237,7 +146,7 @@ impl ParticipationAdmissionFacts<'_> {
                 "current membership or grant denies participation".to_owned(),
             ));
         }
-        Ok(self.batch.selection)
+        Ok(self.selection.intersect(self.target_policy))
     }
 
     pub fn allows(&self, action: ParticipationAction) -> Result<bool> {
@@ -254,11 +163,6 @@ fn participation_bit(bits: ParticipationBits, action: ParticipationAction) -> bo
         ParticipationAction::AcceptThirdPartyMention => bits.accept_third_party_mention,
         ParticipationAction::ActOnBehalf => bits.act_on_behalf,
     }
-}
-
-fn canonical_hash<T: serde::Serialize>(value: &T) -> Result<Hash> {
-    let bytes = crate::protocol::canonical::canonical_json_bytes(value)?;
-    Hash::new(crate::protocol::canonical::sha256_digest(&bytes)).map_err(Into::into)
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -342,7 +246,6 @@ mod tests {
             session_available: false,
             recovery_stale: false,
             accepted_welcome_available: false,
-            participation_admitted: false,
         });
         assert_eq!(
             plan.ready_actions,
@@ -360,7 +263,6 @@ mod tests {
             session_available: true,
             recovery_stale: false,
             accepted_welcome_available: true,
-            participation_admitted: true,
         });
         assert_eq!(
             plan.ready_actions,

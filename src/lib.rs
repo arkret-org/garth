@@ -80,8 +80,8 @@ pub use protocol::{
 };
 pub use runtime_journey::{
     ParticipationAction, ParticipationAdmissionFacts, RuntimeActorView, RuntimeBlocker,
-    RuntimePlan, RuntimePlanFacts, RuntimeReadyAction, SignerEvidenceUse,
-    VerifiedParticipationDisclosure, plan_runtime, signer_evidence_selector,
+    RuntimePlan, RuntimePlanFacts, RuntimeReadyAction, SignerEvidenceUse, plan_runtime,
+    signer_evidence_selector,
 };
 pub use runtime_store::{
     AccountSessionStore, AuditAction, AuditEntry, AuditLogStore, AuthoringBytes,

@@ -15,8 +15,7 @@ pub(crate) use arkret_models_collaboration::http_bodies::{
     EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind,
 };
 pub(crate) use arkret_models_collaboration::protocol_journey::{
-    DeploymentCeilingSignedHead, ParticipationBits, ParticipationReplaceReceipt,
-    ParticipationReplacementBatch, ProtocolOpaqueId, ProtocolOperationId,
+    ParticipationBits, ProtocolOpaqueId, ProtocolOperationId,
 };
 pub(crate) use arkret_models_collaboration::session_grant_bodies::{
     SessionGrantAgentScopeRequest, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,

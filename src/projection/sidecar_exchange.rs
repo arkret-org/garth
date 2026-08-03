@@ -458,7 +458,7 @@ pub fn fold_sidecar_exchange(
 /// remains usable for audit/display after later revocation; it must never be
 /// mistaken for current admission authority.
 pub fn fold_sidecar_exchange_for_current_admission(
-    admission: &crate::runtime_journey::ParticipationAdmissionFacts<'_>,
+    admission: &crate::runtime_journey::ParticipationAdmissionFacts,
     required_action: crate::runtime_journey::ParticipationAction,
     scope: &SidecarExchangeFoldScope,
     exchange_id: &AgentSidecarExchangeId,
