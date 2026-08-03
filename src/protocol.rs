@@ -7,8 +7,7 @@ pub(crate) use crate::{Error, Result};
 pub(crate) use arkret_keystore::{KeyBytes, KeyStore, KeyStoreError};
 pub(crate) use arkret_models_collaboration::account_lifecycle::AccountRegisterRequestBody;
 pub(crate) use arkret_models_collaboration::agent_signer_evidence::{
-    AgentAdmissionEvidence, AgentAuthorizationStatus, AgentLifecycleStatus, AgentSignerEvidence,
-    AgentSignerEvidenceQuerySelector, ControllerAccountEligibility, ControllerAccountStatus,
+    AgentSignerEvidence, AgentSignerEvidenceQuerySelector,
 };
 pub(crate) use arkret_models_collaboration::event_query::EventsQueryOrder;
 pub(crate) use arkret_models_collaboration::events_payloads::MessageCreatePayload;
