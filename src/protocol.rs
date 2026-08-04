@@ -11,11 +11,9 @@ pub(crate) use arkret_models_collaboration::agent_signer_evidence::{
 };
 pub(crate) use arkret_models_collaboration::event_query::EventsQueryOrder;
 pub(crate) use arkret_models_collaboration::events_payloads::MessageCreatePayload;
+pub(crate) use arkret_models_collaboration::governance::agent_participation::ParticipationBits;
 pub(crate) use arkret_models_collaboration::http_bodies::{
     EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind,
-};
-pub(crate) use arkret_models_collaboration::protocol_journey::{
-    ParticipationBits, ProtocolOpaqueId, ProtocolOperationId,
 };
 pub(crate) use arkret_models_collaboration::session_grant_bodies::{
     SessionGrantAgentScopeRequest, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
@@ -62,6 +60,7 @@ pub(crate) use arkret_wire::{
     MessageStreamId, NonEmptyString, RealmId, RequestId, ScopeRef, SealId, SidecarId,
     SignalEnvelope, SignalStreamFrame, StrandId,
 };
+pub(crate) use arkret_wire::{ProtocolOpaqueId, ProtocolOperationId};
 
 #[cfg(test)]
 pub(crate) mod signal {
