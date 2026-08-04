@@ -155,9 +155,9 @@ pub(crate) mod session_grant {
 
 pub(crate) mod signatures {
     pub(crate) use arkret_signatures::PublicKeyMaterial;
-    pub(crate) use arkret_signatures::proof::verify_eddsa_signal_proof;
+    pub(crate) use arkret_signatures::proof::verify_ed25519_signal_proof;
     #[cfg(test)]
-    pub(crate) use arkret_signatures::sign_eddsa_detached_jws;
+    pub(crate) use arkret_signatures::sign_ed25519_detached_jws;
     pub(crate) use arkret_signatures::webvh;
 }
 

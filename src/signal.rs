@@ -24,7 +24,7 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use crate::MaybeSendSync;
-use crate::protocol::signatures::{PublicKeyMaterial, verify_eddsa_signal_proof};
+use crate::protocol::signatures::{PublicKeyMaterial, verify_ed25519_signal_proof};
 use crate::protocol::{
     Did, Error, Result, ScopeRef, SdkSignalPlaintext, SignalEnvelope, canonical,
     open_signal_plaintext,
@@ -257,7 +257,7 @@ impl SignalReceiver {
                     .to_owned(),
             )
         })?;
-        verify_eddsa_signal_proof(envelope, &public_key)
+        verify_ed25519_signal_proof(envelope, &public_key)
             .map_err(|error| Error::Crypto(error.to_string()))?;
         let plaintext = decryptor.open(envelope)?;
         let parsed = SignalPlaintext::parse(envelope, &plaintext)?;
@@ -442,7 +442,7 @@ mod tests {
 
     use super::*;
     use crate::protocol::signal::{SignalClass, SignalEncryptedPayload, SignalKeyRef, SignalProof};
-    use crate::protocol::signatures::sign_eddsa_detached_jws;
+    use crate::protocol::signatures::sign_ed25519_detached_jws;
 
     fn realm() -> RealmId {
         RealmId::new("ak:realm:01904100-0000-7000-8000-65c7feb295d7").unwrap()
@@ -499,7 +499,7 @@ mod tests {
             proof: SignalProof {
                 kind: "detached_jws".to_owned(),
                 verification_method,
-                alg: "EdDSA".to_owned(),
+                alg: "Ed25519".to_owned(),
                 envelope_digest: Hash::new(format!("sha256:{}", "0".repeat(64))).unwrap(),
                 created_at: sent_at(),
                 domain: None,
@@ -510,7 +510,7 @@ mod tests {
         envelope.encrypted_payload.aad_digest = envelope.expected_aad_digest().unwrap();
         envelope.proof.envelope_digest = envelope.envelope_digest().unwrap();
         let binding = envelope.proof_binding_bytes().unwrap();
-        envelope.proof.jws = sign_eddsa_detached_jws(&signing_key, &binding).unwrap();
+        envelope.proof.jws = sign_ed25519_detached_jws(&signing_key, &binding).unwrap();
         let public_key = PublicKeyMaterial::Ed25519Raw {
             bytes: signing_key.verifying_key().to_bytes().to_vec(),
         };
