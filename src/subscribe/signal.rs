@@ -375,7 +375,6 @@ mod tests {
             proof: SignalProof {
                 kind: "detached_jws".to_owned(),
                 verification_method: DidUrl::new(format!("{}#{}", actor(), device())).unwrap(),
-                alg: "Ed25519".to_owned(),
                 envelope_digest: Hash::new(format!("sha256:{}", "0".repeat(64))).unwrap(),
                 created_at: sent_at(),
                 domain: None,
