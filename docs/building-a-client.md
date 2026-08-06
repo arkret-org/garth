@@ -118,7 +118,7 @@ handles.
 - Long-poll / subscribe loop and retry/backpressure.
 - Durable cursor checkpointing — **after** your projector persists.
 - Event dedupe via `EventCacheStore`.
-- Realm drop → `ak.self.events.query.scan` catch-up → `Backfill` projection.
+- Realm drop → `ak.self.events.read.scan` catch-up → `Backfill` projection.
 - Resync (clear cursor + rebuild) and reconnect backoff.
 - Cancellation via `SyncLoopControl`.
 - Lifecycle invalidation via `TransportProvider::is_active`.

@@ -56,12 +56,13 @@ impl EventsScanTransport for arkret_http_client::Client {
         request: EventsScanRequest,
     ) -> BoxScanFuture<'a, EventsQueryOutcome> {
         Box::pin(async move {
-            self.events_query(
+            self.events_read_outcome(
                 request.realm_id.as_str(),
                 request.before.as_deref(),
                 request.after.as_deref(),
                 request.order.map(EventsQueryOrder::as_str),
                 request.limit,
+                None,
             )
             .await
             .map_err(crate::protocol::Error::from)
