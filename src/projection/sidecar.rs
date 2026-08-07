@@ -323,11 +323,7 @@ mod tests {
         AgentSidecarExchangeProjection {
             schema: AgentSidecarExchangeProjectionSchema::V1,
             controller_id: Did::new("did:web:example.com:users:alice").unwrap(),
-            sidecar_id: SidecarId::new(
-                "ak:sidecar:01964137-0000-7000-8000-000000000032".to_owned(),
-            )
-            .unwrap(),
-            private_strand_id: StrandId::from_event_id(&event_id("33")),
+            sidecar_id: SidecarId::from_event_id(&event_id("32")),
             exchange_id: AgentSidecarExchangeId::new("Abcdefghijklmnopqrstuv").unwrap(),
             origin: AgentSidecarExchangeOrigin::SourceTrackRouted,
             source_track_ref: AgentSidecarSourceTrackRef {

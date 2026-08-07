@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::protocol::{
-    DeviceId, Did, Error, GrantId, Result, SessionGrantOutcome, SessionGrantRefreshOutcome,
+    DeviceId, Did, Error, Result, SessionGrantId, SessionGrantOutcome, SessionGrantRefreshOutcome,
     SessionGrantRefreshProof, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
 };
 use chrono::{DateTime, Utc};
@@ -64,7 +64,7 @@ pub struct SessionGrantState {
     #[zeroize(skip)]
     pub device_id: Option<DeviceId>,
     #[zeroize(skip)]
-    pub grant_id: GrantId,
+    pub grant_id: SessionGrantId,
     pub grant_jwt: String,
     #[zeroize(skip)]
     pub expires_at: DateTime<Utc>,
@@ -544,8 +544,13 @@ mod tests {
         DeviceId::new("ak:device:01904100-0000-7000-8000-000000000002").unwrap()
     }
 
-    fn grant_id(n: u64) -> GrantId {
-        GrantId::new(format!("ak:grant:01904100-0000-7000-8000-{n:012}")).unwrap()
+    fn grant_id(n: u64) -> SessionGrantId {
+        let mut digest = [0_u8; 32];
+        digest[24..].copy_from_slice(&n.to_be_bytes());
+        SessionGrantId::from_event_id(&crate::protocol::EventId::from_digest(
+            arkret_canonical::DigestSuite::Sha256,
+            digest,
+        ))
     }
 
     fn digest() -> Hash {
@@ -642,7 +647,7 @@ mod tests {
 
     fn issue_outcome(
         token: &str,
-        grant: GrantId,
+        grant: SessionGrantId,
         principal_id: Did,
         device_id: Option<DeviceId>,
     ) -> SessionGrantOutcome {
@@ -710,7 +715,7 @@ mod tests {
         }
     }
 
-    fn refresh_outcome(token: &str, grant: GrantId) -> SessionGrantRefreshOutcome {
+    fn refresh_outcome(token: &str, grant: SessionGrantId) -> SessionGrantRefreshOutcome {
         SessionGrantRefreshOutcome {
             grant_id: grant,
             grant_jwt: token.to_owned(),

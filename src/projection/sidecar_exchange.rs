@@ -430,7 +430,6 @@ pub fn fold_sidecar_exchange(
         schema: AgentSidecarExchangeProjectionSchema::V1,
         controller_id: scope.controller_id.clone(),
         sidecar_id: scope.sidecar_id.clone(),
-        private_strand_id: scope.private_strand_id.clone(),
         exchange_id: exchange_id.clone(),
         origin: AgentSidecarExchangeOrigin::SourceTrackRouted,
         source_track_ref: context.source_track_ref.clone(),
@@ -595,7 +594,7 @@ mod tests {
     fn scope() -> SidecarExchangeFoldScope {
         SidecarExchangeFoldScope {
             controller_id: controller(),
-            sidecar_id: SidecarId::new("ak:sidecar:01964137-0000-7000-8000-000000000032").unwrap(),
+            sidecar_id: SidecarId::from_event_id(&event_id(0x32)),
             private_strand_id: StrandId::from_event_id(&event_id(0x33)),
         }
     }

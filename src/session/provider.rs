@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::protocol::{GrantId, Result};
+use crate::protocol::{Result, SessionGrantId};
 
 use super::{
     NoopSessionGrantStore, SessionEngine, SessionGrantState, SessionGrantStore,
@@ -8,7 +8,7 @@ use super::{
 };
 use crate::{HostClock, TransportProvider};
 
-type TransportCache<T> = Arc<Mutex<Option<(GrantId, T)>>>;
+type TransportCache<T> = Arc<Mutex<Option<(SessionGrantId, T)>>>;
 
 pub trait AuthenticatedTransportFactory: Clone + 'static {
     type Transport: Clone;
@@ -37,7 +37,7 @@ where
     factory: F,
     refresh_options: SessionRefreshOptions,
     state_store: S,
-    persisted_grant_id: Arc<Mutex<Option<GrantId>>>,
+    persisted_grant_id: Arc<Mutex<Option<SessionGrantId>>>,
     cached: TransportCache<F::Transport>,
     clock: E,
 }
@@ -248,7 +248,7 @@ where
         Ok(transport)
     }
 
-    fn cache_lock(&self) -> std::sync::MutexGuard<'_, Option<(GrantId, F::Transport)>> {
+    fn cache_lock(&self) -> std::sync::MutexGuard<'_, Option<(SessionGrantId, F::Transport)>> {
         self.cached.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -349,8 +349,13 @@ mod tests {
         }
     }
 
-    fn grant_id(n: u64) -> GrantId {
-        GrantId::new(format!("ak:grant:01904100-0000-7000-8000-{n:012}")).unwrap()
+    fn grant_id(n: u64) -> SessionGrantId {
+        let mut digest = [0_u8; 32];
+        digest[24..].copy_from_slice(&n.to_be_bytes());
+        SessionGrantId::from_event_id(&crate::protocol::EventId::from_digest(
+            arkret_canonical::DigestSuite::Sha256,
+            digest,
+        ))
     }
 
     fn state() -> SessionGrantState {

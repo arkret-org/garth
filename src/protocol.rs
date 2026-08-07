@@ -56,9 +56,9 @@ pub(crate) use arkret_models_identity::{
 pub(crate) use arkret_state::resolver::RealmState;
 pub use arkret_wire::{AuthorizationLease, IngressReceipt};
 pub(crate) use arkret_wire::{
-    BlobRef, DeviceId, Did, DidUrl, Event, EventId, EventKind, GrantId, Hash, Hlc, MessageId,
-    MessageStreamId, NonEmptyString, RealmId, RequestId, ScopeRef, SealId, SidecarId,
-    SignalEnvelope, SignalStreamFrame, StrandId,
+    BlobRef, DeviceId, Did, DidUrl, Event, EventId, EventKind, Hash, Hlc, MessageId,
+    MessageStreamId, NonEmptyString, RealmId, RequestId, ScopeRef, SealId, SessionGrantId,
+    SidecarId, SignalEnvelope, SignalStreamFrame, StrandId,
 };
 pub(crate) use arkret_wire::{ProtocolOpaqueId, ProtocolOperationId};
 

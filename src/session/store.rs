@@ -110,7 +110,7 @@ mod tests {
     use chrono::{Duration, Utc};
 
     use super::*;
-    use crate::protocol::{DeviceId, Did, GrantId};
+    use crate::protocol::{DeviceId, Did, EventId, SessionGrantId};
     use crate::{MemorySecureKeyStore, SecureKeyStore};
 
     fn state() -> SessionGrantState {
@@ -119,7 +119,10 @@ mod tests {
             device_id: Some(
                 DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
             ),
-            grant_id: GrantId::new("ak:grant:01904100-0000-7000-8000-000000000001").unwrap(),
+            grant_id: SessionGrantId::from_event_id(&EventId::from_digest(
+                arkret_canonical::DigestSuite::Sha256,
+                [1_u8; 32],
+            )),
             grant_jwt: "secret-grant".to_owned(),
             expires_at: Utc::now() + Duration::hours(1),
             audience: Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
