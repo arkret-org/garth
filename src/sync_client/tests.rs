@@ -76,7 +76,7 @@ fn publication_lease(realm_id: RealmId) -> arkret_wire::AuthorizationLease {
 /// The receipt a policy-accepted ingress returns in
 /// `EventsSubmitOutcome.ingress_receipts[]`.
 fn accepted_receipt() -> arkret_wire::IngressReceipt {
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let lease = publication_lease(realm_id);
     let received_at = lease.issued_at + chrono::Duration::minutes(1);
     super::send_queue::test_publication::receipt(&lease, received_at)
@@ -256,7 +256,7 @@ fn sync_loop_control_applies_backpressure() {
 
 #[test]
 fn sync_loop_can_reset_token_on_limited_timeline_gap() {
-    let realm_id = "ak:realm:01904100-0000-7000-8000-9b64700c6ee8";
+    let realm_id = "ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV";
     let mut response = sync_response("gap-token");
     let entry = RealmSyncEntry {
         timeline: Some(Timeline {
@@ -297,7 +297,7 @@ fn sync_loop_sends_wait_for_as_header_option() {
 
 #[test]
 fn processor_dispatches_all_update_categories() {
-    let realm_id = "ak:realm:01904100-0000-7000-8000-9b64700c6ee8";
+    let realm_id = "ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV";
     let mut response = sync_response("s2");
     let entry = RealmSyncEntry {
         summary: Some(AccountSubscribeRealmSummary {
@@ -404,7 +404,7 @@ fn processor_dispatches_all_update_categories() {
 /// survive it.
 #[test]
 fn summary_less_realm_delta_preserves_durable_processor_summary() {
-    let realm_id = "ak:realm:01904100-0000-7000-8000-9b64700c6ee8";
+    let realm_id = "ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV";
     let parsed_realm_id = RealmId::new(realm_id).unwrap();
     let mut processor = SyncResponseProcessor::new();
 
@@ -455,7 +455,7 @@ fn summary_less_realm_delta_preserves_durable_processor_summary() {
 
 #[test]
 fn processor_tracks_limited_timelines_and_to_device_ack() {
-    let realm_id = "ak:realm:01904100-0000-7000-8000-9b64700c6ee8";
+    let realm_id = "ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV";
     let parsed_realm_id = RealmId::new(realm_id).unwrap();
     let event = Event::new(
         "ak.message.create",
@@ -545,7 +545,7 @@ fn processor_applies_notification_add_update_and_remove_deltas() {
 
 #[test]
 fn send_queue_is_idempotent_orders_dependencies_and_snapshots() {
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     let message = queue
         .enqueue_message(
@@ -587,7 +587,7 @@ fn send_queue_is_idempotent_orders_dependencies_and_snapshots() {
 
 #[test]
 fn send_queue_rejects_unbounded_active_work() {
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     for index in 0..MAX_SEND_QUEUE_ITEMS {
         queue
@@ -612,7 +612,7 @@ fn send_queue_rejects_unbounded_active_work() {
 
 #[test]
 fn send_queue_prunes_unreferenced_terminal_work_at_capacity() {
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     for index in 0..MAX_SEND_QUEUE_ITEMS {
         queue
@@ -641,7 +641,7 @@ fn send_queue_prunes_unreferenced_terminal_work_at_capacity() {
 
 #[test]
 fn send_queue_preserves_transitive_dependencies_during_capacity_pruning() {
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     queue
         .enqueue_message(
@@ -700,8 +700,8 @@ fn send_queue_preserves_transitive_dependencies_during_capacity_pruning() {
 
 #[test]
 fn send_queue_serializes_unsigned_intents_per_realm_actor_scope() {
-    let realm_a = RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap();
-    let realm_b = RealmId::new("ak:realm:01904100-0000-7000-8000-000000000002").unwrap();
+    let realm_a = RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO").unwrap();
+    let realm_b = RealmId::new("ak:realm:AT0jIIg6naB0Vkqbb-ip6eunf-bHr5-nh4pz2_kYNyVX").unwrap();
     let actor = Did::new("did:webvh:z6mkfixture:alice.example").unwrap();
     let mut queue = SendQueue::new();
 
@@ -745,7 +745,7 @@ fn send_queue_serializes_unsigned_intents_per_realm_actor_scope() {
 
 #[test]
 fn send_queue_replays_exact_persisted_bytes_and_links_semantic_replacement() {
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap();
+    let realm_id = RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO").unwrap();
     let actor = Did::new("did:webvh:z6mkfixture:alice.example").unwrap();
     let mut queue = SendQueue::new();
     let original = queue
@@ -800,7 +800,7 @@ fn send_queue_replays_exact_persisted_bytes_and_links_semantic_replacement() {
 
 #[test]
 fn send_queue_cancels_dependent_edit_redaction_and_reaction() {
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let event_id = event_id(1);
     let mut queue = SendQueue::new();
     queue
@@ -852,7 +852,7 @@ fn send_queue_refuses_delayed_acceptance_without_an_ingress_receipt() {
     // ingress inside its lease window (`offline-publication.md` §2). Recording
     // an acceptance without one would leave a locally "sent" item that no peer
     // can ever be made to accept.
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     queue
         .enqueue_message(
@@ -877,7 +877,7 @@ fn send_queue_refuses_delayed_acceptance_without_an_ingress_receipt() {
 fn send_queue_accepts_online_submission_without_an_ingress_receipt() {
     // Online publication has no authorization lease, so there is no lease
     // window for an ingress receipt to bind (`event_submission.rs`).
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     queue
         .enqueue_message(Some("txn1".to_owned()), realm_id, json!({"body": "hi"}))
@@ -895,7 +895,7 @@ fn send_queue_keeps_the_original_receipt_across_an_idempotent_retry() {
     // original receipt. A later `received_at` would extend an already fixed
     // revocation window, so the durable copy wins over whatever the retry
     // reported.
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     queue
         .enqueue_message(Some("txn1".to_owned()), realm_id.clone(), json!({"a": 1}))
@@ -926,7 +926,7 @@ fn send_queue_keeps_the_original_receipt_across_an_idempotent_retry() {
 
 #[test]
 fn send_queue_rejects_a_receipt_for_another_lease() {
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     queue
         .enqueue_message(Some("txn1".to_owned()), realm_id.clone(), json!({"a": 1}))
@@ -957,7 +957,7 @@ fn send_queue_retires_unreceipted_work_once_its_lease_expires() {
     // An Event that first appears after its lease expired without a receipt is
     // permanently rejected (`offline-publication.md` §2), so it stops being
     // schedulable work rather than retrying forever.
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     queue
         .enqueue_message(Some("txn1".to_owned()), realm_id.clone(), json!({"a": 1}))
@@ -982,8 +982,8 @@ fn send_queue_retires_unreceipted_work_once_its_lease_expires() {
 
 #[test]
 fn send_queue_refuses_a_lease_scoped_to_another_realm() {
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
-    let other_realm = RealmId::new("ak:realm:01904100-0000-7000-8000-000000000099").unwrap();
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
+    let other_realm = RealmId::new("ak:realm:ASc9wABHjT9O0CyPDbA8mMnMYoVQe0dWU7KkoFC-vH73").unwrap();
     let mut queue = SendQueue::new();
     queue
         .enqueue_message(Some("txn1".to_owned()), realm_id, json!({"a": 1}))

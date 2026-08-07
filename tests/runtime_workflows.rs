@@ -65,7 +65,7 @@ fn interoperability_serialization_roundtrips() {
         cursor: Some("s1".to_owned()),
         realms: Some(AccountSubscribeRealms {
             entries: BTreeMap::from([(
-                "ak:realm:01904100-0000-7000-8000-9b64700c6ee8".to_owned(),
+                "ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV".to_owned(),
                 RealmSyncEntry::default(),
             )]),
         }),

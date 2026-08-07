@@ -3,7 +3,7 @@ use arkret_wire::RealmId;
 use garth::{MemoryPersistenceStore, StateSnapshotStore, restore_realm_state_from_persistence};
 
 fn main() -> garth::Result<()> {
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8")?;
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV")?;
     let state = RealmState::new(realm_id.clone());
 
     let mut store = MemoryPersistenceStore::new();

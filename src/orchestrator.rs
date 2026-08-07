@@ -1270,7 +1270,7 @@ mod tests {
     }
 
     fn realm_id() -> RealmId {
-        RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap()
+        RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO").unwrap()
     }
 
     fn account_scope() -> CursorScope {
@@ -1284,7 +1284,7 @@ mod tests {
     #[test]
     fn backoff_seeds_are_stable_and_scope_specific() {
         let realm_a = realm_id();
-        let realm_b = RealmId::new("ak:realm:01904100-0000-7000-8000-000000000002").unwrap();
+        let realm_b = RealmId::new("ak:realm:AT0jIIg6naB0Vkqbb-ip6eunf-bHr5-nh4pz2_kYNyVX").unwrap();
         assert_eq!(
             stable_backoff_seed(11, 0xA11C_E001, &realm_a),
             stable_backoff_seed(11, 0xA11C_E001, &realm_a)

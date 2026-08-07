@@ -139,7 +139,7 @@ impl AuthenticatedTransportFactory for ReferenceFactory {
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let actor_id = Did::new("did:webvh:z6mkfixture:alice.example")?;
     let device_id = DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001")?;
-    let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001")?;
+    let realm_id = RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO")?;
 
     // Production hosts replace this memory vault with Keychain/Keystore/etc.
     let grant_store =

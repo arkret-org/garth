@@ -609,7 +609,7 @@ mod tests {
     ) -> AgentSidecarExchangeRequestContext {
         AgentSidecarExchangeRequestContext {
             source_track_ref: AgentSidecarSourceTrackRef {
-                realm_id: RealmId::new("ak:realm:01964137-0000-7000-8000-000000000030").unwrap(),
+                realm_id: RealmId::new("ak:realm:AWk_ywNSTc6WhrGkRSaK84HThnFXKBAy3vQ_RLJZ4kCY").unwrap(),
                 strand_id: StrandId::from_event_id(&event_id(0x31)),
                 track_name: "discussion".to_owned(),
             },
@@ -647,7 +647,7 @@ mod tests {
         let mut event = arkret_wire::Event::new_with_derived_id_at(
             kind,
             arkret_wire::ScopeRef::Realm {
-                realm_id: RealmId::new("ak:realm:01964137-0000-7000-8000-000000000030".to_owned())
+                realm_id: RealmId::new("ak:realm:AWk_ywNSTc6WhrGkRSaK84HThnFXKBAy3vQ_RLJZ4kCY".to_owned())
                     .unwrap(),
             },
             controller(),

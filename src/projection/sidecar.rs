@@ -327,7 +327,7 @@ mod tests {
             exchange_id: AgentSidecarExchangeId::new("Abcdefghijklmnopqrstuv").unwrap(),
             origin: AgentSidecarExchangeOrigin::SourceTrackRouted,
             source_track_ref: AgentSidecarSourceTrackRef {
-                realm_id: RealmId::new("ak:realm:01964137-0000-7000-8000-000000000030".to_owned())
+                realm_id: RealmId::new("ak:realm:AWk_ywNSTc6WhrGkRSaK84HThnFXKBAy3vQ_RLJZ4kCY".to_owned())
                     .unwrap(),
                 strand_id: StrandId::from_event_id(&event_id("31")),
                 track_name: "discussion".to_owned(),
@@ -450,7 +450,7 @@ mod tests {
         refolded.participating_agent_ids =
             vec![Did::new("did:webvh:z6mkfixture:assistant.agents.example").unwrap()];
         fold.apply_folded_exchange(refolded.clone()).unwrap();
-        let realm_id = RealmId::new("ak:realm:01964137-0000-7000-8000-000000000030").unwrap();
+        let realm_id = RealmId::new("ak:realm:AWk_ywNSTc6WhrGkRSaK84HThnFXKBAy3vQ_RLJZ4kCY").unwrap();
         let strand_id = StrandId::from_event_id(&event_id("31"));
         let stored = fold
             .exchanges_for_track(&realm_id, &strand_id, "discussion")

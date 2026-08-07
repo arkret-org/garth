@@ -627,7 +627,7 @@ mod tests {
             agent_key_authorization_ref: agent_key_authorization_ref(),
             agent_scope_request: SessionGrantAgentScopeRequest {
                 realm_ids: vec![
-                    RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap(),
+                    RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO").unwrap(),
                 ],
                 strand_ids: Vec::new(),
                 track_names: Vec::new(),

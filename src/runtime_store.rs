@@ -525,9 +525,9 @@ mod tests {
         let mut event = Event {
             event_id: EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [0; 32]),
             kind: EventKind::MORPH_CREATE.into(),
-            realm_id: RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap(),
+            realm_id: RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap(),
             scope_ref: crate::protocol::ScopeRef::Realm {
-                realm_id: RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap(),
+                realm_id: RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap(),
             },
             actor_id: Did::new("did:webvh:z6mkfixture:alice.example.com").unwrap(),
             actor_seq: 1,
@@ -545,7 +545,7 @@ mod tests {
             payload: serde_json::from_value(json!({
                 "object": {
                     "schema": SchemaId::MORPH_V1,
-                    "realm_id": "ak:realm:01904100-0000-7000-8000-9b64700c6ee8",
+                    "realm_id": "ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV",
                     "schema_refs": [SchemaId::MORPH_V1],
                     "morph_kind": "task",
                     "metadata": {"title": title},
@@ -590,7 +590,7 @@ mod tests {
 
     #[test]
     fn projection_rebuild_helpers_replay_event_cache_and_use_valid_snapshot() {
-        let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
+        let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
         let event = morph_event("Stored task");
         let morph_id = arkret_wire::MorphId::from_event_id(&event.event_id);
         let mut store = MemoryPersistenceStore::new();
