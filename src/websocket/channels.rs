@@ -5,6 +5,8 @@
 //! to the driver and nothing else. No driver, projection, cursor rule or
 //! Signal admission check is duplicated here.
 
+use std::collections::VecDeque;
+
 use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountSubscribeBatch, AccountSubscribeFrame,
 };
@@ -83,6 +85,7 @@ where
             connection: self.connection.clone(),
             pacer: self.pacer.clone(),
             channel_id,
+            pending: VecDeque::new(),
         })
     }
 
@@ -105,6 +108,7 @@ where
             connection: self.connection.clone(),
             pacer: self.pacer.clone(),
             channel_id,
+            pending: VecDeque::new(),
         })
     }
 
@@ -221,6 +225,10 @@ pub struct WebSocketEventsChannel<E> {
     connection: SharedConnection,
     pacer: E,
     channel_id: String,
+    /// One wake can hand back a burst. The frame-source seam yields a single
+    /// frame per call, so the rest of the batch waits here instead of being
+    /// dropped on the floor.
+    pending: VecDeque<ChannelFrame>,
 }
 
 impl<E> WebSocketEventsChannel<E> {
@@ -240,26 +248,22 @@ where
         Option<arkret_models_collaboration::http_bodies::EventsSubscribeFrame>,
     > {
         Box::pin(async move {
-            loop {
-                for frame in next_frames(&self.connection, &self.pacer, &self.channel_id).await {
-                    match frame {
-                        ChannelFrame::Data(WebSocketDataPayload::Events(payload))
-                        | ChannelFrame::Control(WebSocketChannelControlPayload::Events(payload)) => {
-                            self.connection
-                                .with_mut(|connection| connection.checkpoint(&self.channel_id));
-                            return Ok(Some(*payload));
-                        }
-                        ChannelFrame::Closed => return Ok(None),
-                        ChannelFrame::Failed(error) => {
-                            return Err(Error::Protocol(error.message));
-                        }
-                        _ => {
-                            return Err(Error::Protocol(
-                                "a foreign payload reached the events channel".to_owned(),
-                            ));
-                        }
-                    }
+            if self.pending.is_empty() {
+                self.pending
+                    .extend(next_frames(&self.connection, &self.pacer, &self.channel_id).await);
+            }
+            match self.pending.pop_front() {
+                Some(ChannelFrame::Data(WebSocketDataPayload::Events(payload)))
+                | Some(ChannelFrame::Control(WebSocketChannelControlPayload::Events(payload))) => {
+                    self.connection
+                        .with_mut(|connection| connection.checkpoint(&self.channel_id));
+                    Ok(Some(*payload))
                 }
+                Some(ChannelFrame::Closed) | None => Ok(None),
+                Some(ChannelFrame::Failed(error)) => Err(Error::Protocol(error.message)),
+                Some(_) => Err(Error::Protocol(
+                    "a foreign payload reached the events channel".to_owned(),
+                )),
             }
         })
     }
@@ -290,6 +294,8 @@ pub struct WebSocketSignalChannel<E> {
     connection: SharedConnection,
     pacer: E,
     channel_id: String,
+    /// See [`WebSocketEventsChannel::pending`].
+    pending: VecDeque<ChannelFrame>,
 }
 
 impl<E> WebSocketSignalChannel<E> {
@@ -304,24 +310,20 @@ where
 {
     fn next_frame<'a>(&'a mut self) -> BoxSignalStreamFuture<'a, Option<SignalStreamFrame>> {
         Box::pin(async move {
-            loop {
-                for frame in next_frames(&self.connection, &self.pacer, &self.channel_id).await {
-                    match frame {
-                        ChannelFrame::Data(WebSocketDataPayload::Signal(payload))
-                        | ChannelFrame::Control(WebSocketChannelControlPayload::Signal(payload)) => {
-                            return Ok(Some(*payload));
-                        }
-                        ChannelFrame::Closed => return Ok(None),
-                        ChannelFrame::Failed(error) => {
-                            return Err(Error::Protocol(error.message));
-                        }
-                        _ => {
-                            return Err(Error::Protocol(
-                                "a foreign payload reached the Signal channel".to_owned(),
-                            ));
-                        }
-                    }
+            if self.pending.is_empty() {
+                self.pending
+                    .extend(next_frames(&self.connection, &self.pacer, &self.channel_id).await);
+            }
+            match self.pending.pop_front() {
+                Some(ChannelFrame::Data(WebSocketDataPayload::Signal(payload)))
+                | Some(ChannelFrame::Control(WebSocketChannelControlPayload::Signal(payload))) => {
+                    Ok(Some(*payload))
                 }
+                Some(ChannelFrame::Closed) | None => Ok(None),
+                Some(ChannelFrame::Failed(error)) => Err(Error::Protocol(error.message)),
+                Some(_) => Err(Error::Protocol(
+                    "a foreign payload reached the Signal channel".to_owned(),
+                )),
             }
         })
     }

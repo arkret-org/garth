@@ -259,11 +259,8 @@ impl CryptoStore for MemoryCryptoStore {
         device_id: &DeviceId,
     ) -> Vec<&MlsKeyPackageRecord> {
         self.key_packages
-            .iter()
-            .filter_map(|(_, record)| {
-                (&record.principal_id == principal_id && &record.device_id == device_id)
-                    .then_some(record)
-            })
+            .values()
+            .filter(|record| &record.principal_id == principal_id && &record.device_id == device_id)
             .collect()
     }
 
