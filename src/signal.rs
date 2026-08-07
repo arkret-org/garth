@@ -26,8 +26,8 @@ use serde_json::Value;
 use crate::MaybeSendSync;
 use crate::protocol::signatures::{PublicKeyMaterial, verify_ed25519_signal_proof};
 use crate::protocol::{
-    Did, Error, Result, ScopeRef, SdkSignalPlaintext, SignalEnvelope, canonical,
-    open_signal_plaintext,
+    Did, Error, Result, ScopeRef, SdkSignalPlaintext, SignalEnvelope, SignalSequence,
+    SignalSequenceDecision, SignalSequenceHighWater, canonical, open_signal_plaintext,
 };
 use crate::store::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
 
@@ -206,7 +206,15 @@ impl SignalPlaintext {
 /// an unauthenticated envelope can never reach the AEAD.
 #[derive(Debug)]
 pub struct SignalReceiver {
-    seen: BoundedSeenWindow<(String, String, u64)>,
+    seen_envelope_digests: BoundedSeenWindow<String>,
+    sequence_high_waters: BTreeMap<(String, String), ActiveSignalHighWater>,
+    capacity: usize,
+}
+
+#[derive(Debug)]
+struct ActiveSignalHighWater {
+    high_water: SignalSequenceHighWater,
+    retain_until: DateTime<Utc>,
 }
 
 impl Default for SignalReceiver {
@@ -221,8 +229,11 @@ impl SignalReceiver {
     }
 
     pub fn with_capacity(capacity: usize) -> Self {
+        let capacity = capacity.max(1);
         Self {
-            seen: BoundedSeenWindow::new(capacity),
+            seen_envelope_digests: BoundedSeenWindow::new(capacity),
+            sequence_high_waters: BTreeMap::new(),
+            capacity,
         }
     }
 
@@ -235,9 +246,10 @@ impl SignalReceiver {
     /// `proof.created_at == sent_at` equality, the recomputed
     /// `envelope_digest` and the canonical size bound); wall-clock expiry;
     /// the current-directory device authorization lookup; the device proof
-    /// signature; the AEAD open; the closed plaintext shape; and finally the
-    /// `(sender_device_id, scope_ref, payload_sequence)` de-duplication of
-    /// `signal.md` §2.
+    /// signature; exact-envelope replay suppression; the AEAD open; the closed
+    /// plaintext shape; and finally the strictly-increasing,
+    /// non-contiguous `(sender_device_id, scope_ref)` sequence high-water rule
+    /// of `signal.md` §2.
     pub fn accept(
         &mut self,
         envelope: &SignalEnvelope,
@@ -259,19 +271,56 @@ impl SignalReceiver {
         })?;
         verify_ed25519_signal_proof(envelope, &public_key)
             .map_err(|error| Error::Crypto(error.to_string()))?;
-        let plaintext = decryptor.open(envelope)?;
-        let parsed = SignalPlaintext::parse(envelope, &plaintext)?;
-        let key = (
-            envelope.sender_device_id.as_str().to_owned(),
-            scope_key(&envelope.scope_ref)?,
-            parsed.payload_sequence,
-        );
-        if !self.seen.remember(key) {
+        let envelope_digest = envelope.proof.envelope_digest.as_str();
+        if self.seen_envelope_digests.contains(envelope_digest) {
             return Err(Error::Protocol(
-                "signal repeats an already delivered (sender_device_id, scope_ref, payload_sequence)"
-                    .to_owned(),
+                "signal_exact_envelope_replay: envelope_digest was already delivered".to_owned(),
             ));
         }
+        let plaintext = decryptor.open(envelope)?;
+        let parsed = SignalPlaintext::parse(envelope, &plaintext)?;
+        let domain = (
+            envelope.sender_device_id.as_str().to_owned(),
+            scope_key(&envelope.scope_ref)?,
+        );
+        self.sequence_high_waters
+            .retain(|_, active| active.retain_until > now);
+        if !self.sequence_high_waters.contains_key(&domain) {
+            if self.sequence_high_waters.len() >= self.capacity {
+                return Err(Error::Protocol(
+                    "signal_sequence_domain_capacity_exceeded: all tracked domains are still active"
+                        .to_owned(),
+                ));
+            }
+            self.sequence_high_waters.insert(
+                domain.clone(),
+                ActiveSignalHighWater {
+                    high_water: SignalSequenceHighWater::default(),
+                    retain_until: envelope.expires_at,
+                },
+            );
+        }
+        let active = self
+            .sequence_high_waters
+            .get_mut(&domain)
+            .expect("signal sequence domain was inserted above");
+        let decision = active
+            .high_water
+            .observe(SignalSequence::new(parsed.payload_sequence));
+        if let SignalSequenceDecision::Stale {
+            high_water,
+            candidate,
+        } = decision
+        {
+            return Err(Error::Protocol(format!(
+                "signal_payload_sequence_stale: candidate {} did not advance high-water {}",
+                candidate.get(),
+                high_water.get()
+            )));
+        }
+        active.retain_until = active.retain_until.max(envelope.expires_at);
+        self.seen_envelope_digests
+            .remember(envelope_digest.to_owned());
         Ok(parsed)
     }
 }
@@ -496,8 +545,8 @@ mod tests {
                 purpose: crate::protocol::signal::SIGNAL_AEAD_PURPOSE.to_owned(),
                 aead_profile: "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519".to_owned(),
                 epoch: 7,
-                nonce: "AAAAAAAAAAAAAAAA".to_owned(),
-                ciphertext: "Q2lwaGVydGV4dFBsYWNlaG9sZGVy".to_owned(),
+                nonce: arkret_canonical::base64url_encode(&seed[..12]),
+                ciphertext: arkret_canonical::base64url_encode(&seed[..16]),
                 aad_digest: Hash::new(format!("sha256:{}", "0".repeat(64))).unwrap(),
             },
             proof: SignalProof {
@@ -748,7 +797,52 @@ mod tests {
             .accept(&envelope, &resolver, &FixedDecryptor(plaintext), sent_at())
             .unwrap_err();
 
-        assert!(format!("{error}").contains("already delivered"));
+        assert!(format!("{error}").contains("signal_exact_envelope_replay"));
+    }
+
+    #[test]
+    fn receiver_accepts_forward_gaps_and_rejects_stale_new_emissions() {
+        let mut receiver = SignalReceiver::new();
+        for (sequence, state, seed) in [(7, "online", [31u8; 32]), (1024, "idle", [32u8; 32])] {
+            let (envelope, public_key, plaintext) = signed_signal(
+                device("000000000005"),
+                presence_plaintext(state, sequence),
+                SignalClass::Session,
+                30,
+                seed,
+            );
+            let accepted = receiver
+                .accept(
+                    &envelope,
+                    &key_of(public_key),
+                    &FixedDecryptor(plaintext),
+                    sent_at(),
+                )
+                .unwrap();
+            assert_eq!(accepted.payload_sequence, sequence);
+        }
+
+        // A distinct, correctly signed envelope below the high-water is stale,
+        // not an exact transport replay.  The large accepted gap is normal.
+        let (stale, public_key, plaintext) = signed_signal(
+            device("000000000005"),
+            presence_plaintext("dnd", 8),
+            SignalClass::Session,
+            30,
+            [33u8; 32],
+        );
+        let error = receiver
+            .accept(
+                &stale,
+                &key_of(public_key),
+                &FixedDecryptor(plaintext),
+                sent_at(),
+            )
+            .unwrap_err();
+        assert!(
+            format!("{error}").contains("signal_payload_sequence_stale"),
+            "{error}"
+        );
     }
 
     #[test]
