@@ -231,7 +231,7 @@ mod tests {
         let request = LoginKind::HolderProof(HolderProofLogin {
             principal_id: did(),
             device_id: Some(device_id()),
-            requested_scope: vec!["ak.self.account.query.viewer".to_owned()],
+            requested_scope: vec!["ak.self.account.read.viewer".to_owned()],
             dpop_binding_proof: Some(SessionGrantDpopBindingProof {
                 proof_jwt: "holder-dpop-proof".to_owned(),
             }),
