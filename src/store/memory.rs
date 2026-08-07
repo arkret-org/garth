@@ -286,7 +286,7 @@ mod tests {
     }
 
     fn event_id(n: usize) -> EventId {
-        EventId::new(format!("ak:event:01904100-0000-7000-8000-{n:012}")).unwrap()
+        EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [n as u8; 32])
     }
 
     #[tokio::test]

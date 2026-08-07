@@ -295,10 +295,10 @@ mod tests {
                 if digest == request_digest
         ));
 
-        let event_id = EventId::new("ak:event:01904100-0000-7000-8000-000000000007").unwrap();
         let event_digest =
             Hash::new("sha256:2222222222222222222222222222222222222222222222222222222222222222")
                 .unwrap();
+        let event_id = EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [0x22; 32]);
         let historical = signer_evidence_selector(&SignerEvidenceUse::HistoricalVerification {
             agent_id: agent,
             verification_method: method,

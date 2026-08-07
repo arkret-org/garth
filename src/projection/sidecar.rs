@@ -299,11 +299,14 @@ mod tests {
 
     use super::*;
 
+    fn indexed_event_id(index: usize) -> EventId {
+        let mut digest = [0_u8; 32];
+        digest[24..].copy_from_slice(&(index as u64).to_be_bytes());
+        EventId::from_digest(arkret_canonical::DigestSuite::Sha256, digest)
+    }
+
     fn event_id(suffix: &str) -> EventId {
-        EventId::new(format!(
-            "ak:event:01964137-0000-7000-8000-0000000000{suffix}"
-        ))
-        .unwrap()
+        indexed_event_id(usize::from_str_radix(suffix, 16).unwrap())
     }
 
     fn event(suffix: &str, hlc: &str, value: &'static str) -> SidecarTimelineEvent<&'static str> {
@@ -324,19 +327,13 @@ mod tests {
                 "ak:sidecar:01964137-0000-7000-8000-000000000032".to_owned(),
             )
             .unwrap(),
-            private_strand_id: StrandId::new(
-                "ak:strand:01964137-0000-7000-8000-000000000033".to_owned(),
-            )
-            .unwrap(),
+            private_strand_id: StrandId::from_event_id(&event_id("33")),
             exchange_id: AgentSidecarExchangeId::new("Abcdefghijklmnopqrstuv").unwrap(),
             origin: AgentSidecarExchangeOrigin::SourceTrackRouted,
             source_track_ref: AgentSidecarSourceTrackRef {
                 realm_id: RealmId::new("ak:realm:01964137-0000-7000-8000-000000000030".to_owned())
                     .unwrap(),
-                strand_id: StrandId::new(
-                    "ak:strand:01964137-0000-7000-8000-000000000031".to_owned(),
-                )
-                .unwrap(),
+                strand_id: StrandId::from_event_id(&event_id("31")),
                 track_name: "discussion".to_owned(),
             },
             source_frontier_anchor: Some(anchor),
@@ -458,7 +455,7 @@ mod tests {
             vec![Did::new("did:webvh:z6mkfixture:assistant.agents.example").unwrap()];
         fold.apply_folded_exchange(refolded.clone()).unwrap();
         let realm_id = RealmId::new("ak:realm:01964137-0000-7000-8000-000000000030").unwrap();
-        let strand_id = StrandId::new("ak:strand:01964137-0000-7000-8000-000000000031").unwrap();
+        let strand_id = StrandId::from_event_id(&event_id("31"));
         let stored = fold
             .exchanges_for_track(&realm_id, &strand_id, "discussion")
             .next()
@@ -510,8 +507,7 @@ mod tests {
     fn long_history_merge_handles_ten_thousand_shared_and_two_thousand_private_events() {
         fn indexed_event(index: usize, track_name: &str) -> SidecarTimelineEvent<usize> {
             SidecarTimelineEvent {
-                event_id: EventId::new(format!("ak:event:01964137-0000-7000-8000-{index:012x}"))
-                    .unwrap(),
+                event_id: indexed_event_id(index),
                 hlc: format!("{:012x}-0001-a13f9c2e", 0x0197_0e58_9d21_u64 + index as u64),
                 track_name: track_name.to_owned(),
                 value: index,

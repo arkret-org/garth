@@ -173,7 +173,7 @@ where
                             serde_json::Value::Object(payload.into_iter().collect()),
                         )
                     {
-                        let event_id = event.event_id.clone();
+                        let event_id = crate::protocol::verified_event_id(&event)?;
                         if !self.event_cache_store.seen(event_id.clone()).await? {
                             batch = self.decode_event_batch(event);
                             remember_after_commit = Some(event_id);
@@ -290,7 +290,8 @@ where
                             serde_json::Value::Object(payload.into_iter().collect()),
                         )
                     {
-                        let event_id = event.event_id.clone();
+                        let event_id = crate::protocol::verified_event_id(&event)
+                            .map_err(ProjectedRunError::Transport)?;
                         if !self
                             .event_cache_store
                             .seen(event_id.clone())
@@ -484,7 +485,12 @@ mod tests {
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
             json!({
                 "content": {"kind": "ak.content.text", "body": "hello"},
-                "strand_id": "ak:strand:01904100-0000-7000-8000-000000000002",
+                "strand_id": arkret_wire::StrandId::from_event_id(
+                    &arkret_wire::EventId::from_digest(
+                        arkret_canonical::DigestSuite::Sha256,
+                        [2; 32],
+                    ),
+                ),
                 "track_name": "discussion"
             }),
         )

@@ -379,7 +379,7 @@ mod tests {
         MessageStreamAbort, MessageStreamAbortReason, MessageStreamDelta, MessageStreamKeyframe,
     };
 
-    use arkret_wire::{RealmId, SealId};
+    use arkret_wire::{EventId, RealmId, SealId};
 
     use super::*;
 
@@ -392,11 +392,17 @@ mod tests {
     }
 
     fn strand() -> StrandId {
-        StrandId::new("ak:strand:01904100-0000-7000-8000-000000000002").unwrap()
+        StrandId::from_event_id(&EventId::from_digest(
+            arkret_canonical::DigestSuite::Sha256,
+            [2; 32],
+        ))
     }
 
     fn message() -> MessageId {
-        MessageId::new("ak:message:01904100-0000-7000-8000-000000000003").unwrap()
+        MessageId::from_event_id(&EventId::from_digest(
+            arkret_canonical::DigestSuite::Sha256,
+            [3; 32],
+        ))
     }
 
     fn stream(suffix: &str) -> MessageStreamId {

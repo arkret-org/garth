@@ -299,7 +299,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
-    use arkret_wire::{DeviceId, DidUrl, Hash, RealmId, SealId};
+    use arkret_wire::{DeviceId, DidUrl, EventId, Hash, RealmId, SealId};
     use chrono::{Duration, TimeZone};
     use ed25519_dalek::SigningKey;
     use serde_json::{Value, json};
@@ -363,7 +363,11 @@ mod tests {
                 scheme: crate::protocol::signal::SIGNAL_AEAD_SCHEME.to_owned(),
                 key_ref: SignalKeyRef {
                     algorithm: "MLS-EXPORTER-AEAD".to_owned(),
-                    group_state_ref: "ak:event:01904100-0000-7000-8000-cccccccccccc".to_owned(),
+                    group_state_ref: EventId::from_digest(
+                        arkret_canonical::DigestSuite::Sha256,
+                        [0xcc; 32],
+                    )
+                    .to_string(),
                 },
                 purpose: crate::protocol::signal::SIGNAL_AEAD_PURPOSE.to_owned(),
                 aead_profile: "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519".to_owned(),

@@ -82,6 +82,10 @@ fn accepted_receipt() -> arkret_wire::IngressReceipt {
     super::send_queue::test_publication::receipt(&lease, received_at)
 }
 
+fn event_id(seed: u8) -> EventId {
+    EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [seed; 32])
+}
+
 #[test]
 fn backoff_grows_until_capped() {
     let mut backoff = ExponentialBackoff::new(BackoffConfig {
@@ -561,7 +565,7 @@ fn send_queue_is_idempotent_orders_dependencies_and_snapshots() {
         .enqueue_edit(
             Some("txn2".to_owned()),
             realm_id,
-            EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap(),
+            event_id(1),
             json!({"content":{"body":"hi"}}),
             vec!["txn1".to_owned()],
         )
@@ -572,11 +576,7 @@ fn send_queue_is_idempotent_orders_dependencies_and_snapshots() {
 
     queue.mark_sending("txn1").unwrap();
     queue
-        .mark_sent(
-            "txn1",
-            EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap(),
-            vec![accepted_receipt()],
-        )
+        .mark_sent("txn1", event_id(1), vec![accepted_receipt()])
         .unwrap();
     assert_eq!(queue.ready_batch(Utc::now(), 10), vec![edit]);
 
@@ -624,11 +624,7 @@ fn send_queue_prunes_unreferenced_terminal_work_at_capacity() {
             .unwrap();
     }
     queue
-        .mark_sent(
-            "prunable-0",
-            EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap(),
-            vec![accepted_receipt()],
-        )
+        .mark_sent("prunable-0", event_id(1), vec![accepted_receipt()])
         .unwrap();
 
     queue
@@ -673,18 +669,10 @@ fn send_queue_preserves_transitive_dependencies_during_capacity_pruning() {
         )
         .unwrap();
     queue
-        .mark_sent(
-            "dependency-root",
-            EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap(),
-            vec![accepted_receipt()],
-        )
+        .mark_sent("dependency-root", event_id(1), vec![accepted_receipt()])
         .unwrap();
     queue
-        .mark_sent(
-            "dependency-middle",
-            EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f438").unwrap(),
-            vec![accepted_receipt()],
-        )
+        .mark_sent("dependency-middle", event_id(2), vec![accepted_receipt()])
         .unwrap();
     for index in queue.len()..MAX_SEND_QUEUE_ITEMS {
         queue
@@ -745,11 +733,7 @@ fn send_queue_serializes_unsigned_intents_per_realm_actor_scope() {
 
     queue.mark_sending("scope-a-1").unwrap();
     queue
-        .mark_sent(
-            "scope-a-1",
-            EventId::new("ak:event:01904100-0000-7000-8000-000000000001").unwrap(),
-            vec![accepted_receipt()],
-        )
+        .mark_sent("scope-a-1", event_id(1), vec![accepted_receipt()])
         .unwrap();
     assert!(
         queue
@@ -817,7 +801,7 @@ fn send_queue_replays_exact_persisted_bytes_and_links_semantic_replacement() {
 #[test]
 fn send_queue_cancels_dependent_edit_redaction_and_reaction() {
     let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
-    let event_id = EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap();
+    let event_id = event_id(1);
     let mut queue = SendQueue::new();
     queue
         .enqueue_message(
@@ -882,11 +866,7 @@ fn send_queue_refuses_delayed_acceptance_without_an_ingress_receipt() {
         .unwrap();
 
     let error = queue
-        .mark_sent(
-            "txn1",
-            EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap(),
-            Vec::new(),
-        )
+        .mark_sent("txn1", event_id(1), Vec::new())
         .unwrap_err();
 
     assert!(format!("{error}").contains("at least one ingress receipt"));
@@ -903,13 +883,7 @@ fn send_queue_accepts_online_submission_without_an_ingress_receipt() {
         .enqueue_message(Some("txn1".to_owned()), realm_id, json!({"body": "hi"}))
         .unwrap();
 
-    queue
-        .mark_sent(
-            "txn1",
-            EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap(),
-            Vec::new(),
-        )
-        .unwrap();
+    queue.mark_sent("txn1", event_id(1), Vec::new()).unwrap();
 
     assert_eq!(queue.get("txn1").unwrap().status, SendQueueStatus::Sent);
     assert!(queue.get("txn1").unwrap().ingress_receipts.is_empty());
@@ -938,7 +912,7 @@ fn send_queue_keeps_the_original_receipt_across_an_idempotent_retry() {
         &lease,
         lease.issued_at + chrono::Duration::minutes(30),
     );
-    let event_id = EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap();
+    let event_id = event_id(1);
 
     queue
         .mark_sent("txn1", event_id.clone(), vec![original.clone()])
@@ -972,11 +946,7 @@ fn send_queue_rejects_a_receipt_for_another_lease() {
     );
 
     let error = queue
-        .mark_sent(
-            "txn1",
-            EventId::new("ak:event:01904100-0000-7000-8000-ab84c4c0f437").unwrap(),
-            vec![foreign],
-        )
+        .mark_sent("txn1", event_id(1), vec![foreign])
         .unwrap_err();
 
     assert!(format!("{error}").contains("does not cite the bound authorization lease"));

@@ -295,7 +295,7 @@ where
         let mut batch = Vec::new();
         let mut accepted_ids = Vec::new();
         for event in outcome.events.iter().cloned() {
-            let event_id = event.event_id.clone();
+            let event_id = crate::protocol::verified_event_id(&event)?;
             if self.event_cache_store.seen(event_id.clone()).await? {
                 continue;
             }

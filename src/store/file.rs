@@ -41,7 +41,7 @@ pub struct FileStore {
 struct FileStoreInner {
     path: PathBuf,
     state: FileState,
-    /// Runtime lookup index over `state.seen_events` (not persisted).
+    /// Runtime lookup index over `state.seen_event_ids` (not persisted).
     seen_window: BoundedSeenWindow<String>,
     generation: u64,
 }
@@ -61,8 +61,8 @@ struct PersistSnapshot {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct FileState {
     cursors: BTreeMap<String, OpaqueCursor>,
-    /// Insertion-ordered dedupe window, oldest first.
-    seen_events: VecDeque<String>,
+    /// Insertion-ordered full Event identity dedupe window, oldest first.
+    seen_event_ids: VecDeque<String>,
     next_delivery_id: u64,
     deliveries: VecDeque<PendingDelivery>,
     outbound: crate::sync_client::SendQueueSnapshot,
@@ -81,9 +81,9 @@ impl FileStore {
     pub fn open_with_seen_capacity(path: impl Into<PathBuf>, capacity: usize) -> Result<Self> {
         let path = path.into();
         let mut state = load_state(&path)?;
-        let seen_events = std::mem::take(&mut state.seen_events);
-        let seen_window = BoundedSeenWindow::from_entries(seen_events, capacity);
-        state.seen_events = seen_window.entries().clone();
+        let seen_event_ids = std::mem::take(&mut state.seen_event_ids);
+        let seen_window = BoundedSeenWindow::from_entries(seen_event_ids, capacity);
+        state.seen_event_ids = seen_window.entries().clone();
         Ok(Self {
             inner: Arc::new(Mutex::new(FileStoreInner {
                 path,
@@ -186,9 +186,9 @@ impl FileStore {
         drop(guard);
         let path_exists = path.exists();
         let mut state = load_state(&path)?;
-        let seen_events = std::mem::take(&mut state.seen_events);
-        let seen_window = BoundedSeenWindow::from_entries(seen_events, capacity);
-        state.seen_events = seen_window.entries().clone();
+        let seen_event_ids = std::mem::take(&mut state.seen_event_ids);
+        let seen_window = BoundedSeenWindow::from_entries(seen_event_ids, capacity);
+        state.seen_event_ids = seen_window.entries().clone();
         let before = serde_json::to_vec(&state)
             .map_err(|err| Error::Protocol(format!("serialize file store: {err}")))?;
         let mut candidate = FileStoreInner {
@@ -414,9 +414,9 @@ impl EventCacheStore for FileStore {
     fn remember(&self, event_id: EventId) -> impl Future<Output = Result<()>> + '_ {
         async move {
             self.mutate(|inner| {
-                let id = event_id.as_str().to_owned();
-                if inner.seen_window.remember(id) {
-                    inner.state.seen_events = inner.seen_window.entries().clone();
+                let identity = event_id.to_string();
+                if inner.seen_window.remember(identity) {
+                    inner.state.seen_event_ids = inner.seen_window.entries().clone();
                 }
             })
             .await
@@ -589,7 +589,7 @@ impl MonotonicStampStore for FileStore {
 #[cfg(test)]
 mod tests {
     use crate::protocol::{
-        DeviceId, Did, NotificationDelta, NotificationDeltaAction, NotificationId,
+        DeviceId, Did, EventId, NotificationDelta, NotificationDeltaAction, NotificationId,
         NotificationKind, RealmId,
     };
 
@@ -691,7 +691,7 @@ mod tests {
     async fn dedupe_survives_reopen() {
         let path = temp_path("dedupe-roundtrip");
         let _ = std::fs::remove_file(&path);
-        let event = EventId::new("ak:event:01904100-0000-7000-8000-0000000000aa").unwrap();
+        let event = event_id(0xaa);
         {
             let store = FileStore::open(&path).unwrap();
             assert!(!store.seen(event.clone()).await.unwrap());
@@ -820,7 +820,7 @@ mod tests {
     }
 
     fn event_id(n: usize) -> EventId {
-        EventId::new(format!("ak:event:01904100-0000-7000-8000-{n:012}")).unwrap()
+        EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [n as u8; 32])
     }
 
     #[tokio::test]

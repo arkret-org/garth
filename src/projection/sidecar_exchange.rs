@@ -571,7 +571,9 @@ mod tests {
     use super::*;
 
     fn event_id(suffix: u32) -> EventId {
-        EventId::new(format!("ak:event:01964137-0000-7000-8000-{suffix:012x}")).unwrap()
+        let mut digest = [0_u8; 32];
+        digest[28..].copy_from_slice(&suffix.to_be_bytes());
+        EventId::from_digest(arkret_canonical::DigestSuite::Sha256, digest)
     }
 
     fn hlc(counter: u32) -> Hlc {
@@ -594,8 +596,7 @@ mod tests {
         SidecarExchangeFoldScope {
             controller_id: controller(),
             sidecar_id: SidecarId::new("ak:sidecar:01964137-0000-7000-8000-000000000032").unwrap(),
-            private_strand_id: StrandId::new("ak:strand:01964137-0000-7000-8000-000000000033")
-                .unwrap(),
+            private_strand_id: StrandId::from_event_id(&event_id(0x33)),
         }
     }
 
@@ -610,7 +611,7 @@ mod tests {
         AgentSidecarExchangeRequestContext {
             source_track_ref: AgentSidecarSourceTrackRef {
                 realm_id: RealmId::new("ak:realm:01964137-0000-7000-8000-000000000030").unwrap(),
-                strand_id: StrandId::new("ak:strand:01964137-0000-7000-8000-000000000031").unwrap(),
+                strand_id: StrandId::from_event_id(&event_id(0x31)),
                 track_name: "discussion".to_owned(),
             },
             source_hlc: hlc(1),
@@ -634,19 +635,17 @@ mod tests {
         }
     }
 
-    fn canonical_event_digest(
-        suffix: u32,
+    fn canonical_event_identity(
         actor_seq: u64,
         counter: u32,
         kind: &str,
         payload: serde_json::Value,
         refs_after: &[EventId],
-    ) -> String {
+    ) -> (EventId, String) {
         let created_at = chrono::DateTime::parse_from_rfc3339("2026-07-29T00:00:00.000Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
-        let mut event = arkret_wire::Event::new_with_id_at(
-            event_id(suffix),
+        let mut event = arkret_wire::Event::new_with_derived_id_at(
             kind,
             arkret_wire::ScopeRef::Realm {
                 realm_id: RealmId::new("ak:realm:01964137-0000-7000-8000-000000000030".to_owned())
@@ -664,7 +663,9 @@ mod tests {
                 .iter()
                 .map(|event_id| arkret_wire::EventRef::new(event_id.to_string(), "after")),
         );
-        event.event_digest().unwrap()
+        event.refresh_content_bound_identity().unwrap();
+        let digest = event.event_digest().unwrap();
+        (event.event_id, digest)
     }
 
     fn canonical_request_fact(
@@ -673,8 +674,7 @@ mod tests {
         body: &str,
     ) -> SidecarExchangeRequestFact {
         let mut fact = request_fact(suffix, actor_seq, "");
-        fact.event_digest = canonical_event_digest(
-            suffix,
+        let (event_id, event_digest) = canonical_event_identity(
             actor_seq,
             1,
             arkret_wire::EventKind::MESSAGE_CREATE,
@@ -690,6 +690,8 @@ mod tests {
             }),
             &[],
         );
+        fact.event_id = event_id;
+        fact.event_digest = event_digest;
         fact
     }
 
@@ -699,8 +701,7 @@ mod tests {
         control: AgentSidecarExchangeControl,
     ) -> SidecarExchangeControlFact {
         let mut fact = control_fact(suffix, actor_seq, "", control.clone());
-        fact.event_digest = canonical_event_digest(
-            suffix,
+        let (event_id, event_digest) = canonical_event_identity(
             actor_seq,
             0x40 + suffix,
             arkret_wire::EventKind::AGENT_SIDECAR_EXCHANGE_CONTROL,
@@ -710,6 +711,8 @@ mod tests {
             }),
             &fact.refs_after,
         );
+        fact.event_id = event_id;
+        fact.event_digest = event_digest;
         fact
     }
 
@@ -720,16 +723,26 @@ mod tests {
         role: AgentSidecarExchangeBindingRole,
         request_suffix: u32,
     ) -> SidecarExchangeAgentFact {
+        agent_fact_for_request(suffix, counter, actor, role, event_id(request_suffix))
+    }
+
+    fn agent_fact_for_request(
+        suffix: u32,
+        counter: u32,
+        actor: Did,
+        role: AgentSidecarExchangeBindingRole,
+        request_event_id: EventId,
+    ) -> SidecarExchangeAgentFact {
         let binding = match role {
             AgentSidecarExchangeBindingRole::UserFacingResponse => {
                 AgentSidecarEventExchangeBinding::user_facing_response(
                     exchange_id(),
-                    event_id(request_suffix),
+                    request_event_id.clone(),
                 )
                 .unwrap()
             }
             AgentSidecarExchangeBindingRole::Internal => {
-                AgentSidecarEventExchangeBinding::internal(exchange_id(), event_id(request_suffix))
+                AgentSidecarEventExchangeBinding::internal(exchange_id(), request_event_id.clone())
                     .unwrap()
             }
             AgentSidecarExchangeBindingRole::Request => unreachable!(),
@@ -739,7 +752,7 @@ mod tests {
             hlc: hlc(counter),
             actor_id: actor,
             binding,
-            refs_after: vec![event_id(request_suffix)],
+            refs_after: vec![request_event_id],
         }
     }
 
@@ -761,10 +774,18 @@ mod tests {
     }
 
     fn close_control(basis: Vec<EventId>, responses: Vec<EventId>) -> AgentSidecarExchangeControl {
+        close_control_for_request(event_id(0x34), basis, responses)
+    }
+
+    fn close_control_for_request(
+        request_event_id: EventId,
+        basis: Vec<EventId>,
+        responses: Vec<EventId>,
+    ) -> AgentSidecarExchangeControl {
         AgentSidecarExchangeControl {
             schema: AgentSidecarExchangeControlSchema::V1,
             exchange_id: exchange_id(),
-            request_event_id: event_id(0x34),
+            request_event_id,
             basis_event_ids: basis,
             action: AgentSidecarExchangeControlAction::Close,
             response_event_ids: Some(responses),
@@ -1022,22 +1043,31 @@ mod tests {
     #[test]
     fn first_valid_terminal_absorbs_later_controls_and_siblings_resolve_by_digest() {
         let request = canonical_request_fact(0x34, 1, "request");
-        let response = agent_fact(
+        let request_event_id = request.event_id.clone();
+        let response = agent_fact_for_request(
             0x35,
             2,
             agent_s(),
             AgentSidecarExchangeBindingRole::UserFacingResponse,
-            0x34,
+            request_event_id.clone(),
         );
         let sibling_left = canonical_control_fact(
             0x36,
             2,
-            close_control(vec![event_id(0x35)], vec![event_id(0x35)]),
+            close_control_for_request(
+                request_event_id.clone(),
+                vec![event_id(0x35)],
+                vec![event_id(0x35)],
+            ),
         );
         let sibling_right = canonical_control_fact(
             0x37,
             2,
-            close_control(vec![event_id(0x35)], vec![event_id(0x35)]),
+            close_control_for_request(
+                request_event_id.clone(),
+                vec![event_id(0x35)],
+                vec![event_id(0x35)],
+            ),
         );
         let expected_terminal = [&sibling_left, &sibling_right]
             .into_iter()
@@ -1049,7 +1079,8 @@ mod tests {
             .unwrap()
             .event_id
             .clone();
-        let mut reassign = close_control(vec![event_id(0x35)], vec![]);
+        let mut reassign =
+            close_control_for_request(request_event_id, vec![event_id(0x35)], vec![]);
         reassign.action = AgentSidecarExchangeControlAction::ReassignCoordinator;
         reassign.response_event_ids = None;
         reassign.expected_coordinator_agent_id = Some(agent_s());
@@ -1260,26 +1291,27 @@ mod tests {
     #[test]
     fn fold_is_deterministic_across_input_permutations() {
         let request = canonical_request_fact(0x34, 1, "canonical request");
-        let response_a = agent_fact(
+        let request_event_id = request.event_id.clone();
+        let response_a = agent_fact_for_request(
             0x35,
             3,
             agent_s(),
             AgentSidecarExchangeBindingRole::UserFacingResponse,
-            0x34,
+            request_event_id.clone(),
         );
-        let response_b = agent_fact(
+        let response_b = agent_fact_for_request(
             0x36,
             2,
             agent_t(),
             AgentSidecarExchangeBindingRole::UserFacingResponse,
-            0x34,
+            request_event_id.clone(),
         );
-        let internal = agent_fact(
+        let internal = agent_fact_for_request(
             0x37,
             4,
             agent_t(),
             AgentSidecarExchangeBindingRole::Internal,
-            0x34,
+            request_event_id.clone(),
         );
         let forward = fold_sidecar_exchange(
             &scope(),
@@ -1311,7 +1343,7 @@ mod tests {
         );
         assert_eq!(forward.folded_frontier, reversed.folded_frontier);
         let union_ids = [
-            event_id(0x34),
+            request_event_id,
             event_id(0x35),
             event_id(0x36),
             event_id(0x37),

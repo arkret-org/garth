@@ -101,6 +101,7 @@ pub trait StateSnapshotStore: Send + Sync {
 pub trait EventCacheStore: Send + Sync {
     fn put_event(&mut self, event: Event) -> Result<()>;
     fn event(&self, event_id: &EventId) -> Option<&Event>;
+    fn quarantined_events(&self, event_id: &EventId) -> Vec<&Event>;
     fn events_for_realm(&self, realm_id: &RealmId) -> Vec<&Event>;
 }
 
@@ -158,8 +159,11 @@ impl StoreEncryptionKey {
 #[derive(Clone, Debug, Default)]
 pub struct MemoryPersistenceStore {
     snapshots: BTreeMap<RealmId, StateSnapshot>,
-    events: BTreeMap<RealmId, BTreeMap<EventId, (String, Event)>>,
+    /// Accepted Events by full identity: canonical digest preimage, full envelope evidence, Event.
+    events: BTreeMap<RealmId, BTreeMap<EventId, (Vec<u8>, Vec<u8>, Event)>>,
     event_index: BTreeMap<EventId, RealmId>,
+    /// Full canonical envelopes retained as evidence for a verified hash collision.
+    quarantined_events: BTreeMap<EventId, Vec<(Vec<u8>, Event)>>,
     sessions: BTreeMap<String, AuthSession>,
     sessions_by_principal: BTreeMap<Did, Vec<String>>,
     account_data: BTreeMap<(Did, String), StoredAccountData>,
@@ -204,6 +208,76 @@ impl MemoryPersistenceStore {
     pub fn new() -> Self {
         Self::default()
     }
+
+    fn put_event_candidate(&mut self, event: Event) -> Result<()> {
+        let event_id = event.event_id.clone();
+        crate::protocol::verified_event_id(&event)?;
+        let preimage_bytes =
+            crate::protocol::canonical::canonical_json_bytes(&event.digest_payload()?)?;
+        let envelope_bytes = crate::protocol::canonical::canonical_json_bytes(&event)?;
+        self.put_verified_event_candidate(event_id, preimage_bytes, envelope_bytes, event)
+    }
+
+    /// Apply the storage transition after the caller has re-derived and verified `event_id`.
+    fn put_verified_event_candidate(
+        &mut self,
+        event_id: EventId,
+        preimage_bytes: Vec<u8>,
+        envelope_bytes: Vec<u8>,
+        event: Event,
+    ) -> Result<()> {
+        if let Some(candidates) = self.quarantined_events.get_mut(&event_id) {
+            if !candidates
+                .iter()
+                .any(|(candidate_bytes, _)| candidate_bytes == &envelope_bytes)
+            {
+                candidates.push((envelope_bytes, event));
+            }
+            return Err(Error::IdempotencyConflict(event_id.to_string()));
+        }
+
+        if let Some(existing_realm_id) = self.event_index.get(&event_id).cloned() {
+            let existing_bytes = self
+                .events
+                .get(&existing_realm_id)
+                .and_then(|events| events.get(&event_id))
+                .map(|(preimage_bytes, _, _)| preimage_bytes)
+                .expect("accepted Event identity index resolves to an Event");
+            if existing_bytes == &preimage_bytes {
+                return Ok(());
+            }
+            let (existing_realm_id, existing_envelope_bytes, existing_event) = self
+                .remove_accepted_event(&event_id)
+                .expect("accepted Event identity index resolves to an Event");
+            self.snapshots.remove(&existing_realm_id);
+            self.quarantined_events.insert(
+                event_id.clone(),
+                vec![
+                    (existing_envelope_bytes, existing_event),
+                    (envelope_bytes, event),
+                ],
+            );
+            return Err(Error::IdempotencyConflict(event_id.to_string()));
+        }
+
+        let realm_scope = RealmId::new(event.realm_id.to_string())?;
+        self.event_index
+            .insert(event_id.clone(), realm_scope.clone());
+        self.events
+            .entry(realm_scope)
+            .or_default()
+            .insert(event_id, (preimage_bytes, envelope_bytes, event));
+        Ok(())
+    }
+
+    fn remove_accepted_event(&mut self, event_id: &EventId) -> Option<(RealmId, Vec<u8>, Event)> {
+        let realm_id = self.event_index.remove(event_id)?;
+        let event = self.events.get_mut(&realm_id)?.remove(event_id)?;
+        if self.events.get(&realm_id).is_some_and(BTreeMap::is_empty) {
+            self.events.remove(&realm_id);
+        }
+        Some((realm_id, event.1, event.2))
+    }
 }
 
 impl StateSnapshotStore for MemoryPersistenceStore {
@@ -225,42 +299,32 @@ impl StateSnapshotStore for MemoryPersistenceStore {
 
 impl EventCacheStore for MemoryPersistenceStore {
     fn put_event(&mut self, event: Event) -> Result<()> {
-        let digest = event.event_digest()?;
-        if let Some(existing_realm_id) = self.event_index.get(&event.event_id) {
-            let existing_digest = self
-                .events
-                .get(existing_realm_id)
-                .and_then(|events| events.get(&event.event_id))
-                .map(|(existing_digest, _)| existing_digest);
-            return match existing_digest {
-                Some(existing_digest) if existing_digest == &digest => Ok(()),
-                _ => Err(Error::IdempotencyConflict(event.event_id.to_string())),
-            };
-        }
-
-        let realm_scope = RealmId::new(event.realm_id.to_string())?;
-        self.event_index
-            .insert(event.event_id.clone(), realm_scope.clone());
-        self.events
-            .entry(realm_scope)
-            .or_default()
-            .insert(event.event_id.clone(), (digest, event));
-        Ok(())
+        self.put_event_candidate(event)
     }
 
     fn event(&self, event_id: &EventId) -> Option<&Event> {
+        if self.quarantined_events.contains_key(event_id) {
+            return None;
+        }
         self.event_index.get(event_id).and_then(|realm_id| {
             self.events
                 .get(realm_id)
                 .and_then(|events| events.get(event_id))
-                .map(|(_, event)| event)
+                .map(|(_, _, event)| event)
         })
+    }
+
+    fn quarantined_events(&self, event_id: &EventId) -> Vec<&Event> {
+        self.quarantined_events
+            .get(event_id)
+            .map(|events| events.iter().map(|(_, event)| event).collect())
+            .unwrap_or_default()
     }
 
     fn events_for_realm(&self, realm_id: &RealmId) -> Vec<&Event> {
         self.events
             .get(realm_id)
-            .map(|events| events.values().map(|(_, event)| event).collect())
+            .map(|events| events.values().map(|(_, _, event)| event).collect())
             .unwrap_or_default()
     }
 }
@@ -457,9 +521,9 @@ mod tests {
     use crate::protocol::resolver::SnapshotRestoreSource;
     use crate::protocol::{BlobRef, DeviceId, Did, EventId, Hash, Hlc, ObjectState, RealmId};
 
-    fn morph_event(event_id: &str, title: &str) -> Event {
-        Event {
-            event_id: EventId::new(event_id).unwrap(),
+    fn morph_event(title: &str) -> Event {
+        let mut event = Event {
+            event_id: EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [0; 32]),
             kind: EventKind::MORPH_CREATE.into(),
             realm_id: RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap(),
             scope_ref: crate::protocol::ScopeRef::Realm {
@@ -480,7 +544,6 @@ mod tests {
             redacts: None,
             payload: serde_json::from_value(json!({
                 "object": {
-                    "id": "ak:morph:01904100-0000-7000-8000-b7a4e10c8c77",
                     "schema": SchemaId::MORPH_V1,
                     "realm_id": "ak:realm:01904100-0000-7000-8000-9b64700c6ee8",
                     "schema_refs": [SchemaId::MORPH_V1],
@@ -499,7 +562,9 @@ mod tests {
             actor_kind: None,
             unsigned: BTreeMap::new(),
             proofs: vec![],
-        }
+        };
+        event.refresh_content_bound_identity().unwrap();
+        event
     }
 
     fn blob_metadata(blob_ref: BlobRef, size_bytes: u64) -> BlobMetadata {
@@ -526,42 +591,17 @@ mod tests {
     #[test]
     fn projection_rebuild_helpers_replay_event_cache_and_use_valid_snapshot() {
         let realm_id = RealmId::new("ak:realm:01904100-0000-7000-8000-9b64700c6ee8").unwrap();
-        let event = morph_event(
-            "ak:event:01904100-0000-7000-8000-ec26a4d295c0",
-            "Stored task",
-        );
+        let event = morph_event("Stored task");
+        let morph_id = arkret_wire::MorphId::from_event_id(&event.event_id);
         let mut store = MemoryPersistenceStore::new();
         store.put_event(event.clone()).unwrap();
         store.put_event(event.clone()).unwrap();
-
-        let mut conflicting = event;
-        conflicting.payload = serde_json::from_value(json!({
-            "object": {
-                "id": "ak:morph:01904100-0000-7000-8000-b7a4e10c8c77",
-                "schema": SchemaId::MORPH_V1,
-                "realm_id": "ak:realm:01904100-0000-7000-8000-9b64700c6ee8",
-                "schema_refs": [SchemaId::MORPH_V1],
-                "morph_kind": "task",
-                "metadata": {"title": "Changed"},
-                "stage": "draft",
-                "created_by": "did:webvh:z6mkfixture:alice.example.com",
-                "created_at": "2026-05-02T00:00:00.000Z"
-            }
-        }))
-        .unwrap();
-        assert!(matches!(
-            store.put_event(conflicting),
-            Err(Error::IdempotencyConflict(_))
-        ));
+        assert_eq!(store.event(&event.event_id), Some(&event));
 
         let state = rebuild_realm_state_from_events(&store, &realm_id).unwrap();
         assert_eq!(state.morphs.len(), 1);
         assert_eq!(
-            state
-                .morphs
-                .get("ak:morph:01904100-0000-7000-8000-b7a4e10c8c77")
-                .unwrap()
-                .state,
+            state.morphs.get(morph_id.as_str()).unwrap().state,
             Some(ObjectState::Active)
         );
 
@@ -569,6 +609,101 @@ mod tests {
         let restored = restore_realm_state_from_persistence(&store, &realm_id).unwrap();
         assert_eq!(restored.source, SnapshotRestoreSource::Snapshot);
         assert_eq!(restored.state.morphs.len(), 1);
+    }
+
+    #[test]
+    fn exact_event_replay_is_idempotent() {
+        let event = morph_event("Exact replay");
+        let event_id = event.event_id.clone();
+        let mut store = MemoryPersistenceStore::new();
+        store.put_event(event.clone()).unwrap();
+        store.put_event(event.clone()).unwrap();
+
+        assert_eq!(store.event(&event_id), Some(&event));
+        assert!(store.quarantined_events(&event_id).is_empty());
+    }
+
+    #[test]
+    fn excluded_envelope_fields_do_not_create_an_event_identity_conflict() {
+        let first = morph_event("First candidate");
+        let event_id = first.event_id.clone();
+        let mut decorated = first.clone();
+        decorated
+            .unsigned
+            .insert("transport_hint".to_owned(), json!("different envelope"));
+
+        let mut store = MemoryPersistenceStore::new();
+        store.put_event(first.clone()).unwrap();
+        store.put_event(decorated).unwrap();
+
+        assert_eq!(store.event(&event_id), Some(&first));
+        assert!(store.quarantined_events(&event_id).is_empty());
+    }
+
+    #[test]
+    fn mismatched_carried_event_id_does_not_quarantine_the_accepted_event() {
+        let first = morph_event("First candidate");
+        let event_id = first.event_id.clone();
+        let mut conflicting = first.clone();
+        conflicting.payload.get_mut("object").unwrap()["metadata"]["title"] =
+            json!("Covered conflict");
+
+        let realm_id = first.realm_id.clone();
+        let mut store = MemoryPersistenceStore::new();
+        store.put_event(first.clone()).unwrap();
+        let snapshot = rebuild_realm_state_from_events(&store, &realm_id)
+            .unwrap()
+            .snapshot()
+            .unwrap();
+        store.put_state_snapshot(snapshot).unwrap();
+        let error = store.put_event(conflicting).unwrap_err();
+        assert!(format!("{error}").contains("event_id_digest_mismatch"));
+
+        assert_eq!(store.event(&event_id), Some(&first));
+        assert!(store.quarantined_events(&event_id).is_empty());
+        assert_eq!(store.events_for_realm(&realm_id), vec![&first]);
+        assert!(store.state_snapshot(&realm_id).is_some());
+    }
+
+    #[test]
+    fn verified_hash_collision_quarantines_every_variant() {
+        let first = morph_event("First candidate");
+        let event_id = first.event_id.clone();
+        let mut colliding = first.clone();
+        colliding.payload.get_mut("object").unwrap()["metadata"]["title"] =
+            json!("Different verified preimage");
+        let colliding_preimage =
+            crate::protocol::canonical::canonical_json_bytes(&colliding.digest_payload().unwrap())
+                .unwrap();
+        let colliding_envelope =
+            crate::protocol::canonical::canonical_json_bytes(&colliding).unwrap();
+
+        let realm_id = first.realm_id.clone();
+        let mut store = MemoryPersistenceStore::new();
+        store.put_event(first).unwrap();
+        let snapshot = rebuild_realm_state_from_events(&store, &realm_id)
+            .unwrap()
+            .snapshot()
+            .unwrap();
+        store.put_state_snapshot(snapshot).unwrap();
+
+        // A real 256-bit collision is not constructible in a unit test. Call the
+        // post-verification state transition directly to model two preimages that
+        // the selected digest suite has already proven map to this same Event ID.
+        assert!(matches!(
+            store.put_verified_event_candidate(
+                event_id.clone(),
+                colliding_preimage,
+                colliding_envelope,
+                colliding,
+            ),
+            Err(Error::IdempotencyConflict(_))
+        ));
+
+        assert!(store.event(&event_id).is_none());
+        assert_eq!(store.quarantined_events(&event_id).len(), 2);
+        assert!(store.events_for_realm(&realm_id).is_empty());
+        assert!(store.state_snapshot(&realm_id).is_none());
     }
 
     #[test]

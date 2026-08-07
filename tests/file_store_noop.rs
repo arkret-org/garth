@@ -25,7 +25,7 @@ async fn idle_mutations_leave_the_file_untouched() {
     let store = FileStore::open(&path).unwrap();
     let scope = account_scope();
     let cursor = "ak:cursor:stable".to_owned();
-    let event = EventId::new("ak:event:01904100-0000-7000-8000-000000000077".to_owned()).unwrap();
+    let event = EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [0x77; 32]);
 
     store.save(scope.clone(), cursor.clone()).await.unwrap();
     store.remember(event.clone()).await.unwrap();

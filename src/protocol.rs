@@ -62,6 +62,12 @@ pub(crate) use arkret_wire::{
 };
 pub(crate) use arkret_wire::{ProtocolOpaqueId, ProtocolOperationId};
 
+pub(crate) fn verified_event_id(event: &Event) -> Result<EventId> {
+    let digest_suite = event.event_id.digest_suite_code().digest_suite();
+    event.verify_event_id_matches_content_with_digest_suite(digest_suite)?;
+    Ok(event.event_id.clone())
+}
+
 #[cfg(test)]
 pub(crate) mod signal {
     pub(crate) use arkret_wire::signal::{

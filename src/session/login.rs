@@ -190,6 +190,11 @@ mod tests {
         "2026-07-08T10:05:00.000Z".parse().unwrap()
     }
 
+    fn agent_key_authorization_ref() -> String {
+        crate::protocol::EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [2; 32])
+            .to_string()
+    }
+
     fn proof_fields() -> SessionProofFields {
         SessionProofFields {
             challenge: "session-grant-challenge-0001".to_owned(),
@@ -291,7 +296,7 @@ mod tests {
             principal_id: did(),
             device_id: device_id(),
             requested_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
-            agent_key_authorization_ref: "ak:event:01904100-0000-7000-8000-000000000002".to_owned(),
+            agent_key_authorization_ref: agent_key_authorization_ref(),
             agent_scope_request: SessionGrantAgentScopeRequest {
                 realm_ids: vec![
                     RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap(),
@@ -319,7 +324,7 @@ mod tests {
         );
         assert_eq!(
             request.agent_key_authorization_ref.as_deref(),
-            Some("ak:event:01904100-0000-7000-8000-000000000002")
+            Some(agent_key_authorization_ref().as_str())
         );
         assert_eq!(request.device_id, Some(device_id()));
         assert_eq!(

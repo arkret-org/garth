@@ -523,6 +523,11 @@ mod tests {
         "2026-07-08T00:00:00.000Z".parse().unwrap()
     }
 
+    fn agent_key_authorization_ref() -> String {
+        crate::protocol::EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [2; 32])
+            .to_string()
+    }
+
     fn did() -> Did {
         Did::new("did:webvh:z6mkfixture:alice.example").unwrap()
     }
@@ -614,7 +619,7 @@ mod tests {
             principal_id: did(),
             device_id: device_id(),
             requested_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
-            agent_key_authorization_ref: "ak:event:01904100-0000-7000-8000-000000000002".to_owned(),
+            agent_key_authorization_ref: agent_key_authorization_ref(),
             agent_scope_request: SessionGrantAgentScopeRequest {
                 realm_ids: vec![
                     RealmId::new("ak:realm:01904100-0000-7000-8000-000000000001").unwrap(),

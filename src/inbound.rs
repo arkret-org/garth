@@ -49,7 +49,7 @@ impl InboundDecoder {
 
 #[cfg(test)]
 mod tests {
-    use arkret_wire::{Did, Hlc, RealmId, ScopeRef};
+    use arkret_wire::{Did, EventId, Hlc, RealmId, ScopeRef, StrandId};
     use serde_json::{Value, json};
 
     use super::*;
@@ -74,7 +74,10 @@ mod tests {
             .try_decode_event(event(
                 arkret_wire::EventKind::MESSAGE_CREATE,
                 json!({
-                    "strand_id": "ak:strand:01904100-0000-7000-8000-000000000002",
+                    "strand_id": StrandId::from_event_id(&EventId::from_digest(
+                        arkret_canonical::DigestSuite::Sha256,
+                        [2; 32],
+                    )),
                     "track_name": "discussion",
                     "content": {"kind": "ak.content.text", "body": "hello"}
                 }),
