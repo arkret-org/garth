@@ -983,7 +983,8 @@ fn send_queue_retires_unreceipted_work_once_its_lease_expires() {
 #[test]
 fn send_queue_refuses_a_lease_scoped_to_another_realm() {
     let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
-    let other_realm = RealmId::new("ak:realm:ASc9wABHjT9O0CyPDbA8mMnMYoVQe0dWU7KkoFC-vH73").unwrap();
+    let other_realm =
+        RealmId::new("ak:realm:ASc9wABHjT9O0CyPDbA8mMnMYoVQe0dWU7KkoFC-vH73").unwrap();
     let mut queue = SendQueue::new();
     queue
         .enqueue_message(Some("txn1".to_owned()), realm_id, json!({"a": 1}))

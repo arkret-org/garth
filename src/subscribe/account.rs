@@ -69,7 +69,8 @@ mod tests {
     fn updates() -> SyncUpdates {
         SyncUpdates {
             realm_updates: vec![RealmUpdate {
-                realm_id: RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO").unwrap(),
+                realm_id: RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO")
+                    .unwrap(),
                 entry: RealmSyncEntry::default(),
             }],
             malformed_realms: Vec::new(),

@@ -435,7 +435,8 @@ mod tests {
             sent_at: at(0),
             expires_at: at(30),
             scope_ref: ScopeRef::Realm {
-                realm_id: RealmId::new("ak:realm:AW8gVTGSDcgFsgxhf3pxx6_g2zsDTvJO7mE-h6cesXnI").unwrap(),
+                realm_id: RealmId::new("ak:realm:AW8gVTGSDcgFsgxhf3pxx6_g2zsDTvJO7mE-h6cesXnI")
+                    .unwrap(),
             },
             seal_ref: SealId::new(format!("ak:seal:sha256:{}", "a".repeat(64))).unwrap(),
             sender_device_id: device(),

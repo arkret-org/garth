@@ -1284,7 +1284,8 @@ mod tests {
     #[test]
     fn backoff_seeds_are_stable_and_scope_specific() {
         let realm_a = realm_id();
-        let realm_b = RealmId::new("ak:realm:AT0jIIg6naB0Vkqbb-ip6eunf-bHr5-nh4pz2_kYNyVX").unwrap();
+        let realm_b =
+            RealmId::new("ak:realm:AT0jIIg6naB0Vkqbb-ip6eunf-bHr5-nh4pz2_kYNyVX").unwrap();
         assert_eq!(
             stable_backoff_seed(11, 0xA11C_E001, &realm_a),
             stable_backoff_seed(11, 0xA11C_E001, &realm_a)
