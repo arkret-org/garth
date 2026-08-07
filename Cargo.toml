@@ -39,7 +39,6 @@ arkret-models-collaboration = {version = "0.3.0",path = "../arkret-rust-sdk/crat
 arkret-models-crypto = {version = "0.3.0",path = "../arkret-rust-sdk/crates/models-crypto",default-features = false}
 arkret-models-discovery = {version = "0.3.0",path = "../arkret-rust-sdk/crates/models-discovery",default-features = false}
 arkret-models-identity = {version = "0.3.0",path = "../arkret-rust-sdk/crates/models-identity",default-features = false}
-arkret-models-integration = {version = "0.3.0",path = "../arkret-rust-sdk/crates/models-integration",default-features = false}
 arkret-http-client = {version = "0.3.0",path = "../arkret-rust-sdk/crates/http-client",default-features = false}
 arkret-schema = {version = "0.3.0",path = "../arkret-rust-sdk/crates/schema",default-features = false}
 arkret-signatures = {version = "0.3.0",path = "../arkret-rust-sdk/crates/signatures",default-features = false,features = ["collaboration"]}
