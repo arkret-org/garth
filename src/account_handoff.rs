@@ -7,13 +7,12 @@
 use crate::protocol::{
     AccountBindingReceipt, AccountHandoffAuthenticationProof,
     AccountHandoffAuthenticationProofKind, AccountHandoffBinding, AccountHandoffOutcome,
-    AccountHandoffRequestBody, AccountRegisterRequestBody, DeviceId, Did,
+    AccountHandoffRequestBody, AccountRegisterOutcome, AccountRegisterRequestBody, Did,
     DidOperationSubmitRequestBody, Hash, IdentityBindingChallengeOutcome,
     IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationControlProof,
     IdentityCreationControlProofKind, IdentityCreationLease, IdentityCreationRegistration,
-    RequestId, Result, SessionGrantDeviceBootstrapRequest, SessionGrantRequestBody,
+    InitialSessionGrantRequest, PcrGenesisUnit, RequestId, Result,
 };
-use chrono::{DateTime, Utc};
 
 #[derive(Clone, Debug)]
 pub struct OidcAccountHandoffInput {
@@ -89,6 +88,8 @@ pub fn identity_binding_challenge_request(
     request_id: RequestId,
     lease: &IdentityCreationLease,
     did_operation: DidOperationSubmitRequestBody,
+    pcr_genesis_unit: &PcrGenesisUnit,
+    initial_session: &InitialSessionGrantRequest,
 ) -> Result<IdentityBindingChallengeRequestBody> {
     let reserved =
         crate::protocol::ReservedIdentityCreation::from_operation(did_operation.clone())?;
@@ -99,12 +100,26 @@ pub fn identity_binding_challenge_request(
             "identity-creation lease is already reserved for a different operation",
         ));
     }
-    Ok(IdentityBindingChallengeRequestBody {
+    pcr_genesis_unit.validate_ordered_envelopes()?;
+    initial_session.validate()?;
+    let create = pcr_genesis_unit.create();
+    let authorize = pcr_genesis_unit.founding_authorize();
+    let request = IdentityBindingChallengeRequestBody {
         request_id,
-        lease_id: lease.lease_id.clone(),
+        identity_creation_lease_id: lease.lease_id.clone(),
         lease_fence: lease.fence,
         did_operation,
-    })
+        pcr_realm_id: create.realm_id.clone(),
+        realm_create_payload_digest: Hash::new(crate::protocol::canonical::canonical_sha256(
+            &create.payload,
+        )?)?,
+        founding_authorize_payload_digest: Hash::new(
+            crate::protocol::canonical::canonical_sha256(&authorize.payload)?,
+        )?,
+        initial_session_request_digest: initial_session.canonical_request_digest()?,
+    };
+    request.canonical_request_digest()?;
+    Ok(request)
 }
 
 /// Build the canonical identity-creation register request and sign its control
@@ -112,6 +127,8 @@ pub fn identity_binding_challenge_request(
 pub fn identity_creation_register_request(
     challenge: &IdentityBindingChallengeOutcome,
     did_operation: DidOperationSubmitRequestBody,
+    pcr_genesis_unit: PcrGenesisUnit,
+    initial_session: InitialSessionGrantRequest,
     root_seed: &[u8; 32],
     display_name: Option<String>,
 ) -> Result<AccountRegisterRequestBody> {
@@ -120,7 +137,7 @@ pub fn identity_creation_register_request(
             .map_err(|error| protocol(error.to_string()))?;
     if challenge.principal_id != validated.principal_id
         || challenge.operation_digest != validated.operation_digest
-        || challenge.purpose != IdentityBindingPurpose::AccountBinding
+        || challenge.purpose != IdentityBindingPurpose::AccountBindingAndPcrGenesis
     {
         return Err(protocol(
             "identity-binding challenge does not match the inception operation",
@@ -133,7 +150,12 @@ pub fn identity_creation_register_request(
         purpose: challenge.purpose,
         principal_id: challenge.principal_id.clone(),
         operation_digest: challenge.operation_digest.clone(),
-        lease_id: challenge.lease_id.clone(),
+        pcr_realm_id: challenge.pcr_realm_id.clone(),
+        realm_create_payload_digest: challenge.realm_create_payload_digest.clone(),
+        founding_authorize_payload_digest: challenge.founding_authorize_payload_digest.clone(),
+        initial_session_request_digest: challenge.initial_session_request_digest.clone(),
+        genesis_unit_kinds: challenge.genesis_unit_kinds,
+        identity_creation_lease_id: challenge.identity_creation_lease_id.clone(),
         lease_fence: challenge.lease_fence,
         dpop_jkt: challenge.dpop_jkt.clone(),
         audience: challenge.audience.clone(),
@@ -149,28 +171,30 @@ pub fn identity_creation_register_request(
         root_seed,
     )
     .map_err(|error| protocol(error.to_string()))?;
-    Ok(AccountRegisterRequestBody {
+    let request = AccountRegisterRequestBody {
         principal_id: challenge.principal_id.clone(),
         display_name,
-        // The founding device is enrolled only after the verified binding
-        // receipt exists; identity creation itself cannot authorize a device.
-        device_id: None,
+        device_id: Some(initial_session.device_id.clone()),
         proof: None,
         identity_creation: Some(IdentityCreationRegistration {
-            lease_id: challenge.lease_id.clone(),
+            identity_creation_lease_id: challenge.identity_creation_lease_id.clone(),
             lease_fence: challenge.lease_fence,
             did_operation,
             control_proof,
+            pcr_genesis_unit,
+            initial_session,
         }),
         policy_evidence: None,
-    })
+    };
+    request.validate()?;
+    Ok(request)
 }
 
 pub fn validate_binding_receipt(
     receipt: &AccountBindingReceipt,
     challenge: &IdentityBindingChallengeOutcome,
 ) -> Result<()> {
-    if receipt.lease_id != challenge.lease_id
+    if receipt.identity_creation_lease_id != challenge.identity_creation_lease_id
         || receipt.lease_fence != challenge.lease_fence
         || receipt.operation_digest != challenge.operation_digest
     {
@@ -181,30 +205,14 @@ pub fn validate_binding_receipt(
     Ok(())
 }
 
-/// Build and holder-sign the session request immediately following a verified
-/// binding. The signing callback must use the handoff holder / DPoP key.
-pub fn pre_registration_session_grant_request(
-    principal_id: Did,
-    device_id: DeviceId,
-    requested_scope: Vec<String>,
-    device_bootstrap_request: SessionGrantDeviceBootstrapRequest,
-    account_handoff_grant: &str,
-    audience: Did,
-    expires_at: DateTime<Utc>,
-    sign: impl FnOnce(&[u8]) -> Result<String>,
-) -> Result<SessionGrantRequestBody> {
-    let mut request =
-        crate::protocol::session_grant::pre_registration_handoff_session_grant_request(
-            principal_id,
-            device_id,
-            requested_scope,
-            device_bootstrap_request,
-            account_handoff_grant,
-            audience,
-            expires_at,
-        )?;
-    request.proof.signature = sign(&request.proof.canonical_signing_bytes()?)?;
-    Ok(request)
+/// Validate the only successful identity-creation terminal: the account is
+/// bound, PCR genesis has a verified receipt, and the first grant is Standard.
+pub fn validate_identity_creation_outcome(
+    outcome: &AccountRegisterOutcome,
+    request: &AccountRegisterRequestBody,
+) -> Result<()> {
+    outcome.validate_against_request(request)?;
+    Ok(())
 }
 
 fn protocol(message: impl Into<String>) -> crate::protocol::Error {
@@ -213,9 +221,8 @@ fn protocol(message: impl Into<String>) -> crate::protocol::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
-
     use super::*;
+    use chrono::Utc;
 
     fn did(value: &str) -> Did {
         Did::new(value.to_owned()).unwrap()
@@ -275,57 +282,5 @@ mod tests {
         ));
         outcome.allowed_operations.swap(0, 1);
         assert!(account_handoff_disposition(&outcome).is_err());
-    }
-
-    #[test]
-    fn founding_handoff_request_keeps_client_fixed_bootstrap_and_signs_once() {
-        let fixture: serde_json::Value = serde_json::from_str(include_str!(
-            "../../arkret-spec/spec/v1/artifacts/fixtures/device-bootstrap-fixture.json"
-        ))
-        .unwrap();
-        let enroll: arkret_models_identity::AccountDeviceEnrollRequestBody =
-            serde_json::from_value(fixture["enroll_request"].clone()).unwrap();
-        let event_ids = fixture["founding_batch"]["event_ids"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|value| arkret_wire::EventId::new(value.as_str().unwrap().to_owned()).unwrap())
-            .collect();
-        let bootstrap = SessionGrantDeviceBootstrapRequest {
-            mode: arkret_models_collaboration::session_grant_bodies::SessionGrantDeviceBootstrapMode::Founding,
-            authorize_event_preimage: enroll.authorize_event_preimage,
-            founding_event_ids: event_ids,
-            founding_batch_digest: Hash::new(
-                fixture["founding_batch"]["expected_digest"]
-                    .as_str()
-                    .unwrap()
-                    .to_owned(),
-            )
-            .unwrap(),
-        };
-        let sign_count = Cell::new(0);
-        let request = pre_registration_session_grant_request(
-            did("did:webvh:z6mkfixture:alice.example"),
-            DeviceId::new("ak:device:019a0000-0000-7000-8000-000000000001").unwrap(),
-            Vec::new(),
-            bootstrap.clone(),
-            &"handoff-secret".repeat(4),
-            did("did:webvh:z6mkfixture:principal.example"),
-            DateTime::parse_from_rfc3339("2026-08-08T12:05:00Z")
-                .unwrap()
-                .with_timezone(&Utc),
-            |_| {
-                sign_count.set(sign_count.get() + 1);
-                Ok("holder-signature".to_owned())
-            },
-        )
-        .unwrap();
-
-        request.validate().unwrap();
-        assert_eq!(sign_count.get(), 1);
-        assert_eq!(request.device_bootstrap_request, Some(bootstrap));
-        let first = arkret_canonical::canonical_json_bytes(&request).unwrap();
-        let replay = arkret_canonical::canonical_json_bytes(&request).unwrap();
-        assert_eq!(first, replay);
     }
 }

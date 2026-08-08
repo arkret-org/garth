@@ -105,6 +105,41 @@ impl SessionGrantState {
         }
     }
 
+    pub fn from_initial_registration_outcome(
+        request: &crate::protocol::InitialSessionGrantRequest,
+        outcome: SessionGrantOutcome,
+        now: DateTime<Utc>,
+    ) -> Result<Self> {
+        if outcome.session_grant.trim().is_empty() || outcome.expires_at <= now {
+            return Err(protocol(
+                "initial Standard session grant is empty or expired",
+            ));
+        }
+        if outcome.device_id.as_ref() != Some(&request.device_id)
+            || outcome.session_public_key != request.session_public_key
+            || outcome.audience != request.audience
+            || outcome
+                .granted_scope
+                .iter()
+                .any(|scope| !request.requested_scope.contains(scope))
+        {
+            return Err(protocol(
+                "initial Standard session grant does not match registration request",
+            ));
+        }
+        Ok(Self {
+            principal_id: outcome.principal_id,
+            device_id: outcome.device_id,
+            grant_id: outcome.grant_id,
+            grant_jwt: outcome.session_grant,
+            expires_at: outcome.expires_at,
+            audience: outcome.audience,
+            granted_scope: outcome.granted_scope,
+            session_public_key: Some(outcome.session_public_key.into_string()),
+            dpop_jkt: Some(request.session_public_key.thumbprint_sha256()?),
+        })
+    }
+
     fn refresh_state(&self) -> SessionGrantRefreshState {
         SessionGrantRefreshState {
             grant_expires_at: Some(self.expires_at),

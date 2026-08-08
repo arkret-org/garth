@@ -5,7 +5,9 @@
 
 pub(crate) use crate::{Error, Result};
 pub(crate) use arkret_keystore::{KeyBytes, KeyStore, KeyStoreError};
-pub(crate) use arkret_models_collaboration::account_lifecycle::AccountRegisterRequestBody;
+pub(crate) use arkret_models_collaboration::account_lifecycle::{
+    AccountRegisterOutcome, AccountRegisterRequestBody,
+};
 pub(crate) use arkret_models_collaboration::agent_operations::AgentRequestedScopeDisclosure;
 pub(crate) use arkret_models_collaboration::agent_signer_evidence::{
     AgentSignerEvidence, AgentSignerEvidenceQuerySelector,
@@ -17,10 +19,9 @@ pub(crate) use arkret_models_collaboration::http_bodies::{
     EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind,
 };
 pub(crate) use arkret_models_collaboration::session_grant_bodies::{
-    SessionGrantAgentScopeRequest, SessionGrantAppletDelegation,
-    SessionGrantDeviceBootstrapRequest, SessionGrantDpopBindingProof, SessionGrantOutcome,
-    SessionGrantRefreshOutcome, SessionGrantRefreshProof, SessionGrantRefreshRequestBody,
-    SessionGrantRequestBody,
+    SessionGrantAgentScopeRequest, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
+    SessionGrantOutcome, SessionGrantRefreshOutcome, SessionGrantRefreshProof,
+    SessionGrantRefreshRequestBody, SessionGrantRequestBody,
 };
 pub(crate) use arkret_models_collaboration::signal_message_stream::{
     MAX_MESSAGE_STREAM_LIFETIME_SECONDS, MAX_MESSAGE_STREAM_PREVIEW_BYTES,
@@ -53,14 +54,15 @@ pub(crate) use arkret_models_identity::{
     AccountHandoffRequestBody, DeviceVerificationState, DidOperationSubmitRequestBody,
     IdentityBindingChallengeOutcome, IdentityBindingChallengeRequestBody, IdentityBindingPurpose,
     IdentityCreationControlProof, IdentityCreationControlProofKind, IdentityCreationLease,
-    IdentityCreationRegistration, ReservedIdentityCreation, SessionGrantProofKind,
+    IdentityCreationRegistration, InitialSessionGrantRequest, ReservedIdentityCreation,
+    SessionGrantProofKind,
 };
 pub(crate) use arkret_state::resolver::RealmState;
 pub use arkret_wire::{AuthorizationLease, IngressReceipt};
 pub(crate) use arkret_wire::{
     BlobRef, DeviceId, Did, DidUrl, Event, EventId, EventKind, Hash, Hlc, MessageId,
-    MessageStreamId, NonEmptyString, RealmId, RequestId, ScopeRef, SealId, SessionGrantId,
-    SidecarId, SignalEnvelope, SignalStreamFrame, StrandId,
+    MessageStreamId, NonEmptyString, PcrGenesisUnit, RealmId, RequestId, ScopeRef, SealId,
+    SessionGrantId, SidecarId, SignalEnvelope, SignalStreamFrame, StrandId,
 };
 pub(crate) use arkret_wire::{ProtocolOpaqueId, ProtocolOperationId};
 
@@ -156,7 +158,6 @@ pub(crate) mod session_grant {
     pub(crate) use arkret_auth::session_grant::{
         agent_key_proof_session_grant_request, did_proof_session_grant_request,
         holder_proof_session_grant_request, oidc_session_grant_request,
-        pre_registration_handoff_session_grant_request,
     };
 }
 

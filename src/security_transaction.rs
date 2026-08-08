@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex};
 use arkret_models_crypto::TypedSecurityTransactionContinueRequest;
 use arkret_models_crypto::{BackupSeriesEraseOutcome, BackupSeriesEraseRequestBody};
 use arkret_wire::{
-    Hash, PromoteRecoverySessionGrantOutcome, PromoteRecoverySessionGrantRequest,
+    Hash, IssueRecoveryCompletionGrantOutcome, IssueRecoveryCompletionGrantRequest,
     SecurityTransaction, SecurityTransactionCreateRequest, SecurityTransactionState,
     SecurityTransactionStep, TransactionId,
 };
@@ -49,10 +49,10 @@ pub trait SecurityTransactionTransport: MaybeSendSync {
         request: &'a BackupSeriesEraseRequestBody,
     ) -> BoxSecurityTransactionFuture<'a, BackupSeriesEraseOutcome>;
 
-    fn promote_recovery_session_grant<'a>(
+    fn issue_recovery_completion_grant<'a>(
         &'a self,
-        request: &'a PromoteRecoverySessionGrantRequest,
-    ) -> BoxSecurityTransactionFuture<'a, PromoteRecoverySessionGrantOutcome>;
+        request: &'a IssueRecoveryCompletionGrantRequest,
+    ) -> BoxSecurityTransactionFuture<'a, IssueRecoveryCompletionGrantOutcome>;
 }
 
 impl SecurityTransactionTransport for arkret_http_client::Client {
@@ -97,12 +97,12 @@ impl SecurityTransactionTransport for arkret_http_client::Client {
         Box::pin(async move { self.erase_backup_series(request).await.map_err(Error::from) })
     }
 
-    fn promote_recovery_session_grant<'a>(
+    fn issue_recovery_completion_grant<'a>(
         &'a self,
-        request: &'a PromoteRecoverySessionGrantRequest,
-    ) -> BoxSecurityTransactionFuture<'a, PromoteRecoverySessionGrantOutcome> {
+        request: &'a IssueRecoveryCompletionGrantRequest,
+    ) -> BoxSecurityTransactionFuture<'a, IssueRecoveryCompletionGrantOutcome> {
         Box::pin(async move {
-            self.promote_recovery_session_grant(request)
+            self.issue_recovery_completion_grant(request)
                 .await
                 .map_err(Error::from)
         })
@@ -127,7 +127,9 @@ pub struct DurableSecurityTransaction {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_erase_request: Option<Vec<u8>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_promotion_request: Option<Vec<u8>>,
+    pub pending_completion_grant_request: Option<Vec<u8>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub accepted_completion_grant_request: Option<Vec<u8>>,
     /// Cached UI projection only; GET remains authoritative.
     pub last_observed_resource: Option<SecurityTransaction>,
 }
@@ -353,7 +355,8 @@ where
                     pending_continue: None,
                     accepted_terminal_continue: None,
                     pending_erase_request: None,
-                    pending_promotion_request: None,
+                    pending_completion_grant_request: None,
+                    accepted_completion_grant_request: None,
                     last_observed_resource: None,
                 };
                 self.store.save(&state).await?;
@@ -526,11 +529,11 @@ where
             .map(Some)
     }
 
-    pub async fn promote_recovery_session_grant(
+    pub async fn issue_recovery_completion_grant(
         &self,
         transaction_id: &TransactionId,
-        request: &PromoteRecoverySessionGrantRequest,
-    ) -> Result<PromoteRecoverySessionGrantOutcome> {
+        request: &IssueRecoveryCompletionGrantRequest,
+    ) -> Result<IssueRecoveryCompletionGrantOutcome> {
         let mut local = self.store.load(transaction_id)?.ok_or_else(|| {
             Error::Protocol(format!(
                 "security transaction {} has no local public plan",
@@ -539,12 +542,12 @@ where
         })?;
         if &request.transaction_id != transaction_id {
             return Err(Error::Protocol(
-                "recovery grant promotion belongs to a different transaction".to_owned(),
+                "recovery completion grant belongs to a different transaction".to_owned(),
             ));
         }
         let resource = local.last_observed_resource.as_ref().ok_or_else(|| {
             Error::Protocol(
-                "recovery grant promotion requires an authoritative terminal resource".to_owned(),
+                "recovery completion grant requires an authoritative terminal resource".to_owned(),
             )
         })?;
         if resource.state != SecurityTransactionState::Completed
@@ -555,62 +558,83 @@ where
                 != Some(&request.completion_attestation)
         {
             return Err(Error::Protocol(
-                "recovery grant promotion does not match the completed transaction attestation"
+                "recovery completion grant does not match the completed transaction attestation"
                     .to_owned(),
             ));
         }
         request.validate_structural().map_err(Error::from)?;
         let canonical = arkret_canonical::canonical_json_bytes(request)?;
         if local
-            .pending_promotion_request
+            .pending_completion_grant_request
             .as_ref()
-            .is_some_and(|existing| existing != &canonical)
+            .into_iter()
+            .chain(local.accepted_completion_grant_request.as_ref())
+            .any(|existing| existing != &canonical)
         {
             return Err(Error::IdempotencyConflict(format!(
-                "{}:promote_recovery_session_grant",
+                "{}:issue_recovery_completion_grant",
                 transaction_id.as_str()
             )));
         }
-        local.pending_promotion_request = Some(canonical);
+        local.pending_completion_grant_request = Some(canonical.clone());
         self.store.save(&local).await?;
         let outcome = self
             .transport
-            .promote_recovery_session_grant(request)
+            .issue_recovery_completion_grant(request)
             .await?;
-        if outcome.transaction_id != *transaction_id
-            || outcome.consumed_grant_id != request.old_grant_id
-        {
+        if outcome.transaction_id != *transaction_id {
             return Err(Error::Protocol(
-                "recovery grant promotion outcome changed its transaction binding".to_owned(),
+                "recovery completion grant outcome changed its transaction binding".to_owned(),
             ));
         }
-        local.pending_promotion_request = None;
+        let initial_session: arkret_models_identity::InitialSessionGrantRequest =
+            serde_json::from_value(request.initial_session.clone()).map_err(|error| {
+                Error::Protocol(format!(
+                    "recovery completion initial_session is invalid: {error}"
+                ))
+            })?;
+        let session_grant_outcome: crate::protocol::SessionGrantOutcome =
+            serde_json::from_value(outcome.session_grant_outcome.clone()).map_err(|error| {
+                Error::Protocol(format!(
+                    "recovery completion session grant is invalid: {error}"
+                ))
+            })?;
+        crate::SessionGrantState::from_initial_registration_outcome(
+            &initial_session,
+            session_grant_outcome,
+            chrono::Utc::now(),
+        )?;
+        local.pending_completion_grant_request = None;
+        local.accepted_completion_grant_request = Some(canonical);
         self.store.save(&local).await?;
         Ok(outcome)
     }
 
-    pub async fn retry_pending_promotion(
+    pub async fn retry_durable_completion_grant(
         &self,
         transaction_id: &TransactionId,
-    ) -> Result<Option<PromoteRecoverySessionGrantOutcome>> {
+    ) -> Result<Option<IssueRecoveryCompletionGrantOutcome>> {
         let local = self.store.load(transaction_id)?.ok_or_else(|| {
             Error::Protocol(format!(
                 "security transaction {} has no local public plan",
                 transaction_id.as_str()
             ))
         })?;
-        let Some(canonical) = local.pending_promotion_request else {
+        let Some(canonical) = local
+            .pending_completion_grant_request
+            .or(local.accepted_completion_grant_request)
+        else {
             return Ok(None);
         };
-        let request: PromoteRecoverySessionGrantRequest = serde_json::from_value(
+        let request: IssueRecoveryCompletionGrantRequest = serde_json::from_value(
             arkret_canonical::parse_canonical_json(&canonical)?,
         )
         .map_err(|error| {
             Error::Protocol(format!(
-                "stored recovery grant promotion request is invalid: {error}"
+                "stored recovery completion grant request is invalid: {error}"
             ))
         })?;
-        self.promote_recovery_session_grant(transaction_id, &request)
+        self.issue_recovery_completion_grant(transaction_id, &request)
             .await
             .map(Some)
     }
@@ -674,7 +698,8 @@ mod tests {
             pending_continue: None,
             accepted_terminal_continue: None,
             pending_erase_request: None,
-            pending_promotion_request: None,
+            pending_completion_grant_request: None,
+            accepted_completion_grant_request: None,
             last_observed_resource: None,
         };
         store.save(&state).await.unwrap();
@@ -701,7 +726,8 @@ mod tests {
             pending_continue: None,
             accepted_terminal_continue: None,
             pending_erase_request: None,
-            pending_promotion_request: None,
+            pending_completion_grant_request: None,
+            accepted_completion_grant_request: None,
             last_observed_resource: None,
         };
         let progress = state.progress();
@@ -733,7 +759,8 @@ mod tests {
             pending_continue: None,
             accepted_terminal_continue: None,
             pending_erase_request: None,
-            pending_promotion_request: None,
+            pending_completion_grant_request: None,
+            accepted_completion_grant_request: None,
             last_observed_resource: None,
         };
 

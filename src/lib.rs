@@ -41,7 +41,7 @@ pub mod websocket;
 pub use account_handoff::{
     AccountHandoffDisposition, OidcAccountHandoffInput, account_handoff_disposition,
     identity_binding_challenge_request, identity_creation_register_request,
-    oidc_account_handoff_request, pre_registration_session_grant_request, validate_binding_receipt,
+    oidc_account_handoff_request, validate_binding_receipt, validate_identity_creation_outcome,
 };
 pub use arkret_models_collaboration::signal_message_stream::MESSAGE_STREAM_KIND;
 pub use backoff::Backoff;
@@ -101,14 +101,10 @@ pub use security_transaction::{
 pub use session::{
     AgentKeyProofLogin, AuthenticatedTransportFactory, DidProofLogin, GRANT_ROTATION_SKEW_SECS,
     HolderProofLogin, LoginKind, NoopSessionGrantStore, OidcLogin, POLL_INTERVAL_SECS,
-    PreRegistrationHandoffLogin, REFRESH_SKEW_SECS, RefreshDecision, SecureSessionGrantStore,
-    SessionEngine, SessionGrantRefreshState, SessionGrantState, SessionGrantStore,
-    SessionGrantTransport, SessionHandle, SessionProofFields, SessionRefreshOptions,
-    SessionTransportProvider, grant_due_for_rotation, grant_is_dead, refresh_decision,
-};
-pub use session::{
-    CANCEL_DEVICE_BOOTSTRAP_PATH, DeviceBootstrapCancelTransport, PreparedDeviceBootstrapCancel,
-    send_prepared_device_bootstrap_cancel,
+    REFRESH_SKEW_SECS, RefreshDecision, SecureSessionGrantStore, SessionEngine,
+    SessionGrantRefreshState, SessionGrantState, SessionGrantStore, SessionGrantTransport,
+    SessionHandle, SessionProofFields, SessionRefreshOptions, SessionTransportProvider,
+    grant_due_for_rotation, grant_is_dead, refresh_decision,
 };
 pub use signal::{
     PresenceObservation, PresenceProjection, PresenceStatus, SIGNAL_PLAINTEXT_KIND_CALL,
