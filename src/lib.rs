@@ -106,6 +106,10 @@ pub use session::{
     SessionGrantTransport, SessionHandle, SessionProofFields, SessionRefreshOptions,
     SessionTransportProvider, grant_due_for_rotation, grant_is_dead, refresh_decision,
 };
+pub use session::{
+    CANCEL_DEVICE_BOOTSTRAP_PATH, DeviceBootstrapCancelTransport, PreparedDeviceBootstrapCancel,
+    send_prepared_device_bootstrap_cancel,
+};
 pub use signal::{
     PresenceObservation, PresenceProjection, PresenceStatus, SIGNAL_PLAINTEXT_KIND_CALL,
     SIGNAL_PLAINTEXT_KIND_PRESENCE, SignalDecryptor, SignalPlaintext, SignalReceiver,

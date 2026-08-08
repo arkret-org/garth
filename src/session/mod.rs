@@ -1,3 +1,4 @@
+pub mod bootstrap_cancel;
 pub mod dpop;
 pub mod engine;
 pub mod login;
@@ -5,6 +6,10 @@ mod provider;
 pub mod refresh;
 mod store;
 
+pub use bootstrap_cancel::{
+    CANCEL_DEVICE_BOOTSTRAP_PATH, DeviceBootstrapCancelTransport, PreparedDeviceBootstrapCancel,
+    send_prepared_device_bootstrap_cancel,
+};
 pub use engine::{
     BoxSessionFuture, REFRESH_SUCCESS_COOLDOWN_SECS, SessionEngine, SessionGrantState,
     SessionGrantTransport, SessionRefreshOptions,
