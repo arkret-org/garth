@@ -3,8 +3,9 @@ use crate::protocol::session_grant::{
     holder_proof_session_grant_request, oidc_session_grant_request,
 };
 use crate::protocol::{
-    DeviceId, Did, DidUrl, Hash, Result, SessionGrantAgentScopeRequest,
-    SessionGrantAppletDelegation, SessionGrantDpopBindingProof, SessionGrantRequestBody,
+    AgentRequestedScopeDisclosure, DeviceId, Did, DidUrl, Hash, Result,
+    SessionGrantAgentScopeRequest, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
+    SessionGrantRequestBody,
 };
 use chrono::{DateTime, Utc};
 
@@ -17,6 +18,7 @@ pub struct AgentKeyProofLogin {
     pub requested_scope: Vec<String>,
     pub agent_key_authorization_ref: String,
     pub agent_scope_request: SessionGrantAgentScopeRequest,
+    pub requested_scope_disclosure: Option<AgentRequestedScopeDisclosure>,
     pub dpop_binding_proof: SessionGrantDpopBindingProof,
     pub verification_method: DidUrl,
     pub challenge: String,
@@ -34,6 +36,7 @@ impl AgentKeyProofLogin {
             self.requested_scope,
             self.agent_key_authorization_ref,
             self.agent_scope_request,
+            self.requested_scope_disclosure,
             self.dpop_binding_proof,
             self.verification_method,
             self.challenge,
@@ -304,6 +307,7 @@ mod tests {
                 strand_ids: Vec::new(),
                 track_names: Vec::new(),
             },
+            requested_scope_disclosure: None,
             dpop_binding_proof: SessionGrantDpopBindingProof {
                 proof_jwt: "dpop-proof".to_owned(),
             },

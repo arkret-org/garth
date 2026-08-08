@@ -352,10 +352,7 @@ mod tests {
     fn grant_id(n: u64) -> SessionGrantId {
         let mut digest = [0_u8; 32];
         digest[24..].copy_from_slice(&n.to_be_bytes());
-        SessionGrantId::from_event_id(&crate::protocol::EventId::from_digest(
-            arkret_canonical::DigestSuite::Sha256,
-            digest,
-        ))
+        SessionGrantId::from_issuance_digest(digest)
     }
 
     fn state() -> SessionGrantState {
@@ -378,7 +375,10 @@ mod tests {
         SessionGrantRefreshOutcome {
             grant_id: grant_id(2),
             grant_jwt: "grant-2".to_owned(),
-            session_public_key: "session-public-key".to_owned(),
+            session_public_key: arkret_models_identity::CanonicalSessionPublicJwk::new(
+                r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
+            )
+            .unwrap(),
             expires_at: Utc::now() + Duration::hours(1),
             audience: Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
             scopes: vec!["ak.self.events.stream.subscribe".to_owned()],
@@ -414,17 +414,13 @@ mod tests {
                         DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
                     ),
                     proof: Some(SessionGrantRefreshProof {
-                        proof_kind: Some(SessionGrantProofKind::DidBoundSignature),
-                        challenge: Some("refresh-challenge".to_owned()),
-                        request_canonical_digest: Some(
-                            Hash::new("sha256:0000000000000000000000000000000000000000000000000000000000000000").unwrap(),
-                        ),
-                        audience: Some(
-                            Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
-                        ),
-                        issued_at: Some(Utc::now()),
-                        expires_at: Some(Utc::now() + Duration::minutes(5)),
-                        signature: Some("refresh-proof-signature".to_owned()),
+                        proof_kind: SessionGrantProofKind::DidBoundSignature,
+                        challenge: "refresh-challenge".to_owned(),
+                        request_canonical_digest: Hash::new("sha256:0000000000000000000000000000000000000000000000000000000000000000").unwrap(),
+                        audience: Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
+                        issued_at: Utc::now(),
+                        expires_at: Utc::now() + Duration::minutes(5),
+                        signature: "refresh-proof-signature".to_owned(),
                         verification_method: Some(
                             DidUrl::new("did:webvh:z6mkfixture:alice.example#device-1").unwrap(),
                         ),
@@ -489,18 +485,16 @@ mod tests {
             audience: Some(Did::new("did:webvh:z6mkfixture:service.example").unwrap()),
             device_id: state().device_id.clone(),
             proof: Some(SessionGrantRefreshProof {
-                proof_kind: Some(SessionGrantProofKind::DidBoundSignature),
-                challenge: Some("refresh-challenge".to_owned()),
-                request_canonical_digest: Some(
-                    Hash::new(
-                        "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-                    )
-                    .unwrap(),
-                ),
-                audience: Some(Did::new("did:webvh:z6mkfixture:service.example").unwrap()),
-                issued_at: Some(Utc::now()),
-                expires_at: Some(Utc::now() + chrono::Duration::minutes(5)),
-                signature: Some("refresh-proof-signature".to_owned()),
+                proof_kind: SessionGrantProofKind::DidBoundSignature,
+                challenge: "refresh-challenge".to_owned(),
+                request_canonical_digest: Hash::new(
+                    "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+                )
+                .unwrap(),
+                audience: Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
+                issued_at: Utc::now(),
+                expires_at: Utc::now() + chrono::Duration::minutes(5),
+                signature: "refresh-proof-signature".to_owned(),
                 verification_method: Some(
                     DidUrl::new("did:webvh:z6mkfixture:alice.example#device-1").unwrap(),
                 ),

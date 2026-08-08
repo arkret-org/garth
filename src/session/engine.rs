@@ -337,8 +337,8 @@ fn refresh_request(
         SessionGrantRefreshRequestBody {
             grant_jwt: current.grant_jwt.clone(),
             audience: Some(audience),
-            device_id: Some(device_id),
-            proof: Some(proof),
+            device_id,
+            proof,
         },
         expected_dpop_jkt,
     ))
@@ -361,18 +361,12 @@ fn state_from_issue_outcome(
     if request.device_id.as_ref() != outcome.device_id.as_ref() {
         return Err(protocol("issued session grant device changed"));
     }
-    let audience = required(outcome.audience, "issued session grant audience is missing")?;
+    let audience = outcome.audience;
     if audience != request.proof.audience {
         return Err(protocol("issued session grant audience changed"));
     }
-    let grant_id = required(outcome.grant_id, "issued session grant id is missing")?;
-    let session_public_key = required(
-        outcome.session_public_key,
-        "issued session grant public key is missing",
-    )?;
-    if session_public_key.trim().is_empty() {
-        return Err(protocol("issued session grant public key is empty"));
-    }
+    let grant_id = outcome.grant_id;
+    let session_public_key = outcome.session_public_key.into_string();
 
     Ok(SessionGrantState {
         principal_id: outcome.principal_id,
@@ -409,9 +403,6 @@ fn state_from_refresh_outcome(
     if outcome.grant_id == current.grant_id {
         return Err(protocol("refreshed session grant id was replayed"));
     }
-    if outcome.session_public_key.trim().is_empty() {
-        return Err(protocol("refreshed session grant public key is empty"));
-    }
     if outcome.dpop_jkt != expected_dpop_jkt {
         return Err(protocol("refreshed session grant DPoP key changed"));
     }
@@ -420,7 +411,7 @@ fn state_from_refresh_outcome(
             "refreshed session grant audience mismatched request",
         ));
     }
-    if request.device_id.as_ref() != current.device_id.as_ref() {
+    if current.device_id.as_ref() != Some(&request.device_id) {
         return Err(protocol(
             "refreshed session grant device mismatched request",
         ));
@@ -434,7 +425,7 @@ fn state_from_refresh_outcome(
         expires_at: outcome.expires_at,
         audience: outcome.audience,
         granted_scope: outcome.scopes,
-        session_public_key: Some(outcome.session_public_key),
+        session_public_key: Some(outcome.session_public_key.into_string()),
         dpop_jkt: Some(outcome.dpop_jkt),
     })
 }
@@ -547,10 +538,7 @@ mod tests {
     fn grant_id(n: u64) -> SessionGrantId {
         let mut digest = [0_u8; 32];
         digest[24..].copy_from_slice(&n.to_be_bytes());
-        SessionGrantId::from_event_id(&crate::protocol::EventId::from_digest(
-            arkret_canonical::DigestSuite::Sha256,
-            digest,
-        ))
+        SessionGrantId::from_issuance_digest(digest)
     }
 
     fn digest() -> Hash {
@@ -632,6 +620,7 @@ mod tests {
                 strand_ids: Vec::new(),
                 track_names: Vec::new(),
             },
+            requested_scope_disclosure: None,
             dpop_binding_proof: SessionGrantDpopBindingProof {
                 proof_jwt: "agent-dpop-proof".to_owned(),
             },
@@ -656,9 +645,12 @@ mod tests {
             device_id,
             session_grant: token.to_owned(),
             expires_at: now() + Duration::hours(1),
-            grant_id: Some(grant),
-            session_public_key: Some("session-public-key".to_owned()),
-            audience: Some(audience()),
+            grant_id: grant,
+            session_public_key: arkret_models_identity::CanonicalSessionPublicJwk::new(
+                r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
+            )
+            .unwrap(),
+            audience: audience(),
             granted_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
             scope_details: None::<SessionGrantScopeDetails>,
         }
@@ -693,13 +685,13 @@ mod tests {
 
     fn refresh_proof() -> SessionGrantRefreshProof {
         SessionGrantRefreshProof {
-            proof_kind: Some(SessionGrantProofKind::DidBoundSignature),
-            challenge: Some("refresh-challenge".to_owned()),
-            request_canonical_digest: Some(digest()),
-            audience: Some(audience()),
-            issued_at: Some(now()),
-            expires_at: Some(now() + Duration::minutes(5)),
-            signature: Some("refresh-proof-signature".to_owned()),
+            proof_kind: SessionGrantProofKind::DidBoundSignature,
+            challenge: "refresh-challenge".to_owned(),
+            request_canonical_digest: digest(),
+            audience: audience(),
+            issued_at: now(),
+            expires_at: now() + Duration::minutes(5),
+            signature: "refresh-proof-signature".to_owned(),
             verification_method: Some(
                 DidUrl::new("did:webvh:z6mkfixture:alice.example#device-1").unwrap(),
             ),
@@ -719,7 +711,10 @@ mod tests {
         SessionGrantRefreshOutcome {
             grant_id: grant,
             grant_jwt: token.to_owned(),
-            session_public_key: "session-public-key".to_owned(),
+            session_public_key: arkret_models_identity::CanonicalSessionPublicJwk::new(
+                r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
+            )
+            .unwrap(),
             expires_at: now() + Duration::hours(1),
             audience: audience(),
             scopes: vec!["ak.self.events.stream.subscribe".to_owned()],

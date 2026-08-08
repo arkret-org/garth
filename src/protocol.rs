@@ -6,6 +6,7 @@
 pub(crate) use crate::{Error, Result};
 pub(crate) use arkret_keystore::{KeyBytes, KeyStore, KeyStoreError};
 pub(crate) use arkret_models_collaboration::account_lifecycle::AccountRegisterRequestBody;
+pub(crate) use arkret_models_collaboration::agent_operations::AgentRequestedScopeDisclosure;
 pub(crate) use arkret_models_collaboration::agent_signer_evidence::{
     AgentSignerEvidence, AgentSignerEvidenceQuerySelector,
 };
@@ -16,9 +17,10 @@ pub(crate) use arkret_models_collaboration::http_bodies::{
     EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind,
 };
 pub(crate) use arkret_models_collaboration::session_grant_bodies::{
-    SessionGrantAgentScopeRequest, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
-    SessionGrantOutcome, SessionGrantRefreshOutcome, SessionGrantRefreshProof,
-    SessionGrantRefreshRequestBody, SessionGrantRequestBody,
+    SessionGrantAgentScopeRequest, SessionGrantAppletDelegation,
+    SessionGrantDeviceBootstrapRequest, SessionGrantDpopBindingProof, SessionGrantOutcome,
+    SessionGrantRefreshOutcome, SessionGrantRefreshProof, SessionGrantRefreshRequestBody,
+    SessionGrantRequestBody,
 };
 pub(crate) use arkret_models_collaboration::signal_message_stream::{
     MAX_MESSAGE_STREAM_LIFETIME_SECONDS, MAX_MESSAGE_STREAM_PREVIEW_BYTES,

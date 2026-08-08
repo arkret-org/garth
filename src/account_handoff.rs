@@ -11,7 +11,7 @@ use crate::protocol::{
     DidOperationSubmitRequestBody, Hash, IdentityBindingChallengeOutcome,
     IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationControlProof,
     IdentityCreationControlProofKind, IdentityCreationLease, IdentityCreationRegistration,
-    RequestId, Result, SessionGrantRequestBody,
+    RequestId, Result, SessionGrantDeviceBootstrapRequest, SessionGrantRequestBody,
 };
 use chrono::{DateTime, Utc};
 
@@ -185,8 +185,9 @@ pub fn validate_binding_receipt(
 /// binding. The signing callback must use the handoff holder / DPoP key.
 pub fn pre_registration_session_grant_request(
     principal_id: Did,
-    device_id: Option<DeviceId>,
+    device_id: DeviceId,
     requested_scope: Vec<String>,
+    device_bootstrap_request: SessionGrantDeviceBootstrapRequest,
     account_handoff_grant: &str,
     audience: Did,
     expires_at: DateTime<Utc>,
@@ -197,6 +198,7 @@ pub fn pre_registration_session_grant_request(
             principal_id,
             device_id,
             requested_scope,
+            device_bootstrap_request,
             account_handoff_grant,
             audience,
             expires_at,
@@ -211,6 +213,8 @@ fn protocol(message: impl Into<String>) -> crate::protocol::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
+
     use super::*;
 
     fn did(value: &str) -> Did {
@@ -271,5 +275,57 @@ mod tests {
         ));
         outcome.allowed_operations.swap(0, 1);
         assert!(account_handoff_disposition(&outcome).is_err());
+    }
+
+    #[test]
+    fn founding_handoff_request_keeps_client_fixed_bootstrap_and_signs_once() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../../arkret-spec/spec/v1/artifacts/fixtures/device-bootstrap-fixture.json"
+        ))
+        .unwrap();
+        let enroll: arkret_models_identity::AccountDeviceEnrollRequestBody =
+            serde_json::from_value(fixture["enroll_request"].clone()).unwrap();
+        let event_ids = fixture["founding_batch"]["event_ids"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|value| arkret_wire::EventId::new(value.as_str().unwrap().to_owned()).unwrap())
+            .collect();
+        let bootstrap = SessionGrantDeviceBootstrapRequest {
+            mode: arkret_models_collaboration::session_grant_bodies::SessionGrantDeviceBootstrapMode::Founding,
+            authorize_event_preimage: enroll.authorize_event_preimage,
+            founding_event_ids: event_ids,
+            founding_batch_digest: Hash::new(
+                fixture["founding_batch"]["expected_digest"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned(),
+            )
+            .unwrap(),
+        };
+        let sign_count = Cell::new(0);
+        let request = pre_registration_session_grant_request(
+            did("did:webvh:z6mkfixture:alice.example"),
+            DeviceId::new("ak:device:019a0000-0000-7000-8000-000000000001").unwrap(),
+            Vec::new(),
+            bootstrap.clone(),
+            &"handoff-secret".repeat(4),
+            did("did:webvh:z6mkfixture:principal.example"),
+            DateTime::parse_from_rfc3339("2026-08-08T12:05:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+            |_| {
+                sign_count.set(sign_count.get() + 1);
+                Ok("holder-signature".to_owned())
+            },
+        )
+        .unwrap();
+
+        request.validate().unwrap();
+        assert_eq!(sign_count.get(), 1);
+        assert_eq!(request.device_bootstrap_request, Some(bootstrap));
+        let first = arkret_canonical::canonical_json_bytes(&request).unwrap();
+        let replay = arkret_canonical::canonical_json_bytes(&request).unwrap();
+        assert_eq!(first, replay);
     }
 }
