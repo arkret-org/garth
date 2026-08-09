@@ -174,7 +174,7 @@ pub fn identity_creation_register_request(
     let request = AccountRegisterRequestBody {
         principal_id: challenge.principal_id.clone(),
         display_name,
-        device_id: Some(initial_session.device_id.clone()),
+        device_id: None,
         proof: None,
         identity_creation: Some(IdentityCreationRegistration {
             identity_creation_lease_id: challenge.identity_creation_lease_id.clone(),
