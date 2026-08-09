@@ -5,13 +5,13 @@
 //! cryptography and DTO validation to the Arkret SDK.
 
 use crate::protocol::{
-    AccountBindingReceipt, AccountHandoffAuthenticationProof,
-    AccountHandoffAuthenticationProofKind, AccountHandoffBinding, AccountHandoffOutcome,
-    AccountHandoffRequestBody, AccountRegisterOutcome, AccountRegisterRequestBody, Did,
+    AccountBindingReceipt, AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
+    AccountRegisterOutcome, AccountRegisterRequestBody, Base64UrlString, Did,
     DidOperationSubmitRequestBody, Hash, IdentityBindingChallengeOutcome,
-    IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationControlProof,
-    IdentityCreationControlProofKind, IdentityCreationLease, IdentityCreationRegistration,
-    InitialSessionGrantRequest, PcrGenesisUnit, RequestId, Result,
+    IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationLease,
+    IdentityCreationRegistration, InitialSessionGrantRequest, PcrGenesisUnit, RequestId, Result,
+    UnsignedAccountHandoffAuthenticationProof, UnsignedAccountHandoffRequestBody,
+    UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
 };
 
 #[derive(Clone, Debug)]
@@ -59,15 +59,12 @@ pub fn oidc_account_handoff_request(
     input: OidcAccountHandoffInput,
     sign: impl FnOnce(&[u8]) -> Result<String>,
 ) -> Result<AccountHandoffRequestBody> {
-    let placeholder = Hash::new(format!("sha256:{}", "0".repeat(64)))?;
-    let mut request = AccountHandoffRequestBody {
-        request_id: input.request_id,
-        proof: AccountHandoffAuthenticationProof {
-            proof_kind: AccountHandoffAuthenticationProofKind::OidcCodeExchange,
+    let unsigned = UnsignedAccountHandoffRequestBody::new(
+        input.request_id,
+        UnsignedAccountHandoffAuthenticationProof {
             // The authorization transaction nonce is the protocol challenge
             // for this code-exchange transcript.
             challenge: input.nonce.clone(),
-            request_canonical_digest: placeholder,
             audience: input.audience,
             issuer: input.issuer,
             client_id: input.client_id,
@@ -76,12 +73,10 @@ pub fn oidc_account_handoff_request(
             nonce: input.nonce,
             authorization_code: input.authorization_code,
             code_verifier: input.code_verifier,
-            signature: String::new(),
         },
-    };
-    request.proof.request_canonical_digest = request.canonical_request_digest()?;
-    request.proof.signature = sign(&request.proof.canonical_signing_bytes()?)?;
-    Ok(request)
+    )?;
+    let signature = Base64UrlString::new(sign(&unsigned.canonical_signing_bytes()?)?)?;
+    unsigned.attach_signature(signature)
 }
 
 pub fn identity_binding_challenge_request(
@@ -143,31 +138,30 @@ pub fn identity_creation_register_request(
             "identity-binding challenge does not match the inception operation",
         ));
     }
-    let mut control_proof = IdentityCreationControlProof {
-        proof_kind: IdentityCreationControlProofKind::DidWebvhInceptionUpdateKey,
-        challenge_id: challenge.challenge_id.clone(),
-        challenge: challenge.challenge.clone(),
-        purpose: challenge.purpose,
-        principal_id: challenge.principal_id.clone(),
-        operation_digest: challenge.operation_digest.clone(),
-        pcr_realm_id: challenge.pcr_realm_id.clone(),
-        realm_create_payload_digest: challenge.realm_create_payload_digest.clone(),
-        founding_authorize_payload_digest: challenge.founding_authorize_payload_digest.clone(),
-        initial_session_request_digest: challenge.initial_session_request_digest.clone(),
-        genesis_unit_kinds: challenge.genesis_unit_kinds,
-        identity_creation_lease_id: challenge.identity_creation_lease_id.clone(),
-        lease_fence: challenge.lease_fence,
-        dpop_jkt: challenge.dpop_jkt.clone(),
-        audience: challenge.audience.clone(),
-        origin: challenge.origin.clone(),
-        trust_domain: challenge.trust_domain.clone(),
-        issued_at: challenge.issued_at,
-        expires_at: challenge.expires_at,
-        verification_key_multibase: validated.root_public_key_multibase,
-        signature: String::new(),
-    };
-    crate::protocol::signatures::webvh::sign_identity_creation_control_proof(
-        &mut control_proof,
+    let unsigned_control_proof =
+        UnsignedIdentityCreationControlProof::new(UnsignedIdentityCreationControlProofBody {
+            challenge_id: challenge.challenge_id.clone(),
+            challenge: challenge.challenge.clone(),
+            purpose: challenge.purpose,
+            principal_id: challenge.principal_id.clone(),
+            operation_digest: challenge.operation_digest.clone(),
+            pcr_realm_id: challenge.pcr_realm_id.clone(),
+            realm_create_payload_digest: challenge.realm_create_payload_digest.clone(),
+            founding_authorize_payload_digest: challenge.founding_authorize_payload_digest.clone(),
+            initial_session_request_digest: challenge.initial_session_request_digest.clone(),
+            genesis_unit_kinds: challenge.genesis_unit_kinds,
+            identity_creation_lease_id: challenge.identity_creation_lease_id.clone(),
+            lease_fence: challenge.lease_fence,
+            dpop_jkt: challenge.dpop_jkt.clone(),
+            audience: challenge.audience.clone(),
+            origin: challenge.origin.clone(),
+            trust_domain: challenge.trust_domain.clone(),
+            issued_at: challenge.issued_at,
+            expires_at: challenge.expires_at,
+            verification_key_multibase: validated.root_public_key_multibase,
+        })?;
+    let control_proof = crate::protocol::signatures::webvh::sign_identity_creation_control_proof(
+        unsigned_control_proof,
         root_seed,
     )
     .map_err(|error| protocol(error.to_string()))?;
@@ -245,7 +239,7 @@ mod tests {
                 authorization_code: "code".to_owned(),
                 code_verifier: "verifier".to_owned(),
             },
-            |bytes| Ok(format!("signed:{}", bytes.len())),
+            |bytes| Ok(arkret_canonical::base64url_encode(bytes)),
         )
         .unwrap();
 
@@ -257,7 +251,7 @@ mod tests {
                 .as_str()
                 .starts_with("sha256:")
         );
-        assert!(request.proof.signature.starts_with("signed:"));
+        assert!(!request.proof.signature.is_empty());
     }
 
     #[test]

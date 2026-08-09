@@ -4,8 +4,8 @@ use crate::protocol::{
     AccountSubscribeRealms, AccountSubscribeUnreadCounts, DeviceMessageContainer, ErrorEnvelope,
     EventContainer, ProtocolKind, RealmSyncEntry,
 };
-use arkret_wire::OpaqueLocalId;
-use serde_json::json;
+use arkret_wire::{EventKind, Hlc, OpaqueLocalId, ScopeRef};
+use serde_json::{Value, json};
 
 use super::*;
 use crate::protocol::{
@@ -84,6 +84,83 @@ fn accepted_receipt() -> arkret_wire::IngressReceipt {
 
 fn event_id(seed: u8) -> EventId {
     EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [seed; 32])
+}
+
+fn queued_record(realm_id: &RealmId, payload: Value) -> crate::QueuedRecord {
+    let event = arkret_wire::test_support::raw_event(
+        EventKind::MessageCreate.as_str(),
+        ScopeRef::Realm {
+            realm_id: realm_id.clone(),
+        },
+        Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+        1,
+        Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
+        payload,
+    )
+    .unwrap();
+    crate::QueuedRecord::SdkEvent(
+        crate::QueuedSdkEvent::unauthored(
+            event,
+            "test-operation".to_owned(),
+            "test-attempt".to_owned(),
+            None,
+            crate::AuthoringGeneration {
+                authority_model: crate::AuthoringAuthorityModel::AcceptedDevice,
+                authority_principal_id: "did:webvh:z6mkfixture:alice.example".to_owned(),
+                generation_ref: "test-generation".to_owned(),
+            },
+            None,
+        )
+        .unwrap(),
+    )
+}
+
+trait SendQueueTestExt {
+    fn enqueue_test_record(
+        &mut self,
+        transaction_id: Option<String>,
+        realm_id: RealmId,
+        content: Value,
+    ) -> Result<SendQueueItem>;
+
+    fn enqueue_dependent_test_record(
+        &mut self,
+        transaction_id: Option<String>,
+        realm_id: RealmId,
+        content: Value,
+        depends_on: Vec<String>,
+    ) -> Result<SendQueueItem>;
+}
+
+impl SendQueueTestExt for SendQueue {
+    fn enqueue_test_record(
+        &mut self,
+        transaction_id: Option<String>,
+        realm_id: RealmId,
+        content: Value,
+    ) -> Result<SendQueueItem> {
+        self.enqueue(
+            transaction_id,
+            realm_id.clone(),
+            queued_record(&realm_id, content),
+            Vec::new(),
+        )
+    }
+
+    fn enqueue_dependent_test_record(
+        &mut self,
+        transaction_id: Option<String>,
+        realm_id: RealmId,
+        content: Value,
+        depends_on: Vec<String>,
+    ) -> Result<SendQueueItem> {
+        self.enqueue(
+            transaction_id,
+            realm_id.clone(),
+            queued_record(&realm_id, content),
+            depends_on,
+        )
+    }
 }
 
 #[test]
@@ -314,7 +391,7 @@ fn processor_dispatches_all_update_categories() {
     let sender = Did::new("did:webvh:z6mkfixture:alice.example").unwrap();
     let recipient = Did::new("did:webvh:z6mkfixture:bob.example").unwrap();
     let realm = RealmId::new(realm_id).unwrap();
-    let account_data_event = Event::new(
+    let account_data_event = arkret_wire::test_support::raw_event(
         "ak.account_data.set",
         crate::protocol::ScopeRef::Realm { realm_id: realm },
         sender.clone(),
@@ -457,7 +534,7 @@ fn summary_less_realm_delta_preserves_durable_processor_summary() {
 fn processor_tracks_limited_timelines_and_to_device_ack() {
     let realm_id = "ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV";
     let parsed_realm_id = RealmId::new(realm_id).unwrap();
-    let event = Event::new(
+    let event = arkret_wire::test_support::raw_event(
         "ak.message.create",
         crate::protocol::ScopeRef::Realm {
             realm_id: parsed_realm_id.clone(),
@@ -548,24 +625,23 @@ fn send_queue_is_idempotent_orders_dependencies_and_snapshots() {
     let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     let message = queue
-        .enqueue_message(
+        .enqueue_test_record(
             Some("txn1".to_owned()),
             realm_id.clone(),
             json!({"body":"hello"}),
         )
         .unwrap();
     let duplicate = queue
-        .enqueue_message(
+        .enqueue_test_record(
             Some("txn1".to_owned()),
             realm_id.clone(),
             json!({"body":"hello"}),
         )
         .unwrap();
     let edit = queue
-        .enqueue_edit(
+        .enqueue_dependent_test_record(
             Some("txn2".to_owned()),
             realm_id,
-            event_id(1),
             json!({"content":{"body":"hi"}}),
             vec!["txn1".to_owned()],
         )
@@ -586,12 +662,48 @@ fn send_queue_is_idempotent_orders_dependencies_and_snapshots() {
 }
 
 #[test]
+fn send_queue_snapshot_is_tagged_and_rejects_legacy_kind_content_shape() {
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
+    let mut queue = SendQueue::new();
+    queue
+        .enqueue_test_record(
+            Some("tagged".to_owned()),
+            realm_id,
+            json!({"body": "hello"}),
+        )
+        .unwrap();
+    assert_eq!(
+        queue
+            .get("tagged")
+            .unwrap()
+            .record
+            .event_kind()
+            .unwrap()
+            .as_str(),
+        EventKind::MessageCreate.as_str()
+    );
+    let encoded = serde_json::to_value(queue.snapshot()).unwrap();
+    assert_eq!(
+        encoded.pointer("/items/0/record/record_type"),
+        Some(&Value::String("sdk_event".to_owned()))
+    );
+    assert!(encoded.pointer("/items/0/kind").is_none());
+    assert!(encoded.pointer("/items/0/content").is_none());
+
+    let legacy = json!({
+        "items": [],
+        "next_sequence": 0
+    });
+    assert!(serde_json::from_value::<SendQueueSnapshot>(legacy).is_err());
+}
+
+#[test]
 fn send_queue_rejects_unbounded_active_work() {
     let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     for index in 0..MAX_SEND_QUEUE_ITEMS {
         queue
-            .enqueue_message(
+            .enqueue_test_record(
                 Some(format!("bounded-{index}")),
                 realm_id.clone(),
                 json!({"index": index}),
@@ -600,7 +712,7 @@ fn send_queue_rejects_unbounded_active_work() {
     }
 
     let error = queue
-        .enqueue_message(
+        .enqueue_test_record(
             Some("over-limit".to_owned()),
             realm_id,
             json!({"over_limit": true}),
@@ -616,7 +728,7 @@ fn send_queue_prunes_unreferenced_terminal_work_at_capacity() {
     let mut queue = SendQueue::new();
     for index in 0..MAX_SEND_QUEUE_ITEMS {
         queue
-            .enqueue_message(
+            .enqueue_test_record(
                 Some(format!("prunable-{index}")),
                 realm_id.clone(),
                 json!({"index": index}),
@@ -628,7 +740,7 @@ fn send_queue_prunes_unreferenced_terminal_work_at_capacity() {
         .unwrap();
 
     queue
-        .enqueue_message(
+        .enqueue_test_record(
             Some("replacement".to_owned()),
             realm_id,
             json!({"replacement": true}),
@@ -644,7 +756,7 @@ fn send_queue_preserves_transitive_dependencies_during_capacity_pruning() {
     let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     queue
-        .enqueue_message(
+        .enqueue_test_record(
             Some("dependency-root".to_owned()),
             realm_id.clone(),
             json!({"root": true}),
@@ -654,8 +766,7 @@ fn send_queue_preserves_transitive_dependencies_during_capacity_pruning() {
         .enqueue(
             Some("dependency-middle".to_owned()),
             realm_id.clone(),
-            SendQueueItemKind::Message,
-            json!({"middle": true}),
+            queued_record(&realm_id, json!({"middle": true})),
             vec!["dependency-root".to_owned()],
         )
         .unwrap();
@@ -663,8 +774,7 @@ fn send_queue_preserves_transitive_dependencies_during_capacity_pruning() {
         .enqueue(
             Some("active-leaf".to_owned()),
             realm_id.clone(),
-            SendQueueItemKind::Message,
-            json!({"leaf": true}),
+            queued_record(&realm_id, json!({"leaf": true})),
             vec!["dependency-middle".to_owned()],
         )
         .unwrap();
@@ -676,7 +786,7 @@ fn send_queue_preserves_transitive_dependencies_during_capacity_pruning() {
         .unwrap();
     for index in queue.len()..MAX_SEND_QUEUE_ITEMS {
         queue
-            .enqueue_message(
+            .enqueue_test_record(
                 Some(format!("capacity-{index}")),
                 realm_id.clone(),
                 json!({"index": index}),
@@ -686,7 +796,7 @@ fn send_queue_preserves_transitive_dependencies_during_capacity_pruning() {
 
     assert!(
         queue
-            .enqueue_message(
+            .enqueue_test_record(
                 Some("over-limit".to_owned()),
                 realm_id,
                 json!({"over_limit": true}),
@@ -711,7 +821,7 @@ fn send_queue_serializes_unsigned_intents_per_realm_actor_scope() {
         ("scope-b-1", realm_b),
     ] {
         let item = queue
-            .enqueue_message(
+            .enqueue_test_record(
                 Some(transaction_id.to_owned()),
                 realm_id,
                 json!({"unsigned_intent": transaction_id}),
@@ -749,7 +859,7 @@ fn send_queue_replays_exact_persisted_bytes_and_links_semantic_replacement() {
     let actor = Did::new("did:webvh:z6mkfixture:alice.example").unwrap();
     let mut queue = SendQueue::new();
     let original = queue
-        .enqueue_message(
+        .enqueue_test_record(
             Some("attempt-1".to_owned()),
             realm_id.clone(),
             json!({"signed": "immutable-body-1"}),
@@ -779,9 +889,8 @@ fn send_queue_replays_exact_persisted_bytes_and_links_semantic_replacement() {
         .supersede(
             "attempt-1",
             "attempt-2".to_owned(),
-            realm_id,
-            SendQueueItemKind::Message,
-            json!({"signed": "immutable-body-2"}),
+            realm_id.clone(),
+            queued_record(&realm_id, json!({"signed": "immutable-body-2"})),
             Vec::new(),
         )
         .unwrap();
@@ -799,33 +908,29 @@ fn send_queue_replays_exact_persisted_bytes_and_links_semantic_replacement() {
 }
 
 #[test]
-fn send_queue_cancels_dependent_edit_redaction_and_reaction() {
+fn send_queue_cancels_transitive_dependents() {
     let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
-    let event_id = event_id(1);
     let mut queue = SendQueue::new();
     queue
-        .enqueue_message(
+        .enqueue_test_record(
             Some("txn1".to_owned()),
             realm_id.clone(),
             json!({"body":"hello"}),
         )
         .unwrap();
     queue
-        .enqueue_redaction(
+        .enqueue_dependent_test_record(
             Some("txn2".to_owned()),
             realm_id.clone(),
-            event_id.clone(),
-            None,
+            json!({"dependency": 1}),
             vec!["txn1".to_owned()],
         )
         .unwrap();
     queue
-        .enqueue_reaction(
+        .enqueue_dependent_test_record(
             Some("txn3".to_owned()),
             realm_id,
-            event_id,
-            "+1".to_owned(),
-            true,
+            json!({"dependency": 2}),
             vec!["txn2".to_owned()],
         )
         .unwrap();
@@ -855,7 +960,7 @@ fn send_queue_refuses_delayed_acceptance_without_an_ingress_receipt() {
     let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     queue
-        .enqueue_message(
+        .enqueue_test_record(
             Some("txn1".to_owned()),
             realm_id.clone(),
             json!({"body": "hi"}),
@@ -880,7 +985,7 @@ fn send_queue_accepts_online_submission_without_an_ingress_receipt() {
     let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     queue
-        .enqueue_message(Some("txn1".to_owned()), realm_id, json!({"body": "hi"}))
+        .enqueue_test_record(Some("txn1".to_owned()), realm_id, json!({"body": "hi"}))
         .unwrap();
 
     queue.mark_sent("txn1", event_id(1), Vec::new()).unwrap();
@@ -898,7 +1003,7 @@ fn send_queue_keeps_the_original_receipt_across_an_idempotent_retry() {
     let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     queue
-        .enqueue_message(Some("txn1".to_owned()), realm_id.clone(), json!({"a": 1}))
+        .enqueue_test_record(Some("txn1".to_owned()), realm_id.clone(), json!({"a": 1}))
         .unwrap();
     let lease = publication_lease(realm_id);
     queue
@@ -929,7 +1034,7 @@ fn send_queue_rejects_a_receipt_for_another_lease() {
     let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     queue
-        .enqueue_message(Some("txn1".to_owned()), realm_id.clone(), json!({"a": 1}))
+        .enqueue_test_record(Some("txn1".to_owned()), realm_id.clone(), json!({"a": 1}))
         .unwrap();
     let lease = publication_lease(realm_id.clone());
     queue
@@ -960,7 +1065,7 @@ fn send_queue_retires_unreceipted_work_once_its_lease_expires() {
     let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     queue
-        .enqueue_message(Some("txn1".to_owned()), realm_id.clone(), json!({"a": 1}))
+        .enqueue_test_record(Some("txn1".to_owned()), realm_id.clone(), json!({"a": 1}))
         .unwrap();
     let lease = publication_lease(realm_id);
     let expires_at = lease.expires_at;
@@ -987,7 +1092,7 @@ fn send_queue_refuses_a_lease_scoped_to_another_realm() {
         RealmId::new("ak:realm:ASc9wABHjT9O0CyPDbA8mMnMYoVQe0dWU7KkoFC-vH73").unwrap();
     let mut queue = SendQueue::new();
     queue
-        .enqueue_message(Some("txn1".to_owned()), realm_id, json!({"a": 1}))
+        .enqueue_test_record(Some("txn1".to_owned()), realm_id, json!({"a": 1}))
         .unwrap();
 
     let error = queue

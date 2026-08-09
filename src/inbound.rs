@@ -30,12 +30,12 @@ impl InboundDecoder {
     }
 
     pub fn try_decode_event(&self, event: Event) -> Result<DecodedInbound> {
-        match event.kind.as_str() {
-            arkret_wire::EventKind::MESSAGE_CREATE
-            | arkret_wire::EventKind::MESSAGE_REVISE
-            | arkret_wire::EventKind::MESSAGE_REDACT
-            | arkret_wire::EventKind::REACTION_ADD
-            | arkret_wire::EventKind::REACTION_REMOVE => {
+        match &event.kind {
+            arkret_wire::EventKind::MessageCreate
+            | arkret_wire::EventKind::MessageRevise
+            | arkret_wire::EventKind::MessageRedact
+            | arkret_wire::EventKind::ReactionAdd
+            | arkret_wire::EventKind::ReactionRemove => {
                 let payload = event.as_message_event_payload()?;
                 Ok(DecodedInbound::Message(Box::new(DecodedMessage {
                     event,
@@ -55,7 +55,7 @@ mod tests {
     use super::*;
 
     fn event(kind: &str, payload: Value) -> Event {
-        Event::new(
+        arkret_wire::test_support::raw_event(
             kind,
             ScopeRef::Realm {
                 realm_id: RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO")
@@ -73,7 +73,7 @@ mod tests {
     fn decoder_parses_message_create_payload() {
         let inbound = InboundDecoder::new()
             .try_decode_event(event(
-                arkret_wire::EventKind::MESSAGE_CREATE,
+                arkret_wire::EventKind::MessageCreate.as_str(),
                 json!({
                     "strand_id": StrandId::from_event_id(&EventId::from_digest(
                         arkret_canonical::DigestSuite::Sha256,
@@ -99,7 +99,7 @@ mod tests {
     #[test]
     fn decoder_rejects_invalid_standard_message_payload() {
         let result = InboundDecoder::new().try_decode_event(event(
-            arkret_wire::EventKind::MESSAGE_CREATE,
+            arkret_wire::EventKind::MessageCreate.as_str(),
             json!({"content": {"kind": "ak.content.text", "body": "missing strand"}}),
         ));
 

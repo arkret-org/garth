@@ -3,9 +3,9 @@ use crate::protocol::session_grant::{
     holder_proof_session_grant_request, oidc_session_grant_request,
 };
 use crate::protocol::{
-    AgentRequestedScopeDisclosure, DeviceId, Did, DidUrl, Hash, Result,
+    AgentRequestedScopeDisclosure, DeviceId, Did, DidUrl, NonEmptyString, Result,
     SessionGrantAgentScopeRequest, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
-    SessionGrantRequestBody,
+    SessionGrantRequestBody, UnsignedSessionGrantRequestBody,
 };
 use chrono::{DateTime, Utc};
 
@@ -100,7 +100,6 @@ pub struct OidcLogin {
     pub device_id: Option<DeviceId>,
     pub requested_scope: Vec<String>,
     pub challenge: String,
-    pub request_canonical_digest: Hash,
     pub audience: Did,
     pub issuer: String,
     pub client_id: String,
@@ -112,13 +111,12 @@ pub struct OidcLogin {
 }
 
 impl OidcLogin {
-    pub fn into_session_grant_request(self) -> SessionGrantRequestBody {
-        oidc_session_grant_request(
+    pub fn into_unsigned_session_grant_request(self) -> Result<UnsignedSessionGrantRequestBody> {
+        Ok(oidc_session_grant_request(
             self.principal_id,
             self.device_id,
             self.requested_scope,
             self.challenge,
-            self.request_canonical_digest,
             self.audience,
             self.issuer,
             self.client_id,
@@ -127,7 +125,26 @@ impl OidcLogin {
             self.nonce,
             self.authorization_code,
             self.code_verifier,
-        )
+        )?)
+    }
+
+    pub fn sign(self, sign: impl FnOnce(&[u8]) -> Result<String>) -> Result<SignedOidcLogin> {
+        let unsigned = self.into_unsigned_session_grant_request()?;
+        let signature = NonEmptyString::new(sign(&unsigned.canonical_signing_bytes()?)?)?;
+        Ok(SignedOidcLogin {
+            request: unsigned.attach_signature(signature)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SignedOidcLogin {
+    request: SessionGrantRequestBody,
+}
+
+impl SignedOidcLogin {
+    pub fn into_session_grant_request(self) -> SessionGrantRequestBody {
+        self.request
     }
 }
 
@@ -135,7 +152,7 @@ impl OidcLogin {
 pub enum LoginKind {
     AgentKeyProof(AgentKeyProofLogin),
     HolderProof(HolderProofLogin),
-    Oidc(OidcLogin),
+    Oidc(SignedOidcLogin),
     DidProof(DidProofLogin),
 }
 
@@ -152,7 +169,7 @@ impl LoginKind {
 
 #[cfg(test)]
 mod tests {
-    use crate::protocol::{RealmId, SessionGrantProofKind};
+    use crate::protocol::{Hash, RealmId, SessionGrantProofKind};
 
     use super::*;
 
@@ -243,21 +260,24 @@ mod tests {
 
     #[test]
     fn oidc_login_builds_code_exchange_request() {
-        let request = LoginKind::Oidc(OidcLogin {
-            principal_id: did(),
-            device_id: Some(device_id()),
-            requested_scope: Vec::new(),
-            challenge: "oidc-challenge".to_owned(),
-            request_canonical_digest: digest(),
-            audience: Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
-            issuer: "https://issuer.example".to_owned(),
-            client_id: "client-1".to_owned(),
-            redirect_uri: "https://app.example/callback".to_owned(),
-            state: "state-1".to_owned(),
-            nonce: "nonce-1".to_owned(),
-            authorization_code: "code-1".to_owned(),
-            code_verifier: "verifier-1".to_owned(),
-        })
+        let request = LoginKind::Oidc(
+            OidcLogin {
+                principal_id: did(),
+                device_id: Some(device_id()),
+                requested_scope: Vec::new(),
+                challenge: "oidc-challenge".to_owned(),
+                audience: Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
+                issuer: "https://issuer.example".to_owned(),
+                client_id: "client-1".to_owned(),
+                redirect_uri: "https://app.example/callback".to_owned(),
+                state: "state-1".to_owned(),
+                nonce: "nonce-1".to_owned(),
+                authorization_code: "code-1".to_owned(),
+                code_verifier: "verifier-1".to_owned(),
+            }
+            .sign(|bytes| Ok(arkret_canonical::base64url_encode(bytes)))
+            .unwrap(),
+        )
         .into_session_grant_request()
         .unwrap();
 
@@ -270,7 +290,7 @@ mod tests {
             Some("https://issuer.example")
         );
         assert_eq!(request.proof.authorization_code.as_deref(), Some("code-1"));
-        assert!(request.proof.signature.is_empty());
+        assert!(!request.proof.signature.is_empty());
     }
 
     #[test]

@@ -524,7 +524,7 @@ mod tests {
     fn morph_event(title: &str) -> Event {
         let mut event = Event {
             event_id: EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [0; 32]),
-            kind: EventKind::MORPH_CREATE.into(),
+            kind: EventKind::MorphCreate,
             realm_id: RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV")
                 .unwrap(),
             scope_ref: crate::protocol::ScopeRef::Realm {

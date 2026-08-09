@@ -21,7 +21,7 @@ pub(crate) use arkret_models_collaboration::http_bodies::{
 pub(crate) use arkret_models_collaboration::session_grant_bodies::{
     SessionGrantAgentScopeRequest, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
     SessionGrantOutcome, SessionGrantRefreshOutcome, SessionGrantRefreshProof,
-    SessionGrantRefreshRequestBody, SessionGrantRequestBody,
+    SessionGrantRefreshRequestBody, SessionGrantRequestBody, UnsignedSessionGrantRequestBody,
 };
 pub(crate) use arkret_models_collaboration::signal_message_stream::{
     MAX_MESSAGE_STREAM_LIFETIME_SECONDS, MAX_MESSAGE_STREAM_PREVIEW_BYTES,
@@ -53,16 +53,17 @@ pub(crate) use arkret_models_identity::{
     AccountHandoffAuthenticationProofKind, AccountHandoffBinding, AccountHandoffOutcome,
     AccountHandoffRequestBody, DeviceVerificationState, DidOperationSubmitRequestBody,
     IdentityBindingChallengeOutcome, IdentityBindingChallengeRequestBody, IdentityBindingPurpose,
-    IdentityCreationControlProof, IdentityCreationControlProofKind, IdentityCreationLease,
-    IdentityCreationRegistration, InitialSessionGrantRequest, ReservedIdentityCreation,
-    SessionGrantProofKind,
+    IdentityCreationControlProof, IdentityCreationLease, IdentityCreationRegistration,
+    InitialSessionGrantRequest, ReservedIdentityCreation, SessionGrantProofKind,
+    UnsignedAccountHandoffAuthenticationProof, UnsignedAccountHandoffRequestBody,
+    UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
 };
 pub(crate) use arkret_state::resolver::RealmState;
 pub use arkret_wire::{AuthorizationLease, IngressReceipt};
 pub(crate) use arkret_wire::{
-    BlobRef, DeviceId, Did, DidUrl, Event, EventId, EventKind, Hash, Hlc, MessageId,
-    MessageStreamId, NonEmptyString, PcrGenesisUnit, RealmId, RequestId, ScopeRef, SealId,
-    SessionGrantId, SidecarId, SignalEnvelope, SignalStreamFrame, StrandId,
+    Base64UrlString, BlobRef, DeviceId, Did, DidUrl, Event, EventId, EventKind, Hash, Hlc,
+    MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit, RealmId, RequestId, ScopeRef,
+    SealId, SessionGrantId, SidecarId, SignalEnvelope, SignalStreamFrame, StrandId,
 };
 pub(crate) use arkret_wire::{ProtocolOpaqueId, ProtocolOperationId};
 

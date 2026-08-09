@@ -625,21 +625,24 @@ mod tests {
     }
 
     fn oidc_login() -> LoginKind {
-        LoginKind::Oidc(OidcLogin {
-            principal_id: did(),
-            device_id: Some(device_id()),
-            requested_scope: Vec::new(),
-            challenge: "oidc-challenge".to_owned(),
-            request_canonical_digest: digest(),
-            audience: audience(),
-            issuer: "https://issuer.example".to_owned(),
-            client_id: "client-1".to_owned(),
-            redirect_uri: "https://app.example/callback".to_owned(),
-            state: "state-1".to_owned(),
-            nonce: "nonce-1".to_owned(),
-            authorization_code: "code-1".to_owned(),
-            code_verifier: "verifier-1".to_owned(),
-        })
+        LoginKind::Oidc(
+            OidcLogin {
+                principal_id: did(),
+                device_id: Some(device_id()),
+                requested_scope: Vec::new(),
+                challenge: "oidc-challenge".to_owned(),
+                audience: audience(),
+                issuer: "https://issuer.example".to_owned(),
+                client_id: "client-1".to_owned(),
+                redirect_uri: "https://app.example/callback".to_owned(),
+                state: "state-1".to_owned(),
+                nonce: "nonce-1".to_owned(),
+                authorization_code: "code-1".to_owned(),
+                code_verifier: "verifier-1".to_owned(),
+            }
+            .sign(|bytes| Ok(arkret_canonical::base64url_encode(bytes)))
+            .unwrap(),
+        )
     }
 
     fn agent_login() -> LoginKind {

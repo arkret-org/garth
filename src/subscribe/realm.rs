@@ -475,8 +475,8 @@ mod tests {
     }
 
     fn message_event() -> Event {
-        Event::new(
-            EventKind::MESSAGE_CREATE,
+        arkret_wire::test_support::raw_event(
+            EventKind::MessageCreate.as_str(),
             crate::protocol::ScopeRef::Realm {
                 realm_id: realm_id(),
             },
@@ -997,8 +997,8 @@ mod tests {
         // A known kind with an invalid business payload degrades to a raw
         // `ClientEvent::Event` instead of erroring the loop.
         let store = MemoryStore::new();
-        let event = Event::new(
-            EventKind::MESSAGE_CREATE,
+        let event = arkret_wire::test_support::raw_event(
+            EventKind::MessageCreate.as_str(),
             crate::protocol::ScopeRef::Realm {
                 realm_id: realm_id(),
             },

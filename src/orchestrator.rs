@@ -1343,8 +1343,8 @@ mod tests {
     }
 
     fn event_frame() -> EventsSubscribeFrame {
-        let event = crate::protocol::Event::new(
-            EventKind::MESSAGE_CREATE,
+        let event = arkret_wire::test_support::raw_event(
+            EventKind::MessageCreate.as_str(),
             crate::protocol::ScopeRef::Realm {
                 realm_id: realm_id(),
             },

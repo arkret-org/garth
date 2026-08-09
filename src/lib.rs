@@ -27,6 +27,7 @@ pub mod maybe_send;
 pub mod orchestrator;
 pub mod outbound;
 pub mod projection;
+pub mod queued_record;
 pub mod runtime_journey;
 pub mod runtime_store;
 pub mod security_transaction;
@@ -82,6 +83,11 @@ pub use projection::{ProjectionMount, RealmStateReducer};
 pub use protocol::{
     PresencePlaintext, ReadReceipt, SdkSignalPlaintext, TypingPlaintext, open_signal_plaintext,
 };
+pub use queued_record::{
+    AuthoringAuthorityModel, AuthoringGeneration, QueuedAuthoredEventAttempt, QueuedEventIntent,
+    QueuedMlsSnapshot, QueuedPostAcceptAction, QueuedRealmBootstrap, QueuedRecord, QueuedSdkEvent,
+    ScheduledSendDispatchRecord, ScheduledSendSubmissionState,
+};
 pub use runtime_journey::{
     ParticipationAction, ParticipationAdmissionFacts, RuntimeActorView, RuntimeBlocker,
     RuntimePlan, RuntimePlanFacts, RuntimeReadyAction, SignerEvidenceUse, plan_runtime,
@@ -104,7 +110,7 @@ pub use session::{
     REFRESH_SKEW_SECS, RefreshDecision, SecureSessionGrantStore, SessionEngine,
     SessionGrantRefreshState, SessionGrantState, SessionGrantStore, SessionGrantTransport,
     SessionHandle, SessionProofFields, SessionRefreshOptions, SessionTransportProvider,
-    grant_due_for_rotation, grant_is_dead, refresh_decision,
+    SignedOidcLogin, grant_due_for_rotation, grant_is_dead, refresh_decision,
 };
 pub use signal::{
     PresenceObservation, PresenceProjection, PresenceStatus, SIGNAL_PLAINTEXT_KIND_CALL,
@@ -140,7 +146,6 @@ pub use subscribe::{
 pub use sync_client::{
     AsyncSyncTransport, BackoffConfig, BackpressureConfig, BoxSyncFuture, CancellationToken,
     EventsSubscribeTransport, ExponentialBackoff, LocalEcho, ProcessedRealm, SendQueue,
-    SendQueueItem, SendQueueItemKind, SendQueueSnapshot, SendQueueStatus, SyncGapStrategy,
-    SyncLoop, SyncLoopControl, SyncLoopSnapshot, SyncLoopStep, SyncRecoveryAction,
-    SyncResponseProcessor, SyncTransport,
+    SendQueueItem, SendQueueSnapshot, SendQueueStatus, SyncGapStrategy, SyncLoop, SyncLoopControl,
+    SyncLoopSnapshot, SyncLoopStep, SyncRecoveryAction, SyncResponseProcessor, SyncTransport,
 };

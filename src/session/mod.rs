@@ -11,6 +11,7 @@ pub use engine::{
 };
 pub use login::{
     AgentKeyProofLogin, DidProofLogin, HolderProofLogin, LoginKind, OidcLogin, SessionProofFields,
+    SignedOidcLogin,
 };
 pub use provider::{AuthenticatedTransportFactory, SessionTransportProvider};
 pub use refresh::{

@@ -101,8 +101,7 @@ pub trait SignalDecryptor: MaybeSendSync {
 /// `kind` and `payload_sequence` are the §1.1 common minimum, lifted out of the
 /// [`payload`] so the dedupe triple and the product route can be read without
 /// matching the union. `payload` is the typed profile the SDK selected by
-/// `kind`; `body` is the same object as JSON for projections that read further
-/// profile fields.
+/// `kind`; projections must match that union rather than reparsing raw JSON.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SignalPlaintext {
     pub kind: String,
@@ -114,13 +113,8 @@ pub struct SignalPlaintext {
     /// This is the only admitted parse: `signal.md` §1.1 requires a receiver to
     /// select the corresponding closed schema by `kind` and drop anything else
     /// as `schema_violation`, and forbids hand-parsing a plaintext by field
-    /// name. Consumers match on this rather than reading [`Self::body`] keys.
+    /// name. Consumers match this union to access profile fields.
     pub payload: SdkSignalPlaintext,
-    /// The whole decoded object, for projections that need a further field of
-    /// the profile they already selected. Never a substitute for `payload`:
-    /// reading a field out of here without knowing the profile is exactly the
-    /// hand-parse §1.1 forbids.
-    pub body: BTreeMap<String, Value>,
     /// Outer `sent_at`, the reference instant for the plaintext TTL and the
     /// tie-breaker for `status_message` selection (`profiles-presence.md`
     /// §3.3).
@@ -151,14 +145,6 @@ impl SignalPlaintext {
                 envelope.expires_at,
             )
             .map_err(|error| Error::Protocol(error.to_string()))?;
-        let body = match canonical::parse_canonical_json(plaintext)? {
-            Value::Object(map) => map.into_iter().collect(),
-            _ => {
-                return Err(Error::Protocol(
-                    "signal plaintext must be a canonical JSON object".to_owned(),
-                ));
-            }
-        };
         Ok(Self {
             kind: payload.kind().as_str().to_owned(),
             actor_id: envelope.sender_actor_id.clone(),
@@ -166,7 +152,6 @@ impl SignalPlaintext {
             ttl_ms: payload.ttl_ms(),
             expires_at: payload.effective_expires_at(envelope.sent_at, envelope.expires_at),
             payload,
-            body,
             sent_at: envelope.sent_at,
             scope_ref: envelope.scope_ref.clone(),
             seal_ref: envelope.seal_ref.clone(),
@@ -371,36 +356,31 @@ impl PresenceProjection {
                 plaintext.kind
             )));
         }
-        let state = plaintext
-            .body
-            .get("state")
-            .and_then(Value::as_str)
-            .and_then(PresenceStatus::parse_wire)
-            .ok_or_else(|| {
-                Error::Protocol("presence state is outside the v1 closed set".to_owned())
-            })?;
-        let status_message = match plaintext.body.get("status_message") {
-            Some(value) => {
-                let text = value.as_str().ok_or_else(|| {
-                    Error::Protocol("presence status_message must be a string".to_owned())
-                })?;
-                validate_status_message(text)
-                    .map_err(|error| Error::Protocol(error.to_string()))?;
-                Some(text.to_owned())
+        let presence = plaintext.presence().ok_or_else(|| {
+            Error::Protocol("presence projection received a non-presence payload".to_owned())
+        })?;
+        let state = match presence.state {
+            arkret_models_collaboration::signal_plaintext::PresenceState::Online => {
+                PresenceStatus::Online
             }
-            None => None,
-        };
-        let last_active_at = match plaintext.body.get("last_active_at") {
-            Some(value) => {
-                let text = value.as_str().ok_or_else(|| {
-                    Error::Protocol("presence last_active_at must be a string".to_owned())
-                })?;
-                validate_last_active_at(text)
-                    .map_err(|error| Error::Protocol(error.to_string()))?;
-                Some(text.to_owned())
+            arkret_models_collaboration::signal_plaintext::PresenceState::Idle => {
+                PresenceStatus::Idle
             }
-            None => None,
+            arkret_models_collaboration::signal_plaintext::PresenceState::Offline => {
+                PresenceStatus::Offline
+            }
+            arkret_models_collaboration::signal_plaintext::PresenceState::Dnd => {
+                PresenceStatus::Dnd
+            }
         };
+        let status_message = presence.status_message.clone();
+        if let Some(text) = status_message.as_deref() {
+            validate_status_message(text).map_err(|error| Error::Protocol(error.to_string()))?;
+        }
+        let last_active_at = presence.last_active_at.clone();
+        if let Some(text) = last_active_at.as_deref() {
+            validate_last_active_at(text).map_err(|error| Error::Protocol(error.to_string()))?;
+        }
         let device_key = plaintext.sender_device_id.as_str().to_owned();
         let entry = self.devices.entry(plaintext.actor_id.clone()).or_default();
         if let Some(previous) = entry.get(&device_key)

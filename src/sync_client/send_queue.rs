@@ -1,37 +1,5 @@
 use super::*;
-
-/// Outbound send queue operation kind.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SendQueueItemKind {
-    /// New message/event.
-    Message,
-    /// Message edit targeting an existing event.
-    Edit { target_event_id: EventId },
-    /// Redaction targeting an existing event.
-    Redaction { target_event_id: EventId },
-    /// Reaction add/remove targeting an existing event.
-    Reaction {
-        target_event_id: EventId,
-        reaction_key: String,
-        add: bool,
-    },
-    /// Custom event kind.
-    Custom { kind: String },
-}
-
-impl SendQueueItemKind {
-    fn event_kind(&self) -> String {
-        match self {
-            Self::Message => "ak.message.create".to_owned(),
-            Self::Edit { .. } => "ak.message.revise".to_owned(),
-            Self::Redaction { .. } => "ak.message.redact".to_owned(),
-            Self::Reaction { add, .. } if *add => "ak.reaction.add".to_owned(),
-            Self::Reaction { .. } => "ak.reaction.remove".to_owned(),
-            Self::Custom { kind } => kind.clone(),
-        }
-    }
-}
+use crate::QueuedRecord;
 
 /// Send queue item lifecycle.
 ///
@@ -65,6 +33,7 @@ pub enum SendQueueStatus {
 
 /// Local echo projected before a queued item is sent.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalEcho {
     /// Idempotent transaction ID.
     pub transaction_id: String,
@@ -72,10 +41,6 @@ pub struct LocalEcho {
     pub item_id: String,
     /// Realm receiving the item.
     pub realm_id: RealmId,
-    /// Event kind represented by the echo.
-    pub event_kind: String,
-    /// Echo content.
-    pub content: Value,
     /// Local creation time.
     pub created_at: DateTime<Utc>,
     /// Current queue status.
@@ -84,6 +49,7 @@ pub struct LocalEcho {
 
 /// One queued outbound event.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SendQueueItem {
     /// Idempotent transaction ID.
     pub transaction_id: String,
@@ -98,10 +64,8 @@ pub struct SendQueueItem {
     /// items leave this unset.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub actor_id: Option<Did>,
-    /// Operation kind.
-    pub kind: SendQueueItemKind,
-    /// Event content.
-    pub content: Value,
+    /// Self-describing, strongly typed queue record.
+    pub record: QueuedRecord,
     /// Canonical hash of the idempotent payload.
     pub payload_digest: String,
     /// Exact canonical payload persisted for deterministic transport replay.
@@ -145,8 +109,19 @@ pub struct SendQueueItem {
 }
 
 /// Serializable send queue state.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SendQueueSnapshotSchema {
+    #[default]
+    #[serde(rename = "ak.garth.send_queue.v1")]
+    V1,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SendQueueSnapshot {
+    /// Snapshot schema. Its required presence makes the clean break from the
+    /// retired `kind` + `content` format explicit and fail-closed.
+    pub schema: SendQueueSnapshotSchema,
     /// Items in queue order.
     pub items: Vec<SendQueueItem>,
     /// Next insertion sequence.
@@ -190,6 +165,29 @@ impl SendQueue {
             ..Self::default()
         };
         for mut item in snapshot.items {
+            item.record.validate()?;
+            validate_record_scope(&item.realm_id, &item.record)?;
+            let canonical_payload_bytes = canonical::canonical_json_bytes(&item.record)?;
+            if canonical_payload_bytes != item.canonical_payload_bytes {
+                return Err(Error::Protocol(
+                    "send queue snapshot canonical record bytes mismatch".to_owned(),
+                ));
+            }
+            let payload_digest =
+                queue_payload_digest(&item.realm_id, &item.record, &item.depends_on)?;
+            if payload_digest != item.payload_digest {
+                return Err(Error::Protocol(
+                    "send queue snapshot record digest mismatch".to_owned(),
+                ));
+            }
+            if item.local_echo.transaction_id != item.transaction_id
+                || item.local_echo.realm_id != item.realm_id
+                || item.local_echo.status != item.status
+            {
+                return Err(Error::Protocol(
+                    "send queue snapshot local echo does not match its item".to_owned(),
+                ));
+            }
             if queue.items.contains_key(&item.transaction_id) {
                 return Err(Error::IdempotencyConflict(item.transaction_id));
             }
@@ -208,6 +206,7 @@ impl SendQueue {
     /// Export queue state for persistence by the embedding application.
     pub fn snapshot(&self) -> SendQueueSnapshot {
         SendQueueSnapshot {
+            schema: SendQueueSnapshotSchema::V1,
             items: self
                 .order
                 .iter()
@@ -227,36 +226,46 @@ impl SendQueue {
         self.items.is_empty()
     }
 
-    /// Enqueue a new message.
-    pub fn enqueue_message(
-        &mut self,
-        transaction_id: Option<String>,
-        realm_id: RealmId,
-        content: Value,
-    ) -> Result<SendQueueItem> {
-        self.enqueue(
-            transaction_id,
-            realm_id,
-            SendQueueItemKind::Message,
-            content,
-            Vec::new(),
-        )
-    }
-
     /// Attach the authoring partition to a newly enqueued item.
     pub fn set_actor_scope(&mut self, transaction_id: &str, actor_id: Did) -> Result<()> {
-        self.item_mut(transaction_id)?.actor_id = Some(actor_id);
+        let item = self.item_mut(transaction_id)?;
+        if item.record.actor_id()? != &actor_id {
+            return Err(Error::Protocol(
+                "send queue actor scope does not match its typed record".to_owned(),
+            ));
+        }
+        item.actor_id = Some(actor_id);
         Ok(())
     }
 
     /// Atomically replace an unsigned intent payload with its first immutable
     /// signed attempt before any transport call.
-    pub fn mark_prepared(&mut self, transaction_id: &str, content: Value) -> Result<SendQueueItem> {
+    pub fn mark_prepared(
+        &mut self,
+        transaction_id: &str,
+        record: QueuedRecord,
+    ) -> Result<SendQueueItem> {
+        record.validate()?;
+        let existing = self.items.get(transaction_id).ok_or_else(|| {
+            Error::Protocol(format!(
+                "send queue transaction not found: {}",
+                transaction_id
+            ))
+        })?;
+        validate_record_scope(&existing.realm_id, &record)?;
+        if existing
+            .actor_id
+            .as_ref()
+            .is_some_and(|actor_id| record.actor_id().ok() != Some(actor_id))
+        {
+            return Err(Error::Protocol(
+                "prepared send queue record changed its actor scope".to_owned(),
+            ));
+        }
         let item = self.item_mut(transaction_id)?;
-        item.content = content;
-        item.canonical_payload_bytes = canonical::canonical_json_bytes(&item.content)?;
-        item.payload_digest =
-            queue_payload_digest(&item.realm_id, &item.kind, &item.content, &item.depends_on)?;
+        item.record = record;
+        item.canonical_payload_bytes = canonical::canonical_json_bytes(&item.record)?;
+        item.payload_digest = queue_payload_digest(&item.realm_id, &item.record, &item.depends_on)?;
         item.status = SendQueueStatus::Queued;
         item.next_retry_at = None;
         item.updated_at = Utc::now();
@@ -264,78 +273,17 @@ impl SendQueue {
         Ok(item.clone())
     }
 
-    /// Enqueue a message edit.
-    pub fn enqueue_edit(
-        &mut self,
-        transaction_id: Option<String>,
-        realm_id: RealmId,
-        target_event_id: EventId,
-        content: Value,
-        depends_on: Vec<String>,
-    ) -> Result<SendQueueItem> {
-        self.enqueue(
-            transaction_id,
-            realm_id,
-            SendQueueItemKind::Edit { target_event_id },
-            content,
-            depends_on,
-        )
-    }
-
-    /// Enqueue a redaction.
-    pub fn enqueue_redaction(
-        &mut self,
-        transaction_id: Option<String>,
-        realm_id: RealmId,
-        target_event_id: EventId,
-        reason: Option<String>,
-        depends_on: Vec<String>,
-    ) -> Result<SendQueueItem> {
-        let content = reason
-            .map(|reason| serde_json::json!({ "reason": reason }))
-            .unwrap_or(Value::Null);
-        self.enqueue(
-            transaction_id,
-            realm_id,
-            SendQueueItemKind::Redaction { target_event_id },
-            content,
-            depends_on,
-        )
-    }
-
-    /// Enqueue a reaction add/remove.
-    pub fn enqueue_reaction(
-        &mut self,
-        transaction_id: Option<String>,
-        realm_id: RealmId,
-        target_event_id: EventId,
-        reaction_key: String,
-        add: bool,
-        depends_on: Vec<String>,
-    ) -> Result<SendQueueItem> {
-        self.enqueue(
-            transaction_id,
-            realm_id,
-            SendQueueItemKind::Reaction {
-                target_event_id,
-                reaction_key,
-                add,
-            },
-            Value::Null,
-            depends_on,
-        )
-    }
-
-    /// Enqueue an arbitrary outbound event.
+    /// Enqueue a self-describing outbound record.
     pub fn enqueue(
         &mut self,
         transaction_id: Option<String>,
         realm_id: RealmId,
-        kind: SendQueueItemKind,
-        content: Value,
+        record: QueuedRecord,
         depends_on: Vec<String>,
     ) -> Result<SendQueueItem> {
-        let payload_digest = queue_payload_digest(&realm_id, &kind, &content, &depends_on)?;
+        record.validate()?;
+        validate_record_scope(&realm_id, &record)?;
+        let payload_digest = queue_payload_digest(&realm_id, &record, &depends_on)?;
         let transaction_id = transaction_id
             .unwrap_or_else(|| format!("txn_{}", payload_digest.trim_start_matches("sha256:")));
 
@@ -357,25 +305,21 @@ impl SendQueue {
         let now = Utc::now();
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
-        let event_kind = kind.event_kind();
         let local_echo = LocalEcho {
             transaction_id: transaction_id.clone(),
             item_id: format!("local:{}", transaction_id),
             realm_id: realm_id.clone(),
-            event_kind,
-            content: content.clone(),
             created_at: now,
             status: SendQueueStatus::Queued,
         };
-        let canonical_payload_bytes = canonical::canonical_json_bytes(&content)?;
+        let canonical_payload_bytes = canonical::canonical_json_bytes(&record)?;
         let item = SendQueueItem {
             transaction_id: transaction_id.clone(),
             local_operation_id: transaction_id.clone(),
             supersedes_transaction_id: None,
             realm_id,
             actor_id: None,
-            kind,
-            content,
+            record,
             payload_digest,
             canonical_payload_bytes,
             depends_on,
@@ -403,8 +347,7 @@ impl SendQueue {
         transaction_id: &str,
         replacement_transaction_id: String,
         realm_id: RealmId,
-        kind: SendQueueItemKind,
-        content: Value,
+        record: QueuedRecord,
         depends_on: Vec<String>,
     ) -> Result<SendQueueItem> {
         let local_operation_id = self
@@ -429,8 +372,7 @@ impl SendQueue {
         self.enqueue(
             Some(replacement_transaction_id.clone()),
             realm_id,
-            kind,
-            content,
+            record,
             depends_on,
         )?;
         let item = self.item_mut(&replacement_transaction_id)?;
@@ -765,16 +707,23 @@ impl SendQueue {
 
 fn queue_payload_digest(
     realm_id: &RealmId,
-    kind: &SendQueueItemKind,
-    content: &Value,
+    record: &QueuedRecord,
     depends_on: &[String],
 ) -> Result<String> {
     Ok(canonical::canonical_sha256(&serde_json::json!({
         "realm_id": realm_id,
-        "kind": kind,
-        "content": content,
+        "record": record,
         "depends_on": depends_on,
     }))?)
+}
+
+fn validate_record_scope(realm_id: &RealmId, record: &QueuedRecord) -> Result<()> {
+    if record.realm_id()? != realm_id {
+        return Err(Error::Protocol(
+            "send queue Realm does not match its typed record".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 /// Publication-evidence fixtures shared by the outbound and queue tests.

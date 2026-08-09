@@ -2,10 +2,10 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::{future::Future, pin::Pin, time::Duration};
 
+use crate::QueuedRecord;
 use crate::protocol::{Error, EventId, IngressReceipt, RealmId, Result};
-use crate::sync_client::{SendQueue, SendQueueItem, SendQueueItemKind, SendQueueSnapshot};
+use crate::sync_client::{SendQueue, SendQueueItem, SendQueueSnapshot};
 use chrono::{DateTime, Utc};
-use serde_json::Value;
 
 use crate::MaybeSendSync;
 
@@ -84,7 +84,7 @@ pub enum OutboundSubmitOutcome {
     /// Host prepared and signed the queued unsigned intent. Persist it before
     /// beginning transport.
     Prepared {
-        content: Value,
+        record: QueuedRecord,
     },
     /// The ingress admitted the Event and issued its receipts.
     ///
@@ -123,8 +123,7 @@ pub enum OutboundSubmitOutcome {
     Supersede {
         transaction_id: String,
         realm_id: RealmId,
-        kind: SendQueueItemKind,
-        content: Value,
+        record: QueuedRecord,
         depends_on: Vec<String>,
     },
 }
@@ -171,13 +170,12 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         &self,
         transaction_id: Option<String>,
         realm_id: RealmId,
-        kind: SendQueueItemKind,
-        content: Value,
+        record: QueuedRecord,
         depends_on: Vec<String>,
     ) -> Result<SendQueueItem> {
         self.store
             .mutate_outbound(move |queue| {
-                queue.enqueue(transaction_id, realm_id, kind, content, depends_on)
+                queue.enqueue(transaction_id, realm_id, record, depends_on)
             })
             .await
     }
@@ -187,13 +185,12 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         transaction_id: Option<String>,
         realm_id: RealmId,
         actor_id: crate::protocol::Did,
-        kind: SendQueueItemKind,
-        content: Value,
+        record: QueuedRecord,
         depends_on: Vec<String>,
     ) -> Result<SendQueueItem> {
         self.store
             .mutate_outbound(move |queue| {
-                let item = queue.enqueue(transaction_id, realm_id, kind, content, depends_on)?;
+                let item = queue.enqueue(transaction_id, realm_id, record, depends_on)?;
                 queue.set_actor_scope(&item.transaction_id, actor_id)?;
                 owned_item(queue, &item.transaction_id)
             })
@@ -305,10 +302,10 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
             }
         };
         match submit_outcome {
-            OutboundSubmitOutcome::Prepared { content } => {
+            OutboundSubmitOutcome::Prepared { record } => {
                 let item = self
                     .store
-                    .mutate_outbound(move |queue| queue.mark_prepared(&transaction_id, content))
+                    .mutate_outbound(move |queue| queue.mark_prepared(&transaction_id, record))
                     .await?;
                 Ok(OutboundEngineOutcome::Prepared(item))
             }
@@ -358,8 +355,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
             OutboundSubmitOutcome::Supersede {
                 transaction_id: replacement_id,
                 realm_id,
-                kind,
-                content,
+                record,
                 depends_on,
             } => {
                 let previous_id = transaction_id;
@@ -370,8 +366,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
                             &previous_id,
                             replacement_id,
                             realm_id,
-                            kind,
-                            content,
+                            record,
                             depends_on,
                         )?;
                         Ok(OutboundEngineOutcome::Superseded {
@@ -477,6 +472,42 @@ mod tests {
 
     use super::*;
     use crate::MemoryStore;
+    use arkret_wire::{Did, Event, EventKind, Hlc, ScopeRef};
+    use serde_json::Value;
+
+    fn queued_record(realm_id: &RealmId, payload: Value) -> QueuedRecord {
+        let generation_ref = payload
+            .get("generation")
+            .and_then(Value::as_str)
+            .unwrap_or("test-generation")
+            .to_owned();
+        let event = arkret_wire::test_support::raw_event(
+            EventKind::MessageCreate.as_str(),
+            ScopeRef::Realm {
+                realm_id: realm_id.clone(),
+            },
+            Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            1,
+            Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
+            payload,
+        )
+        .unwrap();
+        QueuedRecord::SdkEvent(
+            crate::QueuedSdkEvent::unauthored(
+                event,
+                "test-operation".to_owned(),
+                "test-attempt".to_owned(),
+                None,
+                crate::AuthoringGeneration {
+                    authority_model: crate::AuthoringAuthorityModel::AcceptedDevice,
+                    authority_principal_id: "did:webvh:z6mkfixture:alice.example".to_owned(),
+                    generation_ref,
+                },
+                None,
+            )
+            .unwrap(),
+        )
+    }
 
     #[derive(Clone)]
     struct QueueSubmitter {
@@ -489,7 +520,10 @@ mod tests {
 
     impl OutboundGenerationFence for RejectGeneration {
         fn evaluate(&self, item: &SendQueueItem) -> Result<OutboundGenerationFenceDecision> {
-            if item.content.get("generation").and_then(Value::as_str) == Some(self.0) {
+            let QueuedRecord::SdkEvent(queued) = &item.record else {
+                return Ok(OutboundGenerationFenceDecision::Current);
+            };
+            if queued.authoring_generation.generation_ref == self.0 {
                 Ok(OutboundGenerationFenceDecision::Current)
             } else {
                 Ok(OutboundGenerationFenceDecision::Quarantine {
@@ -573,8 +607,7 @@ mod tests {
             .enqueue(
                 Some("txn-1".to_owned()),
                 realm_id(),
-                SendQueueItemKind::Message,
-                serde_json::json!({"body": "hello"}),
+                queued_record(&realm_id(), serde_json::json!({"body": "hello"})),
                 Vec::new(),
             )
             .await
@@ -583,8 +616,7 @@ mod tests {
             .enqueue(
                 Some("txn-1".to_owned()),
                 realm_id(),
-                SendQueueItemKind::Message,
-                serde_json::json!({"body": "hello"}),
+                queued_record(&realm_id(), serde_json::json!({"body": "hello"})),
                 Vec::new(),
             )
             .await
@@ -618,8 +650,7 @@ mod tests {
                 Some("local-operation-1".to_owned()),
                 realm_id(),
                 crate::protocol::Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
-                SendQueueItemKind::Message,
-                serde_json::json!({"intent": "unsigned"}),
+                queued_record(&realm_id(), serde_json::json!({"intent": "unsigned"})),
                 Vec::new(),
             )
             .await
@@ -627,7 +658,7 @@ mod tests {
         let submitter = QueueSubmitter {
             outcomes: Arc::new(Mutex::new(VecDeque::from([
                 OutboundSubmitOutcome::Prepared {
-                    content: serde_json::json!({"signed": "immutable-attempt"}),
+                    record: queued_record(&realm_id(), serde_json::json!({"intent": "unsigned"})),
                 },
                 OutboundSubmitOutcome::Accepted {
                     event_id: event_id(),
@@ -640,7 +671,10 @@ mod tests {
         assert!(matches!(prepared, OutboundEngineOutcome::Prepared(_)));
         let snapshot = engine.snapshot().await.unwrap();
         assert_eq!(snapshot.items[0].transaction_id, "local-operation-1");
-        assert_eq!(snapshot.items[0].content["signed"], "immutable-attempt");
+        assert!(matches!(
+            snapshot.items[0].record,
+            QueuedRecord::SdkEvent(_)
+        ));
         assert!(!snapshot.items[0].canonical_payload_bytes.is_empty());
 
         assert!(matches!(
@@ -656,8 +690,7 @@ mod tests {
             .enqueue(
                 Some("txn-offline".to_owned()),
                 realm_id(),
-                SendQueueItemKind::Message,
-                serde_json::json!({"body": "hello"}),
+                queued_record(&realm_id(), serde_json::json!({"body": "hello"})),
                 Vec::new(),
             )
             .await
@@ -681,8 +714,7 @@ mod tests {
             .enqueue(
                 Some("txn-throttled".to_owned()),
                 realm_id(),
-                SendQueueItemKind::Message,
-                serde_json::json!({"body": "hello"}),
+                queued_record(&realm_id(), serde_json::json!({"body": "hello"})),
                 Vec::new(),
             )
             .await
@@ -710,8 +742,7 @@ mod tests {
             .enqueue(
                 Some("txn-post-accept".to_owned()),
                 realm_id(),
-                SendQueueItemKind::Message,
-                serde_json::json!({"body": "hello"}),
+                queued_record(&realm_id(), serde_json::json!({"body": "hello"})),
                 Vec::new(),
             )
             .await
@@ -758,8 +789,7 @@ mod tests {
             .enqueue(
                 Some("txn-stale".to_owned()),
                 realm_id(),
-                SendQueueItemKind::Message,
-                serde_json::json!({"generation": "1-old"}),
+                queued_record(&realm_id(), serde_json::json!({"generation": "1-old"})),
                 Vec::new(),
             )
             .await
@@ -768,10 +798,7 @@ mod tests {
             .enqueue(
                 Some("txn-dependent".to_owned()),
                 realm_id(),
-                SendQueueItemKind::Edit {
-                    target_event_id: event_id(),
-                },
-                serde_json::json!({"generation": "2-current"}),
+                queued_record(&realm_id(), serde_json::json!({"generation": "2-current"})),
                 vec![stale.transaction_id],
             )
             .await
@@ -812,8 +839,7 @@ mod tests {
             .enqueue(
                 Some("txn-reopen".to_owned()),
                 realm_id(),
-                SendQueueItemKind::Message,
-                serde_json::json!({"body": "hello"}),
+                queued_record(&realm_id(), serde_json::json!({"body": "hello"})),
                 Vec::new(),
             )
             .await

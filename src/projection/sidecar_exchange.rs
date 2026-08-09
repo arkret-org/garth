@@ -645,7 +645,7 @@ mod tests {
         let created_at = chrono::DateTime::parse_from_rfc3339("2026-07-29T00:00:00.000Z")
             .unwrap()
             .with_timezone(&chrono::Utc);
-        let mut event = arkret_wire::Event::new_with_derived_id_at(
+        let mut event = arkret_wire::test_support::raw_event_at(
             kind,
             arkret_wire::ScopeRef::Realm {
                 realm_id: RealmId::new(
@@ -679,7 +679,7 @@ mod tests {
         let (event_id, event_digest) = canonical_event_identity(
             actor_seq,
             1,
-            arkret_wire::EventKind::MESSAGE_CREATE,
+            arkret_wire::EventKind::MessageCreate.as_str(),
             serde_json::json!({
                 "strand_id": scope().private_strand_id,
                 "track_name": "discussion",
@@ -706,7 +706,7 @@ mod tests {
         let (event_id, event_digest) = canonical_event_identity(
             actor_seq,
             0x40 + suffix,
-            arkret_wire::EventKind::AGENT_SIDECAR_EXCHANGE_CONTROL,
+            arkret_wire::EventKind::AgentSidecarExchangeControl.as_str(),
             serde_json::json!({
                 "strand_id": scope().private_strand_id,
                 "control": control

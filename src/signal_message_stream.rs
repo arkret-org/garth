@@ -108,11 +108,14 @@ impl MessageStreamProjection {
                 plaintext.kind
             )));
         }
-        let frame: MessageStreamFrame =
-            serde_json::from_value(Value::Object(plaintext.body.clone().into_iter().collect()))
-                .map_err(|error| {
-                    Error::Protocol(format!("invalid message stream payload: {error}"))
-                })?;
+        let frame = match &plaintext.payload {
+            crate::protocol::SdkSignalPlaintext::MessageStream(frame) => frame,
+            _ => {
+                return Err(Error::Protocol(
+                    "message stream projection received a non-message-stream payload".to_owned(),
+                ));
+            }
+        };
         frame
             .validate()
             .map_err(|error| Error::Protocol(error.to_string()))?;
@@ -122,7 +125,7 @@ impl MessageStreamProjection {
                     .to_owned(),
             ));
         }
-        if !authorizer.can_display(plaintext, &frame) {
+        if !authorizer.can_display(plaintext, frame) {
             return Err(Error::Protocol(
                 "message stream product authorization failed closed".to_owned(),
             ));
@@ -422,16 +425,12 @@ mod tests {
     fn plaintext(frame: MessageStreamFrame) -> SignalPlaintext {
         let payload_sequence = frame.payload_sequence();
         let kind = MESSAGE_STREAM_KIND.to_owned();
-        let Value::Object(body) = serde_json::to_value(&frame).unwrap() else {
-            unreachable!()
-        };
         SignalPlaintext {
             kind,
             actor_id: actor(),
             payload_sequence,
             ttl_ms: None,
             payload: crate::protocol::SdkSignalPlaintext::MessageStream(frame),
-            body: body.into_iter().collect(),
             sent_at: at(0),
             expires_at: at(30),
             scope_ref: ScopeRef::Realm {
