@@ -167,13 +167,13 @@ impl MessageStreamProjection {
                     sender_actor_id: plaintext.actor_id.clone(),
                     sender_device_id: plaintext.sender_device_id.clone(),
                     scope_ref: plaintext.scope_ref.clone(),
-                    strand_id: keyframe.strand_id,
-                    message_id: keyframe.message_id,
+                    strand_id: keyframe.strand_id.clone(),
+                    message_id: keyframe.message_id.clone(),
                     attempt: keyframe.attempt,
                     highest_observed_attempt: keyframe.attempt,
-                    stream_id: keyframe.stream_id,
+                    stream_id: keyframe.stream_id.clone(),
                     format: keyframe.format,
-                    text: keyframe.text,
+                    text: keyframe.text.clone(),
                     truncated: keyframe.truncated,
                     last_content_seq: keyframe.seq,
                     highest_observed_seq: keyframe.seq,
@@ -212,13 +212,13 @@ impl MessageStreamProjection {
                 sender_actor_id: plaintext.actor_id.clone(),
                 sender_device_id: plaintext.sender_device_id.clone(),
                 scope_ref: plaintext.scope_ref.clone(),
-                strand_id: keyframe.strand_id,
-                message_id: keyframe.message_id,
+                strand_id: keyframe.strand_id.clone(),
+                message_id: keyframe.message_id.clone(),
                 attempt: keyframe.attempt,
                 highest_observed_attempt: keyframe.attempt,
-                stream_id: keyframe.stream_id,
+                stream_id: keyframe.stream_id.clone(),
                 format: keyframe.format,
-                text: keyframe.text,
+                text: keyframe.text.clone(),
                 truncated: keyframe.truncated,
                 last_content_seq: keyframe.seq,
                 highest_observed_seq: keyframe.seq,
@@ -257,7 +257,7 @@ impl MessageStreamProjection {
                         "message stream format changed within one stream".to_owned(),
                     ));
                 }
-                existing.text = keyframe.text;
+                existing.text = keyframe.text.clone();
                 existing.truncated = keyframe.truncated;
                 existing.last_content_seq = keyframe.seq;
                 existing.last_valid_at = observed_at;

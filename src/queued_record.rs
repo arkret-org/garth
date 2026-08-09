@@ -541,6 +541,7 @@ fn validate_realm_bootstrap_intent(events: &[Event]) -> Result<()> {
         ));
     }
     arkret_policy::realm_bootstrap::validate_realm_bootstrap_unit(events)
+        .map(|_| ())
         .map_err(|error| Error::Protocol(error.reason_code().to_owned()))
 }
 

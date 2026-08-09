@@ -75,8 +75,11 @@ pub fn oidc_account_handoff_request(
             code_verifier: input.code_verifier,
         },
     )?;
-    let signature = Base64UrlString::new(sign(&unsigned.canonical_signing_bytes()?)?)?;
-    unsigned.attach_signature(signature)
+    let signature =
+        Base64UrlString::new(sign(&unsigned.canonical_signing_bytes()?)?).map_err(|error| {
+            crate::Error::Protocol(format!("invalid account handoff signature: {error}"))
+        })?;
+    Ok(unsigned.attach_signature(signature)?)
 }
 
 pub fn identity_binding_challenge_request(

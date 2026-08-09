@@ -87,7 +87,7 @@ fn event_id(seed: u8) -> EventId {
 }
 
 fn queued_record(realm_id: &RealmId, payload: Value) -> crate::QueuedRecord {
-    let event = arkret_wire::test_support::raw_event(
+    let event = arkret_wire::test_support::raw_event_at(
         EventKind::MessageCreate.as_str(),
         ScopeRef::Realm {
             realm_id: realm_id.clone(),
@@ -96,6 +96,9 @@ fn queued_record(realm_id: &RealmId, payload: Value) -> crate::QueuedRecord {
         1,
         Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
         payload,
+        chrono::DateTime::parse_from_rfc3339("2026-07-13T10:00:00.000Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc),
     )
     .unwrap();
     crate::QueuedRecord::SdkEvent(

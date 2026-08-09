@@ -130,7 +130,10 @@ impl OidcLogin {
 
     pub fn sign(self, sign: impl FnOnce(&[u8]) -> Result<String>) -> Result<SignedOidcLogin> {
         let unsigned = self.into_unsigned_session_grant_request()?;
-        let signature = NonEmptyString::new(sign(&unsigned.canonical_signing_bytes()?)?)?;
+        let signature =
+            NonEmptyString::new(sign(&unsigned.canonical_signing_bytes()?)?).map_err(|error| {
+                crate::Error::Protocol(format!("invalid session grant signature: {error}"))
+            })?;
         Ok(SignedOidcLogin {
             request: unsigned.attach_signature(signature)?,
         })
