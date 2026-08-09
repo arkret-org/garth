@@ -627,18 +627,21 @@ fn processor_applies_notification_add_update_and_remove_deltas() {
 fn send_queue_is_idempotent_orders_dependencies_and_snapshots() {
     let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
+    let record = queued_record(&realm_id, json!({"body":"hello"}));
     let message = queue
-        .enqueue_test_record(
+        .enqueue(
             Some("txn1".to_owned()),
             realm_id.clone(),
-            json!({"body":"hello"}),
+            record.clone(),
+            Vec::new(),
         )
         .unwrap();
     let duplicate = queue
-        .enqueue_test_record(
+        .enqueue(
             Some("txn1".to_owned()),
             realm_id.clone(),
-            json!({"body":"hello"}),
+            record,
+            Vec::new(),
         )
         .unwrap();
     let edit = queue

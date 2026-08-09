@@ -606,22 +606,18 @@ mod tests {
     #[tokio::test]
     async fn enqueue_is_idempotent_and_acceptance_is_persisted() {
         let engine = OutboundEngine::new(MemoryStore::new());
+        let record = queued_record(&realm_id(), serde_json::json!({"body": "hello"}));
         let first = engine
             .enqueue(
                 Some("txn-1".to_owned()),
                 realm_id(),
-                queued_record(&realm_id(), serde_json::json!({"body": "hello"})),
+                record.clone(),
                 Vec::new(),
             )
             .await
             .unwrap();
         let second = engine
-            .enqueue(
-                Some("txn-1".to_owned()),
-                realm_id(),
-                queued_record(&realm_id(), serde_json::json!({"body": "hello"})),
-                Vec::new(),
-            )
+            .enqueue(Some("txn-1".to_owned()), realm_id(), record, Vec::new())
             .await
             .unwrap();
         assert_eq!(first, second);

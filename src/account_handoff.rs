@@ -30,8 +30,13 @@ pub struct OidcAccountHandoffInput {
 #[derive(Clone, Debug, PartialEq)]
 pub enum AccountHandoffDisposition {
     IdentityCreationActive(IdentityCreationLease),
-    IdentityCreationBusy { retry_after_ms: u64 },
-    Bound { principal_id: Did },
+    IdentityCreationBusy {
+        retry_after_ms: u64,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    },
+    Bound {
+        principal_id: Did,
+    },
 }
 
 pub fn account_handoff_disposition(
@@ -42,11 +47,13 @@ pub fn account_handoff_disposition(
         AccountHandoffBinding::IdentityCreationActive {
             identity_creation_lease,
         } => AccountHandoffDisposition::IdentityCreationActive(identity_creation_lease.clone()),
-        AccountHandoffBinding::IdentityCreationBusy { retry_after_ms } => {
-            AccountHandoffDisposition::IdentityCreationBusy {
-                retry_after_ms: *retry_after_ms,
-            }
-        }
+        AccountHandoffBinding::IdentityCreationBusy {
+            retry_after_ms,
+            expires_at,
+        } => AccountHandoffDisposition::IdentityCreationBusy {
+            retry_after_ms: *retry_after_ms,
+            expires_at: *expires_at,
+        },
         AccountHandoffBinding::Bound { principal_id } => AccountHandoffDisposition::Bound {
             principal_id: principal_id.clone(),
         },
@@ -124,6 +131,7 @@ pub fn identity_binding_challenge_request(
 /// proof with the cold inception root. The seed is borrowed and never retained.
 pub fn identity_creation_register_request(
     challenge: &IdentityBindingChallengeOutcome,
+    expected_account_subject: &Hash,
     did_operation: DidOperationSubmitRequestBody,
     pcr_genesis_unit: PcrGenesisUnit,
     initial_session: InitialSessionGrantRequest,
@@ -133,8 +141,12 @@ pub fn identity_creation_register_request(
     let validated =
         crate::protocol::signatures::webvh::validate_principal_inception_operation(&did_operation)
             .map_err(|error| protocol(error.to_string()))?;
-    if challenge.principal_id != validated.principal_id
+    if &challenge.account_subject != expected_account_subject
+        || challenge.principal_id != validated.principal_id
         || challenge.operation_digest != validated.operation_digest
+        || challenge.did_version_id != validated.did_version_id
+        || challenge.log_head_digest != validated.log_head_digest
+        || challenge.control_key_digest != validated.control_key_digest
         || challenge.purpose != IdentityBindingPurpose::AccountBindingAndPcrGenesis
     {
         return Err(protocol(
@@ -146,8 +158,12 @@ pub fn identity_creation_register_request(
             challenge_id: challenge.challenge_id.clone(),
             challenge: challenge.challenge.clone(),
             purpose: challenge.purpose,
+            account_subject: challenge.account_subject.clone(),
             principal_id: challenge.principal_id.clone(),
             operation_digest: challenge.operation_digest.clone(),
+            did_version_id: challenge.did_version_id.clone(),
+            log_head_digest: challenge.log_head_digest.clone(),
+            control_key_digest: challenge.control_key_digest.clone(),
             pcr_realm_id: challenge.pcr_realm_id.clone(),
             realm_create_payload_digest: challenge.realm_create_payload_digest.clone(),
             founding_authorize_payload_digest: challenge.founding_authorize_payload_digest.clone(),
@@ -191,9 +207,13 @@ pub fn validate_binding_receipt(
     receipt: &AccountBindingReceipt,
     challenge: &IdentityBindingChallengeOutcome,
 ) -> Result<()> {
-    if receipt.identity_creation_lease_id != challenge.identity_creation_lease_id
+    receipt.validate_shape()?;
+    if receipt.account_subject != challenge.account_subject
+        || receipt.principal_id != challenge.principal_id
+        || receipt.identity_creation_lease_id != challenge.identity_creation_lease_id
         || receipt.lease_fence != challenge.lease_fence
         || receipt.operation_digest != challenge.operation_digest
+        || receipt.head_event_digest != challenge.log_head_digest
     {
         return Err(protocol(
             "account binding receipt does not match the identity-creation reservation",
@@ -209,6 +229,26 @@ pub fn validate_identity_creation_outcome(
     request: &AccountRegisterRequestBody,
 ) -> Result<()> {
     outcome.validate_against_request(request)?;
+    let registration = request
+        .identity_creation
+        .as_ref()
+        .ok_or_else(|| protocol("identity-creation outcome requires identity_creation request"))?;
+    let receipt = outcome
+        .binding_receipt
+        .as_ref()
+        .ok_or_else(|| protocol("identity-creation outcome omits account binding receipt"))?;
+    receipt.validate_shape()?;
+    if receipt.account_subject != registration.control_proof.account_subject
+        || receipt.principal_id != request.principal_id
+        || receipt.identity_creation_lease_id != registration.identity_creation_lease_id
+        || receipt.lease_fence != registration.lease_fence
+        || receipt.operation_digest != registration.control_proof.operation_digest
+        || receipt.head_event_digest != registration.control_proof.log_head_digest
+    {
+        return Err(protocol(
+            "account binding receipt does not match the accepted identity-creation request",
+        ));
+    }
     Ok(())
 }
 
@@ -265,6 +305,7 @@ mod tests {
             )
             .unwrap(),
             account_handle: crate::protocol::Handle::parse("alice:example.com").unwrap(),
+            account_subject: Hash::new(format!("sha256:{}", "a".repeat(64))).unwrap(),
             preferred_locale: None,
             account_handoff_grant: "g".repeat(32),
             expires_at: Utc::now(),
