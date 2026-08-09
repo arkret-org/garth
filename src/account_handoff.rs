@@ -111,7 +111,7 @@ pub fn identity_binding_challenge_request(
     let authorize = pcr_genesis_unit.founding_authorize();
     let request = IdentityBindingChallengeRequestBody {
         request_id,
-        identity_creation_lease_id: lease.lease_id.clone(),
+        identity_creation_lease_id: lease.identity_creation_lease_id.clone(),
         lease_fence: lease.fence,
         did_operation,
         pcr_realm_id: create.realm_id.clone(),
@@ -220,6 +220,20 @@ pub fn validate_binding_receipt(
         ));
     }
     Ok(())
+}
+
+/// Verify an Account Authority receipt against the complete method-native DID
+/// history effective at the receipt timestamp. The explicit error variants
+/// let hosts distinguish retryable resolver unavailability from a fork,
+/// revoked/unauthorized key, or invalid signature.
+pub fn verify_binding_receipt_at_issuance(
+    receipt: &AccountBindingReceipt,
+    resolver: &dyn arkret_identity::AuthorityDidHistoryResolver,
+) -> std::result::Result<
+    arkret_identity::VerifiedAccountBindingReceipt,
+    arkret_identity::AuthorityHistoryVerificationError,
+> {
+    arkret_identity::verify_account_binding_receipt_at_issuance(receipt, resolver)
 }
 
 /// Validate the only successful identity-creation terminal: the account is

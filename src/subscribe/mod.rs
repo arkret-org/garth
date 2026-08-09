@@ -294,7 +294,7 @@ where
         let decoder = crate::InboundDecoder::new();
         let mut batch = Vec::new();
         let mut accepted_ids = Vec::new();
-        for event in outcome.events.iter().filter_map(|row| row.event().cloned()) {
+        for event in outcome.events.iter().cloned() {
             let event_id = crate::protocol::verified_event_id(&event)?;
             if self.event_cache_store.seen(event_id.clone()).await? {
                 continue;

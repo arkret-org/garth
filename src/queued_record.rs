@@ -1,6 +1,10 @@
 use std::ops::Deref;
 
 use arkret_identifiers::ScheduledSendId;
+use arkret_models_collaboration::direct_conversation_ops::{
+    DirectConversationFoundingAcceptanceOutcome, DirectConversationFoundingPlan,
+    DirectConversationFoundingUnitSubmission,
+};
 use arkret_models_collaboration::events_payloads::RealmCreatePayload;
 use arkret_wire::{Did, Event, EventId, EventKind, Hash, MessageId, RealmId};
 use chrono::{DateTime, Utc};
@@ -135,6 +139,15 @@ pub struct QueuedMlsSnapshot {
     pub aead_version: u8,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MlsAdmissionStage {
+    CommitPending,
+    CommitAcceptedWaitingSeal,
+    WelcomesAuthored,
+    WelcomesAcceptedWaitingSeal,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QueuedPostAcceptAction {
@@ -146,6 +159,14 @@ pub enum QueuedPostAcceptAction {
         realm_id: String,
         actor_id: String,
         device_id: String,
+        /// Durable protocol phase. Ingress acceptance is not finality: both
+        /// the Commit and the Welcome batch wait for a covering accepted Seal
+        /// before the next phase is allowed to run.
+        stage: MlsAdmissionStage,
+        #[serde(default)]
+        commit_ingress_receipts: Vec<arkret_wire::IngressReceipt>,
+        #[serde(default)]
+        commit_was_duplicate: bool,
         welcomes: Vec<Event>,
         snapshot: QueuedMlsSnapshot,
     },
@@ -377,6 +398,9 @@ impl QueuedSdkEvent {
                     realm_id,
                     actor_id,
                     device_id,
+                    stage,
+                    commit_ingress_receipts: _,
+                    commit_was_duplicate: _,
                     welcomes,
                     snapshot,
                 } => {
@@ -391,6 +415,25 @@ impl QueuedSdkEvent {
                     {
                         return Err(Error::Protocol(
                             "queued MLS admission Welcome belongs to another Realm".to_owned(),
+                        ));
+                    }
+                    let welcomes_authored = matches!(
+                        stage,
+                        MlsAdmissionStage::WelcomesAuthored
+                            | MlsAdmissionStage::WelcomesAcceptedWaitingSeal
+                    );
+                    if welcomes.iter().any(|welcome| {
+                        if welcomes_authored {
+                            welcome.proofs.is_empty()
+                                || welcome.derive_event_id().ok().as_ref()
+                                    != Some(&welcome.event_id)
+                        } else {
+                            !welcome.proofs.is_empty()
+                        }
+                    }) {
+                        return Err(Error::Protocol(
+                            "queued MLS admission Welcome authoring phase is inconsistent"
+                                .to_owned(),
                         ));
                     }
                     (realm_id, snapshot)
@@ -422,6 +465,26 @@ pub enum QueuedRealmBootstrap {
         events: Vec<Event>,
         canonical_signed_unit_bytes: Vec<u8>,
     },
+    /// A fully authored Direct Conversation first-valid unit. Unlike an
+    /// ordinary Realm bootstrap, all three Events and both evidence carriers
+    /// are already frozen before enqueue. `accepted_outcome_bytes` is persisted
+    /// in a separate prepare pass, followed by a durable exact-covering-Seal
+    /// bit, before the queue is marked sent. A crash after either boundary can
+    /// resume without losing the unique slot receipt or treating ingress as
+    /// finality.
+    DirectConversationPrepared {
+        local_operation_id: String,
+        transport_idempotency_key: String,
+        first_event: Event,
+        canonical_signed_unit_bytes: Vec<u8>,
+        #[serde(deserialize_with = "deserialize_required_nullable")]
+        accepted_outcome_bytes: Option<Vec<u8>>,
+        /// Set only after every Event in the exact three-Event unit resolves
+        /// with its accepted covering Seal. Ingress acceptance alone never
+        /// advances a Direct Conversation into MLS bootstrap.
+        #[serde(default)]
+        founding_finality_confirmed: bool,
+    },
 }
 
 impl QueuedRealmBootstrap {
@@ -442,9 +505,29 @@ impl QueuedRealmBootstrap {
         Ok(queued)
     }
 
+    pub fn direct_conversation_prepared(
+        submission: DirectConversationFoundingUnitSubmission,
+    ) -> Result<Self> {
+        let local_operation_id = submission.idempotency_key.to_string();
+        let canonical_signed_unit_bytes = arkret_canonical::canonical_json_bytes(&submission)?;
+        let queued = Self::DirectConversationPrepared {
+            transport_idempotency_key: local_operation_id.clone(),
+            local_operation_id,
+            first_event: submission.events[0].event.clone(),
+            canonical_signed_unit_bytes,
+            accepted_outcome_bytes: None,
+            founding_finality_confirmed: false,
+        };
+        queued.validate()?;
+        Ok(queued)
+    }
+
     pub fn authority_context_event(&self) -> Result<&Event> {
         let events = match self {
             Self::Intent { events, .. } | Self::Prepared { events, .. } => events,
+            Self::DirectConversationPrepared { first_event, .. } => {
+                return Ok(first_event);
+            }
         };
         events
             .first()
@@ -452,6 +535,91 @@ impl QueuedRealmBootstrap {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if let Self::DirectConversationPrepared {
+            local_operation_id,
+            transport_idempotency_key,
+            first_event,
+            canonical_signed_unit_bytes,
+            accepted_outcome_bytes,
+            founding_finality_confirmed,
+        } = self
+        {
+            let submission: DirectConversationFoundingUnitSubmission =
+                serde_json::from_slice(canonical_signed_unit_bytes).map_err(|error| {
+                    Error::Protocol(format!(
+                        "decode queued Direct Conversation founding unit: {error}"
+                    ))
+                })?;
+            if local_operation_id.trim().is_empty()
+                || transport_idempotency_key != local_operation_id
+                || submission.idempotency_key.as_str() != local_operation_id
+                || &submission.events[0].event != first_event
+            {
+                return Err(Error::Protocol(
+                    "queued Direct Conversation founding identity mismatch".to_owned(),
+                ));
+            }
+            if arkret_canonical::canonical_json_bytes(&submission)? != *canonical_signed_unit_bytes
+            {
+                return Err(Error::Protocol(
+                    "queued Direct Conversation founding canonical bytes mismatch".to_owned(),
+                ));
+            }
+            let events = submission
+                .events
+                .iter()
+                .map(|item| &item.event)
+                .collect::<Vec<_>>();
+            let exact: [&Event; 3] = events.try_into().map_err(|_| {
+                Error::Protocol(
+                    "queued Direct Conversation founding unit must contain three Events".to_owned(),
+                )
+            })?;
+            let plan = DirectConversationFoundingPlan::from_events(exact)?;
+            if submission
+                .events
+                .iter()
+                .any(|item| item.event.proofs.is_empty())
+            {
+                return Err(Error::Protocol(
+                    "queued Direct Conversation founding unit contains an unsigned Event"
+                        .to_owned(),
+                ));
+            }
+            if let Some(bytes) = accepted_outcome_bytes {
+                let outcome: DirectConversationFoundingAcceptanceOutcome =
+                    serde_json::from_slice(bytes).map_err(|error| {
+                        Error::Protocol(format!(
+                            "decode queued Direct Conversation founding outcome: {error}"
+                        ))
+                    })?;
+                if arkret_canonical::canonical_json_bytes(&outcome)? != *bytes {
+                    return Err(Error::Protocol(
+                        "queued Direct Conversation founding outcome bytes are not canonical"
+                            .to_owned(),
+                    ));
+                }
+                outcome.receipt.validate_shape()?;
+                if outcome.event_ids != plan.event_ids
+                    || outcome.receipt.realm_id != plan.realm_id
+                    || outcome.receipt.main_strand_id != plan.main_strand_id
+                    || outcome.receipt.founding_unit_digest != plan.founding_unit_digest
+                {
+                    return Err(Error::Protocol(
+                        "queued Direct Conversation founding receipt does not match frozen unit"
+                            .to_owned(),
+                    ));
+                }
+            }
+            if *founding_finality_confirmed && accepted_outcome_bytes.is_none() {
+                return Err(Error::Protocol(
+                    "queued Direct Conversation founding finality lacks an acceptance receipt"
+                        .to_owned(),
+                ));
+            }
+            return Ok(());
+        }
+
         let (
             local_operation_id,
             transport_idempotency_key,
@@ -486,6 +654,9 @@ impl QueuedRealmBootstrap {
                 events,
                 Some(canonical_signed_unit_bytes),
             ),
+            Self::DirectConversationPrepared { .. } => {
+                unreachable!("Direct Conversation validation returned above")
+            }
         };
         if local_operation_id.trim().is_empty() || transport_idempotency_key.trim().is_empty() {
             return Err(Error::Protocol(
@@ -517,6 +688,98 @@ impl QueuedRealmBootstrap {
         }
         Ok(())
     }
+
+    pub fn direct_conversation_submission(
+        &self,
+    ) -> Result<Option<DirectConversationFoundingUnitSubmission>> {
+        let Self::DirectConversationPrepared {
+            canonical_signed_unit_bytes,
+            ..
+        } = self
+        else {
+            return Ok(None);
+        };
+        let submission = serde_json::from_slice(canonical_signed_unit_bytes).map_err(|error| {
+            Error::Protocol(format!(
+                "decode queued Direct Conversation founding unit: {error}"
+            ))
+        })?;
+        Ok(Some(submission))
+    }
+
+    pub fn direct_conversation_accepted_outcome(
+        &self,
+    ) -> Result<Option<DirectConversationFoundingAcceptanceOutcome>> {
+        let Self::DirectConversationPrepared {
+            accepted_outcome_bytes,
+            ..
+        } = self
+        else {
+            return Ok(None);
+        };
+        accepted_outcome_bytes
+            .as_deref()
+            .map(|bytes| {
+                serde_json::from_slice(bytes).map_err(|error| {
+                    Error::Protocol(format!(
+                        "decode queued Direct Conversation founding outcome: {error}"
+                    ))
+                })
+            })
+            .transpose()
+    }
+
+    pub fn with_direct_conversation_accepted_outcome(
+        mut self,
+        outcome: DirectConversationFoundingAcceptanceOutcome,
+    ) -> Result<Self> {
+        let Self::DirectConversationPrepared {
+            accepted_outcome_bytes,
+            ..
+        } = &mut self
+        else {
+            return Err(Error::Protocol(
+                "cannot attach a Direct Conversation outcome to an ordinary Realm bootstrap"
+                    .to_owned(),
+            ));
+        };
+        *accepted_outcome_bytes = Some(arkret_canonical::canonical_json_bytes(&outcome)?);
+        self.validate()?;
+        Ok(self)
+    }
+
+    pub fn direct_conversation_founding_finality_confirmed(&self) -> Result<Option<bool>> {
+        let Self::DirectConversationPrepared {
+            founding_finality_confirmed,
+            ..
+        } = self
+        else {
+            return Ok(None);
+        };
+        Ok(Some(*founding_finality_confirmed))
+    }
+
+    pub fn with_direct_conversation_founding_finality_confirmed(mut self) -> Result<Self> {
+        let Self::DirectConversationPrepared {
+            accepted_outcome_bytes,
+            founding_finality_confirmed,
+            ..
+        } = &mut self
+        else {
+            return Err(Error::Protocol(
+                "cannot attach Direct Conversation finality to an ordinary Realm bootstrap"
+                    .to_owned(),
+            ));
+        };
+        if accepted_outcome_bytes.is_none() {
+            return Err(Error::Protocol(
+                "cannot confirm Direct Conversation finality before acceptance".to_owned(),
+            ));
+        }
+        *founding_finality_confirmed = true;
+        self.validate()?;
+        Ok(self)
+    }
 }
 
 fn validate_realm_bootstrap_intent(events: &[Event]) -> Result<()> {
@@ -535,11 +798,6 @@ fn validate_realm_bootstrap_intent(events: &[Event]) -> Result<()> {
         .object
         .validate()
         .map_err(|error| Error::Protocol(error.to_string()))?;
-    if payload.object.genesis_salt.is_none() {
-        return Err(Error::Protocol(
-            "event-derived Realm bootstrap intent must persist genesis_salt".to_owned(),
-        ));
-    }
     arkret_policy::realm_bootstrap::validate_realm_bootstrap_unit(events)
         .map(|_| ())
         .map_err(|error| Error::Protocol(error.reason_code().to_owned()))

@@ -1,6 +1,6 @@
 //! Deterministic Sidecar exchange Event fold (`zh/models/sidecar.md` §7.2.4).
 //!
-//! Exchange truth lives only in accepted Sidecar private-Strand Events:
+//! Exchange truth lives only in accepted native Sidecar Events:
 //! the controller request binding, validated Agent binding Events, and
 //! controller-authored durable control Events. This module folds those facts
 //! into the controller-device-local `AgentSidecarExchangeProjection` cache.
@@ -9,8 +9,8 @@
 //!
 //! Callers are responsible for the decrypt-side gates of §7.2.2 checks 1–2:
 //! every fact passed in MUST already come from an Event whose effective scope
-//! is this Sidecar's backing Circle and whose `strand_id` is this context's
-//! private Strand, with a binding that passed closed-schema validation.
+//! is this exact Sidecar and whose source context matches the projection,
+//! with a binding that passed closed-schema validation.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -22,14 +22,13 @@ use crate::protocol::models::{
     AgentSidecarExchangeProjectionSchema, AgentSidecarExchangeRequestContext,
     AgentSidecarExchangeStatus, agent_sidecar_exchange_event_set_digest,
 };
-use crate::protocol::{Did, Error, EventId, Hlc, NonEmptyString, Result, SidecarId, StrandId};
+use crate::protocol::{Did, Error, EventId, Hlc, NonEmptyString, Result, SidecarId};
 
 /// Immutable identity of the fold target. All facts are validated against it.
 #[derive(Clone, Debug)]
 pub struct SidecarExchangeFoldScope {
     pub controller_id: Did,
     pub sidecar_id: SidecarId,
-    pub private_strand_id: StrandId,
 }
 
 /// A decrypted controller `role=request` binding Event.
@@ -563,9 +562,9 @@ fn build_frontier(
 
 #[cfg(test)]
 mod tests {
-    use crate::protocol::RealmId;
     use crate::protocol::models::AgentSidecarExchangeControlSchema;
     use crate::protocol::models::AgentSidecarSourceTrackRef;
+    use crate::protocol::{RealmId, StrandId};
 
     use super::*;
 
@@ -595,7 +594,6 @@ mod tests {
         SidecarExchangeFoldScope {
             controller_id: controller(),
             sidecar_id: SidecarId::from_event_id(&event_id(0x32)),
-            private_strand_id: StrandId::from_event_id(&event_id(0x33)),
         }
     }
 
@@ -681,7 +679,7 @@ mod tests {
             1,
             arkret_wire::EventKind::MessageCreate.as_str(),
             serde_json::json!({
-                "strand_id": scope().private_strand_id,
+                "strand_id": StrandId::from_event_id(&event_id(0x33)),
                 "track_name": "discussion",
                 "content": {"kind": "ak.content.text", "body": body},
                 "exchange_binding": AgentSidecarEventExchangeBinding::request(
@@ -708,7 +706,7 @@ mod tests {
             0x40 + suffix,
             arkret_wire::EventKind::AgentSidecarExchangeControl.as_str(),
             serde_json::json!({
-                "strand_id": scope().private_strand_id,
+                "strand_id": StrandId::from_event_id(&event_id(0x33)),
                 "control": control
             }),
             &fact.refs_after,

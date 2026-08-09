@@ -43,6 +43,11 @@ pub use account_handoff::{
     AccountHandoffDisposition, OidcAccountHandoffInput, account_handoff_disposition,
     identity_binding_challenge_request, identity_creation_register_request,
     oidc_account_handoff_request, validate_binding_receipt, validate_identity_creation_outcome,
+    verify_binding_receipt_at_issuance,
+};
+pub use arkret_identity::{
+    AuthorityDidHistoryResolver, AuthorityHistoryUnavailable, AuthorityHistoryVerificationError,
+    VerifiedAccountBindingReceipt,
 };
 pub use arkret_models_collaboration::signal_message_stream::MESSAGE_STREAM_KIND;
 pub use backoff::Backoff;
@@ -84,9 +89,9 @@ pub use protocol::{
     PresencePlaintext, ReadReceipt, SdkSignalPlaintext, TypingPlaintext, open_signal_plaintext,
 };
 pub use queued_record::{
-    AuthoringAuthorityModel, AuthoringGeneration, QueuedAuthoredEventAttempt, QueuedEventIntent,
-    QueuedMlsSnapshot, QueuedPostAcceptAction, QueuedRealmBootstrap, QueuedRecord, QueuedSdkEvent,
-    ScheduledSendDispatchRecord, ScheduledSendSubmissionState,
+    AuthoringAuthorityModel, AuthoringGeneration, MlsAdmissionStage, QueuedAuthoredEventAttempt,
+    QueuedEventIntent, QueuedMlsSnapshot, QueuedPostAcceptAction, QueuedRealmBootstrap,
+    QueuedRecord, QueuedSdkEvent, ScheduledSendDispatchRecord, ScheduledSendSubmissionState,
 };
 pub use runtime_journey::{
     ParticipationAction, ParticipationAdmissionFacts, RuntimeActorView, RuntimeBlocker,
