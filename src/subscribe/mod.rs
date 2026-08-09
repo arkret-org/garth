@@ -294,7 +294,12 @@ where
         let decoder = crate::InboundDecoder::new();
         let mut batch = Vec::new();
         let mut accepted_ids = Vec::new();
-        for event in outcome.events.iter().cloned() {
+        for (index, row) in outcome.events.iter().cloned().enumerate() {
+            let event = row.into_event().ok_or_else(|| {
+                Error::Protocol(format!(
+                    "Realm history bootstrap requires complete Events; row {index} is redacted or reference-locked"
+                ))
+            })?;
             let event_id = crate::protocol::verified_event_id(&event)?;
             if self.event_cache_store.seen(event_id.clone()).await? {
                 continue;
