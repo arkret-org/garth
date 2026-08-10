@@ -5,7 +5,7 @@ use arkret_models_collaboration::session_grant_bodies::{
 };
 use arkret_models_collaboration::sync_frames::account_subscribe::AccountSubscribeBatch;
 use arkret_models_collaboration::sync_frames::client_sync::SyncRequestBody;
-use arkret_wire::{CoreId, DeviceId, FullId, RealmId, ServiceId, SessionGrantId};
+use arkret_wire::{DeviceId, DidCoreId, RealmId, SessionGrantId};
 use chrono::{Duration, Utc};
 use garth::Result;
 use garth::subscribe::scan::BoxScanFuture;
@@ -137,8 +137,8 @@ impl AuthenticatedTransportFactory for ReferenceFactory {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
-    let actor_id = FullId::new("did:webvh:z6mkfixture:alice.example")?;
-    let principal_id = CoreId::new("ak:did_core:webvh:z6mkfixture:alice.example")?;
+    let actor_id = DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example")?;
+    let principal_id = DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example")?;
     let device_id = DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001")?;
     let realm_id = RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO")?;
 
@@ -152,7 +152,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             grant_id: SessionGrantId::from_issuance_digest([1_u8; 32]),
             grant_jwt: "reference-grant".to_owned(),
             expires_at: Utc::now() + Duration::hours(1),
-            audience: ServiceId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+            audience: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
             session_public_key: Some("reference-public-key".to_owned()),
             dpop_jkt: Some("reference-jkt".to_owned()),

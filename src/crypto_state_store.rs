@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::protocol::{
-    DeviceId, DeviceVerificationState, Did, Error, MlsCommitEnvelope, MlsKeyPackageRecord,
+    DeviceId, DeviceVerificationState, DidCoreId, Error, MlsCommitEnvelope, MlsKeyPackageRecord,
     MlsWelcomeEnvelope, Result,
 };
 
@@ -100,7 +100,7 @@ pub struct MlsEpochSecretRecord {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoredDeviceVerification {
-    pub principal_id: Did,
+    pub principal_id: DidCoreId,
     pub device_id: DeviceId,
     pub state: DeviceVerificationState,
     pub updated_at: DateTime<Utc>,
@@ -117,17 +117,20 @@ pub struct StoredDeviceVerification {
 pub trait CryptoStore: Send + Sync + MlsGroupStateSink + MlsCommitSource {
     fn mls_group_state(&self, group_id: &str) -> Option<&MlsGroupStateRecord>;
     fn put_key_package(&mut self, record: MlsKeyPackageRecord) -> Result<()>;
-    fn key_package(&self, principal_id: &Did, device_id: &DeviceId)
-    -> Option<&MlsKeyPackageRecord>;
+    fn key_package(
+        &self,
+        principal_id: &DidCoreId,
+        device_id: &DeviceId,
+    ) -> Option<&MlsKeyPackageRecord>;
     fn key_packages_for_device(
         &self,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> Vec<&MlsKeyPackageRecord>;
     fn put_welcome(&mut self, record: MlsWelcomeEnvelope) -> Result<()>;
     fn welcomes_for_device(
         &self,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> Vec<&MlsWelcomeEnvelope>;
     fn mark_welcome_accepted(&mut self, welcome_hash: &crate::protocol::Hash) -> Result<()>;
@@ -139,7 +142,7 @@ pub trait CryptoStore: Send + Sync + MlsGroupStateSink + MlsCommitSource {
     fn put_device_verification(&mut self, record: StoredDeviceVerification) -> Result<()>;
     fn device_verification(
         &self,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> Option<&StoredDeviceVerification>;
     fn plan_mls_recovery(
@@ -147,7 +150,7 @@ pub trait CryptoStore: Send + Sync + MlsGroupStateSink + MlsCommitSource {
         group_id: &str,
         local_epoch: Option<u64>,
         required_epoch: u64,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> MlsRecoveryPlan;
     fn export_backup_json(&self) -> Result<String>;
@@ -169,7 +172,7 @@ pub struct MemoryCryptoStore {
     welcome_states: BTreeMap<crate::protocol::Hash, MlsWelcomeState>,
     commits: BTreeMap<String, Vec<MlsCommitEnvelope>>,
     epoch_secrets: BTreeMap<(String, u64), MlsEpochSecretRecord>,
-    device_verifications: BTreeMap<(Did, DeviceId), StoredDeviceVerification>,
+    device_verifications: BTreeMap<(DidCoreId, DeviceId), StoredDeviceVerification>,
 }
 
 // The store aggregates MLS group snapshots, key packages and sealed epoch
@@ -245,7 +248,7 @@ impl CryptoStore for MemoryCryptoStore {
 
     fn key_package(
         &self,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> Option<&MlsKeyPackageRecord> {
         self.key_packages_for_device(principal_id, device_id)
@@ -255,12 +258,20 @@ impl CryptoStore for MemoryCryptoStore {
 
     fn key_packages_for_device(
         &self,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> Vec<&MlsKeyPackageRecord> {
         self.key_packages
             .values()
-            .filter(|record| &record.principal_id == principal_id && &record.device_id == device_id)
+            .filter(|record| {
+                matches!(
+                    &record.endpoint,
+                    crate::protocol::MlsEndpointIdentity::HumanDevice {
+                        principal_id: owner,
+                        device_id: owner_device,
+                    } if owner == principal_id && owner_device == device_id
+                )
+            })
             .collect()
     }
 
@@ -271,15 +282,16 @@ impl CryptoStore for MemoryCryptoStore {
         if let Some(existing) = self.welcomes.iter().find(|welcome| {
             welcome.group_id == record.group_id
                 && welcome.epoch == record.epoch
-                && welcome.recipient_principal_id == record.recipient_principal_id
-                && welcome.recipient_device_id == record.recipient_device_id
+                && welcome.recipient == record.recipient
         }) {
             return if existing.welcome_hash == record.welcome_hash {
                 Ok(())
             } else {
                 Err(Error::IdempotencyConflict(format!(
                     "welcome:{}:{}:{}",
-                    record.group_id, record.epoch, record.recipient_device_id
+                    record.group_id,
+                    record.epoch,
+                    record.recipient.actor_id()
                 )))
             };
         }
@@ -291,14 +303,19 @@ impl CryptoStore for MemoryCryptoStore {
 
     fn welcomes_for_device(
         &self,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> Vec<&MlsWelcomeEnvelope> {
         self.welcomes
             .iter()
             .filter(|welcome| {
-                &welcome.recipient_principal_id == principal_id
-                    && &welcome.recipient_device_id == device_id
+                matches!(
+                    &welcome.recipient,
+                    crate::protocol::MlsEndpointIdentity::HumanDevice {
+                        principal_id: owner,
+                        device_id: owner_device,
+                    } if owner == principal_id && owner_device == device_id
+                )
             })
             .collect()
     }
@@ -378,7 +395,7 @@ impl CryptoStore for MemoryCryptoStore {
 
     fn device_verification(
         &self,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> Option<&StoredDeviceVerification> {
         self.device_verifications
@@ -390,7 +407,7 @@ impl CryptoStore for MemoryCryptoStore {
         group_id: &str,
         local_epoch: Option<u64>,
         required_epoch: u64,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> MlsRecoveryPlan {
         let action = match local_epoch {
@@ -447,8 +464,8 @@ mod tests {
     use super::*;
     use crate::protocol::Hash;
 
-    fn did(name: &str) -> Did {
-        Did::new(format!("did:webvh:z6mkfixture:{name}.example")).unwrap()
+    fn did(name: &str) -> DidCoreId {
+        DidCoreId::new(format!("ak:did_core:webvh:z6mkfixture:{name}.example")).unwrap()
     }
 
     fn device(id: &str) -> DeviceId {
@@ -484,8 +501,10 @@ mod tests {
         store
             .put_key_package(MlsKeyPackageRecord {
                 keypackage_id: format!("ak:mls:kp:{}", uuid::Uuid::now_v7()),
-                principal_id: alice.clone(),
-                device_id: device_id.clone(),
+                endpoint: crate::protocol::MlsEndpointIdentity::human_device(
+                    alice.clone(),
+                    device_id.clone(),
+                ),
                 key_package: "kp".to_owned(),
                 keypackage_ref: Hash::new(
                     "sha256:1111111111111111111111111111111111111111111111111111111111111111",
@@ -556,8 +575,10 @@ mod tests {
             .put_welcome(MlsWelcomeEnvelope {
                 group_id: "group1".to_owned(),
                 epoch: 1,
-                recipient_principal_id: alice.clone(),
-                recipient_device_id: device_id.clone(),
+                recipient: crate::protocol::MlsEndpointIdentity::human_device(
+                    alice.clone(),
+                    device_id.clone(),
+                ),
                 welcome: "welcome".to_owned(),
                 welcome_hash: Hash::new(
                     "sha256:2222222222222222222222222222222222222222222222222222222222222222",
@@ -594,8 +615,10 @@ mod tests {
         let welcome = MlsWelcomeEnvelope {
             group_id: "group1".to_owned(),
             epoch: 1,
-            recipient_principal_id: alice.clone(),
-            recipient_device_id: device_id.clone(),
+            recipient: crate::protocol::MlsEndpointIdentity::human_device(
+                alice.clone(),
+                device_id.clone(),
+            ),
             welcome: "welcome".to_owned(),
             welcome_hash: Hash::new(
                 "sha256:2222222222222222222222222222222222222222222222222222222222222222",

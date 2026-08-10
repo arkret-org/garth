@@ -18,7 +18,7 @@ use std::{
     hash::{Hash, Hasher},
 };
 
-use crate::protocol::{DeviceId, Did, RealmId, Result, SyncUpdates};
+use crate::protocol::{DeviceId, DidCoreId, RealmId, Result, SyncUpdates};
 use crate::sync_client::{AsyncSyncTransport, SyncLoopControl, SyncLoopStep};
 
 use crate::signal::{SignalDecryptor, SignalSenderKeyResolver};
@@ -441,7 +441,7 @@ where
     /// `Unauthorized`, the provider refreshes and rebuilds its transport.
     pub async fn run_account<TP, P>(
         &self,
-        actor_id: Did,
+        actor_id: DidCoreId,
         device_id: DeviceId,
         provider: &TP,
         projector: &P,
@@ -559,7 +559,7 @@ where
     /// cancellation and bounded reconnect backoff remain shared here.
     pub async fn run_account_steps<TP, CMT, H>(
         &self,
-        actor_id: Did,
+        actor_id: DidCoreId,
         device_id: DeviceId,
         provider: &TP,
         handlers: AccountStepHandlers<'_, CMT, H>,
@@ -716,9 +716,9 @@ where
     /// durable-inbox commit instead of a synchronous host projection.
     pub async fn run_account_to_inbox<TP>(
         &self,
-        actor_id: Did,
+        actor_id: DidCoreId,
         device_id: DeviceId,
-        service_id: Option<Did>,
+        service_id: Option<DidCoreId>,
         provider: &TP,
         control: &SyncLoopControl,
         options: RunOptions,
@@ -1261,14 +1261,12 @@ mod tests {
         }
     }
 
-    fn actor_id() -> Did {
-        Did::new("did:webvh:z6mkfixture:alice.example").unwrap()
+    fn actor_id() -> DidCoreId {
+        DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()
     }
 
-    fn event_actor_id() -> crate::protocol::ActorId {
-        crate::protocol::ActorId::from(
-            crate::protocol::project_full_id_to_core_id(&actor_id()).unwrap(),
-        )
+    fn event_actor_id() -> crate::protocol::DidCoreId {
+        actor_id()
     }
 
     fn device_id() -> DeviceId {

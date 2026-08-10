@@ -260,14 +260,14 @@ impl MonotonicStampStore for MemoryStore {
 
 #[cfg(test)]
 mod tests {
-    use crate::protocol::{DeviceId, Did, EventId};
+    use crate::protocol::{DeviceId, DidCoreId, EventId};
 
     use super::*;
 
     fn account_scope() -> CursorScope {
         CursorScope::Account {
             service_id: None,
-            actor_id: Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            actor_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
             device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
         }
     }

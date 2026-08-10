@@ -21,7 +21,7 @@
 
 use std::future::Future;
 
-use crate::protocol::{ActorId, DeviceId, Did, Error, Hlc, RealmId, Result};
+use crate::protocol::{DeviceId, DidCoreId, Error, Hlc, RealmId, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::{HostClock, MaybeSendSync};
@@ -36,8 +36,8 @@ const MAX_PHYSICAL: u64 = crate::protocol::hlc::HLC_MAX_PHYSICAL_MS;
 /// no actor sequence state is stored or allocated here.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct StampScope {
-    pub service_id: Option<Did>,
-    pub actor_id: ActorId,
+    pub service_id: Option<DidCoreId>,
+    pub actor_id: DidCoreId,
     pub device_id: DeviceId,
     pub realm_id: RealmId,
 }
@@ -300,7 +300,7 @@ mod hlc_only_tests {
     fn scope() -> StampScope {
         StampScope {
             service_id: None,
-            actor_id: ActorId::new("ak:did_core:web:alice.example").unwrap(),
+            actor_id: DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
             device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
             realm_id: RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO")
                 .unwrap(),

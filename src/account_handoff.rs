@@ -6,7 +6,7 @@
 
 use crate::protocol::{
     AccountBindingReceipt, AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
-    AccountRegisterOutcome, AccountRegisterRequestBody, Base64UrlString, CoreId, Did,
+    AccountRegisterOutcome, AccountRegisterRequestBody, Base64UrlString, DidCoreId, DidFullId,
     DidOperationSubmitRequestBody, Hash, IdentityBindingChallengeOutcome,
     IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationLease,
     IdentityCreationRegistration, InitialSessionGrantRequest, PcrGenesisUnit, RequestId, Result,
@@ -17,7 +17,7 @@ use crate::protocol::{
 #[derive(Clone, Debug)]
 pub struct OidcAccountHandoffInput {
     pub request_id: RequestId,
-    pub audience: crate::protocol::ServiceId,
+    pub audience: crate::protocol::DidCoreId,
     pub issuer: String,
     pub client_id: String,
     pub redirect_uri: String,
@@ -35,8 +35,8 @@ pub enum AccountHandoffDisposition {
         expires_at: chrono::DateTime<chrono::Utc>,
     },
     Bound {
-        principal_id: CoreId,
-        full_id: Did,
+        principal_id: DidCoreId,
+        full_id: DidFullId,
     },
 }
 
@@ -148,11 +148,9 @@ pub fn identity_creation_register_request(
     let validated =
         crate::protocol::signatures::webvh::validate_principal_inception_operation(&did_operation)
             .map_err(|error| protocol(error.to_string()))?;
-    let validated_principal_id =
-        crate::protocol::project_full_id_to_core_id(&validated.principal_id)?;
     if &challenge.account_subject != expected_account_subject
-        || challenge.principal_id != validated_principal_id
-        || challenge.full_id != validated.principal_id
+        || challenge.principal_id != validated.principal_id
+        || challenge.full_id != did_operation.did
         || challenge.operation_digest != validated.operation_digest
         || challenge.did_version_id != validated.did_version_id
         || challenge.log_head_digest != validated.log_head_digest
@@ -289,11 +287,11 @@ mod tests {
     use super::*;
     use chrono::Utc;
 
-    fn did(value: &str) -> Did {
-        Did::new(value.to_owned()).unwrap()
+    fn did(value: &str) -> DidFullId {
+        DidFullId::new(value.to_owned()).unwrap()
     }
 
-    fn core_id(value: &str) -> CoreId {
+    fn core_id(value: &str) -> DidCoreId {
         crate::protocol::project_full_id_to_core_id(&did(value)).unwrap()
     }
 
@@ -305,7 +303,7 @@ mod tests {
                     "ak:request:01964137-0000-7000-8000-000000000001".to_owned(),
                 )
                 .unwrap(),
-                audience: crate::protocol::ServiceId::new(
+                audience: crate::protocol::DidCoreId::new(
                     "ak:did_core:webvh:z6mkfixture:service.example",
                 )
                 .unwrap(),

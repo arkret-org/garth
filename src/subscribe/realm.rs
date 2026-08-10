@@ -2,7 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::protocol::{
-    Did, Event, EventsSubscribeFrame, EventsSubscribeFrameKind, RealmId, Result,
+    DidCoreId, Event, EventsSubscribeFrame, EventsSubscribeFrameKind, RealmId, Result,
     StreamTraceValidator,
 };
 
@@ -103,7 +103,7 @@ pub struct RealmEventsDriver<C, D> {
     cursor_store: C,
     event_cache_store: D,
     decoder: InboundDecoder,
-    service_id: Option<Did>,
+    service_id: Option<DidCoreId>,
 }
 
 impl<C, D> RealmEventsDriver<C, D>
@@ -120,7 +120,7 @@ where
         }
     }
 
-    pub fn with_service_id(mut self, service_id: Did) -> Self {
+    pub fn with_service_id(mut self, service_id: DidCoreId) -> Self {
         self.service_id = Some(service_id);
         self
     }
@@ -411,7 +411,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::protocol::identifiers::Cursor;
-    use crate::protocol::{Did, Event, Hlc};
+    use crate::protocol::{DidCoreId, Event, Hlc};
     use serde_json::{Value, json};
 
     use super::*;
@@ -467,13 +467,8 @@ mod tests {
         RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO").unwrap()
     }
 
-    fn event_actor_id() -> crate::protocol::ActorId {
-        crate::protocol::ActorId::from(
-            crate::protocol::project_full_id_to_core_id(
-                &Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
-            )
-            .unwrap(),
-        )
+    fn event_actor_id() -> crate::protocol::DidCoreId {
+        DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()
     }
 
     fn scope() -> CursorScope {

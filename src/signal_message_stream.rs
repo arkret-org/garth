@@ -9,10 +9,10 @@ use serde_json::Value;
 use crate::MaybeSendSync;
 
 use crate::protocol::{
-    ActorId, DeviceId, Did, Error, Event, EventKind, MAX_MESSAGE_STREAM_LIFETIME_SECONDS,
+    DeviceId, DidCoreId, Error, Event, EventKind, MAX_MESSAGE_STREAM_LIFETIME_SECONDS,
     MAX_MESSAGE_STREAM_PREVIEW_BYTES, MAX_MESSAGE_STREAMS_PER_DEVICE,
     MESSAGE_STREAM_STALLED_AFTER_SECONDS, MessageCreatePayload, MessageId, MessageStreamFormat,
-    MessageStreamFrame, MessageStreamId, Result, ScopeRef, StrandId, project_full_id_to_core_id,
+    MessageStreamFrame, MessageStreamId, Result, ScopeRef, StrandId,
 };
 
 use crate::signal::SignalPlaintext;
@@ -61,14 +61,14 @@ pub enum MessageStreamApplyOutcome {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct MessageStreamPreviewKey {
-    sender_actor_id: ActorId,
+    sender_actor_id: DidCoreId,
     sender_device_id: DeviceId,
     message_id: MessageId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MessageStreamPreview {
-    pub sender_actor_id: ActorId,
+    pub sender_actor_id: DidCoreId,
     pub sender_device_id: DeviceId,
     pub scope_ref: ScopeRef,
     pub strand_id: StrandId,
@@ -131,7 +131,7 @@ impl MessageStreamProjection {
             ));
         }
 
-        let sender_actor_id = ActorId::from(project_full_id_to_core_id(&plaintext.actor_id)?);
+        let sender_actor_id = plaintext.actor_id.clone();
 
         let key = MessageStreamPreviewKey {
             sender_actor_id: sender_actor_id.clone(),
@@ -299,7 +299,7 @@ impl MessageStreamProjection {
 
     pub fn preview(
         &self,
-        sender_actor_id: &ActorId,
+        sender_actor_id: &DidCoreId,
         sender_device_id: &DeviceId,
         message_id: &MessageId,
     ) -> Option<&MessageStreamPreview> {
@@ -388,12 +388,12 @@ mod tests {
 
     use super::*;
 
-    fn actor() -> Did {
-        Did::new("did:webvh:z6mkfixture:alice.example").unwrap()
+    fn actor() -> DidCoreId {
+        DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()
     }
 
-    fn actor_core() -> ActorId {
-        ActorId::from(project_full_id_to_core_id(&actor()).unwrap())
+    fn actor_core() -> DidCoreId {
+        actor()
     }
 
     fn device() -> DeviceId {

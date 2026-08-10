@@ -23,8 +23,8 @@ use crate::protocol::sync::{
 };
 use crate::protocol::{
     AccountStreamInterrupt, AccountSubscribeBatch, AccountSubscribeDeviceListChanges,
-    AccountSubscribeFrameKind, AccountSubscribeRealmSummary, ActorId, AuthorizationLease, DeviceId,
-    DeviceMessageEnvelope, Did, Error, Event, EventId, IngressReceipt, NotificationDelta,
+    AccountSubscribeFrameKind, AccountSubscribeRealmSummary, AuthorizationLease, DeviceId,
+    DeviceMessageEnvelope, DidCoreId, Error, Event, EventId, IngressReceipt, NotificationDelta,
     NotificationDeltaAction, RealmId, Result, Timeline, canonical,
 };
 

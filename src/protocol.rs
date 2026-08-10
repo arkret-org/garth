@@ -46,7 +46,9 @@ pub(crate) use arkret_models_collaboration::sync_frames::account_sync::{
 };
 pub(crate) use arkret_models_collaboration::sync_frames::client_sync::{RealmUpdate, SyncUpdates};
 pub(crate) use arkret_models_collaboration::sync_frames::stream_trace::StreamTraceValidator;
-pub(crate) use arkret_models_crypto::{MlsCommitEnvelope, MlsKeyPackageRecord, MlsWelcomeEnvelope};
+pub(crate) use arkret_models_crypto::{
+    MlsCommitEnvelope, MlsEndpointIdentity, MlsKeyPackageRecord, MlsWelcomeEnvelope,
+};
 pub use arkret_models_discovery::{
     PresenceStatus, aggregate_presence_states, validate_last_active_at, validate_status_message,
 };
@@ -54,23 +56,23 @@ pub(crate) use arkret_models_identity::agent_signer_evidence::{
     AgentSignerEvidence, AgentSignerEvidenceQuerySelector,
 };
 pub(crate) use arkret_models_identity::{
-    AccountBindingReceipt, AccountHandoffAuthenticationProof,
-    AccountHandoffAuthenticationProofKind, AccountHandoffBinding, AccountHandoffOutcome,
-    AccountHandoffRequestBody, DeviceVerificationState, DidOperationSubmitRequestBody,
-    IdentityBindingChallengeOutcome, IdentityBindingChallengeRequestBody, IdentityBindingPurpose,
-    IdentityCreationControlProof, IdentityCreationLease, IdentityCreationRegistration,
-    InitialSessionGrantRequest, ReservedIdentityCreation, SessionGrantProofKind,
+    AccountBindingReceipt, AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
+    DeviceVerificationState, DidOperationSubmitRequestBody, IdentityBindingChallengeOutcome,
+    IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationLease,
+    IdentityCreationRegistration, InitialSessionGrantRequest, ReservedIdentityCreation,
     UnsignedAccountHandoffAuthenticationProof, UnsignedAccountHandoffRequestBody,
     UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
 };
 pub(crate) use arkret_state::resolver::RealmState;
-pub(crate) use arkret_wire::{
-    ActorId, Base64UrlString, BlobRef, CoreId, DeviceId, Did, DidUrl, Event, EventId, EventKind,
-    Hash, Hlc, MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit, RealmId, RequestId,
-    ScopeRef, SealId, ServiceId, SessionGrantId, SidecarId, SignalEnvelope, SignalStreamFrame,
-    StrandId, project_full_id_to_core_id,
-};
+#[cfg(test)]
+pub(crate) use arkret_wire::project_full_id_to_core_id;
 pub use arkret_wire::{AuthorizationLease, IngressReceipt};
+pub(crate) use arkret_wire::{
+    Base64UrlString, BlobRef, DeviceId, DidCoreId, DidFullId, DidUrl, Event, EventId, EventKind,
+    Hash, Hlc, MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit,
+    PrincipalAuthorityInstance, RealmId, RequestId, ScopeRef, SealId, SessionGrantId, SidecarId,
+    SignalEnvelope, SignalStreamFrame, StrandId,
+};
 pub(crate) use arkret_wire::{ProtocolOpaqueId, ProtocolOperationId};
 
 pub(crate) fn verified_event_id(event: &Event) -> Result<EventId> {
@@ -105,7 +107,9 @@ pub(crate) use arkret_models_collaboration::sync_frames::client_sync::SyncReques
 #[cfg(test)]
 pub(crate) use arkret_models_crypto::MlsKeyPackageState;
 #[cfg(test)]
-pub(crate) use arkret_models_identity::{ACCOUNT_HANDOFF_ALLOWED_OPERATIONS, Handle};
+pub(crate) use arkret_models_identity::{
+    ACCOUNT_HANDOFF_ALLOWED_OPERATIONS, Handle, SessionGrantProofKind,
+};
 #[cfg(test)]
 pub(crate) use arkret_wire::{
     DeviceMessageId, ErrorEnvelope, EventRequirements, NotificationId, NotificationKind,
@@ -118,8 +122,7 @@ pub(crate) mod auth {
 
 pub(crate) mod canonical {
     pub(crate) use arkret_canonical::{
-        canonical_json_bytes, canonical_sha256, parse_canonical_json, sha256_bytes_from_slices,
-        sha256_digest,
+        canonical_json_bytes, canonical_sha256, sha256_bytes_from_slices, sha256_digest,
     };
 }
 

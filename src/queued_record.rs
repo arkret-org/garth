@@ -6,7 +6,7 @@ use arkret_models_collaboration::direct_conversation_ops::{
     DirectConversationFoundingUnitSubmission,
 };
 use arkret_models_collaboration::events_payloads::RealmCreatePayload;
-use arkret_wire::{ActorId, Event, EventId, EventKind, Hash, MessageId, RealmId};
+use arkret_wire::{DidCoreId, Event, EventId, EventKind, Hash, MessageId, RealmId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -830,7 +830,7 @@ impl QueuedRecord {
         }
     }
 
-    pub fn actor_id(&self) -> Result<&ActorId> {
+    pub fn actor_id(&self) -> Result<&DidCoreId> {
         match self {
             Self::SdkEvent(queued) => Ok(&queued.intent.actor_id),
             Self::RealmBootstrap(queued) => Ok(&queued.authority_context_event()?.actor_id),

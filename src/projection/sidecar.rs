@@ -295,7 +295,7 @@ mod tests {
         AgentSidecarExchangeId, AgentSidecarExchangeProjectionSchema, AgentSidecarExchangeStatus,
         AgentSidecarSourceTrackRef, agent_sidecar_exchange_event_set_digest,
     };
-    use crate::protocol::{Did, Hlc, NonEmptyString, SidecarId};
+    use crate::protocol::{DidCoreId, Hlc, NonEmptyString, SidecarId};
 
     use super::*;
 
@@ -319,10 +319,11 @@ mod tests {
     }
 
     fn projection(anchor: EventId, private_event: EventId) -> AgentSidecarExchangeProjection {
-        let addressed_agent = Did::new("did:webvh:z6mkfixture:assistant.agents.example").unwrap();
+        let addressed_agent =
+            DidCoreId::new("ak:did_core:webvh:z6mkfixture:assistant.agents.example").unwrap();
         AgentSidecarExchangeProjection {
             schema: AgentSidecarExchangeProjectionSchema::V1,
-            controller_id: Did::new("did:web:example.com:users:alice").unwrap(),
+            controller_id: DidCoreId::new("ak:did_core:web:example.com:users:alice").unwrap(),
             sidecar_id: SidecarId::from_event_id(&event_id("32")),
             exchange_id: AgentSidecarExchangeId::new("Abcdefghijklmnopqrstuv").unwrap(),
             origin: AgentSidecarExchangeOrigin::SourceTrackRouted,
@@ -450,7 +451,7 @@ mod tests {
         // client_order_key race between devices because the cache is local.
         let mut refolded = initial.clone();
         refolded.participating_agent_ids =
-            vec![Did::new("did:webvh:z6mkfixture:assistant.agents.example").unwrap()];
+            vec![DidCoreId::new("ak:did_core:webvh:z6mkfixture:assistant.agents.example").unwrap()];
         fold.apply_folded_exchange(refolded.clone()).unwrap();
         let realm_id =
             RealmId::new("ak:realm:AWk_ywNSTc6WhrGkRSaK84HThnFXKBAy3vQ_RLJZ4kCY").unwrap();

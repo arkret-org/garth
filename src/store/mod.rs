@@ -8,7 +8,7 @@ mod seen_window;
 
 use std::future::Future;
 
-use crate::protocol::{DeviceId, Did, EventId, RealmId, Result};
+use crate::protocol::{DeviceId, DidCoreId, EventId, RealmId, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::MaybeSendSync;
@@ -38,22 +38,22 @@ pub type OpaqueCursor = String;
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum CursorScope {
     Account {
-        service_id: Option<Did>,
-        actor_id: Did,
+        service_id: Option<DidCoreId>,
+        actor_id: DidCoreId,
         device_id: DeviceId,
     },
     RealmEvents {
-        service_id: Option<Did>,
+        service_id: Option<DidCoreId>,
         realm_id: RealmId,
     },
     RealmEventsScan {
-        service_id: Option<Did>,
+        service_id: Option<DidCoreId>,
         realm_id: RealmId,
         order: Option<String>,
     },
     DeviceMessages {
-        service_id: Option<Did>,
-        actor_id: Did,
+        service_id: Option<DidCoreId>,
+        actor_id: DidCoreId,
         device_id: DeviceId,
     },
 }

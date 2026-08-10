@@ -184,7 +184,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         &self,
         transaction_id: Option<String>,
         realm_id: RealmId,
-        actor_id: crate::protocol::ActorId,
+        actor_id: crate::protocol::DidCoreId,
         record: QueuedRecord,
         depends_on: Vec<String>,
     ) -> Result<SendQueueItem> {
@@ -472,12 +472,14 @@ mod tests {
 
     use super::*;
     use crate::MemoryStore;
-    use arkret_wire::{ActorId, Did, EventKind, Hlc, ScopeRef, project_full_id_to_core_id};
+    use arkret_wire::{DidCoreId, DidFullId, EventKind, Hlc, ScopeRef, project_full_id_to_core_id};
 
-    fn actor_id() -> ActorId {
-        ActorId::from(
-            project_full_id_to_core_id(&Did::new("did:webvh:z6mkfixture:alice.example").unwrap())
-                .unwrap(),
+    fn actor_id() -> DidCoreId {
+        DidCoreId::from(
+            project_full_id_to_core_id(
+                &DidFullId::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            )
+            .unwrap(),
         )
     }
     use serde_json::Value;

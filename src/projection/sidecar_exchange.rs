@@ -22,12 +22,12 @@ use crate::protocol::models::{
     AgentSidecarExchangeProjectionSchema, AgentSidecarExchangeRequestContext,
     AgentSidecarExchangeStatus, agent_sidecar_exchange_event_set_digest,
 };
-use crate::protocol::{Did, Error, EventId, Hlc, NonEmptyString, Result, SidecarId};
+use crate::protocol::{DidCoreId, Error, EventId, Hlc, NonEmptyString, Result, SidecarId};
 
 /// Immutable identity of the fold target. All facts are validated against it.
 #[derive(Clone, Debug)]
 pub struct SidecarExchangeFoldScope {
-    pub controller_id: Did,
+    pub controller_id: DidCoreId,
     pub sidecar_id: SidecarId,
 }
 
@@ -36,7 +36,7 @@ pub struct SidecarExchangeFoldScope {
 pub struct SidecarExchangeRequestFact {
     pub event_id: EventId,
     pub hlc: Hlc,
-    pub actor_id: Did,
+    pub actor_id: DidCoreId,
     /// Accepted controller actor-chain sequence of the carrying Event.
     pub actor_seq: u64,
     /// Canonical Event digest used only for same-sequence sibling
@@ -51,7 +51,7 @@ pub struct SidecarExchangeRequestFact {
 pub struct SidecarExchangeAgentFact {
     pub event_id: EventId,
     pub hlc: Hlc,
-    pub actor_id: Did,
+    pub actor_id: DidCoreId,
     pub binding: AgentSidecarEventExchangeBinding,
     /// Top-level `refs[role=after]` targets of the carrying Event.
     pub refs_after: Vec<EventId>,
@@ -62,7 +62,7 @@ pub struct SidecarExchangeAgentFact {
 pub struct SidecarExchangeControlFact {
     pub event_id: EventId,
     pub hlc: Hlc,
-    pub actor_id: Did,
+    pub actor_id: DidCoreId,
     pub actor_seq: u64,
     pub event_digest: String,
     /// Top-level `refs[role=after]` targets of the carrying Event. §7.2.3
@@ -183,13 +183,13 @@ pub fn fold_sidecar_exchange(
     };
     let request = canonical.fact;
     let context = &request.context;
-    let addressed: BTreeSet<&Did> = context.addressed_agent_ids.iter().collect();
+    let addressed: BTreeSet<&DidCoreId> = context.addressed_agent_ids.iter().collect();
 
     // §7.2.2 Agent binding validation. Facts arrive scope/strand-verified;
     // the fold enforces binding integrity, exchange identity, actor
     // eligibility, causal request refs, and Event-id idempotence.
     let mut responses: BTreeMap<String, &SidecarExchangeAgentFact> = BTreeMap::new();
-    let mut participating: BTreeSet<Did> = BTreeSet::new();
+    let mut participating: BTreeSet<DidCoreId> = BTreeSet::new();
     let mut accepted_agent_facts: BTreeMap<String, &SidecarExchangeAgentFact> = BTreeMap::new();
     for fact in agent_facts {
         // Checks 1–4: exchange-scoped fact, valid closed binding, verbatim
@@ -578,16 +578,16 @@ mod tests {
         Hlc::new(format!("01970e589d21-{counter:04x}-a13f9c2e")).unwrap()
     }
 
-    fn controller() -> Did {
-        Did::new("did:webvh:z6mkcontroller:example.com:users:alice").unwrap()
+    fn controller() -> DidCoreId {
+        DidCoreId::new("ak:did_core:webvh:z6mkcontroller:example.com:users:alice").unwrap()
     }
 
-    fn agent_s() -> Did {
-        Did::new("did:webvh:z6mkassistant:assistant.agents.example").unwrap()
+    fn agent_s() -> DidCoreId {
+        DidCoreId::new("ak:did_core:webvh:z6mkassistant:assistant.agents.example").unwrap()
     }
 
-    fn agent_t() -> Did {
-        Did::new("did:webvh:z6mkreviewer:reviewer.agents.example").unwrap()
+    fn agent_t() -> DidCoreId {
+        DidCoreId::new("ak:did_core:webvh:z6mkreviewer:reviewer.agents.example").unwrap()
     }
 
     fn scope() -> SidecarExchangeFoldScope {
@@ -602,8 +602,8 @@ mod tests {
     }
 
     fn context(
-        addressed: Vec<Did>,
-        coordinator: Option<Did>,
+        addressed: Vec<DidCoreId>,
+        coordinator: Option<DidCoreId>,
     ) -> AgentSidecarExchangeRequestContext {
         AgentSidecarExchangeRequestContext {
             source_track_ref: AgentSidecarSourceTrackRef {
@@ -651,9 +651,7 @@ mod tests {
                 )
                 .unwrap(),
             },
-            arkret_wire::ActorId::from(
-                arkret_wire::project_full_id_to_core_id(&controller()).unwrap(),
-            ),
+            controller(),
             actor_seq,
             hlc(counter),
             payload,
@@ -721,7 +719,7 @@ mod tests {
     fn agent_fact(
         suffix: u32,
         counter: u32,
-        actor: Did,
+        actor: DidCoreId,
         role: AgentSidecarExchangeBindingRole,
         request_suffix: u32,
     ) -> SidecarExchangeAgentFact {
@@ -731,7 +729,7 @@ mod tests {
     fn agent_fact_for_request(
         suffix: u32,
         counter: u32,
-        actor: Did,
+        actor: DidCoreId,
         role: AgentSidecarExchangeBindingRole,
         request_event_id: EventId,
     ) -> SidecarExchangeAgentFact {
@@ -891,7 +889,7 @@ mod tests {
         let mut unaddressed = agent_fact(
             0x36,
             3,
-            Did::new("did:webvh:z6mkstranger:stranger.agents.example").unwrap(),
+            DidCoreId::new("ak:did_core:webvh:z6mkstranger:stranger.agents.example").unwrap(),
             AgentSidecarExchangeBindingRole::UserFacingResponse,
             0x34,
         );
@@ -937,9 +935,9 @@ mod tests {
             "unaddressed/unreferenced/controller/duplicate responses never echo"
         );
         assert!(
-            projection
-                .participating_agent_ids
-                .contains(&Did::new("did:webvh:z6mkstranger:stranger.agents.example").unwrap()),
+            projection.participating_agent_ids.contains(
+                &DidCoreId::new("ak:did_core:webvh:z6mkstranger:stranger.agents.example").unwrap()
+            ),
             "non-addressed actors passing checks 1-4 still join the bookkeeping union"
         );
     }

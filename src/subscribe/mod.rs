@@ -8,7 +8,7 @@ pub(crate) mod test_support;
 
 pub use account::account_updates_to_events;
 
-use crate::protocol::{DeviceId, Did, Error, RealmId, Result};
+use crate::protocol::{DeviceId, DidCoreId, Error, RealmId, Result};
 use crate::sync_client::{
     AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot,
 };
@@ -52,7 +52,7 @@ pub struct SubscriptionEngine<E, C, D> {
     cursor_store: C,
     event_cache_store: D,
     control: SyncLoopControl,
-    service_id: Option<Did>,
+    service_id: Option<DidCoreId>,
 }
 
 impl<E, C, D> std::fmt::Debug for SubscriptionEngine<E, C, D>
@@ -89,7 +89,7 @@ where
         }
     }
 
-    pub fn with_service_id(mut self, service_id: Did) -> Self {
+    pub fn with_service_id(mut self, service_id: DidCoreId) -> Self {
         self.service_id = Some(service_id);
         self
     }
@@ -112,7 +112,7 @@ where
 
     pub async fn run_account<T, P>(
         &self,
-        actor_id: Did,
+        actor_id: DidCoreId,
         device_id: DeviceId,
         transport: &T,
         projector: &P,
@@ -144,7 +144,7 @@ where
     /// prevents a process crash from advancing beyond undispatched work.
     pub async fn run_account_to_inbox<T>(
         &self,
-        actor_id: Did,
+        actor_id: DidCoreId,
         device_id: DeviceId,
         transport: &T,
     ) -> Result<SubscriptionStopReason>
@@ -390,7 +390,7 @@ where
             .await
     }
 
-    pub(crate) fn account_scope(&self, actor_id: Did, device_id: DeviceId) -> CursorScope {
+    pub(crate) fn account_scope(&self, actor_id: DidCoreId, device_id: DeviceId) -> CursorScope {
         CursorScope::Account {
             service_id: self.service_id.clone(),
             actor_id,
@@ -421,8 +421,8 @@ mod tests {
     use crate::protocol::{EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind};
     use crate::{ClientEvent, MemoryStore};
 
-    fn actor_id() -> Did {
-        Did::new("did:webvh:z6mkfixture:alice.example").unwrap()
+    fn actor_id() -> DidCoreId {
+        DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()
     }
 
     fn device_id() -> DeviceId {

@@ -307,7 +307,7 @@ mod tests {
     use super::*;
     use crate::protocol::signal::{SignalClass, SignalEncryptedPayload, SignalKeyRef, SignalProof};
     use crate::protocol::signatures::{PublicKeyMaterial, sign_ed25519_detached_jws};
-    use crate::protocol::{Did, ScopeRef, canonical};
+    use crate::protocol::{DidCoreId, ScopeRef, canonical};
 
     #[derive(Clone, Copy)]
     struct FixedClock(DateTime<Utc>);
@@ -322,8 +322,8 @@ mod tests {
         RealmId::new("ak:realm:AUhJ30wlw7UA5CWJk9HZUsDp0GyhA-QVSF565JjdtLul").unwrap()
     }
 
-    fn actor() -> Did {
-        Did::new("did:webvh:z6mkfixture:alice.example").unwrap()
+    fn actor() -> DidCoreId {
+        DidCoreId::new("ak:did_core:webvh:z6mkfixture").unwrap()
     }
 
     fn device() -> DeviceId {
@@ -378,7 +378,11 @@ mod tests {
             },
             proof: SignalProof {
                 kind: "detached_jws".to_owned(),
-                verification_method: DidUrl::new(format!("{}#{}", actor(), device())).unwrap(),
+                verification_method: DidUrl::new(format!(
+                    "did:webvh:z6mkfixture:alice.example#{}",
+                    device()
+                ))
+                .unwrap(),
                 envelope_digest: Hash::new(format!("sha256:{}", "0".repeat(64))).unwrap(),
                 created_at: sent_at(),
                 domain: None,
@@ -478,7 +482,12 @@ mod tests {
     }
 
     fn key_of(public_key: PublicKeyMaterial) -> impl SignalSenderKeyResolver {
-        move |_envelope: &SignalEnvelope| Some(public_key.clone())
+        move |envelope: &SignalEnvelope| {
+            Some(crate::signal::VerifiedSignalSenderKey::for_test(
+                envelope,
+                public_key.clone(),
+            ))
+        }
     }
 
     #[tokio::test]

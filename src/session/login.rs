@@ -3,7 +3,7 @@ use crate::protocol::session_grant::{
     holder_proof_session_grant_request, oidc_session_grant_request,
 };
 use crate::protocol::{
-    AgentRequestedScopeDisclosure, CoreId, DeviceId, DidUrl, NonEmptyString, Result, ServiceId,
+    AgentRequestedScopeDisclosure, DeviceId, DidCoreId, DidUrl, NonEmptyString, Result,
     SessionGrantAgentScopeRequest, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
     SessionGrantRequestBody, UnsignedSessionGrantRequestBody,
 };
@@ -13,7 +13,7 @@ pub use crate::protocol::session_grant::SessionGrantProofFields as SessionProofF
 
 #[derive(Clone, Debug)]
 pub struct AgentKeyProofLogin {
-    pub principal_id: CoreId,
+    pub principal_id: DidCoreId,
     pub device_id: DeviceId,
     pub requested_scope: Vec<String>,
     pub agent_key_authorization_ref: String,
@@ -23,7 +23,7 @@ pub struct AgentKeyProofLogin {
     pub verification_method: DidUrl,
     pub challenge: String,
     pub nonce: String,
-    pub audience: ServiceId,
+    pub audience: DidCoreId,
     pub expires_at: DateTime<Utc>,
     pub signature: String,
 }
@@ -50,7 +50,7 @@ impl AgentKeyProofLogin {
 
 #[derive(Clone, Debug)]
 pub struct HolderProofLogin {
-    pub principal_id: CoreId,
+    pub principal_id: DidCoreId,
     pub device_id: Option<DeviceId>,
     pub requested_scope: Vec<String>,
     pub dpop_binding_proof: Option<SessionGrantDpopBindingProof>,
@@ -73,7 +73,7 @@ impl HolderProofLogin {
 
 #[derive(Clone, Debug)]
 pub struct DidProofLogin {
-    pub principal_id: CoreId,
+    pub principal_id: DidCoreId,
     pub device_id: DeviceId,
     pub requested_scope: Vec<String>,
     pub dpop_binding_proof: Option<SessionGrantDpopBindingProof>,
@@ -96,11 +96,11 @@ impl DidProofLogin {
 
 #[derive(Clone, Debug)]
 pub struct OidcLogin {
-    pub principal_id: CoreId,
+    pub principal_id: DidCoreId,
     pub device_id: Option<DeviceId>,
     pub requested_scope: Vec<String>,
     pub challenge: String,
-    pub audience: ServiceId,
+    pub audience: DidCoreId,
     pub issuer: String,
     pub client_id: String,
     pub redirect_uri: String,
@@ -176,8 +176,8 @@ mod tests {
 
     use super::*;
 
-    fn did() -> CoreId {
-        CoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()
+    fn did() -> DidCoreId {
+        DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()
     }
 
     fn device_id() -> DeviceId {
@@ -202,7 +202,7 @@ mod tests {
         SessionProofFields {
             challenge: "session-grant-challenge-0001".to_owned(),
             request_canonical_digest: digest(),
-            audience: ServiceId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+            audience: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             expires_at: Some(expires_at()),
             signature: "proof-signature".to_owned(),
             verification_method: Some(
@@ -269,7 +269,7 @@ mod tests {
                 device_id: Some(device_id()),
                 requested_scope: Vec::new(),
                 challenge: "oidc-challenge".to_owned(),
-                audience: ServiceId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+                audience: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
                 issuer: "https://issuer.example".to_owned(),
                 client_id: "client-1".to_owned(),
                 redirect_uri: "https://app.example/callback".to_owned(),
@@ -318,7 +318,7 @@ mod tests {
                 .unwrap(),
             challenge: "agent-challenge".to_owned(),
             nonce: "agent-nonce".to_owned(),
-            audience: ServiceId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+            audience: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             expires_at: expires_at(),
             signature: "agent-signature".to_owned(),
         })

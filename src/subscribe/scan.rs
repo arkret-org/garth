@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::protocol::{Did, EventsQueryOrder, EventsQueryOutcome, RealmId, Result};
+use crate::protocol::{DidCoreId, EventsQueryOrder, EventsQueryOutcome, RealmId, Result};
 
 use super::{ProjectedRunError, ProjectedRunResult};
 use crate::{CursorScope, CursorStore, MaybeSend, MaybeSendSync, OpaqueCursor};
@@ -94,7 +94,7 @@ impl Default for ScanCatchupOptions {
 #[derive(Clone, Debug)]
 pub struct ScanCatchup<S> {
     store: S,
-    service_id: Option<Did>,
+    service_id: Option<DidCoreId>,
 }
 
 impl<S> ScanCatchup<S>
@@ -108,7 +108,7 @@ where
         }
     }
 
-    pub fn with_service_id(mut self, service_id: Did) -> Self {
+    pub fn with_service_id(mut self, service_id: DidCoreId) -> Self {
         self.service_id = Some(service_id);
         self
     }

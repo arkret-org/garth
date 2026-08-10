@@ -4,7 +4,7 @@ use crate::crypto_state_store::{
     StoredDeviceVerification,
 };
 use crate::protocol::{
-    DeviceId, Did, Hash, MlsCommitEnvelope, MlsKeyPackageRecord, MlsWelcomeEnvelope, Result,
+    DeviceId, DidCoreId, Hash, MlsCommitEnvelope, MlsKeyPackageRecord, MlsWelcomeEnvelope, Result,
 };
 use arkret_wire::WireError;
 use zeroize::Zeroizing;
@@ -110,7 +110,7 @@ where
 
     fn key_package(
         &self,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> Option<&MlsKeyPackageRecord> {
         self.inner.key_package(principal_id, device_id)
@@ -118,7 +118,7 @@ where
 
     fn key_packages_for_device(
         &self,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> Vec<&MlsKeyPackageRecord> {
         self.inner.key_packages_for_device(principal_id, device_id)
@@ -131,7 +131,7 @@ where
 
     fn welcomes_for_device(
         &self,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> Vec<&MlsWelcomeEnvelope> {
         self.inner.welcomes_for_device(principal_id, device_id)
@@ -172,7 +172,7 @@ where
 
     fn device_verification(
         &self,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> Option<&StoredDeviceVerification> {
         self.inner.device_verification(principal_id, device_id)
@@ -183,7 +183,7 @@ where
         group_id: &str,
         local_epoch: Option<u64>,
         required_epoch: u64,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> MlsRecoveryPlan {
         self.inner.plan_mls_recovery(

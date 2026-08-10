@@ -7,12 +7,12 @@ use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountSubscribeFrame, AccountSubscribeFrameKind, AccountSubscribeRealms,
 };
 use arkret_models_collaboration::sync_frames::account_sync::RealmSyncEntry;
-use arkret_wire::{DeviceId, Did, RealmId};
+use arkret_wire::{DeviceId, DidCoreId, RealmId};
 use garth::StoreCache;
 use serde_json::json;
 
-fn did(name: &str) -> Did {
-    Did::new(format!("did:webvh:z6mkfixture:{name}.example")).unwrap()
+fn did(name: &str) -> DidCoreId {
+    DidCoreId::new(format!("ak:did_core:webvh:z6mkfixture:{name}.example")).unwrap()
 }
 
 fn device(id: &str) -> DeviceId {

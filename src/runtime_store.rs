@@ -14,8 +14,8 @@ use crate::protocol::auth::AuthSession;
 use crate::protocol::models::BlobMetadata;
 use crate::protocol::resolver::{RealmState, SnapshotRestore, StateSnapshot};
 use crate::protocol::{
-    BlobRef, Did, Error, Event, EventId, Hash, ProtocolOpaqueId, ProtocolOperationId, RealmId,
-    Result,
+    BlobRef, DidCoreId, Error, Event, EventId, Hash, ProtocolOpaqueId, ProtocolOperationId,
+    RealmId, Result,
 };
 
 /// Controller-authored canonical bytes retained for exact retry.
@@ -87,7 +87,7 @@ pub enum AuditAction {
 pub struct AuditEntry {
     pub timestamp: DateTime<Utc>,
     pub action: AuditAction,
-    pub actor: Option<Did>,
+    pub actor: Option<DidCoreId>,
     pub group_id: Option<String>,
     pub detail: String,
 }
@@ -107,7 +107,7 @@ pub trait EventCacheStore: Send + Sync {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StoredAccountData {
-    pub principal_id: Did,
+    pub principal_id: DidCoreId,
     pub account_data_key: String,
     pub content: Value,
     pub updated_at: DateTime<Utc>,
@@ -116,12 +116,12 @@ pub struct StoredAccountData {
 pub trait AccountSessionStore: Send + Sync {
     fn put_session(&mut self, session: AuthSession) -> Result<()>;
     fn session(&self, session_id: &str) -> Option<&AuthSession>;
-    fn sessions_for_principal(&self, principal_id: &Did) -> Vec<&AuthSession>;
+    fn sessions_for_principal(&self, principal_id: &DidCoreId) -> Vec<&AuthSession>;
     fn revoke_session(&mut self, session_id: &str) -> Result<()>;
     fn put_account_data(&mut self, data: StoredAccountData) -> Result<()>;
     fn account_data(
         &self,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         account_data_key: &str,
     ) -> Option<&StoredAccountData>;
 }
@@ -165,8 +165,8 @@ pub struct MemoryPersistenceStore {
     /// Full canonical envelopes retained as evidence for a verified hash collision.
     quarantined_events: BTreeMap<EventId, Vec<(Vec<u8>, Event)>>,
     sessions: BTreeMap<String, AuthSession>,
-    sessions_by_principal: BTreeMap<Did, Vec<String>>,
-    account_data: BTreeMap<(Did, String), StoredAccountData>,
+    sessions_by_principal: BTreeMap<DidCoreId, Vec<String>>,
+    account_data: BTreeMap<(DidCoreId, String), StoredAccountData>,
     blob_metadata: BTreeMap<BlobRef, (String, BlobMetadata)>,
     audit_entries: Vec<AuditEntry>,
     authoring_bytes: BTreeMap<ProtocolOperationId, AuthoringBytes>,
@@ -351,7 +351,7 @@ impl AccountSessionStore for MemoryPersistenceStore {
         self.sessions.get(session_id)
     }
 
-    fn sessions_for_principal(&self, principal_id: &Did) -> Vec<&AuthSession> {
+    fn sessions_for_principal(&self, principal_id: &DidCoreId) -> Vec<&AuthSession> {
         self.sessions_by_principal
             .get(principal_id)
             .into_iter()
@@ -379,7 +379,7 @@ impl AccountSessionStore for MemoryPersistenceStore {
 
     fn account_data(
         &self,
-        principal_id: &Did,
+        principal_id: &DidCoreId,
         account_data_key: &str,
     ) -> Option<&StoredAccountData> {
         self.account_data
@@ -519,10 +519,7 @@ mod tests {
 
     use super::*;
     use crate::protocol::resolver::SnapshotRestoreSource;
-    use crate::protocol::{
-        ActorId, BlobRef, DeviceId, Did, EventId, Hash, Hlc, ObjectState, RealmId,
-        project_full_id_to_core_id,
-    };
+    use crate::protocol::{BlobRef, DeviceId, DidCoreId, EventId, Hash, Hlc, ObjectState, RealmId};
 
     fn morph_event(title: &str) -> Event {
         let mut event = Event {
@@ -534,12 +531,7 @@ mod tests {
                 realm_id: RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV")
                     .unwrap(),
             },
-            actor_id: ActorId::from(
-                project_full_id_to_core_id(
-                    &Did::new("did:webvh:z6mkfixture:alice.example.com").unwrap(),
-                )
-                .unwrap(),
-            ),
+            actor_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example.com").unwrap(),
             actor_seq: 1,
             created_at: Utc::now(),
             hlc: Some(Hlc::new("01970e589d22-0009-11111111").unwrap()),
@@ -591,7 +583,7 @@ mod tests {
             filename: Some("note.txt".to_owned()),
             encryption: None,
             thumbnail_blob_ref: None,
-            created_by: Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            created_by: DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
             created_at: Utc::now(),
             updated_by: None,
             updated_at: None,
@@ -720,7 +712,7 @@ mod tests {
     #[test]
     fn memory_persistence_store_roundtrips_auxiliary_records() {
         let mut store = MemoryPersistenceStore::new();
-        let principal_id = Did::new("did:webvh:z6mkfixture:alice.example").unwrap();
+        let principal_id = DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap();
         let device_id = DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap();
         let session = AuthSession {
             session_id: "sess-1".to_owned(),

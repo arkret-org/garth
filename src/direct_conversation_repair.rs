@@ -8,7 +8,7 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use crate::protocol::{
-    CoreId, DirectConversationCoordinates, DirectConversationRepairDispatchRequest,
+    DidCoreId, DirectConversationCoordinates, DirectConversationRepairDispatchRequest,
     DirectConversationRepairEnqueueOutcome, EventId, Hash, MemberRepairRequestPayload,
     NonEmptyString,
 };
@@ -17,8 +17,8 @@ use crate::{Error, Result};
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DirectConversationRepairRoute {
-    pub source_service_id: CoreId,
-    pub target_service_id: CoreId,
+    pub source_service_id: DidCoreId,
+    pub target_service_id: DidCoreId,
     pub coordinates: DirectConversationCoordinates,
     pub target_keypackage_ref: NonEmptyString,
 }
@@ -40,7 +40,7 @@ impl DirectConversationRepairRoute {
 #[serde(deny_unknown_fields)]
 pub struct SelfRejoinAcceptance {
     pub realm_id: crate::protocol::RealmId,
-    pub requester_principal_id: CoreId,
+    pub requester_principal_id: DidCoreId,
     pub rejoin_event_id: EventId,
     #[serde(with = "arkret_canonical::serde_helpers::canonical_timestamp")]
     pub accepted_at: DateTime<Utc>,
@@ -109,11 +109,11 @@ fn deserialize_member_repair_payload(
     #[serde(deny_unknown_fields)]
     struct Wire {
         realm_id: crate::protocol::RealmId,
-        requester_principal_id: CoreId,
+        requester_principal_id: DidCoreId,
         #[serde(default)]
         requester_device_id: Option<crate::protocol::DeviceId>,
         #[serde(default)]
-        requester_agent_id: Option<CoreId>,
+        requester_agent_id: Option<DidCoreId>,
         #[serde(default)]
         requester_agent_verification_method: Option<crate::protocol::DidUrl>,
         #[serde(default)]
@@ -659,14 +659,14 @@ mod tests {
         Hash::new(format!("sha256:{}", byte.to_string().repeat(64))).unwrap()
     }
 
-    fn principal() -> CoreId {
-        CoreId::new("ak:did_core:key:z6MkRepairRequester").unwrap()
+    fn principal() -> DidCoreId {
+        DidCoreId::new("ak:did_core:key:z6MkRepairRequester").unwrap()
     }
 
     fn route() -> DirectConversationRepairRoute {
         DirectConversationRepairRoute {
-            source_service_id: CoreId::new("ak:did_core:web:source.example").unwrap(),
-            target_service_id: CoreId::new("ak:did_core:web:target.example").unwrap(),
+            source_service_id: DidCoreId::new("ak:did_core:web:source.example").unwrap(),
+            target_service_id: DidCoreId::new("ak:did_core:web:target.example").unwrap(),
             coordinates: DirectConversationCoordinates {
                 pair_key: hash('a'),
                 realm_id: RealmId::new(REALM).unwrap(),
@@ -792,7 +792,7 @@ mod tests {
 
         let mut route_tampered = planner.snapshot();
         route_tampered.route.target_service_id =
-            CoreId::new("ak:did_core:web:attacker.example").unwrap();
+            DidCoreId::new("ak:did_core:web:attacker.example").unwrap();
         assert!(DirectConversationRepairPlanner::restore_durable(route_tampered).is_err());
     }
 

@@ -25,6 +25,7 @@ pub mod executor;
 pub mod facade;
 pub mod inbound;
 pub mod maybe_send;
+pub mod mls_admission;
 pub mod orchestrator;
 pub mod outbound;
 pub mod projection;
@@ -32,6 +33,7 @@ pub mod queued_record;
 pub mod runtime_journey;
 pub mod runtime_store;
 pub mod security_transaction;
+pub mod service_route;
 pub mod session;
 pub mod signal;
 pub mod signal_message_stream;
@@ -74,6 +76,7 @@ pub use executor::{Executor, HostClock, SystemClock};
 pub use facade::ArkretClient;
 pub use inbound::{DecodedInbound, DecodedMessage, InboundDecoder};
 pub use maybe_send::{MaybeSend, MaybeSendSync};
+pub use mls_admission::{MlsClaimEvidenceContext, TargetSigningKey, admit_peer_claim_for_mls};
 pub use orchestrator::{
     AccountCommitOutcome, AccountPostCommitHook, AccountPostCommitOutcome, AccountStepCommitter,
     AccountStepHandlers, AccountStreamStep, RunError, RunErrorClass, RunEvent, RunOptions,
@@ -115,6 +118,11 @@ pub use security_transaction::{
     PendingSecurityTransactionContinue, SecurityTransactionEngine, SecurityTransactionProgress,
     SecurityTransactionStore, SecurityTransactionTransport,
 };
+pub use service_route::{
+    MemoryServiceRouteStateStore, RouteCandidateSource, RouteForkQuarantine, RouteResolution,
+    ServiceDescribeBinding, ServiceRouteCandidate, ServiceRouteDurableSnapshot,
+    ServiceRouteEvaluator, ServiceRouteNoticeCandidate, ServiceRouteSource, ServiceRouteStateStore,
+};
 pub use session::{
     AgentKeyProofLogin, AuthenticatedTransportFactory, DidProofLogin, GRANT_ROTATION_SKEW_SECS,
     HolderProofLogin, LoginKind, NoopSessionGrantStore, OidcLogin, POLL_INTERVAL_SECS,
@@ -126,7 +134,7 @@ pub use session::{
 pub use signal::{
     PresenceObservation, PresenceProjection, PresenceStatus, SIGNAL_PLAINTEXT_KIND_CALL,
     SIGNAL_PLAINTEXT_KIND_PRESENCE, SignalDecryptor, SignalPlaintext, SignalReceiver,
-    SignalSenderKeyResolver, aggregate_presence_states,
+    SignalSenderKeyResolver, VerifiedSignalSenderKey, aggregate_presence_states,
 };
 pub use signal_message_stream::{
     MessageStreamApplyOutcome, MessageStreamAuthorizer, MessageStreamIgnoreReason,

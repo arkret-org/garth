@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use arkret_wire::{DeviceId, Did, EventId};
+use arkret_wire::{DeviceId, DidCoreId, EventId};
 use garth::{
     CursorScope, CursorStore, DurableInboxStore, EventCacheStore, FileStore, OutboundQueueStore,
 };
@@ -10,7 +10,7 @@ use garth::{
 fn account_scope() -> CursorScope {
     CursorScope::Account {
         service_id: None,
-        actor_id: Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+        actor_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
         device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
     }
 }

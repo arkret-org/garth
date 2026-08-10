@@ -4,15 +4,15 @@ use crate::protocol::{
     AccountSubscribeRealms, AccountSubscribeUnreadCounts, DeviceMessageContainer, ErrorEnvelope,
     EventContainer, ProtocolKind, RealmSyncEntry,
 };
-use arkret_wire::{ActorId, EventKind, Hlc, OpaqueLocalId, ScopeRef};
+use arkret_wire::{DidCoreId, EventKind, Hlc, OpaqueLocalId, ScopeRef};
 use serde_json::{Value, json};
 
 use super::*;
 use crate::protocol::{
     AccountNotificationDataKind, AgentRuntimeApprovalNotificationData,
     AgentRuntimeApprovalNotificationRemovalData, AgentRuntimeApprovalRemovalReason,
-    DeviceMessageId, Did, NotificationContainer, NotificationData, NotificationId,
-    NotificationKind, RealmId,
+    DeviceMessageId, NotificationContainer, NotificationData, NotificationId, NotificationKind,
+    RealmId,
 };
 
 fn sync_response(cursor: &str) -> AccountSubscribeBatch {
@@ -51,7 +51,8 @@ fn approval_notifications(notification_id: &str, expires_at: &str) -> Notificati
                         "agent_runtime_approval:01964137-0000-7000-8000-000000000001",
                     )
                     .unwrap(),
-                    agent_id: Did::new("did:webvh:z6mkfixture:agent.example").unwrap(),
+                    agent_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:agent.example")
+                        .unwrap(),
                     requested_at: DateTime::parse_from_rfc3339("2026-07-13T10:00:00.000Z")
                         .unwrap()
                         .with_timezone(&Utc),
@@ -86,8 +87,8 @@ fn event_id(seed: u8) -> EventId {
     EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [seed; 32])
 }
 
-fn actor_id(full_id: &Did) -> ActorId {
-    ActorId::from(arkret_wire::project_full_id_to_core_id(full_id).unwrap())
+fn actor_id(core_id: &DidCoreId) -> DidCoreId {
+    core_id.clone()
 }
 
 fn queued_record(realm_id: &RealmId, payload: Value) -> crate::QueuedRecord {
@@ -96,7 +97,7 @@ fn queued_record(realm_id: &RealmId, payload: Value) -> crate::QueuedRecord {
         ScopeRef::Realm {
             realm_id: realm_id.clone(),
         },
-        actor_id(&Did::new("did:webvh:z6mkfixture:alice.example").unwrap()),
+        actor_id(&DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()),
         1,
         Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
         payload,
@@ -113,7 +114,7 @@ fn queued_record(realm_id: &RealmId, payload: Value) -> crate::QueuedRecord {
             None,
             crate::AuthoringGeneration {
                 authority_model: crate::AuthoringAuthorityModel::AcceptedDevice,
-                authority_principal_id: "did:webvh:z6mkfixture:alice.example".to_owned(),
+                authority_principal_id: "ak:did_core:webvh:z6mkfixture:alice.example".to_owned(),
                 generation_ref: "test-generation".to_owned(),
             },
             None,
@@ -395,8 +396,8 @@ fn processor_dispatches_all_update_categories() {
         }),
         ..Default::default()
     };
-    let sender = Did::new("did:webvh:z6mkfixture:alice.example").unwrap();
-    let recipient = Did::new("did:webvh:z6mkfixture:bob.example").unwrap();
+    let sender = DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap();
+    let recipient = DidCoreId::new("ak:did_core:webvh:z6mkfixture:bob.example").unwrap();
     let realm = RealmId::new(realm_id).unwrap();
     let account_data_event = arkret_wire::test_support::raw_event(
         "ak.account_data.set",
@@ -546,7 +547,7 @@ fn processor_tracks_limited_timelines_and_to_device_ack() {
         crate::protocol::ScopeRef::Realm {
             realm_id: parsed_realm_id.clone(),
         },
-        actor_id(&Did::new("did:webvh:z6mkfixture:alice.example").unwrap()),
+        actor_id(&DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()),
         1,
         crate::protocol::Hlc::new("01970e589d21-0000-a13f9c2e").unwrap(),
         json!({"body":"hello"}),
@@ -822,7 +823,7 @@ fn send_queue_preserves_transitive_dependencies_during_capacity_pruning() {
 fn send_queue_serializes_unsigned_intents_per_realm_actor_scope() {
     let realm_a = RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO").unwrap();
     let realm_b = RealmId::new("ak:realm:AT0jIIg6naB0Vkqbb-ip6eunf-bHr5-nh4pz2_kYNyVX").unwrap();
-    let actor = actor_id(&Did::new("did:webvh:z6mkfixture:alice.example").unwrap());
+    let actor = actor_id(&DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap());
     let mut queue = SendQueue::new();
 
     for (transaction_id, realm_id) in [
@@ -866,7 +867,7 @@ fn send_queue_serializes_unsigned_intents_per_realm_actor_scope() {
 #[test]
 fn send_queue_replays_exact_persisted_bytes_and_links_semantic_replacement() {
     let realm_id = RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO").unwrap();
-    let actor = actor_id(&Did::new("did:webvh:z6mkfixture:alice.example").unwrap());
+    let actor = actor_id(&DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap());
     let mut queue = SendQueue::new();
     let original = queue
         .enqueue_test_record(
