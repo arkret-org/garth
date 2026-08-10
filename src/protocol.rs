@@ -9,10 +9,12 @@ pub(crate) use arkret_models_collaboration::account_lifecycle::{
     AccountRegisterOutcome, AccountRegisterRequestBody,
 };
 pub(crate) use arkret_models_collaboration::agent_operations::AgentRequestedScopeDisclosure;
-pub(crate) use arkret_models_collaboration::agent_signer_evidence::{
-    AgentSignerEvidence, AgentSignerEvidenceQuerySelector,
+pub(crate) use arkret_models_collaboration::direct_conversation_ops::DirectConversationCoordinates;
+pub(crate) use arkret_models_collaboration::direct_conversation_repair::{
+    DirectConversationRepairDispatchRequest, DirectConversationRepairEnqueueOutcome,
 };
 pub(crate) use arkret_models_collaboration::event_query::EventsQueryOrder;
+pub(crate) use arkret_models_collaboration::events_payloads::MemberRepairRequestPayload;
 pub(crate) use arkret_models_collaboration::events_payloads::MessageCreatePayload;
 pub(crate) use arkret_models_collaboration::governance::agent_participation::ParticipationBits;
 pub(crate) use arkret_models_collaboration::http_bodies::{
@@ -48,6 +50,9 @@ pub(crate) use arkret_models_crypto::{MlsCommitEnvelope, MlsKeyPackageRecord, Ml
 pub use arkret_models_discovery::{
     PresenceStatus, aggregate_presence_states, validate_last_active_at, validate_status_message,
 };
+pub(crate) use arkret_models_identity::agent_signer_evidence::{
+    AgentSignerEvidence, AgentSignerEvidenceQuerySelector,
+};
 pub(crate) use arkret_models_identity::{
     AccountBindingReceipt, AccountHandoffAuthenticationProof,
     AccountHandoffAuthenticationProofKind, AccountHandoffBinding, AccountHandoffOutcome,
@@ -61,7 +66,7 @@ pub(crate) use arkret_models_identity::{
 pub(crate) use arkret_state::resolver::RealmState;
 pub use arkret_wire::{AuthorizationLease, IngressReceipt};
 pub(crate) use arkret_wire::{
-    Base64UrlString, BlobRef, DeviceId, Did, DidUrl, Event, EventId, EventKind, Hash, Hlc,
+    Base64UrlString, BlobRef, CoreId, DeviceId, Did, DidUrl, Event, EventId, EventKind, Hash, Hlc,
     MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit, RealmId, RequestId, ScopeRef,
     SealId, SessionGrantId, SidecarId, SignalEnvelope, SignalStreamFrame, StrandId,
 };

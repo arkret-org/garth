@@ -19,6 +19,7 @@ pub mod account_handoff;
 pub mod backoff;
 pub mod crypto_state_store;
 pub mod direct_conversation;
+pub mod direct_conversation_repair;
 pub mod event;
 pub mod executor;
 pub mod facade;
@@ -58,6 +59,11 @@ pub use crypto_state_store::{
 };
 pub use direct_conversation::{
     DirectConversationFoundingAction, direct_conversation_founding_action,
+};
+pub use direct_conversation_repair::{
+    DirectConversationRepairAction, DirectConversationRepairPlanner, DirectConversationRepairRoute,
+    DirectConversationRepairSnapshot, DirectConversationRepairStage,
+    FrozenDirectConversationRepairDispatch, SelfRejoinAcceptance,
 };
 pub use event::{AccountUpdateContext, ClientEvent, ClientProjector};
 #[cfg(feature = "native")]

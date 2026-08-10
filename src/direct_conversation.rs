@@ -26,7 +26,7 @@ pub fn direct_conversation_founding_action(
     prepared: Option<DirectConversationFoundingUnitSubmission>,
 ) -> Result<DirectConversationFoundingAction> {
     match resolve {
-        DirectConversationResolveOutcome::CreationRequired => {
+        DirectConversationResolveOutcome::CreationRequired { .. } => {
             let prepared = prepared.ok_or_else(|| {
                 Error::Protocol("founder has not prepared the closed three-Event unit".to_owned())
             })?;
