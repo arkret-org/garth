@@ -519,7 +519,10 @@ mod tests {
 
     use super::*;
     use crate::protocol::resolver::SnapshotRestoreSource;
-    use crate::protocol::{BlobRef, DeviceId, Did, EventId, Hash, Hlc, ObjectState, RealmId};
+    use crate::protocol::{
+        ActorId, BlobRef, DeviceId, Did, EventId, Hash, Hlc, ObjectState, RealmId,
+        project_full_id_to_core_id,
+    };
 
     fn morph_event(title: &str) -> Event {
         let mut event = Event {
@@ -531,7 +534,12 @@ mod tests {
                 realm_id: RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV")
                     .unwrap(),
             },
-            actor_id: Did::new("did:webvh:z6mkfixture:alice.example.com").unwrap(),
+            actor_id: ActorId::from(
+                project_full_id_to_core_id(
+                    &Did::new("did:webvh:z6mkfixture:alice.example.com").unwrap(),
+                )
+                .unwrap(),
+            ),
             actor_seq: 1,
             created_at: Utc::now(),
             hlc: Some(Hlc::new("01970e589d22-0009-11111111").unwrap()),
@@ -552,7 +560,7 @@ mod tests {
                     "morph_kind": "task",
                     "metadata": {"title": title},
                     "stage": "draft",
-                    "created_by": "did:webvh:z6mkfixture:alice.example.com",
+                    "created_by": "ak:did_core:webvh:z6mkfixture",
                     "created_at": "2026-05-02T00:00:00.000Z"
                 }
             }))

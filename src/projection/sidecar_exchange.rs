@@ -579,15 +579,15 @@ mod tests {
     }
 
     fn controller() -> Did {
-        Did::new("did:webvh:z6mkfixture:example.com:users:alice").unwrap()
+        Did::new("did:webvh:z6mkcontroller:example.com:users:alice").unwrap()
     }
 
     fn agent_s() -> Did {
-        Did::new("did:webvh:z6mkfixture:assistant.agents.example").unwrap()
+        Did::new("did:webvh:z6mkassistant:assistant.agents.example").unwrap()
     }
 
     fn agent_t() -> Did {
-        Did::new("did:webvh:z6mkfixture:reviewer.agents.example").unwrap()
+        Did::new("did:webvh:z6mkreviewer:reviewer.agents.example").unwrap()
     }
 
     fn scope() -> SidecarExchangeFoldScope {
@@ -651,7 +651,9 @@ mod tests {
                 )
                 .unwrap(),
             },
-            controller(),
+            arkret_wire::ActorId::from(
+                arkret_wire::project_full_id_to_core_id(&controller()).unwrap(),
+            ),
             actor_seq,
             hlc(counter),
             payload,
@@ -889,7 +891,7 @@ mod tests {
         let mut unaddressed = agent_fact(
             0x36,
             3,
-            Did::new("did:webvh:z6mkfixture:stranger.agents.example").unwrap(),
+            Did::new("did:webvh:z6mkstranger:stranger.agents.example").unwrap(),
             AgentSidecarExchangeBindingRole::UserFacingResponse,
             0x34,
         );
@@ -937,7 +939,7 @@ mod tests {
         assert!(
             projection
                 .participating_agent_ids
-                .contains(&Did::new("did:webvh:z6mkfixture:stranger.agents.example").unwrap()),
+                .contains(&Did::new("did:webvh:z6mkstranger:stranger.agents.example").unwrap()),
             "non-addressed actors passing checks 1-4 still join the bookkeeping union"
         );
     }

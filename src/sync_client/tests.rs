@@ -4,7 +4,7 @@ use crate::protocol::{
     AccountSubscribeRealms, AccountSubscribeUnreadCounts, DeviceMessageContainer, ErrorEnvelope,
     EventContainer, ProtocolKind, RealmSyncEntry,
 };
-use arkret_wire::{EventKind, Hlc, OpaqueLocalId, ScopeRef};
+use arkret_wire::{ActorId, EventKind, Hlc, OpaqueLocalId, ScopeRef};
 use serde_json::{Value, json};
 
 use super::*;
@@ -86,13 +86,17 @@ fn event_id(seed: u8) -> EventId {
     EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [seed; 32])
 }
 
+fn actor_id(full_id: &Did) -> ActorId {
+    ActorId::from(arkret_wire::project_full_id_to_core_id(full_id).unwrap())
+}
+
 fn queued_record(realm_id: &RealmId, payload: Value) -> crate::QueuedRecord {
     let event = arkret_wire::test_support::raw_event_at(
         EventKind::MessageCreate.as_str(),
         ScopeRef::Realm {
             realm_id: realm_id.clone(),
         },
-        Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+        actor_id(&Did::new("did:webvh:z6mkfixture:alice.example").unwrap()),
         1,
         Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
         payload,
@@ -397,7 +401,7 @@ fn processor_dispatches_all_update_categories() {
     let account_data_event = arkret_wire::test_support::raw_event(
         "ak.account_data.set",
         crate::protocol::ScopeRef::Realm { realm_id: realm },
-        sender.clone(),
+        actor_id(&sender),
         2,
         crate::protocol::Hlc::new("01970e589d22-0000-a13f9c2e").unwrap(),
         json!({"key":"ak.settings","body":{"theme":"light"}}),
@@ -542,7 +546,7 @@ fn processor_tracks_limited_timelines_and_to_device_ack() {
         crate::protocol::ScopeRef::Realm {
             realm_id: parsed_realm_id.clone(),
         },
-        Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+        actor_id(&Did::new("did:webvh:z6mkfixture:alice.example").unwrap()),
         1,
         crate::protocol::Hlc::new("01970e589d21-0000-a13f9c2e").unwrap(),
         json!({"body":"hello"}),
@@ -818,7 +822,7 @@ fn send_queue_preserves_transitive_dependencies_during_capacity_pruning() {
 fn send_queue_serializes_unsigned_intents_per_realm_actor_scope() {
     let realm_a = RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO").unwrap();
     let realm_b = RealmId::new("ak:realm:AT0jIIg6naB0Vkqbb-ip6eunf-bHr5-nh4pz2_kYNyVX").unwrap();
-    let actor = Did::new("did:webvh:z6mkfixture:alice.example").unwrap();
+    let actor = actor_id(&Did::new("did:webvh:z6mkfixture:alice.example").unwrap());
     let mut queue = SendQueue::new();
 
     for (transaction_id, realm_id) in [
@@ -862,7 +866,7 @@ fn send_queue_serializes_unsigned_intents_per_realm_actor_scope() {
 #[test]
 fn send_queue_replays_exact_persisted_bytes_and_links_semantic_replacement() {
     let realm_id = RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO").unwrap();
-    let actor = Did::new("did:webvh:z6mkfixture:alice.example").unwrap();
+    let actor = actor_id(&Did::new("did:webvh:z6mkfixture:alice.example").unwrap());
     let mut queue = SendQueue::new();
     let original = queue
         .enqueue_test_record(

@@ -63,7 +63,7 @@ pub struct SendQueueItem {
     /// Actor partition for ordinary Event authoring. Generic non-Event queue
     /// items leave this unset.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub actor_id: Option<Did>,
+    pub actor_id: Option<ActorId>,
     /// Self-describing, strongly typed queue record.
     pub record: QueuedRecord,
     /// Canonical hash of the idempotent payload.
@@ -227,7 +227,7 @@ impl SendQueue {
     }
 
     /// Attach the authoring partition to a newly enqueued item.
-    pub fn set_actor_scope(&mut self, transaction_id: &str, actor_id: Did) -> Result<()> {
+    pub fn set_actor_scope(&mut self, transaction_id: &str, actor_id: ActorId) -> Result<()> {
         let item = self.item_mut(transaction_id)?;
         if item.record.actor_id()? != &actor_id {
             return Err(Error::Protocol(

@@ -1265,6 +1265,12 @@ mod tests {
         Did::new("did:webvh:z6mkfixture:alice.example").unwrap()
     }
 
+    fn event_actor_id() -> crate::protocol::ActorId {
+        crate::protocol::ActorId::from(
+            crate::protocol::project_full_id_to_core_id(&actor_id()).unwrap(),
+        )
+    }
+
     fn device_id() -> DeviceId {
         DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap()
     }
@@ -1348,7 +1354,7 @@ mod tests {
             crate::protocol::ScopeRef::Realm {
                 realm_id: realm_id(),
             },
-            actor_id(),
+            event_actor_id(),
             1,
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
             json!({

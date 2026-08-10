@@ -9,10 +9,10 @@ use serde_json::Value;
 use crate::MaybeSendSync;
 
 use crate::protocol::{
-    DeviceId, Did, Error, Event, EventKind, MAX_MESSAGE_STREAM_LIFETIME_SECONDS,
+    ActorId, DeviceId, Did, Error, Event, EventKind, MAX_MESSAGE_STREAM_LIFETIME_SECONDS,
     MAX_MESSAGE_STREAM_PREVIEW_BYTES, MAX_MESSAGE_STREAMS_PER_DEVICE,
     MESSAGE_STREAM_STALLED_AFTER_SECONDS, MessageCreatePayload, MessageId, MessageStreamFormat,
-    MessageStreamFrame, MessageStreamId, Result, ScopeRef, StrandId,
+    MessageStreamFrame, MessageStreamId, Result, ScopeRef, StrandId, project_full_id_to_core_id,
 };
 
 use crate::signal::SignalPlaintext;
@@ -61,14 +61,14 @@ pub enum MessageStreamApplyOutcome {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct MessageStreamPreviewKey {
-    sender_actor_id: Did,
+    sender_actor_id: ActorId,
     sender_device_id: DeviceId,
     message_id: MessageId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MessageStreamPreview {
-    pub sender_actor_id: Did,
+    pub sender_actor_id: ActorId,
     pub sender_device_id: DeviceId,
     pub scope_ref: ScopeRef,
     pub strand_id: StrandId,
@@ -131,8 +131,10 @@ impl MessageStreamProjection {
             ));
         }
 
+        let sender_actor_id = ActorId::from(project_full_id_to_core_id(&plaintext.actor_id)?);
+
         let key = MessageStreamPreviewKey {
-            sender_actor_id: plaintext.actor_id.clone(),
+            sender_actor_id: sender_actor_id.clone(),
             sender_device_id: plaintext.sender_device_id.clone(),
             message_id: frame.message_id().clone(),
         };
@@ -151,7 +153,7 @@ impl MessageStreamProjection {
                 .previews
                 .values()
                 .filter(|preview| {
-                    preview.sender_actor_id == plaintext.actor_id
+                    preview.sender_actor_id == sender_actor_id
                         && preview.sender_device_id == plaintext.sender_device_id
                         && preview.status != MessageStreamPreviewStatus::Aborted
                 })
@@ -164,7 +166,7 @@ impl MessageStreamProjection {
             self.previews.insert(
                 key,
                 MessageStreamPreview {
-                    sender_actor_id: plaintext.actor_id.clone(),
+                    sender_actor_id: sender_actor_id.clone(),
                     sender_device_id: plaintext.sender_device_id.clone(),
                     scope_ref: plaintext.scope_ref.clone(),
                     strand_id: keyframe.strand_id.clone(),
@@ -209,7 +211,7 @@ impl MessageStreamProjection {
                 ));
             }
             *existing = MessageStreamPreview {
-                sender_actor_id: plaintext.actor_id.clone(),
+                sender_actor_id,
                 sender_device_id: plaintext.sender_device_id.clone(),
                 scope_ref: plaintext.scope_ref.clone(),
                 strand_id: keyframe.strand_id.clone(),
@@ -297,7 +299,7 @@ impl MessageStreamProjection {
 
     pub fn preview(
         &self,
-        sender_actor_id: &Did,
+        sender_actor_id: &ActorId,
         sender_device_id: &DeviceId,
         message_id: &MessageId,
     ) -> Option<&MessageStreamPreview> {
@@ -388,6 +390,10 @@ mod tests {
 
     fn actor() -> Did {
         Did::new("did:webvh:z6mkfixture:alice.example").unwrap()
+    }
+
+    fn actor_core() -> ActorId {
+        ActorId::from(project_full_id_to_core_id(&actor()).unwrap())
     }
 
     fn device() -> DeviceId {
@@ -495,7 +501,9 @@ mod tests {
             projection.apply(&plaintext(abort), &allow, at(2)).unwrap(),
             MessageStreamApplyOutcome::Aborted
         );
-        let preview = projection.preview(&actor(), &device(), &message()).unwrap();
+        let preview = projection
+            .preview(&actor_core(), &device(), &message())
+            .unwrap();
         assert_eq!(preview.text, "hello");
         assert_eq!(preview.status, MessageStreamPreviewStatus::Aborted);
     }
@@ -560,7 +568,7 @@ mod tests {
         );
         assert_eq!(
             projection
-                .preview(&actor(), &device(), &message())
+                .preview(&actor_core(), &device(), &message())
                 .unwrap()
                 .text,
             "recovered"
@@ -608,7 +616,7 @@ mod tests {
         );
         assert_eq!(
             projection
-                .preview(&actor(), &device(), &message())
+                .preview(&actor_core(), &device(), &message())
                 .unwrap()
                 .status,
             MessageStreamPreviewStatus::Forked

@@ -589,8 +589,8 @@ impl MonotonicStampStore for FileStore {
 #[cfg(test)]
 mod tests {
     use crate::protocol::{
-        DeviceId, Did, EventId, NotificationDelta, NotificationDeltaAction, NotificationId,
-        NotificationKind, RealmId,
+        ActorId, DeviceId, Did, EventId, NotificationDelta, NotificationDeltaAction,
+        NotificationId, NotificationKind, RealmId,
     };
 
     use super::*;
@@ -619,7 +619,7 @@ mod tests {
     fn stamp_scope() -> StampScope {
         StampScope {
             service_id: None,
-            actor_id: Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            actor_id: ActorId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
             device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
             realm_id: RealmId::new("ak:realm:AfuGzJo578BJKgyC0bGwDqxsCPVeZViXjoIRGcW7-S6x")
                 .unwrap(),

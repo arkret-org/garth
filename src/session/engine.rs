@@ -4,8 +4,9 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::protocol::{
-    DeviceId, Did, Error, Result, SessionGrantId, SessionGrantOutcome, SessionGrantRefreshOutcome,
-    SessionGrantRefreshProof, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
+    CoreId, DeviceId, Error, Result, ServiceId, SessionGrantId, SessionGrantOutcome,
+    SessionGrantRefreshOutcome, SessionGrantRefreshProof, SessionGrantRefreshRequestBody,
+    SessionGrantRequestBody,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -60,7 +61,7 @@ impl SessionGrantTransport for arkret_http_client::Client {
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 pub struct SessionGrantState {
     #[zeroize(skip)]
-    pub principal_id: Did,
+    pub principal_id: CoreId,
     #[zeroize(skip)]
     pub device_id: Option<DeviceId>,
     #[zeroize(skip)]
@@ -69,7 +70,7 @@ pub struct SessionGrantState {
     #[zeroize(skip)]
     pub expires_at: DateTime<Utc>,
     #[zeroize(skip)]
-    pub audience: Did,
+    pub audience: ServiceId,
     #[zeroize(skip)]
     pub granted_scope: Vec<String>,
     /// The session public key reported by the Account Authority when the grant
@@ -149,7 +150,7 @@ impl SessionGrantState {
 
 #[derive(Clone, Debug, Default)]
 pub struct SessionRefreshOptions {
-    pub audience: Option<Did>,
+    pub audience: Option<ServiceId>,
     pub device_id: Option<DeviceId>,
     pub proof: Option<SessionGrantRefreshProof>,
     pub expected_dpop_jkt: Option<String>,
@@ -554,12 +555,12 @@ mod tests {
             .to_string()
     }
 
-    fn did() -> Did {
-        Did::new("did:webvh:z6mkfixture:alice.example").unwrap()
+    fn did() -> CoreId {
+        CoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()
     }
 
-    fn other_did() -> Did {
-        Did::new("did:webvh:z6mkfixture:bob.example").unwrap()
+    fn other_did() -> CoreId {
+        CoreId::new("ak:did_core:webvh:z6mkfixture:bob.example").unwrap()
     }
 
     fn device_id() -> DeviceId {
@@ -581,8 +582,8 @@ mod tests {
             .unwrap()
     }
 
-    fn audience() -> Did {
-        Did::new("did:webvh:z6mkfixture:service.example").unwrap()
+    fn audience() -> ServiceId {
+        ServiceId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap()
     }
 
     fn proof_fields() -> SessionProofFields {
@@ -675,7 +676,7 @@ mod tests {
     fn issue_outcome(
         token: &str,
         grant: SessionGrantId,
-        principal_id: Did,
+        principal_id: CoreId,
         device_id: Option<DeviceId>,
     ) -> SessionGrantOutcome {
         SessionGrantOutcome {
@@ -921,7 +922,8 @@ mod tests {
     #[tokio::test]
     async fn refresh_rejects_changed_outcomes_without_replacing_state() {
         let mut wrong_audience = refresh_outcome("grant-wrong-audience", grant_id(30));
-        wrong_audience.audience = Did::new("did:webvh:z6mkfixture:other-service.example").unwrap();
+        wrong_audience.audience =
+            ServiceId::new("ak:did_core:webvh:z6mkfixture:other-service.example").unwrap();
 
         let mut wrong_previous = refresh_outcome("grant-wrong-previous", grant_id(31));
         wrong_previous.previous_grant_id = grant_id(99);

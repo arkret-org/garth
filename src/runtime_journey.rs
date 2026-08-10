@@ -7,8 +7,8 @@
 use chrono::{DateTime, Utc};
 
 use crate::protocol::{
-    AgentSignerEvidenceQuerySelector, Did, Error, EventId, Hash, NonEmptyString, ParticipationBits,
-    ProtocolOperationId, Result,
+    ActorId, AgentSignerEvidenceQuerySelector, Error, EventId, Hash, NonEmptyString,
+    ParticipationBits, ProtocolOperationId, Result, ServiceId,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,22 +168,22 @@ fn participation_bit(bits: ParticipationBits, action: ParticipationAction) -> bo
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SignerEvidenceUse {
     CurrentAdmission {
-        agent_id: Did,
+        agent_id: ActorId,
         verification_method: arkret_wire::DidUrl,
         now: DateTime<Utc>,
         operation_id: ProtocolOperationId,
         request_digest: Hash,
-        verifier_id: Did,
-        audience: Did,
+        verifier_id: ServiceId,
+        audience: ServiceId,
         challenge: NonEmptyString,
     },
     HistoricalVerification {
-        agent_id: Did,
+        agent_id: ActorId,
         verification_method: arkret_wire::DidUrl,
         now: DateTime<Utc>,
         event_id: EventId,
         event_digest: Hash,
-        receiver_service_id: Did,
+        receiver_service_id: ServiceId,
     },
 }
 
@@ -272,7 +272,7 @@ mod tests {
 
     #[test]
     fn signer_selector_separates_current_and_historical_queries() {
-        let agent = Did::new("did:webvh:z6mkfixture:agent.example").unwrap();
+        let agent = ActorId::new("ak:did_core:webvh:z6mkfixture:agent.example").unwrap();
         let method =
             arkret_wire::DidUrl::new("did:webvh:z6mkfixture:agent.example#runtime-key-1").unwrap();
         let request_digest =
@@ -284,8 +284,8 @@ mod tests {
             now: Utc::now(),
             operation_id: ProtocolOperationId::new("ak:operation:signer-current-1").unwrap(),
             request_digest: request_digest.clone(),
-            verifier_id: Did::new("did:webvh:z6mkfixture:verifier.example").unwrap(),
-            audience: Did::new("did:webvh:z6mkfixture:audience.example").unwrap(),
+            verifier_id: ServiceId::new("ak:did_core:webvh:z6mkfixture:verifier.example").unwrap(),
+            audience: ServiceId::new("ak:did_core:webvh:z6mkfixture:audience.example").unwrap(),
             challenge: NonEmptyString::new("0123456789abcdef").unwrap(),
         })
         .unwrap();
@@ -305,7 +305,8 @@ mod tests {
             now: Utc::now(),
             event_id: event_id.clone(),
             event_digest,
-            receiver_service_id: Did::new("did:webvh:z6mkfixture:receiver.example").unwrap(),
+            receiver_service_id: ServiceId::new("ak:did_core:webvh:z6mkfixture:receiver.example")
+                .unwrap(),
         })
         .unwrap();
         assert!(matches!(

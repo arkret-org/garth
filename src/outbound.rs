@@ -184,7 +184,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         &self,
         transaction_id: Option<String>,
         realm_id: RealmId,
-        actor_id: crate::protocol::Did,
+        actor_id: crate::protocol::ActorId,
         record: QueuedRecord,
         depends_on: Vec<String>,
     ) -> Result<SendQueueItem> {
@@ -472,7 +472,14 @@ mod tests {
 
     use super::*;
     use crate::MemoryStore;
-    use arkret_wire::{Did, EventKind, Hlc, ScopeRef};
+    use arkret_wire::{ActorId, Did, EventKind, Hlc, ScopeRef, project_full_id_to_core_id};
+
+    fn actor_id() -> ActorId {
+        ActorId::from(
+            project_full_id_to_core_id(&Did::new("did:webvh:z6mkfixture:alice.example").unwrap())
+                .unwrap(),
+        )
+    }
     use serde_json::Value;
 
     fn queued_record(realm_id: &RealmId, payload: Value) -> QueuedRecord {
@@ -486,7 +493,7 @@ mod tests {
             ScopeRef::Realm {
                 realm_id: realm_id.clone(),
             },
-            Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            actor_id(),
             1,
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
             payload,
@@ -648,7 +655,7 @@ mod tests {
             .enqueue_scoped(
                 Some("local-operation-1".to_owned()),
                 realm_id(),
-                crate::protocol::Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+                actor_id(),
                 queued_record(&realm_id(), serde_json::json!({"intent": "unsigned"})),
                 Vec::new(),
             )

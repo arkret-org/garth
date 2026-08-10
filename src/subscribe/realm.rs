@@ -467,6 +467,15 @@ mod tests {
         RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO").unwrap()
     }
 
+    fn event_actor_id() -> crate::protocol::ActorId {
+        crate::protocol::ActorId::from(
+            crate::protocol::project_full_id_to_core_id(
+                &Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            )
+            .unwrap(),
+        )
+    }
+
     fn scope() -> CursorScope {
         CursorScope::RealmEvents {
             service_id: None,
@@ -480,7 +489,7 @@ mod tests {
             crate::protocol::ScopeRef::Realm {
                 realm_id: realm_id(),
             },
-            Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            event_actor_id(),
             1,
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
             json!({
@@ -1002,7 +1011,7 @@ mod tests {
             crate::protocol::ScopeRef::Realm {
                 realm_id: realm_id(),
             },
-            Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            event_actor_id(),
             1,
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
             json!({"content": {"kind": "ak.content.text", "body": "missing strand"}}),

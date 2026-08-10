@@ -64,12 +64,13 @@ pub(crate) use arkret_models_identity::{
     UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
 };
 pub(crate) use arkret_state::resolver::RealmState;
-pub use arkret_wire::{AuthorizationLease, IngressReceipt};
 pub(crate) use arkret_wire::{
-    Base64UrlString, BlobRef, CoreId, DeviceId, Did, DidUrl, Event, EventId, EventKind, Hash, Hlc,
-    MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit, RealmId, RequestId, ScopeRef,
-    SealId, SessionGrantId, SidecarId, SignalEnvelope, SignalStreamFrame, StrandId,
+    ActorId, Base64UrlString, BlobRef, CoreId, DeviceId, Did, DidUrl, Event, EventId, EventKind,
+    Hash, Hlc, MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit, RealmId, RequestId,
+    ScopeRef, SealId, ServiceId, SessionGrantId, SidecarId, SignalEnvelope, SignalStreamFrame,
+    StrandId, project_full_id_to_core_id,
 };
+pub use arkret_wire::{AuthorizationLease, IngressReceipt};
 pub(crate) use arkret_wire::{ProtocolOpaqueId, ProtocolOperationId};
 
 pub(crate) fn verified_event_id(event: &Event) -> Result<EventId> {

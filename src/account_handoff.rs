@@ -6,7 +6,7 @@
 
 use crate::protocol::{
     AccountBindingReceipt, AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
-    AccountRegisterOutcome, AccountRegisterRequestBody, Base64UrlString, Did,
+    AccountRegisterOutcome, AccountRegisterRequestBody, Base64UrlString, CoreId, Did,
     DidOperationSubmitRequestBody, Hash, IdentityBindingChallengeOutcome,
     IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationLease,
     IdentityCreationRegistration, InitialSessionGrantRequest, PcrGenesisUnit, RequestId, Result,
@@ -17,7 +17,7 @@ use crate::protocol::{
 #[derive(Clone, Debug)]
 pub struct OidcAccountHandoffInput {
     pub request_id: RequestId,
-    pub audience: Did,
+    pub audience: crate::protocol::ServiceId,
     pub issuer: String,
     pub client_id: String,
     pub redirect_uri: String,
@@ -35,7 +35,8 @@ pub enum AccountHandoffDisposition {
         expires_at: chrono::DateTime<chrono::Utc>,
     },
     Bound {
-        principal_id: Did,
+        principal_id: CoreId,
+        full_id: Did,
     },
 }
 
@@ -54,8 +55,12 @@ pub fn account_handoff_disposition(
             retry_after_ms: *retry_after_ms,
             expires_at: *expires_at,
         },
-        AccountHandoffBinding::Bound { principal_id } => AccountHandoffDisposition::Bound {
+        AccountHandoffBinding::Bound {
+            principal_id,
+            full_id,
+        } => AccountHandoffDisposition::Bound {
             principal_id: principal_id.clone(),
+            full_id: full_id.clone(),
         },
     })
 }
@@ -109,10 +114,12 @@ pub fn identity_binding_challenge_request(
     initial_session.validate()?;
     let create = pcr_genesis_unit.create();
     let authorize = pcr_genesis_unit.founding_authorize();
+    let full_id = did_operation.did.clone();
     let request = IdentityBindingChallengeRequestBody {
         request_id,
         identity_creation_lease_id: lease.identity_creation_lease_id.clone(),
         lease_fence: lease.fence,
+        full_id,
         did_operation,
         pcr_realm_id: create.realm_id.clone(),
         realm_create_payload_digest: Hash::new(crate::protocol::canonical::canonical_sha256(
@@ -141,8 +148,11 @@ pub fn identity_creation_register_request(
     let validated =
         crate::protocol::signatures::webvh::validate_principal_inception_operation(&did_operation)
             .map_err(|error| protocol(error.to_string()))?;
+    let validated_principal_id =
+        crate::protocol::project_full_id_to_core_id(&validated.principal_id)?;
     if &challenge.account_subject != expected_account_subject
-        || challenge.principal_id != validated.principal_id
+        || challenge.principal_id != validated_principal_id
+        || challenge.full_id != validated.principal_id
         || challenge.operation_digest != validated.operation_digest
         || challenge.did_version_id != validated.did_version_id
         || challenge.log_head_digest != validated.log_head_digest
@@ -160,6 +170,7 @@ pub fn identity_creation_register_request(
             purpose: challenge.purpose,
             account_subject: challenge.account_subject.clone(),
             principal_id: challenge.principal_id.clone(),
+            full_id: challenge.full_id.clone(),
             operation_digest: challenge.operation_digest.clone(),
             did_version_id: challenge.did_version_id.clone(),
             log_head_digest: challenge.log_head_digest.clone(),
@@ -186,12 +197,14 @@ pub fn identity_creation_register_request(
     .map_err(|error| protocol(error.to_string()))?;
     let request = AccountRegisterRequestBody {
         principal_id: challenge.principal_id.clone(),
+        full_id: challenge.full_id.clone(),
         display_name,
         device_id: None,
         proof: None,
         identity_creation: Some(IdentityCreationRegistration {
             identity_creation_lease_id: challenge.identity_creation_lease_id.clone(),
             lease_fence: challenge.lease_fence,
+            full_id: challenge.full_id.clone(),
             did_operation,
             control_proof,
             pcr_genesis_unit,
@@ -210,8 +223,10 @@ pub fn validate_binding_receipt(
     receipt.validate_shape()?;
     if receipt.account_subject != challenge.account_subject
         || receipt.principal_id != challenge.principal_id
-        || receipt.identity_creation_lease_id != challenge.identity_creation_lease_id
-        || receipt.lease_fence != challenge.lease_fence
+        || receipt.full_id != challenge.full_id
+        || receipt.identity_creation_lease_id.as_deref()
+            != Some(challenge.identity_creation_lease_id.as_str())
+        || receipt.lease_fence != Some(challenge.lease_fence)
         || receipt.operation_digest != challenge.operation_digest
         || receipt.head_event_digest != challenge.log_head_digest
     {
@@ -247,15 +262,14 @@ pub fn validate_identity_creation_outcome(
         .identity_creation
         .as_ref()
         .ok_or_else(|| protocol("identity-creation outcome requires identity_creation request"))?;
-    let receipt = outcome
-        .binding_receipt
-        .as_ref()
-        .ok_or_else(|| protocol("identity-creation outcome omits account binding receipt"))?;
+    let receipt = &outcome.binding_receipt;
     receipt.validate_shape()?;
     if receipt.account_subject != registration.control_proof.account_subject
         || receipt.principal_id != request.principal_id
-        || receipt.identity_creation_lease_id != registration.identity_creation_lease_id
-        || receipt.lease_fence != registration.lease_fence
+        || receipt.full_id != request.full_id
+        || receipt.identity_creation_lease_id.as_deref()
+            != Some(registration.identity_creation_lease_id.as_str())
+        || receipt.lease_fence != Some(registration.lease_fence)
         || receipt.operation_digest != registration.control_proof.operation_digest
         || receipt.head_event_digest != registration.control_proof.log_head_digest
     {
@@ -279,6 +293,10 @@ mod tests {
         Did::new(value.to_owned()).unwrap()
     }
 
+    fn core_id(value: &str) -> CoreId {
+        crate::protocol::project_full_id_to_core_id(&did(value)).unwrap()
+    }
+
     #[test]
     fn oidc_handoff_digest_and_signature_are_built_in_canonical_order() {
         let request = oidc_account_handoff_request(
@@ -287,7 +305,10 @@ mod tests {
                     "ak:request:01964137-0000-7000-8000-000000000001".to_owned(),
                 )
                 .unwrap(),
-                audience: did("did:webvh:z6mkfixture:service.example"),
+                audience: crate::protocol::ServiceId::new(
+                    "ak:did_core:webvh:z6mkfixture:service.example",
+                )
+                .unwrap(),
                 issuer: "https://auth.example".to_owned(),
                 client_id: "inkson".to_owned(),
                 redirect_uri: "https://app.example/auth/callback".to_owned(),
@@ -325,7 +346,8 @@ mod tests {
             expires_at: Utc::now(),
             allowed_operations: crate::protocol::ACCOUNT_HANDOFF_ALLOWED_OPERATIONS,
             binding: AccountHandoffBinding::Bound {
-                principal_id: did("did:webvh:z6mkfixture:alice.example"),
+                principal_id: core_id("did:webvh:z6mkfixture:alice.example"),
+                full_id: did("did:webvh:z6mkfixture:alice.example"),
             },
         };
         assert!(matches!(

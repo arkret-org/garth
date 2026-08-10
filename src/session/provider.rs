@@ -302,9 +302,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::protocol::{
-        DeviceId, Did, DidUrl, Error, Hash, SessionGrantOutcome, SessionGrantProofKind,
-        SessionGrantRefreshOutcome, SessionGrantRefreshProof, SessionGrantRefreshRequestBody,
-        SessionGrantRequestBody,
+        CoreId, DeviceId, DidUrl, Error, Hash, ServiceId, SessionGrantOutcome,
+        SessionGrantProofKind, SessionGrantRefreshOutcome, SessionGrantRefreshProof,
+        SessionGrantRefreshRequestBody, SessionGrantRequestBody,
     };
     use chrono::{Duration, Utc};
 
@@ -357,14 +357,14 @@ mod tests {
 
     fn state() -> SessionGrantState {
         SessionGrantState {
-            principal_id: Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            principal_id: CoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
             device_id: Some(
                 DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
             ),
             grant_id: grant_id(1),
             grant_jwt: "grant-1".to_owned(),
             expires_at: Utc::now() + Duration::hours(2),
-            audience: Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
+            audience: ServiceId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
             session_public_key: Some("session-public-key".to_owned()),
             dpop_jkt: Some("jkt-1".to_owned()),
@@ -380,7 +380,10 @@ mod tests {
             )
             .unwrap(),
             expires_at: Utc::now() + Duration::hours(1),
-            audience: Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
+            audience: ServiceId::new(
+                "ak:did_core:webvh:z6mkfixture:service.example",
+            )
+            .unwrap(),
             scopes: vec!["ak.self.events.stream.subscribe".to_owned()],
             dpop_jkt: "jkt-1".to_owned(),
             previous_grant_id: grant_id(1),
@@ -408,7 +411,7 @@ mod tests {
                 factory,
                 SessionRefreshOptions {
                     audience: Some(
-                        Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
+                        ServiceId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
                     ),
                     device_id: Some(
                         DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
@@ -417,7 +420,10 @@ mod tests {
                         proof_kind: SessionGrantProofKind::DidBoundSignature,
                         challenge: "refresh-challenge".to_owned(),
                         request_canonical_digest: Hash::new("sha256:0000000000000000000000000000000000000000000000000000000000000000").unwrap(),
-                        audience: Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
+                        audience: ServiceId::new(
+                            "ak:did_core:webvh:z6mkfixture:service.example",
+                        )
+                        .unwrap(),
                         issued_at: Utc::now(),
                         expires_at: Utc::now() + Duration::minutes(5),
                         signature: "refresh-proof-signature".to_owned(),
@@ -482,7 +488,9 @@ mod tests {
             calls: Arc::new(Mutex::new(0)),
         };
         let options = SessionRefreshOptions {
-            audience: Some(Did::new("did:webvh:z6mkfixture:service.example").unwrap()),
+            audience: Some(
+                ServiceId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+            ),
             device_id: state().device_id.clone(),
             proof: Some(SessionGrantRefreshProof {
                 proof_kind: SessionGrantProofKind::DidBoundSignature,
@@ -491,7 +499,7 @@ mod tests {
                     "sha256:0000000000000000000000000000000000000000000000000000000000000000",
                 )
                 .unwrap(),
-                audience: Did::new("did:webvh:z6mkfixture:service.example").unwrap(),
+                audience: ServiceId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
                 issued_at: Utc::now(),
                 expires_at: Utc::now() + chrono::Duration::minutes(5),
                 signature: "refresh-proof-signature".to_owned(),

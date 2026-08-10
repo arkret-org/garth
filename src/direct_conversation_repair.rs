@@ -5,7 +5,7 @@
 //! dispatch and to keep transport enqueue distinct from business completion.
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, de::Error as _};
 
 use crate::protocol::{
     CoreId, DirectConversationCoordinates, DirectConversationRepairDispatchRequest,
@@ -46,7 +46,7 @@ pub struct SelfRejoinAcceptance {
     pub accepted_at: DateTime<Utc>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct FrozenDirectConversationRepairDispatch {
     pub request: DirectConversationRepairDispatchRequest,
@@ -56,6 +56,124 @@ pub struct FrozenDirectConversationRepairDispatch {
     /// on the wire request.
     pub frozen_context_digest: Hash,
     pub canonical_request_bytes: Vec<u8>,
+}
+
+impl<'de> Deserialize<'de> for FrozenDirectConversationRepairDispatch {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Wire {
+            request: serde_json::Value,
+            request_digest: Hash,
+            frozen_context_digest: Hash,
+            canonical_request_bytes: Vec<u8>,
+        }
+
+        let wire = Wire::deserialize(deserializer)?;
+        Ok(Self {
+            request: deserialize_dispatch_request(wire.request).map_err(D::Error::custom)?,
+            request_digest: wire.request_digest,
+            frozen_context_digest: wire.frozen_context_digest,
+            canonical_request_bytes: wire.canonical_request_bytes,
+        })
+    }
+}
+
+fn deserialize_dispatch_request(
+    value: serde_json::Value,
+) -> std::result::Result<DirectConversationRepairDispatchRequest, serde_json::Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Wire {
+        request_id: crate::protocol::Base64UrlString,
+        content: serde_json::Value,
+        requester_authorization:
+            arkret_models_collaboration::direct_conversation_repair::DirectConversationRepairAuthorization,
+    }
+
+    let wire: Wire = serde_json::from_value(value)?;
+    Ok(DirectConversationRepairDispatchRequest {
+        request_id: wire.request_id,
+        content: deserialize_member_repair_payload(wire.content)?,
+        requester_authorization: wire.requester_authorization,
+    })
+}
+
+fn deserialize_member_repair_payload(
+    value: serde_json::Value,
+) -> std::result::Result<MemberRepairRequestPayload, serde_json::Error> {
+    #[derive(Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct Wire {
+        realm_id: crate::protocol::RealmId,
+        requester_principal_id: CoreId,
+        #[serde(default)]
+        requester_device_id: Option<crate::protocol::DeviceId>,
+        #[serde(default)]
+        requester_agent_id: Option<CoreId>,
+        #[serde(default)]
+        requester_agent_verification_method: Option<crate::protocol::DidUrl>,
+        #[serde(default)]
+        agent_key_authorize_event_id: Option<EventId>,
+        requester_keypackage_ref: NonEmptyString,
+        observed_active_generation_value_digest: Hash,
+        rejoin_event_id: EventId,
+        #[serde(with = "arkret_canonical::serde_helpers::canonical_timestamp")]
+        created_at: DateTime<Utc>,
+    }
+
+    let wire: Wire = serde_json::from_value(value)?;
+    let requester = match (
+        wire.requester_device_id,
+        wire.requester_agent_id,
+        wire.requester_agent_verification_method,
+        wire.agent_key_authorize_event_id,
+    ) {
+        (Some(requester_device_id), None, None, None) => {
+            arkret_models_collaboration::events_payloads::MemberRepairRequester::Device {
+                requester_device_id,
+            }
+        }
+        (
+            None,
+            Some(requester_agent_id),
+            Some(requester_agent_verification_method),
+            Some(agent_key_authorize_event_id),
+        ) => arkret_models_collaboration::events_payloads::MemberRepairRequester::NativeAgent {
+            requester_agent_id,
+            requester_agent_verification_method,
+            agent_key_authorize_event_id,
+        },
+        _ => {
+            return Err(<serde_json::Error as serde::de::Error>::custom(
+                "repair requester identity must select exactly one closed branch",
+            ));
+        }
+    };
+    Ok(MemberRepairRequestPayload {
+        realm_id: wire.realm_id,
+        requester_principal_id: wire.requester_principal_id,
+        requester,
+        requester_keypackage_ref: wire.requester_keypackage_ref,
+        observed_active_generation_value_digest: wire.observed_active_generation_value_digest,
+        rejoin_event_id: wire.rejoin_event_id,
+        created_at: wire.created_at,
+    })
+}
+
+fn deserialize_optional_member_repair_payload<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<MemberRepairRequestPayload>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Option::<serde_json::Value>::deserialize(deserializer)?
+        .map(deserialize_member_repair_payload)
+        .transpose()
+        .map_err(D::Error::custom)
 }
 
 impl FrozenDirectConversationRepairDispatch {
@@ -140,6 +258,7 @@ pub struct DirectConversationRepairSnapshot {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_rejoin_acceptance: Option<SelfRejoinAcceptance>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(deserialize_with = "deserialize_optional_member_repair_payload")]
     pub expected_content: Option<MemberRepairRequestPayload>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub frozen_dispatch: Option<FrozenDirectConversationRepairDispatch>,
