@@ -152,13 +152,41 @@ pub enum RouteCandidateSource {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RouteResolution {
-    pub source: RouteCandidateSource,
-    pub route: ServiceRouteCacheEntry,
+    source: RouteCandidateSource,
+    route: ServiceRouteCacheEntry,
+    authenticated_resolution: AuthenticatedServiceResolution,
+}
+
+impl RouteResolution {
+    #[must_use]
+    pub const fn source(&self) -> RouteCandidateSource {
+        self.source
+    }
+
+    #[must_use]
+    pub const fn route(&self) -> &ServiceRouteCacheEntry {
+        &self.route
+    }
+
+    /// Exact authenticated record, method-history evidence and normalized DID
+    /// document accepted by this evaluator. Keeping this material behind the
+    /// evaluator-produced token prevents consumers from supplying a bare full
+    /// DID or an unrelated DID document as service authority.
+    #[must_use]
+    pub const fn authenticated_resolution(&self) -> &AuthenticatedServiceResolution {
+        &self.authenticated_resolution
+    }
+}
+
+#[derive(Clone, Debug)]
+struct CachedRouteResolution {
+    route: ServiceRouteCacheEntry,
+    authenticated_resolution: AuthenticatedServiceResolution,
 }
 
 pub struct ServiceRouteEvaluator<S> {
     store: S,
-    cache: BTreeMap<(DidCoreId, String), ServiceRouteCacheEntry>,
+    cache: BTreeMap<(DidCoreId, String), CachedRouteResolution>,
     cache_ttl: Duration,
     external_mirror_enabled: bool,
 }
@@ -220,12 +248,13 @@ where
             return Err(Error::Protocol("service_route_fork_quarantined".to_owned()));
         }
         if let Some(cached) = self.cache.get(&key)
-            && cached.is_routable_at(now)
-            && cache_matches_floor(cached, durable.floor.as_ref())
+            && cached.route.is_routable_at(now)
+            && cache_matches_floor(&cached.route, durable.floor.as_ref())
         {
             return Ok(RouteResolution {
                 source: RouteCandidateSource::FreshCache,
-                route: cached.clone(),
+                route: cached.route.clone(),
+                authenticated_resolution: cached.authenticated_resolution.clone(),
             });
         }
         self.cache.remove(&key);
@@ -474,13 +503,18 @@ where
             verified_at: now,
         });
         self.store.save_route_state(durable)?;
+        let authenticated_resolution = candidate.resolution;
         self.cache.insert(
             (durable.service_id.clone(), durable.service_kind.clone()),
-            route.clone(),
+            CachedRouteResolution {
+                route: route.clone(),
+                authenticated_resolution: authenticated_resolution.clone(),
+            },
         );
         Ok(RouteResolution {
             source: candidate_source,
             route,
+            authenticated_resolution,
         })
     }
 
@@ -602,11 +636,188 @@ fn validate_notice_chain(
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    use arkret_models_identity::{
+        DidDocument, ResolutionDidBindingEvidenceKind, ResolutionDidBindingEvidenceReceipt,
+        ResolutionMethodEvidenceBoundary, ResolutionMethodHistoryEvidence,
+        ServiceResolutionRecordCore,
+    };
+    use arkret_wire::{DidFullId, DidUrl};
+    use chrono::TimeZone as _;
+    use ed25519_dalek::SigningKey;
 
     use super::*;
 
     fn hash(byte: char) -> Hash {
         Hash::new(format!("sha256:{}", byte.to_string().repeat(64))).unwrap()
+    }
+
+    fn route_fixture(service_kind: &str) -> AuthenticatedServiceResolution {
+        let signing_key = SigningKey::from_bytes(&[31_u8; 32]);
+        let full_id = DidFullId::new("did:web:media.example").unwrap();
+        let service_id = arkret_wire::project_full_id_to_core_id(&full_id).unwrap();
+        let method = DidUrl::new(format!("{full_id}#signing-1")).unwrap();
+        let document = DidDocument {
+            id: full_id.clone(),
+            verification_methods: BTreeMap::from([(
+                method.to_string(),
+                arkret_canonical::ed25519_pubkey_to_did_key_multibase(
+                    signing_key.verifying_key().as_bytes(),
+                ),
+            )]),
+            also_known_as: Vec::new(),
+            updated_at: None,
+            raw_properties: BTreeMap::from([(
+                "assertionMethod".to_owned(),
+                serde_json::json!([method]),
+            )]),
+        };
+        let issued_at = Utc.with_ymd_and_hms(2026, 8, 11, 1, 0, 0).unwrap();
+        let record = arkret_signatures::service_resolution::sign_service_resolution_record(
+            ServiceResolutionRecordCore {
+                service_id,
+                service_kind: service_kind.to_owned(),
+                full_id,
+                method_history_head: "did-web-document-sha256:fixture".to_owned(),
+                version_id: "did-web-document-sha256:fixture".to_owned(),
+                resolution_event_ref: format!("did-web-document-sha256:{}", "1".repeat(64)),
+                record_sequence: 0,
+                previous_record_digest: None,
+                current_record_url: "https://media.example/_arkret/open/services/ak%3Adid_core%3Aweb%3Amedia.example/resolution".to_owned(),
+                base_url: "https://media.example/".to_owned(),
+                describe_digest: hash('2'),
+                issued_at,
+                refresh_after: issued_at + Duration::minutes(5),
+                expires_at: issued_at + Duration::minutes(10),
+            },
+            method,
+            &signing_key,
+        )
+        .unwrap();
+        let document_digest =
+            Hash::new(arkret_canonical::canonical_sha256(&document).unwrap()).unwrap();
+        AuthenticatedServiceResolution {
+            service_resolution_record: record,
+            method_history_evidence: ResolutionMethodHistoryEvidence::DidWebDocument {
+                adapter_version: "did:web:1".to_owned(),
+                boundary: ResolutionMethodEvidenceBoundary {
+                    from_method_history_head: "did-web-document-sha256:fixture".to_owned(),
+                    from_version_id: "did-web-document-sha256:fixture".to_owned(),
+                    to_method_history_head: "did-web-document-sha256:fixture".to_owned(),
+                    to_version_id: "did-web-document-sha256:fixture".to_owned(),
+                },
+                evidence: ResolutionDidBindingEvidenceReceipt {
+                    kind: ResolutionDidBindingEvidenceKind::AkDidBindingEvidenceV1,
+                    method: "web".to_owned(),
+                    document_digest,
+                    method_proofs: Vec::new(),
+                },
+            },
+            normalized_did_document: document,
+        }
+    }
+
+    struct FixtureSource {
+        candidate: Option<ServiceRouteCandidate>,
+        calls: Vec<&'static str>,
+    }
+
+    impl ServiceRouteSource for FixtureSource {
+        fn verify_method_history(
+            &mut self,
+            _: &AuthenticatedServiceResolution,
+            _: DateTime<Utc>,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        fn current_record(
+            &mut self,
+            _: &DidCoreId,
+            _: &str,
+        ) -> Result<Option<ServiceRouteCandidate>> {
+            self.calls.push("current");
+            Ok(self.candidate.take())
+        }
+
+        fn active_notice(
+            &mut self,
+            _: &DidCoreId,
+            _: &str,
+        ) -> Result<Option<ServiceRouteNoticeCandidate>> {
+            self.calls.push("notice");
+            Ok(None)
+        }
+
+        fn realm_peer_mirror(
+            &mut self,
+            _: &DidCoreId,
+            _: &str,
+            _: Option<&ServiceResolutionLastSeenFloor>,
+        ) -> Result<Option<ServiceRouteCandidate>> {
+            self.calls.push("realm");
+            Ok(None)
+        }
+
+        fn external_mirror(
+            &mut self,
+            _: &DidCoreId,
+            _: &str,
+            _: Option<&ServiceResolutionLastSeenFloor>,
+        ) -> Result<Option<ServiceRouteCandidate>> {
+            self.calls.push("external");
+            Ok(None)
+        }
+
+        fn describe(&mut self, base_url: &str) -> Result<ServiceDescribeBinding> {
+            let resolution = route_fixture("media_service");
+            Ok(ServiceDescribeBinding {
+                service_id: resolution.service_resolution_record.record.service_id,
+                service_kind: "media_service".to_owned(),
+                base_url: base_url.to_owned(),
+                describe_digest: hash('2'),
+            })
+        }
+    }
+
+    #[test]
+    fn evaluator_token_preserves_exact_authenticated_material_in_fresh_cache() {
+        let resolution = route_fixture("media_service");
+        let service_id = resolution
+            .service_resolution_record
+            .record
+            .service_id
+            .clone();
+        let now = resolution.service_resolution_record.record.issued_at;
+        let mut source = FixtureSource {
+            candidate: Some(ServiceRouteCandidate { resolution }),
+            calls: Vec::new(),
+        };
+        let mut evaluator = ServiceRouteEvaluator::new(
+            MemoryServiceRouteStateStore::default(),
+            Duration::minutes(1),
+        )
+        .unwrap();
+        let first = evaluator
+            .resolve(&service_id, "media_service", now, &mut source)
+            .unwrap();
+        assert_eq!(first.source(), RouteCandidateSource::CurrentRecord);
+        assert_eq!(
+            first.authenticated_resolution().normalized_did_document.id,
+            first.route().full_id
+        );
+
+        source.calls.clear();
+        let cached = evaluator
+            .resolve(&service_id, "media_service", now, &mut source)
+            .unwrap();
+        assert_eq!(cached.source(), RouteCandidateSource::FreshCache);
+        assert_eq!(
+            cached.authenticated_resolution(),
+            first.authenticated_resolution()
+        );
+        assert!(source.calls.is_empty());
     }
 
     #[test]
@@ -753,59 +964,6 @@ mod tests {
             source.calls.into_inner(),
             vec!["current", "notice", "realm", "external"]
         );
-    }
-
-    #[test]
-    fn fresh_cache_short_circuits_every_network_source() {
-        let service_id = DidCoreId::new("ak:did_core:web:service.example").unwrap();
-        let now = Utc::now();
-        let digest = hash('4');
-        let floor = ServiceResolutionLastSeenFloor {
-            service_id: service_id.clone(),
-            service_kind: "principal_server".to_owned(),
-            record_sequence: 4,
-            record_digest: digest.clone(),
-            verified_at: now,
-        };
-        let mut store = MemoryServiceRouteStateStore::default();
-        store
-            .save_route_state(&ServiceRouteDurableSnapshot {
-                service_id: service_id.clone(),
-                service_kind: "principal_server".to_owned(),
-                floor: Some(floor),
-                notice: None,
-                quarantine: None,
-            })
-            .unwrap();
-        let mut evaluator = ServiceRouteEvaluator::new(store, Duration::minutes(1)).unwrap();
-        evaluator.cache.insert(
-            (service_id.clone(), "principal_server".to_owned()),
-            ServiceRouteCacheEntry {
-                service_id: service_id.clone(),
-                service_kind: "principal_server".to_owned(),
-                full_id: arkret_wire::DidFullId::new("did:web:service.example").unwrap(),
-                method_history_head: "head".to_owned(),
-                version_id: "version".to_owned(),
-                record_sequence: 4,
-                record_digest: digest,
-                base_url: "https://service.example/".to_owned(),
-                current_record_url: "https://service.example/current".to_owned(),
-                describe_digest: hash('2'),
-                verified_at: now,
-                refresh_after: now + Duration::minutes(1),
-                expires_at: now + Duration::minutes(2),
-                cached_at: now,
-                cache_expires_at: now + Duration::minutes(1),
-            },
-        );
-        let mut source = EmptySource {
-            calls: RefCell::new(Vec::new()),
-        };
-        let resolved = evaluator
-            .resolve(&service_id, "principal_server", now, &mut source)
-            .unwrap();
-        assert_eq!(resolved.source, RouteCandidateSource::FreshCache);
-        assert!(source.calls.into_inner().is_empty());
     }
 
     #[test]
