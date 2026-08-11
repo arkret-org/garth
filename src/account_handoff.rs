@@ -161,6 +161,13 @@ pub fn identity_creation_register_request(
             "identity-binding challenge does not match the inception operation",
         ));
     }
+    let registration_did_evidence_draft =
+        crate::protocol::signatures::webvh::sign_registration_did_evidence_draft(
+            &did_operation,
+            challenge.issued_at,
+            root_seed,
+        )
+        .map_err(|error| protocol(error.to_string()))?;
     let unsigned_control_proof =
         UnsignedIdentityCreationControlProof::new(UnsignedIdentityCreationControlProofBody {
             challenge_id: challenge.challenge_id.clone(),
@@ -204,6 +211,7 @@ pub fn identity_creation_register_request(
             lease_fence: challenge.lease_fence,
             full_id: challenge.full_id.clone(),
             did_operation,
+            registration_did_evidence_draft,
             control_proof,
             pcr_genesis_unit,
             initial_session,
