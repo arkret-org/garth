@@ -43,9 +43,10 @@ pub mod subscribe;
 pub mod sync_client;
 pub mod websocket;
 pub use account_handoff::{
-    AccountHandoffDisposition, OidcAccountHandoffInput, account_handoff_disposition,
-    identity_binding_challenge_request, identity_creation_register_request,
-    oidc_account_handoff_request, validate_binding_receipt, validate_identity_creation_outcome,
+    AccountHandoffDisposition, IdentityCreationNextStep, IdentityCreationReconciliation,
+    OidcAccountHandoffInput, account_handoff_disposition, identity_binding_challenge_request,
+    identity_creation_register_request, oidc_account_handoff_request, reconcile_identity_creation,
+    validate_binding_receipt, validate_identity_creation_outcome,
     verify_binding_receipt_at_issuance,
 };
 pub use arkret_identity::{

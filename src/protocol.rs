@@ -58,7 +58,9 @@ pub(crate) use arkret_models_identity::agent_signer_evidence::{
 pub(crate) use arkret_models_identity::{
     AccountBindingReceipt, AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
     DeviceVerificationState, DidOperationSubmitRequestBody, IdentityBindingChallengeOutcome,
-    IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationLease,
+    IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationCommandKind,
+    IdentityCreationGoal, IdentityCreationLease, IdentityCreationLeaseState,
+    IdentityCreationLocalArtifactKind, IdentityCreationRecoveryKeyState,
     IdentityCreationRegistration, InitialSessionGrantRequest, ReservedIdentityCreation,
     UnsignedAccountHandoffAuthenticationProof, UnsignedAccountHandoffRequestBody,
     UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,

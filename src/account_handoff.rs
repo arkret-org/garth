@@ -8,11 +8,14 @@ use crate::protocol::{
     AccountBindingReceipt, AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
     AccountRegisterOutcome, AccountRegisterRequestBody, Base64UrlString, DidCoreId, DidFullId,
     DidOperationSubmitRequestBody, Hash, IdentityBindingChallengeOutcome,
-    IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationLease,
+    IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationCommandKind,
+    IdentityCreationGoal, IdentityCreationLease, IdentityCreationLeaseState,
+    IdentityCreationLocalArtifactKind, IdentityCreationRecoveryKeyState,
     IdentityCreationRegistration, InitialSessionGrantRequest, PcrGenesisUnit, RequestId, Result,
     UnsignedAccountHandoffAuthenticationProof, UnsignedAccountHandoffRequestBody,
     UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
 };
+use std::collections::BTreeSet;
 
 #[derive(Clone, Debug)]
 pub struct OidcAccountHandoffInput {
@@ -38,6 +41,129 @@ pub enum AccountHandoffDisposition {
         principal_id: DidCoreId,
         full_id: DidFullId,
     },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum IdentityCreationNextStep {
+    GenerateRecoveryKey,
+    ConfirmRecoveryKey,
+    EnterExistingRecoveryKey,
+    Collect(IdentityCreationLocalArtifactKind),
+    Authenticate,
+    Execute(IdentityCreationCommandKind),
+    Complete,
+}
+
+/// Deterministic reconciliation of server-authored onboarding state with
+/// host-local artifacts. `stored_artifacts` describes everything found on the
+/// device; `valid_artifacts` is the subset the host proved belongs to the
+/// current lease/fence/identity. Anything outside `keep_artifacts` must be
+/// erased before executing `next_step`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdentityCreationReconciliation {
+    pub goal: IdentityCreationGoal,
+    pub keep_artifacts: Vec<IdentityCreationLocalArtifactKind>,
+    pub discard_artifacts: Vec<IdentityCreationLocalArtifactKind>,
+    pub missing_artifacts: Vec<IdentityCreationLocalArtifactKind>,
+    pub next_step: IdentityCreationNextStep,
+}
+
+pub fn reconcile_identity_creation(
+    lease: &IdentityCreationLease,
+    goal: IdentityCreationGoal,
+    recovery_key_state: IdentityCreationRecoveryKeyState,
+    stored_artifacts: impl IntoIterator<Item = IdentityCreationLocalArtifactKind>,
+    valid_artifacts: impl IntoIterator<Item = IdentityCreationLocalArtifactKind>,
+) -> Result<IdentityCreationReconciliation> {
+    lease.validate()?;
+    let stored = stored_artifacts.into_iter().collect::<BTreeSet<_>>();
+    let valid = valid_artifacts.into_iter().collect::<BTreeSet<_>>();
+    if !valid.is_subset(&stored) {
+        return Err(protocol(
+            "valid onboarding artifacts must be a subset of stored artifacts",
+        ));
+    }
+    let required = lease
+        .required_local_artifacts(goal)?
+        .iter()
+        .copied()
+        .collect::<BTreeSet<_>>();
+    let keep = stored
+        .intersection(&valid)
+        .copied()
+        .collect::<BTreeSet<_>>()
+        .intersection(&required)
+        .copied()
+        .collect::<Vec<_>>();
+    let keep_set = keep.iter().copied().collect::<BTreeSet<_>>();
+    let discard = stored.difference(&keep_set).copied().collect::<Vec<_>>();
+    let missing = required.difference(&keep_set).copied().collect::<Vec<_>>();
+
+    use IdentityCreationCommandKind::{
+        ConfirmAbandonment, IssueAbandonmentChallenge, IssueIdentityBindingChallenge,
+        SubmitRegistration,
+    };
+    use IdentityCreationGoal::{AbandonProvisionalIdentity, CompleteIdentity};
+    use IdentityCreationLeaseState::{
+        AccountBound, Active, Completed, DidPublished, PcrAccepted, Reserved,
+    };
+    use IdentityCreationLocalArtifactKind::{
+        AbandonmentChallenge, FreshAccountHandoff, PreparedRegistrationRequest,
+        RegistrationCheckpoint,
+    };
+
+    let next_step = match goal {
+        CompleteIdentity if lease.state == Completed => IdentityCreationNextStep::Complete,
+        CompleteIdentity => {
+            if recovery_key_state == IdentityCreationRecoveryKeyState::Unavailable {
+                if lease.state == Active {
+                    IdentityCreationNextStep::GenerateRecoveryKey
+                } else {
+                    IdentityCreationNextStep::EnterExistingRecoveryKey
+                }
+            } else if recovery_key_state.needs_confirmation() {
+                IdentityCreationNextStep::ConfirmRecoveryKey
+            } else if !recovery_key_state.can_control_identity() {
+                return Err(protocol(
+                    "identity creation recovery-key state is not usable for completion",
+                ));
+            } else if !keep_set.contains(&RegistrationCheckpoint) {
+                IdentityCreationNextStep::Collect(RegistrationCheckpoint)
+            } else {
+                match lease.state {
+                    Active | Reserved => {
+                        IdentityCreationNextStep::Execute(IssueIdentityBindingChallenge)
+                    }
+                    DidPublished | PcrAccepted | AccountBound
+                        if !keep_set.contains(&PreparedRegistrationRequest) =>
+                    {
+                        IdentityCreationNextStep::Collect(PreparedRegistrationRequest)
+                    }
+                    DidPublished | PcrAccepted | AccountBound => {
+                        IdentityCreationNextStep::Execute(SubmitRegistration)
+                    }
+                    Completed => unreachable!("completed state was handled before artifacts"),
+                }
+            }
+        }
+        AbandonProvisionalIdentity => {
+            if !keep_set.contains(&AbandonmentChallenge) {
+                IdentityCreationNextStep::Execute(IssueAbandonmentChallenge)
+            } else if !keep_set.contains(&FreshAccountHandoff) {
+                IdentityCreationNextStep::Authenticate
+            } else {
+                IdentityCreationNextStep::Execute(ConfirmAbandonment)
+            }
+        }
+    };
+
+    Ok(IdentityCreationReconciliation {
+        goal,
+        keep_artifacts: keep,
+        discard_artifacts: discard,
+        missing_artifacts: missing,
+        next_step,
+    })
 }
 
 pub fn account_handoff_disposition(
@@ -295,6 +421,31 @@ mod tests {
     use super::*;
     use chrono::Utc;
 
+    fn lease(state: IdentityCreationLeaseState) -> IdentityCreationLease {
+        let reserved_identity = state.has_reserved_identity().then(|| {
+            let full_id = did("did:webvh:z6mkfixture:alice.example");
+            crate::protocol::ReservedIdentityCreation {
+                principal_id: core_id(full_id.as_str()),
+                full_id: full_id.clone(),
+                operation_digest: Hash::new(format!("sha256:{}", "a".repeat(64))).unwrap(),
+                did_operation: crate::protocol::DidOperationSubmitRequestBody {
+                    did: full_id,
+                    did_method: "webvh".to_owned(),
+                    seq: None,
+                    prev_event_digest: None,
+                    operation: std::collections::BTreeMap::new(),
+                },
+            }
+        });
+        IdentityCreationLease {
+            identity_creation_lease_id: "lease-fixture".to_owned(),
+            fence: 1,
+            state,
+            expires_at: Utc::now() + chrono::Duration::minutes(15),
+            reserved_identity,
+        }
+    }
+
     fn did(value: &str) -> DidFullId {
         DidFullId::new(value.to_owned()).unwrap()
     }
@@ -362,5 +513,172 @@ mod tests {
         ));
         outcome.allowed_operations.swap(0, 1);
         assert!(account_handoff_disposition(&outcome).is_err());
+    }
+
+    #[test]
+    fn reconciliation_discards_foreign_and_invalid_local_artifacts() {
+        use IdentityCreationLocalArtifactKind::{
+            AbandonmentChallenge, PreparedRegistrationRequest, RegistrationCheckpoint,
+        };
+        let plan = reconcile_identity_creation(
+            &lease(IdentityCreationLeaseState::Reserved),
+            IdentityCreationGoal::CompleteIdentity,
+            IdentityCreationRecoveryKeyState::GeneratedLocallyValidatedDurable,
+            [
+                RegistrationCheckpoint,
+                PreparedRegistrationRequest,
+                AbandonmentChallenge,
+            ],
+            [PreparedRegistrationRequest],
+        )
+        .unwrap();
+
+        assert!(plan.keep_artifacts.is_empty());
+        assert!(plan.discard_artifacts.contains(&RegistrationCheckpoint));
+        assert!(
+            plan.discard_artifacts
+                .contains(&PreparedRegistrationRequest)
+        );
+        assert!(plan.discard_artifacts.contains(&AbandonmentChallenge));
+        assert_eq!(
+            plan.next_step,
+            IdentityCreationNextStep::Collect(RegistrationCheckpoint)
+        );
+    }
+
+    #[test]
+    fn reserved_completion_reuses_valid_material_and_skips_collection() {
+        use IdentityCreationLocalArtifactKind::RegistrationCheckpoint;
+        let plan = reconcile_identity_creation(
+            &lease(IdentityCreationLeaseState::Reserved),
+            IdentityCreationGoal::CompleteIdentity,
+            IdentityCreationRecoveryKeyState::ExistingValidatedDurable,
+            [RegistrationCheckpoint],
+            [RegistrationCheckpoint],
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.next_step,
+            IdentityCreationNextStep::Execute(
+                IdentityCreationCommandKind::IssueIdentityBindingChallenge
+            )
+        );
+        assert!(plan.missing_artifacts.is_empty());
+    }
+
+    #[test]
+    fn abandonment_requires_challenge_then_fresh_authentication() {
+        use IdentityCreationLocalArtifactKind::{AbandonmentChallenge, FreshAccountHandoff};
+        let lease = lease(IdentityCreationLeaseState::DidPublished);
+        let issue = reconcile_identity_creation(
+            &lease,
+            IdentityCreationGoal::AbandonProvisionalIdentity,
+            IdentityCreationRecoveryKeyState::Unavailable,
+            [],
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            issue.next_step,
+            IdentityCreationNextStep::Execute(
+                IdentityCreationCommandKind::IssueAbandonmentChallenge
+            )
+        );
+
+        let authenticate = reconcile_identity_creation(
+            &lease,
+            IdentityCreationGoal::AbandonProvisionalIdentity,
+            IdentityCreationRecoveryKeyState::Unavailable,
+            [AbandonmentChallenge],
+            [AbandonmentChallenge],
+        )
+        .unwrap();
+        assert_eq!(
+            authenticate.next_step,
+            IdentityCreationNextStep::Authenticate
+        );
+
+        let confirm = reconcile_identity_creation(
+            &lease,
+            IdentityCreationGoal::AbandonProvisionalIdentity,
+            IdentityCreationRecoveryKeyState::Unavailable,
+            [AbandonmentChallenge, FreshAccountHandoff],
+            [AbandonmentChallenge, FreshAccountHandoff],
+        )
+        .unwrap();
+        assert_eq!(
+            confirm.next_step,
+            IdentityCreationNextStep::Execute(IdentityCreationCommandKind::ConfirmAbandonment)
+        );
+    }
+
+    #[test]
+    fn pcr_acceptance_closes_the_abandonment_goal() {
+        let result = reconcile_identity_creation(
+            &lease(IdentityCreationLeaseState::PcrAccepted),
+            IdentityCreationGoal::AbandonProvisionalIdentity,
+            IdentityCreationRecoveryKeyState::Unavailable,
+            [],
+            [],
+        );
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn completed_server_state_is_terminal_without_local_artifacts() {
+        let plan = reconcile_identity_creation(
+            &lease(IdentityCreationLeaseState::Completed),
+            IdentityCreationGoal::CompleteIdentity,
+            IdentityCreationRecoveryKeyState::Unavailable,
+            [],
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(plan.next_step, IdentityCreationNextStep::Complete);
+        assert!(plan.missing_artifacts.is_empty());
+    }
+
+    #[test]
+    fn recovery_key_state_distinguishes_fresh_resume_and_existing_entry() {
+        let fresh = reconcile_identity_creation(
+            &lease(IdentityCreationLeaseState::Active),
+            IdentityCreationGoal::CompleteIdentity,
+            IdentityCreationRecoveryKeyState::Unavailable,
+            [],
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            fresh.next_step,
+            IdentityCreationNextStep::GenerateRecoveryKey
+        );
+
+        let recovered = reconcile_identity_creation(
+            &lease(IdentityCreationLeaseState::Reserved),
+            IdentityCreationGoal::CompleteIdentity,
+            IdentityCreationRecoveryKeyState::RecoveredPendingConfirmation,
+            [],
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            recovered.next_step,
+            IdentityCreationNextStep::ConfirmRecoveryKey
+        );
+
+        let missing = reconcile_identity_creation(
+            &lease(IdentityCreationLeaseState::Reserved),
+            IdentityCreationGoal::CompleteIdentity,
+            IdentityCreationRecoveryKeyState::Unavailable,
+            [],
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            missing.next_step,
+            IdentityCreationNextStep::EnterExistingRecoveryKey
+        );
     }
 }
