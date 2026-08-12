@@ -52,9 +52,7 @@ pub(crate) use arkret_models_crypto::{
 pub use arkret_models_discovery::{
     PresenceStatus, aggregate_presence_states, validate_last_active_at, validate_status_message,
 };
-pub(crate) use arkret_models_identity::agent_signer_evidence::{
-    AgentSignerEvidence, AgentSignerEvidenceQuerySelector,
-};
+pub(crate) use arkret_models_identity::agent_signer_evidence::AgentSignerEvidence;
 pub(crate) use arkret_models_identity::{
     AccountBindingReceipt, AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
     DeviceVerificationState, DidOperationSubmitRequestBody, IdentityBindingChallengeOutcome,
@@ -70,12 +68,11 @@ pub(crate) use arkret_state::resolver::RealmState;
 pub(crate) use arkret_wire::project_full_id_to_core_id;
 pub use arkret_wire::{AuthorizationLease, IngressReceipt};
 pub(crate) use arkret_wire::{
-    Base64UrlString, BlobRef, DeviceId, DidCoreId, DidFullId, DidUrl, Event, EventId, EventKind,
-    Hash, Hlc, MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit,
-    PrincipalAuthorityInstance, RealmId, RequestId, ScopeRef, SealId, SessionGrantId, SidecarId,
-    SignalEnvelope, SignalStreamFrame, StrandId,
+    Base64UrlString, DeviceId, DidCoreId, DidFullId, DidUrl, Event, EventId, EventKind, Hash, Hlc,
+    MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit, PrincipalAuthorityInstance,
+    RealmId, RequestId, ScopeRef, SealId, SessionGrantId, SidecarId, SignalEnvelope,
+    SignalStreamFrame, StrandId,
 };
-pub(crate) use arkret_wire::{ProtocolOpaqueId, ProtocolOperationId};
 
 pub(crate) fn verified_event_id(event: &Event) -> Result<EventId> {
     let digest_suite = event.event_id.digest_suite_code().digest_suite();
@@ -114,18 +111,11 @@ pub(crate) use arkret_models_identity::{
 };
 #[cfg(test)]
 pub(crate) use arkret_wire::{
-    DeviceMessageId, ErrorEnvelope, EventRequirements, NotificationId, NotificationKind,
-    ObjectState, ProtocolKind,
+    DeviceMessageId, ErrorEnvelope, NotificationId, NotificationKind, ProtocolKind,
 };
 
-pub(crate) mod auth {
-    pub(crate) use arkret_auth::AuthSession;
-}
-
 pub(crate) mod canonical {
-    pub(crate) use arkret_canonical::{
-        canonical_json_bytes, canonical_sha256, sha256_bytes_from_slices, sha256_digest,
-    };
+    pub(crate) use arkret_canonical::{canonical_json_bytes, canonical_sha256, sha256_digest};
 }
 
 pub(crate) mod dpop {
@@ -156,13 +146,6 @@ pub(crate) mod models {
     pub(crate) use arkret_models_collaboration::agent_operations::{
         AgentSidecarExchangeControlSchema, AgentSidecarSourceTrackRef,
     };
-    pub(crate) use arkret_models_collaboration::objects::blob::BlobMetadata;
-}
-
-pub(crate) mod resolver {
-    #[cfg(test)]
-    pub(crate) use arkret_state::resolver::SnapshotRestoreSource;
-    pub(crate) use arkret_state::resolver::{RealmState, SnapshotRestore, StateSnapshot};
 }
 
 pub(crate) mod session_grant {

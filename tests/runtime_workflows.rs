@@ -8,7 +8,6 @@ use arkret_models_collaboration::sync_frames::account_subscribe::{
 };
 use arkret_models_collaboration::sync_frames::account_sync::RealmSyncEntry;
 use arkret_wire::{DeviceId, DidCoreId, RealmId};
-use garth::StoreCache;
 use serde_json::json;
 
 fn did(name: &str) -> DidCoreId {
@@ -38,10 +37,6 @@ fn error_boundary_and_concurrency_paths_are_covered() {
         auth.login_password("alice", "wrong", device("desktop"))
             .is_err()
     );
-
-    let mut empty_cache: StoreCache<&str, i32> = StoreCache::new(0);
-    empty_cache.insert("a", 1);
-    assert!(empty_cache.is_empty());
 }
 
 #[test]
@@ -82,13 +77,4 @@ fn interoperability_serialization_roundtrips() {
     let json = serde_json::to_string(&frame).unwrap();
     let decoded: AccountSubscribeFrame = serde_json::from_str(&json).unwrap();
     assert_eq!(decoded.cursor.as_deref(), Some("s1"));
-}
-
-#[test]
-fn stress_smoke_bounds_cache_entries() {
-    let mut cache = StoreCache::new(128);
-    for index in 0..1000 {
-        cache.insert(index, index);
-    }
-    assert_eq!(cache.len(), 128);
 }

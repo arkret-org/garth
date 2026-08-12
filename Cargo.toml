@@ -20,13 +20,11 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [features]
 default = []
-client = []
-native = ["dep:tokio", "client"]
-wasm = ["dep:gloo-timers", "client"]
+native = ["dep:tokio"]
+wasm = ["dep:gloo-timers"]
 
 [dependencies]
 chrono = {version = "0.4.45",default-features = false,features = ["clock", "std", "serde", "wasmbind"]}
-chacha20poly1305 = {version = "0.10.1",default-features = false,features = ["alloc"]}
 arkret-auth = {version = "0.3.0",path = "../arkret-rust-sdk/crates/auth",default-features = false}
 arkret-canonical = {version = "0.3.0",path = "../arkret-rust-sdk/crates/canonical",default-features = false}
 arkret-crypto = {version = "0.3.0",path = "../arkret-rust-sdk/crates/crypto",default-features = false,features = ["account-data", "aead", "identity-root"]}
@@ -47,10 +45,8 @@ arkret-state = {version = "0.3.0",path = "../arkret-rust-sdk/crates/state",defau
 arkret-wire = {version = "0.3.0",path = "../arkret-rust-sdk/crates/wire",default-features = false}
 ed25519-dalek = {version = "2.2.0",default-features = false,features = ["std", "rand_core"]}
 getrandom = {version = "0.4.3",default-features = false,features = ["std", "wasm_js"]}
-hkdf = {version = "0.13.0",default-features = false}
 serde = {version = "1.0.228",default-features = false,features = ["std", "derive"]}
 serde_json = {version = "1.0.150",default-features = false,features = ["std"]}
-sha2 = {version = "0.11.0",default-features = false}
 thiserror = {version = "2.0.18",default-features = false}
 tokio = {version = "1.52.3",default-features = false,features = ["rt", "sync", "time"],optional = true}
 zeroize = {version = "1.8.2",default-features = false,features = ["derive"]}
