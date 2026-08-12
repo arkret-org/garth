@@ -122,7 +122,7 @@ impl SessionGrantState {
             || outcome
                 .granted_scope
                 .iter()
-                .any(|scope| !request.allows_scope(scope))
+                .any(|scope| !request.requested_scope.contains(scope))
         {
             return Err(protocol(
                 "initial Standard session grant does not match registration request",

@@ -430,7 +430,7 @@ mod tests {
                 operation_digest: Hash::new(format!("sha256:{}", "a".repeat(64))).unwrap(),
                 did_operation: crate::protocol::DidOperationSubmitRequestBody {
                     did: full_id,
-                    did_method: arkret_models_identity::DidMethodName::Webvh,
+                    did_method: "webvh".to_owned(),
                     seq: None,
                     prev_event_digest: None,
                     operation: std::collections::BTreeMap::new(),
