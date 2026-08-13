@@ -69,14 +69,15 @@ pub(crate) use arkret_wire::project_full_id_to_core_id;
 pub use arkret_wire::{AuthorizationLease, IngressReceipt};
 pub(crate) use arkret_wire::{
     Base64UrlString, DeviceId, DidCoreId, DidFullId, DidUrl, Event, EventId, EventKind, Hash, Hlc,
-    MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit, PrincipalAuthorityInstance,
-    RealmId, RequestId, ScopeRef, SealId, SessionGrantId, SidecarId, SignalEnvelope,
-    SignalStreamFrame, StrandId,
+    MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit, PrincipalAuthorityKey, RealmId,
+    RequestId, ScopeRef, SealId, SessionGrantId, SidecarId, SignalEnvelope, SignalStreamFrame,
+    StrandId,
 };
 
 pub(crate) fn verified_event_id(event: &Event) -> Result<EventId> {
     let digest_suite = event.event_id.digest_suite_code().digest_suite();
     event.verify_event_id_matches_content_with_digest_suite(digest_suite)?;
+    event.validate_principal_server_admission_binding()?;
     Ok(event.event_id.clone())
 }
 

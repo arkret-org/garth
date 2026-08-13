@@ -479,26 +479,62 @@ mod tests {
     }
 
     fn message_event() -> Event {
-        arkret_wire::test_support::raw_event(
-            EventKind::MessageCreate.as_str(),
-            crate::protocol::ScopeRef::Realm {
-                realm_id: realm_id(),
-            },
-            event_actor_id(),
-            1,
-            Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
-            json!({
-                "content": {"kind": "ak.content.text", "body": "hello"},
-                "strand_id": arkret_wire::StrandId::from_event_id(
-                    &arkret_wire::EventId::from_digest(
-                        arkret_canonical::DigestSuite::Sha256,
-                        [2; 32],
+        accepted_event(
+            arkret_wire::test_support::raw_event(
+                EventKind::MessageCreate.as_str(),
+                crate::protocol::ScopeRef::Realm {
+                    realm_id: realm_id(),
+                },
+                event_actor_id(),
+                DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
+                1,
+                Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
+                json!({
+                    "content": {"kind": "ak.content.text", "body": "hello"},
+                    "strand_id": arkret_wire::StrandId::from_event_id(
+                        &arkret_wire::EventId::from_digest(
+                            arkret_canonical::DigestSuite::Sha256,
+                            [2; 32],
+                        ),
                     ),
-                ),
-                "track_name": "discussion"
-            }),
+                    "track_name": "discussion"
+                }),
+            )
+            .unwrap(),
         )
-        .unwrap()
+    }
+
+    fn accepted_event(mut event: Event) -> Event {
+        let event_digest = arkret_wire::Hash::new(event.event_digest().unwrap()).unwrap();
+        let producer = arkret_wire::ProducerEventProof {
+            kind: arkret_wire::proof_kind::DETACHED_JWS.to_owned(),
+            verification_method: arkret_wire::DidUrl::new(
+                "did:webvh:z6mkfixture:alice.example#device-1",
+            )
+            .unwrap(),
+            event_digest: event_digest.clone(),
+            created_at: event.created_at,
+            domain: None,
+            audience: None,
+            proof_purpose: None,
+            jws: "header..producer".to_owned(),
+        };
+        let admission = arkret_wire::PrincipalServerAdmissionProof {
+            kind: arkret_wire::PrincipalServerAdmissionProofKind::PrincipalServerAdmission,
+            verification_method: arkret_wire::DidUrl::new("did:web:principal.example#admission-1")
+                .unwrap(),
+            event_digest,
+            producer_proof_digest:
+                arkret_wire::PrincipalServerAdmissionProof::producer_proof_digest(&producer)
+                    .unwrap(),
+            producer_verification_method: producer.verification_method.clone(),
+            producer_signing_key: arkret_wire::DidKey::new("did:key:z6MkhFixtureDeviceKey")
+                .unwrap(),
+            accepted_at: event.created_at,
+            jws: "header..admission".to_owned(),
+        };
+        event.proofs = vec![producer.into(), admission.into()];
+        event
     }
 
     fn frame(kind: EventsSubscribeFrameKind, payload: Value) -> EventsSubscribeFrame {
@@ -1001,17 +1037,20 @@ mod tests {
         // A known kind with an invalid business payload degrades to a raw
         // `ClientEvent::Event` instead of erroring the loop.
         let store = MemoryStore::new();
-        let event = arkret_wire::test_support::raw_event(
-            EventKind::MessageCreate.as_str(),
-            crate::protocol::ScopeRef::Realm {
-                realm_id: realm_id(),
-            },
-            event_actor_id(),
-            1,
-            Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
-            json!({"content": {"kind": "ak.content.text", "body": "missing strand"}}),
-        )
-        .unwrap();
+        let event = accepted_event(
+            arkret_wire::test_support::raw_event(
+                EventKind::MessageCreate.as_str(),
+                crate::protocol::ScopeRef::Realm {
+                    realm_id: realm_id(),
+                },
+                event_actor_id(),
+                DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
+                1,
+                Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
+                json!({"content": {"kind": "ak.content.text", "body": "missing strand"}}),
+            )
+            .unwrap(),
+        );
         store
             .save(scope(), "ak:cursor:stored".to_owned())
             .await

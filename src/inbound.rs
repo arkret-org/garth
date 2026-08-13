@@ -67,6 +67,7 @@ mod tests {
                 )
                 .unwrap(),
             ),
+            DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
             1,
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
             payload,

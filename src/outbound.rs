@@ -496,6 +496,7 @@ mod tests {
                 realm_id: realm_id.clone(),
             },
             actor_id(),
+            arkret_wire::DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
             1,
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
             payload,

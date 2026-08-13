@@ -27,8 +27,8 @@ use serde_json::Value;
 use crate::MaybeSendSync;
 use crate::protocol::signatures::{PublicKeyMaterial, verify_ed25519_signal_proof};
 use crate::protocol::{
-    DidCoreId, Error, PrincipalAuthorityInstance, Result, ScopeRef, SdkSignalPlaintext,
-    SignalEnvelope, SignalSequence, SignalSequenceDecision, SignalSequenceHighWater, canonical,
+    DidCoreId, Error, PrincipalAuthorityKey, Result, ScopeRef, SdkSignalPlaintext, SignalEnvelope,
+    SignalSequence, SignalSequenceDecision, SignalSequenceHighWater, canonical,
     open_signal_plaintext,
 };
 use crate::store::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
@@ -44,34 +44,28 @@ pub const SIGNAL_PLAINTEXT_KIND_PRESENCE: &str = "ak.presence";
 /// [`crate::protocol::CallSignalPlaintext`]).
 pub const SIGNAL_PLAINTEXT_KIND_CALL: &str = "ak.call.signal";
 
-/// A Signal signing key admitted from a fully replayed device evidence chain
-/// for the exact human authority instance frozen by the Realm relationship.
-/// Raw directory keys and same-core authority instances cannot construct it.
+/// A Signal signing key admitted by the host from the current local PCR/device
+/// state for the exact public principal authority pair.
 #[derive(Clone, Debug)]
 pub struct VerifiedSignalSenderKey {
     public_key: PublicKeyMaterial,
     actor_id: DidCoreId,
     device_id: crate::protocol::DeviceId,
     verification_method: crate::protocol::DidUrl,
-    authority_instance: PrincipalAuthorityInstance,
-    expires_at: DateTime<Utc>,
+    authority: PrincipalAuthorityKey,
 }
 
 impl VerifiedSignalSenderKey {
     pub fn from_verified_device(
-        evidence: &arkret_signatures::VerifiedFederatedDeviceEvidence,
-        selected_authority_instance: &PrincipalAuthorityInstance,
-        now: DateTime<Utc>,
+        device: &arkret_signatures::VerifiedPrincipalDevice,
+        selected_authority: &PrincipalAuthorityKey,
     ) -> Result<Self> {
-        if evidence.authority_instance() != selected_authority_instance
-            || evidence.expires_at() <= &now
-        {
+        if device.authority() != selected_authority {
             return Err(Error::Protocol(
-                "signal device evidence does not match the frozen authority instance or is expired"
-                    .to_owned(),
+                "signal device does not match the selected principal authority pair".to_owned(),
             ));
         }
-        let multibase = evidence
+        let multibase = device
             .signing_key()
             .as_str()
             .strip_prefix("did:key:")
@@ -82,23 +76,21 @@ impl VerifiedSignalSenderKey {
             public_key: PublicKeyMaterial::Ed25519Multibase {
                 value: multibase.to_owned(),
             },
-            actor_id: evidence.principal_id().clone(),
-            device_id: evidence.device_id().clone(),
-            verification_method: evidence.verification_method().clone(),
-            authority_instance: evidence.authority_instance().clone(),
-            expires_at: *evidence.expires_at(),
+            actor_id: device.principal_id().clone(),
+            device_id: device.device_id().clone(),
+            verification_method: device.verification_method().clone(),
+            authority: device.authority().clone(),
         })
     }
 
-    fn validate_for(&self, envelope: &SignalEnvelope, now: DateTime<Utc>) -> Result<()> {
+    fn validate_for(&self, envelope: &SignalEnvelope) -> Result<()> {
         if self.actor_id != envelope.sender_actor_id
             || self.device_id != envelope.sender_device_id
             || self.verification_method != envelope.proof.verification_method
-            || self.authority_instance.principal_id != envelope.sender_actor_id
-            || self.expires_at <= now
+            || self.authority.principal_id != envelope.sender_actor_id
         {
             return Err(Error::Protocol(
-                "signal verified sender key does not bind this envelope or has expired".to_owned(),
+                "signal verified sender key does not bind this envelope".to_owned(),
             ));
         }
         Ok(())
@@ -106,20 +98,16 @@ impl VerifiedSignalSenderKey {
 
     #[cfg(test)]
     pub(crate) fn for_test(envelope: &SignalEnvelope, public_key: PublicKeyMaterial) -> Self {
-        let authority_instance = PrincipalAuthorityInstance::new(
+        let authority = PrincipalAuthorityKey::new(
             envelope.sender_actor_id.clone(),
             DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
-            envelope.realm_id.clone(),
-            crate::protocol::Hash::new(format!("sha256:{}", "1".repeat(64))).unwrap(),
-        )
-        .unwrap();
+        );
         Self {
             public_key,
             actor_id: envelope.sender_actor_id.clone(),
             device_id: envelope.sender_device_id.clone(),
             verification_method: envelope.proof.verification_method.clone(),
-            authority_instance,
-            expires_at: envelope.expires_at,
+            authority,
         }
     }
 }
@@ -134,7 +122,7 @@ impl VerifiedSignalSenderKey {
 /// * the **Realm/scope** basis is `envelope.seal_ref` — membership, capability
 ///   and product actions are re-evaluated there;
 /// * **device authorization** is independently replayed for the exact
-///   authority instance frozen by the Realm membership. It cannot be
+///   authority pair selected by the Realm membership. It cannot be
 ///   target-Seal-relative:
 ///   a target-Realm Seal does not locate another principal's device frontier,
 ///   and `keys_query_request_body` carries no as-of basis by design.
@@ -333,11 +321,9 @@ impl SignalReceiver {
             return Err(Error::Protocol("signal has already expired".to_owned()));
         }
         let verified_key = resolver.resolve_sender_key(envelope).ok_or_else(|| {
-            Error::Protocol(
-                "signal sender device lacks exact-authority verified evidence".to_owned(),
-            )
+            Error::Protocol("signal sender device lacks exact-authority verified state".to_owned())
         })?;
-        verified_key.validate_for(envelope, now)?;
+        verified_key.validate_for(envelope)?;
         verify_ed25519_signal_proof(envelope, &verified_key.public_key)
             .map_err(|error| Error::Crypto(error.to_string()))?;
         let envelope_digest = envelope.proof.envelope_digest.as_str();
@@ -768,7 +754,7 @@ mod tests {
             )
             .unwrap_err();
 
-        assert!(format!("{error}").contains("exact-authority verified evidence"));
+        assert!(format!("{error}").contains("exact-authority verified state"));
     }
 
     #[test]

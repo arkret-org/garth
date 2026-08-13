@@ -652,6 +652,7 @@ mod tests {
                 .unwrap(),
             },
             controller(),
+            arkret_wire::DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
             actor_seq,
             hlc(counter),
             payload,

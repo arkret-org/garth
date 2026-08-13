@@ -1353,6 +1353,7 @@ mod tests {
                 realm_id: realm_id(),
             },
             event_actor_id(),
+            crate::protocol::DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
             1,
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
             json!({
