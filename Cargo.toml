@@ -1,5 +1,14 @@
 [workspace]
 
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+dbg_macro = "deny"
+mem_forget = "deny"
+todo = "deny"
+unimplemented = "deny"
+
 [package]
 authors = ["Chris Young <chris@sonc.ai>"]
 categories = ["api-bindings", "network-programming", "cryptography"]
@@ -22,6 +31,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 native = ["dep:tokio"]
 wasm = ["dep:gloo-timers"]
+
+[lints]
+workspace = true
 
 [dependencies]
 chrono = {version = "0.4.45",default-features = false,features = ["clock", "std", "serde", "wasmbind"]}
