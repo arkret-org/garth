@@ -117,7 +117,7 @@ pub enum OutboundSubmitOutcome {
     Terminal {
         reason: String,
     },
-    /// The service explicitly rejected the old authoring basis without
+    /// The service explicitly rejected the old authoring frontiers without
     /// accepting the Event. Persist this new immutable attempt before any
     /// network send is allowed.
     Supersede {

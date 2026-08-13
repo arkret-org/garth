@@ -147,10 +147,7 @@ pub fn merge_sidecar_timeline<'a, T: Clone>(
             continue;
         }
         let order = EchoOrder {
-            anchor: exchange
-                .source_frontier_anchor
-                .as_ref()
-                .map(ToString::to_string),
+            anchor: exchange.source_event_id.as_ref().map(ToString::to_string),
             source_hlc: exchange.source_hlc.to_string(),
             exchange_id: exchange.exchange_id.to_string(),
         };
@@ -335,7 +332,7 @@ mod tests {
                 strand_id: StrandId::from_event_id(&event_id("31")),
                 track_name: "discussion".to_owned(),
             },
-            source_frontier_anchor: Some(anchor),
+            source_event_id: Some(anchor),
             source_hlc: Hlc::new("01970e589d21-0001-a13f9c2e").unwrap(),
             client_order_key: NonEmptyString::new("device-1-1").unwrap(),
             addressed_agent_ids: vec![addressed_agent.clone()],

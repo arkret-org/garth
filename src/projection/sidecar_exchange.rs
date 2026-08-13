@@ -432,7 +432,7 @@ pub fn fold_sidecar_exchange(
         exchange_id: exchange_id.clone(),
         origin: AgentSidecarExchangeOrigin::SourceTrackRouted,
         source_track_ref: context.source_track_ref.clone(),
-        source_frontier_anchor: context.source_frontier_anchor.clone(),
+        source_event_id: context.source_event_id.clone(),
         source_hlc: context.source_hlc.clone(),
         client_order_key: context.client_order_key.clone(),
         addressed_agent_ids: context.addressed_agent_ids.clone(),
@@ -617,7 +617,7 @@ mod tests {
             addressed_agent_ids: addressed,
             completion_policy: AgentSidecarExchangeCompletionPolicy::Coordinator,
             coordinator_agent_id: coordinator,
-            source_frontier_anchor: None,
+            source_event_id: None,
         }
     }
 
