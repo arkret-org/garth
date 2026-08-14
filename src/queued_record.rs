@@ -64,7 +64,7 @@ pub struct QueuedEventIntent {
 }
 
 impl QueuedEventIntent {
-    pub fn from_event(event: Event) -> Self {
+    pub fn from_event(event: Event) -> Result<Self> {
         let mut event = event;
         event.actor_seq = 0;
         event.hlc = None;
@@ -76,7 +76,12 @@ impl QueuedEventIntent {
         if event.kind != EventKind::InviteAccept {
             event.seal_basis = None;
         }
-        Self { event }
+        // `event_id` is content-bound to the authoring fields cleared above.
+        // Normalize it too, otherwise a valid retry that refreshes the actor
+        // frontier, HLC, or CBA basis appears to change the frozen semantic
+        // intent solely because signing correctly derives a new Event id.
+        event.event_id = event.derive_event_id()?;
+        Ok(Self { event })
     }
 
     pub fn to_unauthored_event(&self) -> Event {
@@ -209,7 +214,7 @@ impl QueuedSdkEvent {
         authoring_generation: AuthoringGeneration,
         post_accept: Option<QueuedPostAcceptAction>,
     ) -> Result<Self> {
-        let intent = QueuedEventIntent::from_event(event);
+        let intent = QueuedEventIntent::from_event(event)?;
         let intent_digest = intent.digest()?;
         let queued = Self {
             intent,
@@ -235,7 +240,7 @@ impl QueuedSdkEvent {
         authoring_generation: AuthoringGeneration,
         post_accept: Option<QueuedPostAcceptAction>,
     ) -> Result<Self> {
-        let intent = QueuedEventIntent::from_event(envelope.clone());
+        let intent = QueuedEventIntent::from_event(envelope.clone())?;
         let intent_digest = intent.digest()?;
         let queued = Self {
             intent,
@@ -281,7 +286,7 @@ impl QueuedSdkEvent {
         let event_id = envelope.event_id.clone();
         let message_id = MessageId::from_event_id(&event_id);
         let canonical_signed_event_bytes = arkret_canonical::canonical_json_bytes(&envelope)?;
-        let intent = QueuedEventIntent::from_event(envelope.clone());
+        let intent = QueuedEventIntent::from_event(envelope.clone())?;
         let intent_digest = intent.digest()?;
         let queued = Self {
             intent,
@@ -366,7 +371,7 @@ impl QueuedSdkEvent {
                     "queued SDK authored attempt canonical bytes do not match envelope".to_owned(),
                 ));
             }
-            if QueuedEventIntent::from_event(attempt.envelope.clone()) != self.intent {
+            if QueuedEventIntent::from_event(attempt.envelope.clone())? != self.intent {
                 return Err(Error::Protocol(
                     "queued SDK authored envelope changes the bound semantic intent".to_owned(),
                 ));
