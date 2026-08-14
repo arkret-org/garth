@@ -107,7 +107,7 @@ impl SessionGrantState {
     }
 
     pub fn from_initial_registration_outcome(
-        request: &crate::protocol::InitialSessionGrantRequest,
+        request: &crate::protocol::InitialSessionGrantIntent,
         outcome: SessionGrantOutcome,
         now: DateTime<Utc>,
     ) -> Result<Self> {

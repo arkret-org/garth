@@ -59,7 +59,7 @@ pub(crate) use arkret_models_identity::{
     IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationCommandKind,
     IdentityCreationGoal, IdentityCreationLease, IdentityCreationLeaseState,
     IdentityCreationLocalArtifactKind, IdentityCreationRecoveryKeyState,
-    IdentityCreationRegistration, InitialSessionGrantRequest, ReservedIdentityCreation,
+    IdentityCreationRegistration, InitialSessionGrantIntent, ReservedIdentityCreation,
     UnsignedAccountHandoffAuthenticationProof, UnsignedAccountHandoffRequestBody,
     UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
 };

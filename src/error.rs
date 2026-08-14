@@ -64,7 +64,7 @@ impl Error {
         if CODES.contains(&code) {
             return true;
         }
-        if code != "invalid_param" {
+        if code != "param_invalid" {
             return false;
         }
         error

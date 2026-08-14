@@ -505,7 +505,7 @@ mod tests {
                     alice.clone(),
                     device_id.clone(),
                 ),
-                key_package: "kp".to_owned(),
+                keypackage: "kp".to_owned(),
                 keypackage_ref: Hash::new(
                     "sha256:1111111111111111111111111111111111111111111111111111111111111111",
                 )

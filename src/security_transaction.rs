@@ -587,7 +587,7 @@ where
                 "recovery completion grant outcome changed its transaction binding".to_owned(),
             ));
         }
-        let initial_session: arkret_models_identity::InitialSessionGrantRequest =
+        let initial_session: arkret_models_identity::InitialSessionGrantIntent =
             serde_json::from_value(request.initial_session.clone()).map_err(|error| {
                 Error::Protocol(format!(
                     "recovery completion initial_session is invalid: {error}"

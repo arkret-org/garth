@@ -11,7 +11,7 @@ use crate::protocol::{
     IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationCommandKind,
     IdentityCreationGoal, IdentityCreationLease, IdentityCreationLeaseState,
     IdentityCreationLocalArtifactKind, IdentityCreationRecoveryKeyState,
-    IdentityCreationRegistration, InitialSessionGrantRequest, PcrGenesisUnit, RequestId, Result,
+    IdentityCreationRegistration, InitialSessionGrantIntent, PcrGenesisUnit, RequestId, Result,
     UnsignedAccountHandoffAuthenticationProof, UnsignedAccountHandoffRequestBody,
     UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
 };
@@ -225,7 +225,7 @@ pub fn identity_binding_challenge_request(
     lease: &IdentityCreationLease,
     did_operation: DidOperationSubmitRequestBody,
     pcr_genesis_unit: &PcrGenesisUnit,
-    initial_session: &InitialSessionGrantRequest,
+    initial_session: &InitialSessionGrantIntent,
 ) -> Result<IdentityBindingChallengeRequestBody> {
     let reserved =
         crate::protocol::ReservedIdentityCreation::from_operation(did_operation.clone())?;
@@ -267,7 +267,7 @@ pub fn identity_creation_register_request(
     expected_account_subject: &Hash,
     did_operation: DidOperationSubmitRequestBody,
     pcr_genesis_unit: PcrGenesisUnit,
-    initial_session: InitialSessionGrantRequest,
+    initial_session: InitialSessionGrantIntent,
     root_seed: &[u8; 32],
     display_name: Option<String>,
 ) -> Result<AccountRegisterRequestBody> {
