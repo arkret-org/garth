@@ -385,7 +385,6 @@ impl QueuedSdkEvent {
             })?;
             if self.local_operation_id != dispatch.scheduled_send_id.as_str()
                 || self.intent.kind != EventKind::MessageCreate
-                || self.intent.event_id != dispatch.event_id
                 || attempt.envelope.event_id != dispatch.event_id
                 || MessageId::from_event_id(&dispatch.event_id) != dispatch.message_id
                 || attempt.canonical_body_bytes != dispatch.canonical_signed_event_bytes
