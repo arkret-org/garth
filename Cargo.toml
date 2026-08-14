@@ -42,6 +42,7 @@ arkret-canonical = {version = "0.3.0",path = "../arkret-rust-sdk/crates/canonica
 arkret-crypto = {version = "0.3.0",path = "../arkret-rust-sdk/crates/crypto",default-features = false,features = ["account-data", "aead", "identity-root"]}
 arkret-event-draft = {version = "0.3.0",path = "../arkret-rust-sdk/crates/event-draft",default-features = false}
 arkret-hlc = {version = "0.3.0",path = "../arkret-rust-sdk/crates/hlc",default-features = false}
+arkret-retry = {version = "0.3.0",path = "../arkret-rust-sdk/crates/retry",default-features = false}
 arkret-identifiers = {version = "0.3.0",path = "../arkret-rust-sdk/crates/identifiers",default-features = false}
 arkret-identity = {version = "0.3.0",path = "../arkret-rust-sdk/crates/identity",default-features = false}
 arkret-keystore = {version = "0.3.0",path = "../arkret-rust-sdk/crates/keystore",default-features = false}

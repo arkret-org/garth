@@ -148,17 +148,22 @@ pub struct RunOptions {
     pub min_backoff: Duration,
     /// Backoff ceiling.
     pub max_backoff: Duration,
-    /// Fraction of reconnect delay randomized away to avoid fleet lockstep.
+    /// Fraction of the reconnect delay randomized to avoid fleet lockstep.
     pub jitter_ratio: f64,
 }
 
 impl Default for RunOptions {
+    /// The reconnect cadence is normative, not a tunable default:
+    /// `sync/api-conventions.md` §9 requires a first wait of at least 1,000 ms,
+    /// a ceiling of at least 60,000 ms and 0–20% jitter, and
+    /// `sync/client-sync.md` §2.2.6 restates it for subscribe reconnects.
+    /// The previous 500 ms / 30 s pair breached both bounds.
     fn default() -> Self {
         Self {
             beat: Duration::from_millis(250),
-            min_backoff: Duration::from_millis(500),
-            max_backoff: Duration::from_secs(30),
-            jitter_ratio: 0.2,
+            min_backoff: arkret_retry::SPEC_INITIAL_DELAY,
+            max_backoff: arkret_retry::SPEC_MAX_DELAY,
+            jitter_ratio: arkret_retry::SPEC_JITTER_RATIO,
         }
     }
 }

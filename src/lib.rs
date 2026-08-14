@@ -15,7 +15,6 @@ mod protocol;
 pub use error::{Error, Result};
 
 pub mod account_handoff;
-pub mod backoff;
 pub mod crypto_state_store;
 pub mod direct_conversation;
 pub mod direct_conversation_repair;
@@ -51,7 +50,9 @@ pub use arkret_identity::{
     VerifiedAccountBindingReceipt,
 };
 pub use arkret_models_collaboration::signal_message_stream::MESSAGE_STREAM_KIND;
-pub use backoff::Backoff;
+/// The shared Arkret retry cadence (`arkret-retry`). The ladder, its jitter
+/// and the `Retry-After` floor are spec-normative; see that crate's docs.
+pub use arkret_retry::RetrySchedule as Backoff;
 pub use crypto_state_store::{
     CRYPTO_STORE_BACKUP_VERSION, CryptoStore, CryptoStoreBackupEnvelope, MemoryCryptoStore,
     MlsCommitSource, MlsEpochSecretRecord, MlsGroupStateRecord, MlsGroupStateSink,

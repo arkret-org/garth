@@ -1,6 +1,11 @@
+use arkret_retry::{Jitter, RetryPolicy};
+
 use super::*;
 
 /// Retry configuration for sync failures.
+///
+/// The curve itself is [`arkret_retry::RetryPolicy`]; this is the sync loop's
+/// declarative view of it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BackoffConfig {
     /// Initial delay after the first failure.
@@ -9,37 +14,63 @@ pub struct BackoffConfig {
     pub max_delay: Duration,
     /// Multiplier applied after each failure.
     pub multiplier: u32,
-    /// Apply 0–20% additive random jitter to computed delays so a fleet of
-    /// clients does not reconnect in lockstep (api-conventions.md §9 /
+    /// Apply 0–20% additive jitter to computed delays so a fleet of clients
+    /// does not reconnect in lockstep (api-conventions.md §9 /
     /// client-sync.md §2.2.6).
     pub jitter: bool,
 }
 
 impl Default for BackoffConfig {
+    /// `client-sync.md` §2.2.6 / `api-conventions.md` §9 reconnect backoff.
     fn default() -> Self {
-        // client-sync.md §2.2.6 reconnect backoff: start at 1 s, cap at
-        // 60 s, exponential, with jitter.
+        let policy = RetryPolicy::arkret_default();
         Self {
-            initial_delay: Duration::from_secs(1),
-            max_delay: Duration::from_secs(60),
-            multiplier: 2,
+            initial_delay: policy.initial_delay(),
+            max_delay: policy.max_delay(),
+            multiplier: policy.factor(),
             jitter: true,
         }
     }
 }
 
-/// Exponential backoff state.
+impl BackoffConfig {
+    fn policy(&self) -> RetryPolicy {
+        RetryPolicy::exponential(self.initial_delay, self.max_delay)
+            .with_factor(self.multiplier)
+            .with_jitter_ratio(if self.jitter {
+                arkret_retry::SPEC_JITTER_RATIO
+            } else {
+                0.0
+            })
+    }
+}
+
+/// Exponential backoff state for the sync loop.
 #[derive(Clone, Debug)]
 pub struct ExponentialBackoff {
     config: BackoffConfig,
+    policy: RetryPolicy,
+    jitter: Jitter,
     failures: u32,
 }
 
 impl ExponentialBackoff {
     /// Create backoff state with a custom configuration.
+    ///
+    /// `arkret-retry` takes an injected jitter seed rather than reading the OS
+    /// entropy source, which is what keeps the same curve usable on
+    /// `wasm32-unknown-unknown`. The sync loop seeds it once per instance.
     pub fn new(config: BackoffConfig) -> Self {
+        Self::with_jitter_seed(config, backoff_jitter_seed())
+    }
+
+    /// Create backoff state with an explicit jitter seed (deterministic tests).
+    pub fn with_jitter_seed(config: BackoffConfig, seed: u64) -> Self {
+        let policy = config.policy();
         Self {
             config,
+            policy,
+            jitter: Jitter::from_seed(seed),
             failures: 0,
         }
     }
@@ -47,7 +78,8 @@ impl ExponentialBackoff {
     /// Record a failed sync attempt and return the next wait duration.
     pub fn record_failure(&mut self) -> Duration {
         self.failures = self.failures.saturating_add(1);
-        self.current_delay()
+        self.policy
+            .delay(self.failures.saturating_sub(1), &mut self.jitter)
     }
 
     /// Clear failure state after a successful sync.
@@ -60,36 +92,24 @@ impl ExponentialBackoff {
         self.failures
     }
 
-    /// Current delay for the consecutive failure count.
+    /// The configuration this state was built from.
+    pub fn config(&self) -> &BackoffConfig {
+        &self.config
+    }
+
+    /// Current un-jittered delay for the consecutive failure count.
     pub fn current_delay(&self) -> Duration {
         if self.failures == 0 {
             return Duration::ZERO;
         }
-
-        let exponent = self.failures.saturating_sub(1);
-        let factor = self.config.multiplier.saturating_pow(exponent);
-        let delay = self
-            .config
-            .initial_delay
-            .saturating_mul(factor)
-            .min(self.config.max_delay);
-        if self.config.jitter {
-            apply_backoff_jitter(delay)
-        } else {
-            delay
-        }
+        self.policy.base_delay(self.failures.saturating_sub(1))
     }
 }
 
-/// Add 0–20% random jitter to `delay` (api-conventions.md §9). Falls back to
-/// the unjittered delay if the OS randomness source fails.
-fn apply_backoff_jitter(delay: Duration) -> Duration {
-    let mut bytes = [0u8; 4];
-    if getrandom::fill(&mut bytes).is_err() {
-        return delay;
-    }
-    let fraction = f64::from(u32::from_le_bytes(bytes)) / f64::from(u32::MAX);
-    delay.mul_f64(1.0 + fraction * 0.2)
+/// Per-instance jitter seed. Falls back to a fixed seed when the OS randomness
+/// source is unavailable; jitter is de-correlation, never a security boundary.
+fn backoff_jitter_seed() -> u64 {
+    getrandom::u64().unwrap_or(0x5EED_0BAC_C0FF_1E55)
 }
 
 impl Default for ExponentialBackoff {
