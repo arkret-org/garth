@@ -1,8 +1,8 @@
 use std::collections::BTreeMap;
 
 use crate::protocol::{
-    AccountSubscribeRealms, AccountSubscribeUnreadCounts, DeviceMessageContainer, ErrorEnvelope,
-    EventContainer, ProtocolKind, RealmSyncEntry,
+    AccountSubscribeRealms, AccountSubscribeUnreadCounts, DeviceMessageContainer,
+    DeviceMessageSender, ErrorEnvelope, EventContainer, ProtocolKind, RealmSyncEntry,
 };
 use arkret_wire::{DidCoreId, EventKind, Hlc, OpaqueLocalId, ScopeRef};
 use serde_json::{Value, json};
@@ -350,7 +350,7 @@ fn sync_loop_can_reset_token_on_limited_timeline_gap() {
             limited: true,
             prev_cursor: Some("prev".to_owned()),
             preview_only: None,
-            ordered_log_conflicts: Vec::new(),
+            ordered_log_siblings: Vec::new(),
             extra: BTreeMap::new(),
         }),
         ..Default::default()
@@ -423,8 +423,10 @@ fn processor_dispatches_all_update_categories() {
             kind: ProtocolKind::new("ak.test.message").unwrap(),
             content: serde_json::from_value(json!({"ok":true})).unwrap(),
             sender_principal_id: sender.clone(),
-            sender_device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000005")
-                .unwrap(),
+            sender: DeviceMessageSender::Device {
+                sender_device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000005")
+                    .unwrap(),
+            },
             recipient_principal_id: recipient,
             recipient_device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000006")
                 .unwrap(),
@@ -563,7 +565,7 @@ fn processor_tracks_limited_timelines_and_to_device_ack() {
             limited: true,
             prev_cursor: Some("prev".to_owned()),
             preview_only: None,
-            ordered_log_conflicts: Vec::new(),
+            ordered_log_siblings: Vec::new(),
             extra: BTreeMap::new(),
         }),
         ..Default::default()

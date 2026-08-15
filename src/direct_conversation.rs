@@ -28,7 +28,7 @@ pub fn direct_conversation_founding_action(
     match resolve {
         DirectConversationResolveOutcome::CreationRequired { .. } => {
             let prepared = prepared.ok_or_else(|| {
-                Error::Protocol("founder has not prepared the closed three-Event unit".to_owned())
+                Error::Protocol("founder has not prepared the closed four-Event unit".to_owned())
             })?;
             let events = prepared
                 .events
@@ -37,7 +37,7 @@ pub fn direct_conversation_founding_action(
                 .collect::<Vec<_>>();
             let exact = events
                 .try_into()
-                .expect("the typed founding carrier always contains exactly three Events");
+                .expect("the typed founding carrier always contains exactly four Events");
             DirectConversationFoundingPlan::from_events(exact)
                 .map_err(|error| Error::Protocol(error.to_string()))?;
             Ok(DirectConversationFoundingAction::Submit(prepared))

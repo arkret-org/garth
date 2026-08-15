@@ -44,6 +44,10 @@ pub(crate) use arkret_models_collaboration::sync_frames::account_sync::{
     AccountSubscribeDeviceListChanges, AccountSubscribeRealmSummary, DeviceMessageEnvelope,
     NotificationDelta, NotificationDeltaAction, Timeline,
 };
+// The sender endpoint is only constructed by the sync-loop fixtures: the
+// runtime consumes envelopes it decodes rather than building them.
+#[cfg(test)]
+pub(crate) use arkret_models_collaboration::sync_frames::account_sync::DeviceMessageSender;
 pub(crate) use arkret_models_collaboration::sync_frames::client_sync::{RealmUpdate, SyncUpdates};
 pub(crate) use arkret_models_collaboration::sync_frames::stream_trace::StreamTraceValidator;
 pub(crate) use arkret_models_crypto::{

@@ -470,7 +470,7 @@ pub enum QueuedRealmBootstrap {
         canonical_signed_unit_bytes: Vec<u8>,
     },
     /// A fully authored Direct Conversation first-valid unit. Unlike an
-    /// ordinary Realm bootstrap, all three Events and both evidence carriers
+    /// ordinary Realm bootstrap, all four Events and both evidence carriers
     /// are already frozen before enqueue. `accepted_outcome_bytes` is persisted
     /// in a separate prepare pass, followed by a durable exact-covering-Seal
     /// bit, before the queue is marked sent. A crash after either boundary can
@@ -483,7 +483,7 @@ pub enum QueuedRealmBootstrap {
         canonical_signed_unit_bytes: Vec<u8>,
         #[serde(deserialize_with = "deserialize_required_nullable")]
         accepted_outcome_bytes: Option<Vec<u8>>,
-        /// Set only after every Event in the exact three-Event unit resolves
+        /// Set only after every Event in the exact four-Event unit resolves
         /// with its accepted covering Seal. Ingress acceptance alone never
         /// advances a Direct Conversation into MLS bootstrap.
         #[serde(default)]
@@ -574,9 +574,9 @@ impl QueuedRealmBootstrap {
                 .iter()
                 .map(|item| &item.event)
                 .collect::<Vec<_>>();
-            let exact: [&Event; 3] = events.try_into().map_err(|_| {
+            let exact: [&Event; 4] = events.try_into().map_err(|_| {
                 Error::Protocol(
-                    "queued Direct Conversation founding unit must contain three Events".to_owned(),
+                    "queued Direct Conversation founding unit must contain four Events".to_owned(),
                 )
             })?;
             let plan = DirectConversationFoundingPlan::from_events(exact)?;
