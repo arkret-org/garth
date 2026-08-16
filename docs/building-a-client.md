@@ -93,11 +93,15 @@ let control = SyncLoopControl::new();       // keep a clone; `control.cancel()` 
 let projector = MyProjector { /* ... */ };
 let provider = MyTransport { /* ... */ };
 
-// Realm live sync (auto-resumes on StreamEnded/Dropped/ResyncRequired):
+// A UI whose projector is itself transactionally durable may project inline:
 client.run_realm(&provider, realm_id, &projector, &control, RunOptions::default()).await?;
-
-// Account sync:
 client.run_account(actor_id, device_id, &provider, &projector, &control, RunOptions::default()).await?;
+
+// The production default for a host with DurableInboxStore is decoupled
+// ingestion. Cursor + work are committed atomically; a separate dispatcher
+// reads pending(), applies the product projection, then ack()s it.
+client.run_realm_to_inbox(&provider, realm_id, &control, RunOptions::default()).await?;
+client.run_account_to_inbox(actor_id, device_id, None, &provider, &control, RunOptions::default()).await?;
 ```
 
 Both return `RunStopReason`:
@@ -133,8 +137,9 @@ project-then-checkpoint contract at every layer.
 
 ## Durable workers, session transport and outbound
 
-Agent/gateway consumers call `run_account_to_inbox` (or the realm inbox
-driver). Cursor and delivery enter `DurableInboxStore` in one commit; the
+Agent/gateway consumers call `run_account_to_inbox` / `run_realm_to_inbox`.
+Cursor and delivery enter `DurableInboxStore` in one commit; dropped-cursor
+scan catch-up and a resync baseline use that same atomic boundary. The
 worker calls `ack` only after business dispatch succeeds and persists `retry`
 otherwise.
 

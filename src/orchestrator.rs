@@ -440,6 +440,162 @@ where
         }
     }
 
+    /// Resilient Realm run loop whose checkpoint boundary is the durable
+    /// inbox. Stream frames, dropped-cursor scan catch-up, and a fresh
+    /// resynchronization baseline are persisted before their Realm cursor can
+    /// advance, so dispatch may safely happen in a separate host worker.
+    pub async fn run_realm_to_inbox<TP>(
+        &self,
+        provider: &TP,
+        realm_id: RealmId,
+        control: &SyncLoopControl,
+        options: RunOptions,
+    ) -> RunResult<RunStopReason>
+    where
+        TP: TransportProvider,
+        TP::Transport: RealmEventsTransport + EventsScanTransport,
+        C: DurableInboxStore,
+    {
+        let backoff_seed = stable_backoff_seed(self.backoff_seed, 0xA11C_E001, &realm_id);
+        let engine = self.subscription_engine().with_control(control.clone());
+        let mut backoff = Backoff::new(options.min_backoff, options.max_backoff)
+            .with_jitter(options.jitter_ratio, backoff_seed);
+        let mut cursor_recovery_attempted = false;
+        loop {
+            if !provider.is_active() {
+                return Ok(Self::stop(provider, RunStopReason::LifecycleEnded));
+            }
+            if control.is_cancelled() {
+                return Ok(Self::stop(provider, RunStopReason::Cancelled));
+            }
+            provider.observe(RunEvent::Connecting);
+            let transport = match provider.provide().await {
+                Ok(transport) => {
+                    provider.observe(RunEvent::Online);
+                    transport
+                }
+                Err(error) if retryable(classify_error(&error)) => {
+                    let delay = backoff.next_delay();
+                    provider.observe(RunEvent::Backoff { delay });
+                    if let Some(reason) = self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
+                    }
+                    continue;
+                }
+                Err(error) => {
+                    return Err(Self::fail(provider, classify_error(&error), error));
+                }
+            };
+            match engine
+                .run_realm_stream_to_inbox(&transport, realm_id.clone())
+                .await
+            {
+                Ok(RealmStreamStopReason::StreamEnded) => {
+                    cursor_recovery_attempted = false;
+                    backoff.reset();
+                    if let Some(reason) = self.wait_guarded(options.beat, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
+                    }
+                }
+                Ok(RealmStreamStopReason::Dropped {
+                    reconnect_after_ms, ..
+                }) => {
+                    cursor_recovery_attempted = false;
+                    provider.observe(RunEvent::DeliveryPending);
+                    let delay =
+                        backoff.next_delay_with_hint(reconnect_after_ms.map(Duration::from_millis));
+                    provider.observe(RunEvent::Backoff { delay });
+                    if let Some(reason) = self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
+                    }
+                }
+                Ok(RealmStreamStopReason::ResyncRequired { reconnect_after_ms }) => {
+                    if cursor_recovery_attempted {
+                        return Err(Self::fail(
+                            provider,
+                            RunErrorClass::ProtocolViolation,
+                            crate::protocol::Error::Protocol(
+                                "realm stream required resync again before recovery completed"
+                                    .to_owned(),
+                            ),
+                        ));
+                    }
+                    provider.observe(RunEvent::CursorReset);
+                    engine
+                        .bootstrap_realm_history_to_inbox(
+                            &transport,
+                            realm_id.clone(),
+                            ScanCatchupOptions::default(),
+                        )
+                        .await
+                        .map_err(|error| Self::fail(provider, classify_error(&error), error))?;
+                    engine
+                        .clear_realm_scan_cursor(realm_id.clone())
+                        .await
+                        .map_err(|error| {
+                            Self::fail(provider, RunErrorClass::StoreFailure, error)
+                        })?;
+                    provider.observe(RunEvent::DeliveryPending);
+                    cursor_recovery_attempted = true;
+                    let delay =
+                        backoff.next_delay_with_hint(reconnect_after_ms.map(Duration::from_millis));
+                    provider.observe(RunEvent::Backoff { delay });
+                    if let Some(reason) = self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
+                    }
+                }
+                Ok(RealmStreamStopReason::Unauthorized { reason }) => {
+                    match self
+                        .recover_unauthorized(provider, control, &mut backoff)
+                        .await?
+                    {
+                        UnauthorizedRecovery::Recovered | UnauthorizedRecovery::Retry => continue,
+                        UnauthorizedRecovery::GuardedStop(reason) => return Ok(reason),
+                        UnauthorizedRecovery::Unavailable => {}
+                    }
+                    return Ok(Self::stop(provider, RunStopReason::Unauthorized { reason }));
+                }
+                Err(error) if error.is_invalid_cursor() => {
+                    if cursor_recovery_attempted {
+                        return Err(Self::fail(
+                            provider,
+                            RunErrorClass::ProtocolViolation,
+                            error,
+                        ));
+                    }
+                    provider.observe(RunEvent::CursorReset);
+                    engine
+                        .bootstrap_realm_history_to_inbox(
+                            &transport,
+                            realm_id.clone(),
+                            ScanCatchupOptions::default(),
+                        )
+                        .await
+                        .map_err(|error| Self::fail(provider, classify_error(&error), error))?;
+                    engine
+                        .clear_realm_scan_cursor(realm_id.clone())
+                        .await
+                        .map_err(|error| {
+                            Self::fail(provider, RunErrorClass::StoreFailure, error)
+                        })?;
+                    provider.observe(RunEvent::DeliveryPending);
+                    cursor_recovery_attempted = true;
+                    backoff.reset();
+                }
+                Err(error) if retryable(classify_error(&error)) => {
+                    let delay = backoff.next_delay();
+                    provider.observe(RunEvent::Backoff { delay });
+                    if let Some(reason) = self.wait_guarded(delay, control, provider).await {
+                        return Ok(Self::stop(provider, reason));
+                    }
+                }
+                Err(error) => {
+                    return Err(Self::fail(provider, classify_error(&error), error));
+                }
+            }
+        }
+    }
+
     /// Resilient account run loop. The SDK sync loop owns account stream retry
     /// math, while this wrapper re-acquires transport before every step so
     /// provider-side credential refresh participates in retry recovery. On
@@ -1434,6 +1590,121 @@ mod tests {
                 reason: RunStopReason::Cancelled
             }]
         );
+    }
+
+    #[tokio::test]
+    async fn run_realm_to_inbox_stops_before_transport_when_pre_cancelled() {
+        let store = MemoryStore::new();
+        let client = test_client(RecordingExecutor::default(), store.clone());
+        let provider = QueueProvider::<TestRealmTransport>::new(Vec::new());
+        let control = SyncLoopControl::new();
+        control.cancel();
+
+        let stop = client
+            .run_realm_to_inbox(&provider, realm_id(), &control, RunOptions::default())
+            .await
+            .unwrap();
+
+        assert_eq!(stop, RunStopReason::Cancelled);
+        assert_eq!(provider.calls(), 0);
+        assert!(store.pending(10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_realm_to_inbox_atomically_queues_dropped_backfill_and_cursor() {
+        let store = MemoryStore::new();
+        let scope = CursorScope::RealmEvents {
+            service_id: None,
+            realm_id: realm_id(),
+        };
+        let client = test_client(RecordingExecutor::default(), store.clone());
+        let mut dropped = frame(EventsSubscribeFrameKind::Dropped, Value::Null);
+        dropped.cursor =
+            Some(crate::protocol::identifiers::Cursor::new("ak:cursor:dropped").unwrap());
+        let provider = QueueProvider::new(vec![
+            Ok(TestRealmTransport::frames(vec![Ok(dropped)])),
+            Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
+                "revoked",
+            ))])),
+        ]);
+        let control = SyncLoopControl::new();
+
+        let stop = client
+            .run_realm_to_inbox(&provider, realm_id(), &control, options())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            stop,
+            RunStopReason::Unauthorized {
+                reason: Some("revoked".to_owned())
+            }
+        );
+        assert_eq!(
+            store.load(scope).await.unwrap().as_deref(),
+            Some("ak:cursor:dropped")
+        );
+        let pending = store.pending(10).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert!(matches!(
+            pending[0].events.as_slice(),
+            [ClientEvent::Backfill { realm_id: queued_realm, .. }]
+                if queued_realm == &realm_id()
+        ));
+        assert!(provider.events().contains(&RunEvent::DeliveryPending));
+    }
+
+    #[tokio::test]
+    async fn run_realm_to_inbox_replaces_expired_cursor_with_durable_baseline() {
+        let store = MemoryStore::new();
+        let realm_scope = CursorScope::RealmEvents {
+            service_id: None,
+            realm_id: realm_id(),
+        };
+        let scan_scope = CursorScope::RealmEventsScan {
+            service_id: None,
+            realm_id: realm_id(),
+            order: None,
+        };
+        store
+            .save(realm_scope.clone(), "ak:cursor:expired-stream".to_owned())
+            .await
+            .unwrap();
+        store
+            .save(scan_scope.clone(), "ak:cursor:expired-scan".to_owned())
+            .await
+            .unwrap();
+        let client = test_client(RecordingExecutor::default(), store.clone());
+        let provider = QueueProvider::new(vec![
+            Ok(TestRealmTransport {
+                open_error: Mutex::new(Some(cursor_expired_error())),
+                source: Mutex::new(None),
+            }),
+            Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
+                "revoked",
+            ))])),
+        ]);
+
+        let stop = client
+            .run_realm_to_inbox(&provider, realm_id(), &SyncLoopControl::new(), options())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            stop,
+            RunStopReason::Unauthorized {
+                reason: Some("revoked".to_owned())
+            }
+        );
+        assert!(store.load(realm_scope).await.unwrap().is_none());
+        assert!(store.load(scan_scope).await.unwrap().is_none());
+        let pending = store.pending(10).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert!(matches!(
+            pending[0].events.as_slice(),
+            [ClientEvent::Backfill { realm_id: queued_realm, .. }]
+                if queued_realm == &realm_id()
+        ));
     }
 
     #[tokio::test]

@@ -113,7 +113,7 @@ pub struct SendQueueItem {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SendQueueSnapshotSchema {
     #[default]
-    #[serde(rename = "ak.garth.send_queue.v1")]
+    #[serde(rename = "org.arkret.garth.send_queue.v1")]
     V1,
 }
 

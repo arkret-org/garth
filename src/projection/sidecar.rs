@@ -82,6 +82,19 @@ impl SidecarProjectionFold {
         })
     }
 
+    /// Enumerate the complete locally folded exchange projection for one
+    /// Realm. Results are stable in canonical exchange-id order because the
+    /// cache is keyed by `exchange_id`; callers can replace a persisted UI
+    /// cache snapshot without introducing arrival-order churn.
+    pub fn exchanges_for_realm<'a>(
+        &'a self,
+        realm_id: &'a RealmId,
+    ) -> impl Iterator<Item = &'a AgentSidecarExchangeProjection> + 'a {
+        self.exchanges
+            .values()
+            .filter(move |exchange| exchange.source_track_ref.realm_id == *realm_id)
+    }
+
     pub fn merge_timeline<T: Clone>(
         &self,
         realm_id: &RealmId,
@@ -465,6 +478,33 @@ mod tests {
         assert!(
             fold.remove_exchange("Abcdefghijklmnopqrstuv").is_some(),
             "cache entries are disposable"
+        );
+    }
+
+    #[test]
+    fn realm_exchange_snapshot_is_isolated_and_sorted_by_exchange_id() {
+        let realm_id =
+            RealmId::new("ak:realm:AWk_ywNSTc6WhrGkRSaK84HThnFXKBAy3vQ_RLJZ4kCY").unwrap();
+        let other_realm =
+            RealmId::new("ak:realm:Abeq9pC3fxOERl1X0ivHa5cJCBy41KfYu5LKvGfPFq5K").unwrap();
+        let mut later = projection(event_id("34"), event_id("35"));
+        later.exchange_id = AgentSidecarExchangeId::new("Babcdefghijklmnopqrstu").unwrap();
+        let mut earlier = projection(event_id("36"), event_id("37"));
+        earlier.exchange_id = AgentSidecarExchangeId::new("Aabcdefghijklmnopqrstu").unwrap();
+        let mut foreign = projection(event_id("38"), event_id("39"));
+        foreign.exchange_id = AgentSidecarExchangeId::new("Cabcdefghijklmnopqrstu").unwrap();
+        foreign.source_track_ref.realm_id = other_realm;
+
+        let mut fold = SidecarProjectionFold::default();
+        fold.apply_folded_exchange(later).unwrap();
+        fold.apply_folded_exchange(foreign).unwrap();
+        fold.apply_folded_exchange(earlier).unwrap();
+
+        assert_eq!(
+            fold.exchanges_for_realm(&realm_id)
+                .map(|exchange| exchange.exchange_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["Aabcdefghijklmnopqrstu", "Babcdefghijklmnopqrstu"]
         );
     }
 

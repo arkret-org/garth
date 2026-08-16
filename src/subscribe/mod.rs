@@ -181,7 +181,7 @@ where
         realm_id: RealmId,
     ) -> Result<RealmStreamStopReason>
     where
-        T: RealmEventsTransport + ?Sized,
+        T: RealmEventsTransport + EventsScanTransport + ?Sized,
         C: DurableInboxStore,
     {
         let mut driver =
@@ -189,7 +189,48 @@ where
         if let Some(service_id) = self.service_id.clone() {
             driver = driver.with_service_id(service_id);
         }
-        driver.run_stream_to_inbox(transport, realm_id).await
+        let reason = driver
+            .run_stream_to_inbox(transport, realm_id.clone())
+            .await?;
+        match reason {
+            // Keep the dropped-cursor recovery in the same atomic durability
+            // domain as ordinary stream frames. Otherwise the inbox variant
+            // would advance neither its cursor nor its work queue and a host
+            // would have to recreate the projector-only recovery loop.
+            RealmStreamStopReason::Dropped {
+                cursor,
+                reconnect_after_ms,
+            } => {
+                let scope = self.realm_scope(realm_id.clone());
+                let after = self.cursor_store.load(scope.clone()).await?;
+                let outcome = self
+                    .scan_realm_catchup_uncheckpointed_classified(
+                        transport,
+                        realm_id.clone(),
+                        ScanCatchupOptions {
+                            before: Some(cursor.clone()),
+                            after,
+                            order: None,
+                            limit: None,
+                            max_pages: 64,
+                        },
+                    )
+                    .await
+                    .map_err(ProjectedRunError::into_error)?;
+                self.cursor_store
+                    .commit(
+                        scope,
+                        Some(cursor.clone()),
+                        vec![ClientEvent::Backfill { realm_id, outcome }],
+                    )
+                    .await?;
+                Ok(RealmStreamStopReason::Dropped {
+                    cursor,
+                    reconnect_after_ms,
+                })
+            }
+            other => Ok(other),
+        }
     }
 
     pub(crate) async fn run_realm_stream_classified<T, P>(
@@ -323,6 +364,39 @@ where
         Ok(outcome)
     }
 
+    /// Scan a fresh Realm history baseline and enqueue it atomically in the
+    /// durable inbox. The same commit replaces any stale Realm subscribe
+    /// cursor with `None`: a crash can therefore expose either the old cursor
+    /// or the recoverable baseline, never a cleared cursor without its work.
+    /// The next cursorless subscribe establishes the live-tail position only
+    /// after this baseline is already recoverable by the dispatcher.
+    pub async fn bootstrap_realm_history_to_inbox<T>(
+        &self,
+        transport: &T,
+        realm_id: RealmId,
+        options: ScanCatchupOptions,
+    ) -> Result<crate::protocol::EventsQueryOutcome>
+    where
+        T: EventsScanTransport + ?Sized,
+        C: DurableInboxStore,
+    {
+        let outcome = self
+            .scan_realm_catchup_uncheckpointed_classified(transport, realm_id.clone(), options)
+            .await
+            .map_err(ProjectedRunError::into_error)?;
+        self.cursor_store
+            .commit(
+                self.realm_scope(realm_id.clone()),
+                None,
+                vec![ClientEvent::Backfill {
+                    realm_id,
+                    outcome: outcome.clone(),
+                }],
+            )
+            .await?;
+        Ok(outcome)
+    }
+
     async fn scan_realm_catchup_uncheckpointed_classified<T>(
         &self,
         transport: &T,
@@ -381,6 +455,13 @@ where
         self.cursor_store
             .clear(self.realm_scope(realm_id.clone()))
             .await?;
+        self.clear_realm_scan_cursor(realm_id).await
+    }
+
+    /// Clear only the scan continuation after a durable-inbox baseline commit.
+    /// The subscribe cursor is replaced by that atomic commit and must not be
+    /// cleared in a preceding, crash-visible step.
+    pub(crate) async fn clear_realm_scan_cursor(&self, realm_id: RealmId) -> Result<()> {
         self.cursor_store
             .clear(CursorScope::RealmEventsScan {
                 service_id: self.service_id.clone(),
