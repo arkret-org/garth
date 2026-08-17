@@ -131,7 +131,7 @@ impl SessionGrantState {
         Ok(Self {
             principal_id: outcome.principal_id,
             device_id: outcome.device_id,
-            grant_id: outcome.grant_id,
+            grant_id: outcome.session_grant_id,
             grant_jwt: outcome.session_grant,
             expires_at: outcome.expires_at,
             audience: outcome.audience,
@@ -401,7 +401,7 @@ fn state_from_issue_outcome(
     if audience != request.proof.audience {
         return Err(protocol("issued session grant audience changed"));
     }
-    let grant_id = outcome.grant_id;
+    let grant_id = outcome.session_grant_id;
     let session_public_key = outcome.session_public_key.into_string();
 
     Ok(SessionGrantState {
@@ -433,10 +433,10 @@ fn state_from_refresh_outcome(
     if outcome.audience != current.audience {
         return Err(protocol("refreshed session grant audience changed"));
     }
-    if outcome.previous_grant_id != current.grant_id {
+    if outcome.previous_session_grant_id != current.grant_id {
         return Err(protocol("refreshed session grant chain changed"));
     }
-    if outcome.grant_id == current.grant_id {
+    if outcome.session_grant_id == current.grant_id {
         return Err(protocol("refreshed session grant id was replayed"));
     }
     if outcome.dpop_jkt != expected_dpop_jkt {
@@ -456,7 +456,7 @@ fn state_from_refresh_outcome(
     Ok(SessionGrantState {
         principal_id: current.principal_id.clone(),
         device_id: current.device_id.clone(),
-        grant_id: outcome.grant_id,
+        grant_id: outcome.session_grant_id,
         grant_jwt: outcome.grant_jwt,
         expires_at: outcome.expires_at,
         audience: outcome.audience,
@@ -684,7 +684,7 @@ mod tests {
             device_id,
             session_grant: token.to_owned(),
             expires_at: now() + Duration::hours(1),
-            grant_id: grant,
+            session_grant_id: grant,
             session_public_key: arkret_models_identity::CanonicalSessionPublicJwk::new(
                 r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
             )
@@ -748,7 +748,7 @@ mod tests {
 
     fn refresh_outcome(token: &str, grant: SessionGrantId) -> SessionGrantRefreshOutcome {
         SessionGrantRefreshOutcome {
-            grant_id: grant,
+            session_grant_id: grant,
             grant_jwt: token.to_owned(),
             session_public_key: arkret_models_identity::CanonicalSessionPublicJwk::new(
                 r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
@@ -758,7 +758,7 @@ mod tests {
             audience: audience(),
             scopes: vec!["ak.self.events.stream.subscribe".to_owned()],
             dpop_jkt: "jkt-1".to_owned(),
-            previous_grant_id: grant_id(1),
+            previous_session_grant_id: grant_id(1),
         }
     }
 
@@ -926,7 +926,7 @@ mod tests {
             DidCoreId::new("ak:did_core:webvh:z6mkfixture:other-service.example").unwrap();
 
         let mut wrong_previous = refresh_outcome("grant-wrong-previous", grant_id(31));
-        wrong_previous.previous_grant_id = grant_id(99);
+        wrong_previous.previous_session_grant_id = grant_id(99);
 
         let replayed = refresh_outcome("grant-replayed", grant_id(1));
 
@@ -1074,7 +1074,7 @@ mod tests {
         let mut short_lived = refresh_outcome("grant-2", grant_id(2));
         short_lived.expires_at = now() + Duration::seconds(30);
         let mut after_cooldown = refresh_outcome("grant-3", grant_id(3));
-        after_cooldown.previous_grant_id = grant_id(2);
+        after_cooldown.previous_session_grant_id = grant_id(2);
         after_cooldown.expires_at = now() + Duration::seconds(30);
         let transport =
             MockSessionTransport::with_refresh_responses(vec![Ok(short_lived), Ok(after_cooldown)]);

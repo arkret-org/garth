@@ -416,7 +416,7 @@ fn processor_dispatches_all_update_categories() {
     });
     frame.to_device = Some(DeviceMessageContainer {
         messages: vec![DeviceMessageEnvelope {
-            message_id: DeviceMessageId::new(
+            device_message_id: DeviceMessageId::new(
                 "ak:device_message:01904100-0000-7000-8000-000000000007",
             )
             .unwrap(),

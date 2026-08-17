@@ -200,23 +200,23 @@ impl SyncResponseProcessor {
 
     pub fn acknowledge_to_device(
         &mut self,
-        message_id: impl Into<String>,
+        device_message_id: impl Into<String>,
         device_id: DeviceId,
         status: ToDeviceAckStatus,
     ) -> ToDeviceAck {
-        let message_id = message_id.into();
+        let device_message_id = device_message_id.into();
         let ack = ToDeviceAck {
-            message_id: message_id.clone(),
+            device_message_id: device_message_id.clone(),
             device_id,
             status,
             acknowledged_at: Utc::now(),
         };
-        self.to_device_acks.insert(message_id, ack.clone());
+        self.to_device_acks.insert(device_message_id, ack.clone());
         ack
     }
 
-    pub fn to_device_ack(&self, message_id: &str) -> Option<&ToDeviceAck> {
-        self.to_device_acks.get(message_id)
+    pub fn to_device_ack(&self, device_message_id: &str) -> Option<&ToDeviceAck> {
+        self.to_device_acks.get(device_message_id)
     }
 
     pub fn limited_timelines(&self) -> Vec<&LimitedTimelineState> {

@@ -176,7 +176,7 @@ where
         let Some(previous_state) = self.session.current_state() else {
             return Ok(false);
         };
-        let previous_grant_id = Some(previous_state.grant_id.clone());
+        let previous_session_grant_id = Some(previous_state.grant_id.clone());
         let refresh_options = self
             .factory
             .refresh_options(&previous_state, &self.refresh_options)?;
@@ -187,7 +187,7 @@ where
             .session
             .current_state()
             .map(|state| state.grant_id.clone());
-        if refreshed_grant_id == previous_grant_id {
+        if refreshed_grant_id == previous_session_grant_id {
             // Another runner may already have rotated the shared session while
             // this request was still in flight with the previous transport.
             // The SessionEngine cooldown then legitimately returns the current
@@ -373,7 +373,7 @@ mod tests {
 
     fn refresh_outcome() -> SessionGrantRefreshOutcome {
         SessionGrantRefreshOutcome {
-            grant_id: grant_id(2),
+            session_grant_id: grant_id(2),
             grant_jwt: "grant-2".to_owned(),
             session_public_key: arkret_models_identity::CanonicalSessionPublicJwk::new(
                 r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
@@ -386,7 +386,7 @@ mod tests {
             .unwrap(),
             scopes: vec!["ak.self.events.stream.subscribe".to_owned()],
             dpop_jkt: "jkt-1".to_owned(),
-            previous_grant_id: grant_id(1),
+            previous_session_grant_id: grant_id(1),
         }
     }
 
