@@ -30,7 +30,8 @@ backup envelope through `SecureKeyStore`; MLS-specific invariants stay in the
 the shared secure store.
 
 `SdkKeyStoreSecureAdapter<K: KeyStore>` exposes an existing SDK `KeyStore`
-as a `SecureKeyStore` for tests and transitional hosts.
+as a `SecureKeyStore` for tests and for hosts that supply only an SDK
+`KeyStore`.
 
 `SecureCryptoStoreAdapter<S: SecureKeyStore>` exposes SDK `CryptoStore`
 semantics while committing the validated backup envelope to the shared secure store.

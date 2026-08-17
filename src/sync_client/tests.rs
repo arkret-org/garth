@@ -678,7 +678,7 @@ fn send_queue_is_idempotent_orders_dependencies_and_snapshots() {
 }
 
 #[test]
-fn send_queue_snapshot_is_tagged_and_rejects_legacy_kind_content_shape() {
+fn send_queue_snapshot_is_tagged_and_rejects_untagged_kind_content_shape() {
     let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let mut queue = SendQueue::new();
     queue
@@ -706,11 +706,11 @@ fn send_queue_snapshot_is_tagged_and_rejects_legacy_kind_content_shape() {
     assert!(encoded.pointer("/items/0/kind").is_none());
     assert!(encoded.pointer("/items/0/content").is_none());
 
-    let legacy = json!({
+    let untagged = json!({
         "items": [],
         "next_sequence": 0
     });
-    assert!(serde_json::from_value::<SendQueueSnapshot>(legacy).is_err());
+    assert!(serde_json::from_value::<SendQueueSnapshot>(untagged).is_err());
 }
 
 #[test]
