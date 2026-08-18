@@ -15,7 +15,7 @@ A projection-driven client provides at least three integration pieces:
    the current session credentials.
 
 Then call one facade method. You should not hand-roll a poll loop or
-cursor/dedupe/reconnect mechanics; those are garth's job (decision 0006).
+cursor/dedupe/reconnect mechanics; those are garth's job.
 For grant-backed clients, compose `SessionEngine` with
 `SessionTransportProvider`; the host factory supplies the platform HTTP client,
 secure signer and a freshly minted refresh proof for each rotation.
@@ -198,6 +198,5 @@ and snapshot semantics remain host-owned; Garth owns only this ordering gate.
 3. Copy buffers at the FFI boundary, use opaque handles, provide explicit
    cancel/free operations, and never expose an SDK HTTP client, Rust future,
    trait object, grant JWT or private key across the boundary.
-4. Until the object-safe companion facade in Phase 7.4/7.5 is implemented,
-   mobile shells must provide a small Rust-owned wrapper; the RPITIT API is not
+4. Mobile shells must provide a small Rust-owned wrapper; the RPITIT API is not
    itself claimed as a Swift/Kotlin ABI.

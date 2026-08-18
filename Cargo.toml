@@ -71,7 +71,6 @@ gloo-timers = {version = "0.3",default-features = false,features = ["futures"],o
 
 [dev-dependencies]
 arkret-wire = {version = "0.3.0",path = "../arkret-rust-sdk/crates/wire",default-features = false,features = ["test-support"]}
-proptest = {version = "1",default-features = false,features = ["std"]}
 tokio = {version = "1.52.3",default-features = false,features = ["macros", "rt", "sync", "time"]}
 
 [[example]]
