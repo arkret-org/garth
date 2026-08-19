@@ -263,6 +263,20 @@ where
 
     pub async fn login(&self, login: LoginKind, now: DateTime<Utc>) -> Result<SessionHandle> {
         let request = login.into_session_grant_request()?;
+        self.login_request(request, now).await
+    }
+
+    /// Issue a session from an already-authored canonical request.
+    ///
+    /// Some protocol transitions, such as exchanging an authenticated account
+    /// handoff after OIDC, are authored by `arkret-auth` rather than one of the
+    /// convenience [`LoginKind`] builders. They still pass through the same
+    /// response validation and state installation as every other login.
+    pub async fn login_request(
+        &self,
+        request: SessionGrantRequestBody,
+        now: DateTime<Utc>,
+    ) -> Result<SessionHandle> {
         let outcome = self.transport.issue_session_grant(request.clone()).await?;
         let state = state_from_issue_outcome(&request, outcome, now)?;
         let handle = state.handle();
@@ -816,6 +830,24 @@ mod tests {
             requests[3].proof.proof_kind,
             SessionGrantProofKind::DidBoundSignature
         );
+    }
+
+    #[tokio::test]
+    async fn authored_request_uses_the_same_issue_validation_path() {
+        let transport = MockSessionTransport::with_issue_responses(vec![Ok(issue_outcome(
+            "grant-authored",
+            grant_id(14),
+            did(),
+            Some(device_id()),
+        ))]);
+        let engine = SessionEngine::new(transport.clone());
+        let request = did_login().into_session_grant_request().unwrap();
+
+        let handle = engine.login_request(request, now()).await.unwrap();
+
+        assert_eq!(handle.access_token, "grant-authored");
+        assert_eq!(transport.issue_requests().len(), 1);
+        assert_eq!(engine.current_state().unwrap().grant_id, grant_id(14));
     }
 
     #[tokio::test]
