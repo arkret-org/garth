@@ -16,46 +16,6 @@ use crate::protocol::{
     MlsWelcomeEnvelope, Result,
 };
 
-pub const CRYPTO_STORE_BACKUP_VERSION: &str = "arkret.crypto_store.backup.v1";
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct CryptoStoreBackupEnvelope {
-    pub version: String,
-    pub key_version: u64,
-    pub exported_at: DateTime<Utc>,
-    pub payload_json: String,
-    pub payload_digest: String,
-}
-
-impl CryptoStoreBackupEnvelope {
-    pub fn new(key_version: u64, payload_json: String, exported_at: DateTime<Utc>) -> Result<Self> {
-        let payload_digest = crate::protocol::canonical::sha256_digest(payload_json.as_bytes());
-        Ok(Self {
-            version: CRYPTO_STORE_BACKUP_VERSION.to_owned(),
-            key_version,
-            exported_at,
-            payload_json,
-            payload_digest,
-        })
-    }
-
-    pub fn validate(&self) -> Result<()> {
-        if self.version != CRYPTO_STORE_BACKUP_VERSION {
-            return Err(Error::Protocol(
-                "unsupported crypto store backup version".to_owned(),
-            ));
-        }
-        if self.payload_digest
-            != crate::protocol::canonical::sha256_digest(self.payload_json.as_bytes())
-        {
-            return Err(Error::Protocol(
-                "crypto store backup digest mismatch".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MlsRecoveryAction {
     UseLocalState,
@@ -155,13 +115,6 @@ pub trait CryptoStore: Send + Sync + MlsGroupStateSink + MlsCommitSource {
     ) -> MlsRecoveryPlan;
     fn export_backup_json(&self) -> Result<String>;
     fn import_backup_json(&mut self, backup: &str) -> Result<()>;
-    fn export_backup_envelope(&self, key_version: u64) -> Result<CryptoStoreBackupEnvelope> {
-        CryptoStoreBackupEnvelope::new(key_version, self.export_backup_json()?, Utc::now())
-    }
-    fn import_backup_envelope(&mut self, envelope: &CryptoStoreBackupEnvelope) -> Result<()> {
-        envelope.validate()?;
-        self.import_backup_json(&envelope.payload_json)
-    }
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]

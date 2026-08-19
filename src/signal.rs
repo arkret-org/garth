@@ -56,33 +56,6 @@ pub struct VerifiedSignalSenderKey {
 }
 
 impl VerifiedSignalSenderKey {
-    pub fn from_verified_device(
-        device: &arkret_signatures::VerifiedPrincipalDevice,
-        selected_authority: &PrincipalAuthorityKey,
-    ) -> Result<Self> {
-        if device.authority() != selected_authority {
-            return Err(Error::Protocol(
-                "signal device does not match the selected principal authority pair".to_owned(),
-            ));
-        }
-        let multibase = device
-            .signing_key()
-            .as_str()
-            .strip_prefix("did:key:")
-            .ok_or_else(|| {
-                Error::Protocol("signal device signing key is not a did:key value".to_owned())
-            })?;
-        Ok(Self {
-            public_key: PublicKeyMaterial::Ed25519Multibase {
-                value: multibase.to_owned(),
-            },
-            actor_id: device.principal_id().clone(),
-            device_id: device.device_id().clone(),
-            verification_method: device.verification_method().clone(),
-            authority: device.authority().clone(),
-        })
-    }
-
     fn validate_for(&self, envelope: &SignalEnvelope) -> Result<()> {
         if self.actor_id != envelope.sender_actor_id
             || self.device_id != envelope.sender_device_id

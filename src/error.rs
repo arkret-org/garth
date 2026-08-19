@@ -91,13 +91,6 @@ impl Error {
             _ => None,
         }
     }
-
-    pub fn is_key_store_not_found(&self) -> bool {
-        matches!(
-            self.as_key_store_error(),
-            Some(KeyStoreError::NotFound { .. })
-        )
-    }
 }
 
 impl From<arkret_identifiers::IdentifierError> for Error {

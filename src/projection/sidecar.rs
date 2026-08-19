@@ -94,23 +94,6 @@ impl SidecarProjectionFold {
             .values()
             .filter(move |exchange| exchange.source_track_ref.realm_id == *realm_id)
     }
-
-    pub fn merge_timeline<T: Clone>(
-        &self,
-        realm_id: &RealmId,
-        strand_id: &StrandId,
-        track_name: &str,
-        mode: AgentSidecarDisplayMode,
-        shared: &[SidecarTimelineEvent<T>],
-        private: &[SidecarTimelineEvent<T>],
-    ) -> Vec<SidecarTimelineItem<T>> {
-        merge_sidecar_timeline(
-            self.exchanges_for_track(realm_id, strand_id, track_name),
-            mode,
-            shared,
-            private,
-        )
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

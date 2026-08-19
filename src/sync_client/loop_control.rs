@@ -215,24 +215,6 @@ where
     }
 }
 
-/// Async streaming transport abstraction for `ak.self.events.stream.subscribe`
-/// (`/_arkret/self/events/subscribe`).
-///
-/// Opens the `ak.self.events.stream.subscribe` stream. The transport accepts a single
-/// `realm_id` selector; callers that need multi-Realm / actor selectors should
-/// use the lower-level HTTP client directly.
-pub trait EventsSubscribeTransport {
-    /// Streaming response type chosen by the concrete HTTP backend.
-    type EventStream;
-
-    /// Open a server-side events subscription stream from an optional cursor.
-    fn events_subscribe<'a>(
-        &'a self,
-        realm_id: &'a str,
-        from: Option<&'a str>,
-    ) -> BoxSyncFuture<'a, Self::EventStream>;
-}
-
 // Browser HTTP futures contain `JsValue` and are intentionally `!Send`.
 // `BoxSyncFuture` follows the same native/wasm boundary as the rest of the
 // SDK async surface, so the concrete client remains the canonical transport
@@ -245,26 +227,6 @@ impl AsyncSyncTransport for arkret_http_client::Client {
     ) -> BoxSyncFuture<'a, AccountSubscribeBatch> {
         Box::pin(async move {
             self.account_subscribe_batch_with_options(&request, &options)
-                .await
-                .map_err(Error::from)
-        })
-    }
-}
-
-impl EventsSubscribeTransport for arkret_http_client::Client {
-    type EventStream = arkret_http_client::EventsSubscribeFrameStream;
-
-    fn events_subscribe<'a>(
-        &'a self,
-        realm_id: &'a str,
-        from: Option<&'a str>,
-    ) -> BoxSyncFuture<'a, Self::EventStream> {
-        Box::pin(async move {
-            let mut options = arkret_http_client::EventsSubscribeOptions::new().realm(realm_id);
-            if let Some(from) = from {
-                options = options.after(from).catchup(true);
-            }
-            self.events_subscribe_frames(&options)
                 .await
                 .map_err(Error::from)
         })
@@ -331,12 +293,6 @@ impl SyncLoopControl {
         Self::default()
     }
 
-    /// Attach an existing cancellation token.
-    pub fn with_cancellation(mut self, cancellation: CancellationToken) -> Self {
-        self.cancellation = cancellation;
-        self
-    }
-
     /// Set backpressure behavior.
     pub fn with_backpressure(mut self, backpressure: BackpressureConfig) -> Self {
         self.backpressure = backpressure;
@@ -346,11 +302,6 @@ impl SyncLoopControl {
     /// Request cancellation.
     pub fn cancel(&self) {
         self.cancellation.cancel();
-    }
-
-    /// Clear cancellation.
-    pub fn reset_cancellation(&self) {
-        self.cancellation.reset();
     }
 
     /// Whether cancellation has been requested.
@@ -434,7 +385,6 @@ pub struct SyncLoop {
     token: Option<String>,
     timeout: Duration,
     filter: Option<SyncFilter>,
-    subscriptions: Option<SubscriptionConfig>,
     wait_for: Option<String>,
     backoff: ExponentialBackoff,
     processor: SyncResponseProcessor,
@@ -448,7 +398,6 @@ impl SyncLoop {
             token: None,
             timeout: Duration::from_secs(30),
             filter: None,
-            subscriptions: None,
             wait_for: None,
             backoff: ExponentialBackoff::default(),
             processor: SyncResponseProcessor::new(),
@@ -477,12 +426,6 @@ impl SyncLoop {
         self
     }
 
-    /// Set subscriptions sent with each request.
-    pub fn with_subscriptions(mut self, subscriptions: SubscriptionConfig) -> Self {
-        self.subscriptions = Some(subscriptions);
-        self
-    }
-
     /// Set a frontier the server should wait for before returning.
     pub fn with_wait_for(mut self, wait_for: impl Into<String>) -> Self {
         self.wait_for = Some(wait_for.into());
@@ -492,12 +435,6 @@ impl SyncLoop {
     /// Set the gap strategy used after limited timelines.
     pub fn with_gap_strategy(mut self, strategy: SyncGapStrategy) -> Self {
         self.gap_strategy = strategy;
-        self
-    }
-
-    /// Set retry backoff configuration.
-    pub fn with_backoff_config(mut self, config: BackoffConfig) -> Self {
-        self.backoff = ExponentialBackoff::new(config);
         self
     }
 
@@ -513,7 +450,7 @@ impl SyncLoop {
             after: self.token.clone(),
             catchup: Some(true),
             filter: self.filter.clone(),
-            subscriptions: self.subscriptions.clone(),
+            subscriptions: None,
         }
     }
 
@@ -719,15 +656,6 @@ impl SyncLoop {
             timeout_ms: self.timeout.as_millis().min(u128::from(u64::MAX)) as u64,
             gap_strategy: self.gap_strategy,
         }
-    }
-
-    /// Restore durable token state on an existing loop.
-    pub fn restore_snapshot(&mut self, snapshot: SyncLoopSnapshot) {
-        self.token = snapshot.token;
-        self.timeout = Duration::from_millis(snapshot.timeout_ms);
-        self.gap_strategy = snapshot.gap_strategy;
-        self.processor.clear();
-        self.backoff.reset();
     }
 
     /// Reset the loop after unrecoverable state loss.

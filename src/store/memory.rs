@@ -33,7 +33,8 @@ impl MemoryStore {
         Self::default()
     }
 
-    pub fn with_seen_capacity(capacity: usize) -> Self {
+    #[cfg(test)]
+    pub(crate) fn with_seen_capacity(capacity: usize) -> Self {
         Self {
             inner: Arc::new(Mutex::new(MemoryState {
                 cursors: BTreeMap::new(),

@@ -120,7 +120,7 @@ pub(crate) use arkret_wire::{
 };
 
 pub(crate) mod canonical {
-    pub(crate) use arkret_canonical::{canonical_json_bytes, canonical_sha256, sha256_digest};
+    pub(crate) use arkret_canonical::{canonical_json_bytes, canonical_sha256};
 }
 
 pub(crate) mod dpop {
@@ -171,7 +171,7 @@ pub(crate) mod signatures {
 
 pub(crate) mod sync {
     pub(crate) use arkret_models_collaboration::sync_frames::client_sync::{
-        LimitedTimelineState, RealmUpdate, SubscriptionConfig, SyncFilter, SyncGap,
-        SyncRequestBody, SyncUpdates, ToDeviceAck, ToDeviceAckStatus,
+        LimitedTimelineState, RealmUpdate, SyncFilter, SyncGap, SyncRequestBody, SyncUpdates,
+        ToDeviceAck, ToDeviceAckStatus,
     };
 }

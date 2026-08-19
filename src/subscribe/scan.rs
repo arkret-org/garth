@@ -113,31 +113,6 @@ where
         self
     }
 
-    pub async fn scan_realm_once<T>(
-        &self,
-        transport: &T,
-        realm_id: RealmId,
-        options: ScanCatchupOptions,
-    ) -> Result<EventsQueryOutcome>
-    where
-        T: EventsScanTransport + ?Sized,
-    {
-        let scope = self.scope(&realm_id, options.order);
-        let after = self.after_cursor(scope.clone(), options.after).await?;
-        let outcome = transport
-            .scan_events(EventsScanRequest {
-                realm_id,
-                before: options.before,
-                after,
-                order: options.order,
-                limit: options.limit,
-            })
-            .await?;
-        self.save_next_cursor(scope, outcome.next_cursor.clone())
-            .await?;
-        Ok(outcome)
-    }
-
     pub async fn scan_realm_catchup<T>(
         &self,
         transport: &T,
@@ -306,37 +281,6 @@ mod tests {
             has_more,
             range_completeness: None,
         }
-    }
-
-    #[tokio::test]
-    async fn scan_once_uses_stored_cursor_and_saves_next_cursor() {
-        let store = MemoryStore::new();
-        store
-            .save(scope(), "ak:cursor:stored".to_owned())
-            .await
-            .unwrap();
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let requests_for_transport = Arc::clone(&requests);
-        let transport = move |request: EventsScanRequest| {
-            requests_for_transport.lock().unwrap().push(request);
-            async { Ok(outcome(Some("ak:cursor:next"), false)) }
-        };
-
-        let catchup = ScanCatchup::new(store.clone());
-        let response = catchup
-            .scan_realm_once(&transport, realm_id(), ScanCatchupOptions::default())
-            .await
-            .unwrap();
-
-        assert_eq!(response.next_cursor.as_deref(), Some("ak:cursor:next"));
-        assert_eq!(
-            requests.lock().unwrap()[0].after.as_deref(),
-            Some("ak:cursor:stored")
-        );
-        assert_eq!(
-            store.load(scope()).await.unwrap().as_deref(),
-            Some("ak:cursor:next")
-        );
     }
 
     #[tokio::test]

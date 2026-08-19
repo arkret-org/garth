@@ -348,27 +348,6 @@ pub fn identity_creation_register_request(
     Ok(request)
 }
 
-pub fn validate_binding_receipt(
-    receipt: &AccountBindingReceipt,
-    challenge: &IdentityBindingChallengeOutcome,
-) -> Result<()> {
-    receipt.validate_shape()?;
-    if receipt.account_subject != challenge.account_subject
-        || receipt.principal_id != challenge.principal_id
-        || receipt.full_id != challenge.full_id
-        || receipt.identity_creation_lease_id.as_deref()
-            != Some(challenge.identity_creation_lease_id.as_str())
-        || receipt.lease_fence != Some(challenge.lease_fence)
-        || receipt.operation_digest != challenge.operation_digest
-        || receipt.head_event_digest != challenge.log_head_digest
-    {
-        return Err(protocol(
-            "account binding receipt does not match the identity-creation reservation",
-        ));
-    }
-    Ok(())
-}
-
 /// Verify an Account Authority receipt against the complete method-native DID
 /// history effective at the receipt timestamp. The explicit error variants
 /// let hosts distinguish retryable resolver unavailability from a fork,

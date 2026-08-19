@@ -18,8 +18,8 @@ use serde_json::Value;
 #[cfg(test)]
 use crate::protocol::AccountSubscribeFrame;
 use crate::protocol::sync::{
-    LimitedTimelineState, RealmUpdate, SubscriptionConfig, SyncFilter, SyncRequestBody,
-    SyncUpdates, ToDeviceAck, ToDeviceAckStatus,
+    LimitedTimelineState, RealmUpdate, SyncFilter, SyncRequestBody, SyncUpdates, ToDeviceAck,
+    ToDeviceAckStatus,
 };
 use crate::protocol::{
     AccountStreamInterrupt, AccountSubscribeBatch, AccountSubscribeDeviceListChanges,

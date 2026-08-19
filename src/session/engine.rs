@@ -235,10 +235,6 @@ where
         }
     }
 
-    pub fn refresh_in_flight(&self) -> bool {
-        self.gate_lock().in_flight
-    }
-
     pub fn current_state(&self) -> Option<SessionGrantState> {
         self.state_lock().clone()
     }

@@ -1,4 +1,3 @@
-mod crypto_store;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod file;
 mod inbox;
@@ -12,7 +11,6 @@ use crate::protocol::{DeviceId, DidCoreId, EventId, RealmId, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::MaybeSendSync;
-pub use crypto_store::SecureCryptoStoreAdapter;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use file::FileStore;
 pub use inbox::{

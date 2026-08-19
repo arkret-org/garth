@@ -42,8 +42,7 @@ pub use account_handoff::{
     AccountHandoffDisposition, IdentityCreationNextStep, IdentityCreationReconciliation,
     OidcAccountHandoffInput, account_handoff_disposition, identity_binding_challenge_request,
     identity_creation_register_request, oidc_account_handoff_request, reconcile_identity_creation,
-    validate_binding_receipt, validate_identity_creation_outcome,
-    verify_binding_receipt_at_issuance,
+    validate_identity_creation_outcome, verify_binding_receipt_at_issuance,
 };
 pub use arkret_identity::{
     AuthorityDidHistoryResolver, AuthorityHistoryUnavailable, AuthorityHistoryVerificationError,
@@ -54,9 +53,9 @@ pub use arkret_models_collaboration::signal_message_stream::MESSAGE_STREAM_KIND;
 /// and the `Retry-After` floor are spec-normative; see that crate's docs.
 pub use arkret_retry::RetrySchedule as Backoff;
 pub use crypto_state_store::{
-    CRYPTO_STORE_BACKUP_VERSION, CryptoStore, CryptoStoreBackupEnvelope, MemoryCryptoStore,
-    MlsCommitSource, MlsEpochSecretRecord, MlsGroupStateRecord, MlsGroupStateSink,
-    MlsRecoveryAction, MlsRecoveryPlan, MlsWelcomeState, StoredDeviceVerification,
+    CryptoStore, MemoryCryptoStore, MlsCommitSource, MlsEpochSecretRecord, MlsGroupStateRecord,
+    MlsGroupStateSink, MlsRecoveryAction, MlsRecoveryPlan, MlsWelcomeState,
+    StoredDeviceVerification,
 };
 pub use direct_conversation::{
     DirectConversationFoundingAction, direct_conversation_founding_action,
@@ -139,8 +138,7 @@ pub use store::{
     DeliveryId, DurableInboxStore, EventCacheStore, MAX_DELIVERY_ERROR_BYTES,
     MAX_PENDING_DELIVERIES, MAX_PENDING_READ, MemorySecureKeyStore, MemoryStore, OpaqueCursor,
     PendingDelivery, PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter, SecretBytes,
-    SecretClass, SecretDurability, SecureCryptoStoreAdapter, SecureKeyStore,
-    SecureKeyStoreBackendInfo, SecureKeyStoreError,
+    SecretClass, SecretDurability, SecureKeyStore, SecureKeyStoreBackendInfo, SecureKeyStoreError,
 };
 pub use subscribe::{
     BoxRealmStreamFuture, BoxSignalStreamFuture, EventsScanRequest, EventsScanTransport,
@@ -152,7 +150,7 @@ pub use subscribe::{
 };
 pub use sync_client::{
     AsyncSyncTransport, BackoffConfig, BackpressureConfig, BoxSyncFuture, CancellationToken,
-    EventsSubscribeTransport, ExponentialBackoff, LocalEcho, ProcessedRealm, SendQueue,
-    SendQueueItem, SendQueueSnapshot, SendQueueStatus, SyncGapStrategy, SyncLoop, SyncLoopControl,
-    SyncLoopSnapshot, SyncLoopStep, SyncRecoveryAction, SyncResponseProcessor, SyncTransport,
+    ExponentialBackoff, LocalEcho, ProcessedRealm, SendQueue, SendQueueItem, SendQueueSnapshot,
+    SendQueueStatus, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot, SyncLoopStep,
+    SyncRecoveryAction, SyncResponseProcessor, SyncTransport,
 };
