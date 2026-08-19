@@ -507,7 +507,9 @@ mod tests {
         .unwrap();
         QueuedRecord::SdkEvent(
             crate::QueuedSdkEvent::unauthored(
-                event,
+                crate::QueuedEventIntent::new(arkret_event_draft::EventIntent::from_authored(
+                    &event,
+                )),
                 "test-operation".to_owned(),
                 "test-attempt".to_owned(),
                 None,

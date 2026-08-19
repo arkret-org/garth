@@ -109,7 +109,7 @@ fn queued_record(realm_id: &RealmId, payload: Value) -> crate::QueuedRecord {
     .unwrap();
     crate::QueuedRecord::SdkEvent(
         crate::QueuedSdkEvent::unauthored(
-            event,
+            crate::QueuedEventIntent::new(arkret_event_draft::EventIntent::from_authored(&event)),
             "test-operation".to_owned(),
             "test-attempt".to_owned(),
             None,

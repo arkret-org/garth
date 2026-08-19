@@ -1,12 +1,13 @@
 use std::ops::Deref;
 
+use arkret_event_draft::EventIntent;
 use arkret_identifiers::ScheduledSendId;
 use arkret_models_collaboration::direct_conversation_ops::{
     DirectConversationFoundingAcceptanceOutcome, DirectConversationFoundingPlan,
     DirectConversationFoundingUnitSubmission,
 };
 use arkret_models_collaboration::events_payloads::RealmCreatePayload;
-use arkret_wire::{DidCoreId, Event, EventId, EventKind, Hash, MessageId, RealmId};
+use arkret_wire::{AuthoredEvent, DidCoreId, Event, EventId, EventKind, Hash, MessageId, RealmId};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -52,40 +53,37 @@ impl AuthoringGeneration {
     }
 }
 
+/// The semantic operation a queue slot stands for, frozen before authoring.
+///
+/// This is the SDK's [`EventIntent`], not a normalized [`Event`]. The queue used
+/// to keep an `Event` here with its authoring fields blanked and `event_id`
+/// re-derived from the blanks — a durable identity that named no Event anyone
+/// would ever submit, yet was shaped exactly like one, so every reader that
+/// reached for it got a plausible-looking wrong answer. An `EventIntent` has no
+/// identity to reach for; the only identity in this record is on the authored
+/// attempt.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueuedEventIntent {
-    /// SDK-owned wire envelope normalized to its semantic, unauthored form.
-    ///
-    /// Keeping the envelope intact prevents the queue from defining a second
-    /// `kind` + raw payload representation. Authoring-only fields are cleared
-    /// by [`Self::from_event`] and are allocated again for each attempt.
-    pub event: Event,
+    pub intent: EventIntent,
 }
 
 impl QueuedEventIntent {
-    pub fn from_event(event: Event) -> Result<Self> {
-        let mut event = event;
-        event.actor_seq = 0;
-        event.hlc = None;
-        event.prev_refs.clear();
-        event.seal_ref = None;
-        event.auth_context = None;
-        event.proofs.clear();
-        event.unsigned.remove("local_operation_idempotency_alias");
-        if event.kind != EventKind::InviteAccept {
-            event.seal_basis = None;
+    pub fn new(intent: EventIntent) -> Self {
+        // A CBA basis the producer did not pin is per-attempt state: each retry
+        // re-reads the Seal view it authors against.
+        Self {
+            intent: intent.without_cba_basis(),
         }
-        // `event_id` is content-bound to the authoring fields cleared above.
-        // Normalize it too, otherwise a valid retry that refreshes the actor
-        // frontier, HLC, or CBA basis appears to change the frozen semantic
-        // intent solely because signing correctly derives a new Event id.
-        event.event_id = event.derive_event_id()?;
-        Ok(Self { event })
     }
 
-    pub fn to_unauthored_event(&self) -> Event {
-        self.event.clone()
+    /// Freeze an intent that pins its own CBA basis.
+    ///
+    /// A pre-join `ak.invite.accept` cannot re-resolve the membership-gated
+    /// Realm Seal view, so the join-candidate basis its author resolved is part
+    /// of the operation, not of one attempt at it.
+    pub fn with_pinned_cba_basis(intent: EventIntent) -> Self {
+        Self { intent }
     }
 
     pub fn digest(&self) -> Result<Hash> {
@@ -94,18 +92,23 @@ impl QueuedEventIntent {
 }
 
 impl Deref for QueuedEventIntent {
-    type Target = Event;
+    type Target = EventIntent;
 
     fn deref(&self) -> &Self::Target {
-        &self.event
+        &self.intent
     }
 }
 
+/// One authoring attempt at a queue slot's intent, frozen byte-for-byte.
+///
+/// `envelope` is an [`AuthoredEvent`], so restoring this record re-proves that
+/// the stored `event_id` is the one its own content derives. A durable record is
+/// not a trusted source of identity.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueuedAuthoredEventAttempt {
     pub intent_digest: Hash,
-    pub envelope: Event,
+    pub envelope: AuthoredEvent,
     pub transport_idempotency_key: String,
     pub canonical_body_bytes: Vec<u8>,
 }
@@ -153,6 +156,55 @@ pub enum MlsAdmissionStage {
     WelcomesAcceptedWaitingSeal,
 }
 
+/// The Welcome batch bound to an MLS admission Commit.
+///
+/// A Welcome names the Commit by its FINAL `event_id`, so the batch cannot be
+/// authored until the Commit is. This carries that ordering in the type instead
+/// of leaving unsigned envelopes around whose ids a later pass had to rewrite:
+/// `Pending` holds semantic intents with no identity to rewrite, and `Authored`
+/// holds the exact bytes that ship.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
+pub enum QueuedMlsWelcomes {
+    Pending { intents: Vec<EventIntent> },
+    Authored { events: Vec<AuthoredEvent> },
+}
+
+impl QueuedMlsWelcomes {
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Pending { intents } => intents.len(),
+            Self::Authored { events } => events.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    pub fn pending(&self) -> Option<&[EventIntent]> {
+        match self {
+            Self::Pending { intents } => Some(intents),
+            Self::Authored { .. } => None,
+        }
+    }
+
+    pub fn authored(&self) -> Option<&[AuthoredEvent]> {
+        match self {
+            Self::Pending { .. } => None,
+            Self::Authored { events } => Some(events),
+        }
+    }
+
+    /// Every Realm this batch writes into, for the scope check below.
+    fn realm_ids(&self) -> Vec<Option<&RealmId>> {
+        match self {
+            Self::Pending { intents } => intents.iter().map(EventIntent::realm_id_opt).collect(),
+            Self::Authored { events } => events.iter().map(|event| Some(&event.realm_id)).collect(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QueuedPostAcceptAction {
@@ -172,7 +224,7 @@ pub enum QueuedPostAcceptAction {
         commit_ingress_receipts: Vec<arkret_wire::IngressReceipt>,
         #[serde(default)]
         commit_was_duplicate: bool,
-        welcomes: Vec<Event>,
+        welcomes: QueuedMlsWelcomes,
         snapshot: QueuedMlsSnapshot,
     },
 }
@@ -207,14 +259,13 @@ where
 
 impl QueuedSdkEvent {
     pub fn unauthored(
-        event: Event,
+        intent: QueuedEventIntent,
         local_operation_id: String,
         authoring_idempotency_key: String,
         supersedes_event_id: Option<EventId>,
         authoring_generation: AuthoringGeneration,
         post_accept: Option<QueuedPostAcceptAction>,
     ) -> Result<Self> {
-        let intent = QueuedEventIntent::from_event(event)?;
         let intent_digest = intent.digest()?;
         let queued = Self {
             intent,
@@ -231,8 +282,16 @@ impl QueuedSdkEvent {
         Ok(queued)
     }
 
+    /// A slot whose intent is already authored into one exact attempt.
+    ///
+    /// `intent` is passed in rather than reconstructed from `envelope`: the
+    /// caller authored the envelope *from* that intent, and only the caller
+    /// knows which CBA members the producer pinned as part of the operation
+    /// versus resolved for this attempt.
+    #[allow(clippy::too_many_arguments)]
     pub fn authored(
-        envelope: Event,
+        intent: QueuedEventIntent,
+        envelope: AuthoredEvent,
         local_operation_id: String,
         transport_idempotency_key: String,
         canonical_body_bytes: Vec<u8>,
@@ -240,7 +299,6 @@ impl QueuedSdkEvent {
         authoring_generation: AuthoringGeneration,
         post_accept: Option<QueuedPostAcceptAction>,
     ) -> Result<Self> {
-        let intent = QueuedEventIntent::from_event(envelope.clone())?;
         let intent_digest = intent.digest()?;
         let queued = Self {
             intent,
@@ -262,9 +320,13 @@ impl QueuedSdkEvent {
         Ok(queued)
     }
 
+    /// A scheduled send: authored, signed and frozen long before dispatch.
+    ///
+    /// The intent is recovered from the envelope because there is no re-author
+    /// path here — the whole point is that these exact bytes ship later.
     pub fn scheduled_authored(
         scheduled_send_id: ScheduledSendId,
-        envelope: Event,
+        envelope: AuthoredEvent,
         authoring_generation: AuthoringGeneration,
     ) -> Result<Self> {
         if envelope.kind != EventKind::MessageCreate {
@@ -277,16 +339,10 @@ impl QueuedSdkEvent {
                 "scheduled dispatch Event must already be signed".to_owned(),
             ));
         }
-        let derived_event_id = envelope.derive_event_id()?;
-        if derived_event_id != envelope.event_id {
-            return Err(Error::Protocol(
-                "scheduled dispatch Event id does not match its canonical content".to_owned(),
-            ));
-        }
-        let event_id = envelope.event_id.clone();
+        let event_id = envelope.event_id().clone();
         let message_id = MessageId::from_event_id(&event_id);
         let canonical_signed_event_bytes = arkret_canonical::canonical_json_bytes(&envelope)?;
-        let intent = QueuedEventIntent::from_event(envelope.clone())?;
+        let intent = QueuedEventIntent::new(EventIntent::from_authored(envelope.event()));
         let intent_digest = intent.digest()?;
         let queued = Self {
             intent,
@@ -312,13 +368,6 @@ impl QueuedSdkEvent {
         };
         queued.validate()?;
         Ok(queued)
-    }
-
-    pub fn event_for_authority_context(&self) -> Event {
-        self.authored_attempt
-            .as_ref()
-            .map(|attempt| attempt.envelope.clone())
-            .unwrap_or_else(|| self.intent.to_unauthored_event())
     }
 
     pub fn mark_scheduled_submission_uncertain(&mut self) -> bool {
@@ -371,7 +420,10 @@ impl QueuedSdkEvent {
                     "queued SDK authored attempt canonical bytes do not match envelope".to_owned(),
                 ));
             }
-            if QueuedEventIntent::from_event(attempt.envelope.clone())? != self.intent {
+            if !self
+                .intent
+                .authored_envelope_matches(attempt.envelope.event())
+            {
                 return Err(Error::Protocol(
                     "queued SDK authored envelope changes the bound semantic intent".to_owned(),
                 ));
@@ -384,8 +436,8 @@ impl QueuedSdkEvent {
                 )
             })?;
             if self.local_operation_id != dispatch.scheduled_send_id.as_str()
-                || self.intent.kind != EventKind::MessageCreate
-                || attempt.envelope.event_id != dispatch.event_id
+                || self.intent.kind() != &EventKind::MessageCreate
+                || attempt.envelope.event_id() != &dispatch.event_id
                 || MessageId::from_event_id(&dispatch.event_id) != dispatch.message_id
                 || attempt.canonical_body_bytes != dispatch.canonical_signed_event_bytes
             {
@@ -414,36 +466,41 @@ impl QueuedSdkEvent {
                         ));
                     }
                     if welcomes
-                        .iter()
-                        .any(|welcome| welcome.realm_id != self.intent.realm_id)
+                        .realm_ids()
+                        .into_iter()
+                        .any(|realm_id| realm_id != self.intent.realm_id_opt())
                     {
                         return Err(Error::Protocol(
                             "queued MLS admission Welcome belongs to another Realm".to_owned(),
                         ));
                     }
+                    // The stage and the Welcome phase are two views of the same
+                    // fact, so they must agree. `AuthoredEvent` already proves
+                    // each authored Welcome carries its own content-bound id;
+                    // all that is left is the signature.
                     let welcomes_authored = matches!(
                         stage,
                         MlsAdmissionStage::WelcomesAuthored
                             | MlsAdmissionStage::WelcomesAcceptedWaitingSeal
                     );
-                    if welcomes.iter().any(|welcome| {
-                        if welcomes_authored {
-                            welcome.proofs.is_empty()
-                                || welcome.derive_event_id().ok().as_ref()
-                                    != Some(&welcome.event_id)
-                        } else {
-                            !welcome.proofs.is_empty()
+                    match welcomes {
+                        QueuedMlsWelcomes::Authored { events }
+                            if welcomes_authored
+                                && events.iter().all(|event| !event.proofs.is_empty()) => {}
+                        QueuedMlsWelcomes::Pending { .. } if !welcomes_authored => {}
+                        _ => {
+                            return Err(Error::Protocol(
+                                "queued MLS admission Welcome authoring phase is inconsistent"
+                                    .to_owned(),
+                            ));
                         }
-                    }) {
-                        return Err(Error::Protocol(
-                            "queued MLS admission Welcome authoring phase is inconsistent"
-                                .to_owned(),
-                        ));
                     }
                     (realm_id, snapshot)
                 }
             };
-            if realm_id != self.intent.realm_id.as_str() || snapshot.realm_id != *realm_id {
+            if Some(realm_id.as_str()) != self.intent.realm_id_opt().map(RealmId::as_str)
+                || snapshot.realm_id != *realm_id
+            {
                 return Err(Error::Protocol(
                     "queued post-accept snapshot belongs to another Realm".to_owned(),
                 ));
@@ -453,20 +510,22 @@ impl QueuedSdkEvent {
     }
 }
 
+/// A Realm genesis unit in the durable queue.
+///
+/// There is no unauthored state here. A genesis unit's members name each other
+/// by their final `event_id` — every follow-up is scoped to the Realm the create
+/// Event derives — so the unit can only be assembled in one pass, and what the
+/// queue receives is already the exact bytes it will send. The old
+/// intent-then-prepare split is what forced preparation to retype the Realm id
+/// after the fact, and it is gone with the placeholder that made it necessary.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QueuedRealmBootstrap {
-    Intent {
-        local_operation_id: String,
-        transport_idempotency_key: String,
-        intent_digest: Hash,
-        events: Vec<Event>,
-    },
     Prepared {
         local_operation_id: String,
         transport_idempotency_key: String,
         intent_digest: Hash,
-        events: Vec<Event>,
+        events: Vec<AuthoredEvent>,
         canonical_signed_unit_bytes: Vec<u8>,
     },
     /// A fully authored Direct Conversation first-valid unit. Unlike an
@@ -492,18 +551,19 @@ pub enum QueuedRealmBootstrap {
 }
 
 impl QueuedRealmBootstrap {
-    pub fn intent(
+    pub fn prepared(
         local_operation_id: String,
         transport_idempotency_key: String,
-        events: Vec<Event>,
+        events: Vec<AuthoredEvent>,
     ) -> Result<Self> {
-        validate_realm_bootstrap_intent(&events)?;
         let intent_digest = Hash::new(arkret_canonical::canonical_sha256(&events)?)?;
-        let queued = Self::Intent {
+        let canonical_signed_unit_bytes = arkret_canonical::canonical_json_bytes(&events)?;
+        let queued = Self::Prepared {
             local_operation_id,
             transport_idempotency_key,
             intent_digest,
             events,
+            canonical_signed_unit_bytes,
         };
         queued.validate()?;
         Ok(queued)
@@ -527,15 +587,13 @@ impl QueuedRealmBootstrap {
     }
 
     pub fn authority_context_event(&self) -> Result<&Event> {
-        let events = match self {
-            Self::Intent { events, .. } | Self::Prepared { events, .. } => events,
-            Self::DirectConversationPrepared { first_event, .. } => {
-                return Ok(first_event);
-            }
-        };
-        events
-            .first()
-            .ok_or_else(|| Error::Protocol("queued Realm bootstrap unit is empty".to_owned()))
+        match self {
+            Self::Prepared { events, .. } => events
+                .first()
+                .map(AuthoredEvent::event)
+                .ok_or_else(|| Error::Protocol("queued Realm bootstrap unit is empty".to_owned())),
+            Self::DirectConversationPrepared { first_event, .. } => Ok(first_event),
+        }
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -631,19 +689,6 @@ impl QueuedRealmBootstrap {
             events,
             canonical_signed_unit_bytes,
         ) = match self {
-            Self::Intent {
-                local_operation_id,
-                transport_idempotency_key,
-                intent_digest,
-                events,
-                ..
-            } => (
-                local_operation_id,
-                transport_idempotency_key,
-                intent_digest,
-                events,
-                None,
-            ),
             Self::Prepared {
                 local_operation_id,
                 transport_idempotency_key,
@@ -656,7 +701,7 @@ impl QueuedRealmBootstrap {
                 transport_idempotency_key,
                 intent_digest,
                 events,
-                Some(canonical_signed_unit_bytes),
+                canonical_signed_unit_bytes,
             ),
             Self::DirectConversationPrepared { .. } => {
                 unreachable!("Direct Conversation validation returned above")
@@ -667,28 +712,27 @@ impl QueuedRealmBootstrap {
                 "queued Realm bootstrap identities must be non-empty".to_owned(),
             ));
         }
-        validate_realm_bootstrap_intent(events)?;
-        match canonical_signed_unit_bytes {
-            None => {
-                let computed = Hash::new(arkret_canonical::canonical_sha256(events)?)?;
-                if &computed != intent_digest {
-                    return Err(Error::Protocol(
-                        "queued Realm bootstrap intent digest mismatch".to_owned(),
-                    ));
-                }
-            }
-            Some(canonical_signed_unit_bytes) => {
-                if events.iter().any(|event| event.proofs.is_empty()) {
-                    return Err(Error::Protocol(
-                        "prepared Realm bootstrap contains an unsigned Event".to_owned(),
-                    ));
-                }
-                if arkret_canonical::canonical_json_bytes(events)? != *canonical_signed_unit_bytes {
-                    return Err(Error::Protocol(
-                        "prepared Realm bootstrap canonical bytes mismatch".to_owned(),
-                    ));
-                }
-            }
+        let envelopes = events
+            .iter()
+            .map(AuthoredEvent::event)
+            .cloned()
+            .collect::<Vec<_>>();
+        validate_realm_bootstrap_intent(&envelopes)?;
+        let computed = Hash::new(arkret_canonical::canonical_sha256(events)?)?;
+        if &computed != intent_digest {
+            return Err(Error::Protocol(
+                "queued Realm bootstrap unit digest mismatch".to_owned(),
+            ));
+        }
+        if events.iter().any(|event| event.proofs.is_empty()) {
+            return Err(Error::Protocol(
+                "prepared Realm bootstrap contains an unsigned Event".to_owned(),
+            ));
+        }
+        if arkret_canonical::canonical_json_bytes(events)? != *canonical_signed_unit_bytes {
+            return Err(Error::Protocol(
+                "prepared Realm bootstrap canonical bytes mismatch".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -822,21 +866,32 @@ pub enum QueuedRecord {
 impl QueuedRecord {
     pub fn event_kind(&self) -> Result<&EventKind> {
         match self {
-            Self::SdkEvent(queued) => Ok(&queued.intent.kind),
+            Self::SdkEvent(queued) => Ok(queued.intent.kind()),
             Self::RealmBootstrap(queued) => Ok(&queued.authority_context_event()?.kind),
         }
     }
 
+    /// The Realm this record writes into.
+    ///
+    /// A Realm genesis has none: its Realm id is a function of the create Event
+    /// id, so the answer only exists after authoring. Genesis units travel as
+    /// [`QueuedRealmBootstrap`], whose events are already authored, so the
+    /// missing case is a queued `ak.realm.create` in the ordinary lane, which is
+    /// a caller error rather than a Realm to report.
     pub fn realm_id(&self) -> Result<&RealmId> {
         match self {
-            Self::SdkEvent(queued) => Ok(&queued.intent.realm_id),
+            Self::SdkEvent(queued) => queued.intent.realm_id_opt().ok_or_else(|| {
+                Error::Protocol(
+                    "queued SDK event is a Realm genesis and has no Realm scope yet".to_owned(),
+                )
+            }),
             Self::RealmBootstrap(queued) => Ok(&queued.authority_context_event()?.realm_id),
         }
     }
 
     pub fn actor_id(&self) -> Result<&DidCoreId> {
         match self {
-            Self::SdkEvent(queued) => Ok(&queued.intent.actor_id),
+            Self::SdkEvent(queued) => Ok(queued.intent.actor_id()),
             Self::RealmBootstrap(queued) => Ok(&queued.authority_context_event()?.actor_id),
         }
     }

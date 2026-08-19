@@ -1,6 +1,5 @@
 use super::*;
-use crate::protocol::EventKind;
-use crate::{QueuedRealmBootstrap, QueuedRecord};
+use crate::QueuedRecord;
 
 /// Send queue item lifecycle.
 ///
@@ -253,12 +252,7 @@ impl SendQueue {
                 transaction_id
             ))
         })?;
-        let prepared_realm_id = record.realm_id()?.clone();
-        let realm_rebind = existing.realm_id != prepared_realm_id
-            && allows_prepared_genesis_realm_rebind(&existing.record, &record);
-        if !realm_rebind {
-            validate_record_scope(&existing.realm_id, &record)?;
-        }
+        validate_record_scope(&existing.realm_id, &record)?;
         if existing
             .actor_id
             .as_ref()
@@ -269,15 +263,6 @@ impl SendQueue {
             ));
         }
         let item = self.item_mut(transaction_id)?;
-        if realm_rebind {
-            // Realm ids are derived from the finalized create Event id. The
-            // unsigned durable intent is queued before actor-chain/HLC fields
-            // and proofs are frozen, so preparation can legitimately retype
-            // that id. Move the queue scope and local echo atomically with the
-            // exact intent -> prepared transition.
-            item.realm_id = prepared_realm_id;
-            item.local_echo.realm_id = item.realm_id.clone();
-        }
         item.record = record;
         item.canonical_payload_bytes = canonical::canonical_json_bytes(&item.record)?;
         item.payload_digest = queue_payload_digest(&item.realm_id, &item.record, &item.depends_on)?;
@@ -718,37 +703,6 @@ impl SendQueue {
         item.local_echo.status = item.status;
         Ok(())
     }
-}
-
-fn allows_prepared_genesis_realm_rebind(existing: &QueuedRecord, prepared: &QueuedRecord) -> bool {
-    let (
-        QueuedRecord::RealmBootstrap(QueuedRealmBootstrap::Intent {
-            local_operation_id: existing_local_operation_id,
-            transport_idempotency_key: existing_transport_idempotency_key,
-            intent_digest: existing_intent_digest,
-            events: existing_events,
-        }),
-        QueuedRecord::RealmBootstrap(QueuedRealmBootstrap::Prepared {
-            local_operation_id: prepared_local_operation_id,
-            transport_idempotency_key: prepared_transport_idempotency_key,
-            intent_digest: prepared_intent_digest,
-            events: prepared_events,
-            ..
-        }),
-    ) = (existing, prepared)
-    else {
-        return false;
-    };
-
-    existing_local_operation_id == prepared_local_operation_id
-        && existing_transport_idempotency_key == prepared_transport_idempotency_key
-        && existing_intent_digest == prepared_intent_digest
-        && existing_events
-            .first()
-            .is_some_and(|event| event.kind == EventKind::RealmCreate)
-        && prepared_events
-            .first()
-            .is_some_and(|event| event.kind == EventKind::RealmCreate)
 }
 
 fn queue_payload_digest(

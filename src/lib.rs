@@ -96,8 +96,9 @@ pub use protocol::{
 };
 pub use queued_record::{
     AuthoringAuthorityModel, AuthoringGeneration, MlsAdmissionStage, QueuedAuthoredEventAttempt,
-    QueuedEventIntent, QueuedMlsSnapshot, QueuedPostAcceptAction, QueuedRealmBootstrap,
-    QueuedRecord, QueuedSdkEvent, ScheduledSendDispatchRecord, ScheduledSendSubmissionState,
+    QueuedEventIntent, QueuedMlsSnapshot, QueuedMlsWelcomes, QueuedPostAcceptAction,
+    QueuedRealmBootstrap, QueuedRecord, QueuedSdkEvent, ScheduledSendDispatchRecord,
+    ScheduledSendSubmissionState,
 };
 pub use runtime_journey::{ParticipationAction, ParticipationAdmissionFacts};
 pub use security_transaction::{
