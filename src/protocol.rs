@@ -21,9 +21,8 @@ pub(crate) use arkret_models_collaboration::http_bodies::{
     EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind,
 };
 pub(crate) use arkret_models_collaboration::session_grant_bodies::{
-    SessionGrantAgentScopeRequest, SessionGrantAppletDelegation, SessionGrantDpopBindingProof,
-    SessionGrantOutcome, SessionGrantRefreshOutcome, SessionGrantRefreshProof,
-    SessionGrantRefreshRequestBody, SessionGrantRequestBody, UnsignedSessionGrantRequestBody,
+    SessionGrantAgentScopeRequest, SessionGrantDpopBindingProof, SessionGrantOutcome,
+    SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
 };
 pub(crate) use arkret_models_collaboration::signal_message_stream::{
     MAX_MESSAGE_STREAM_LIFETIME_SECONDS, MAX_MESSAGE_STREAM_PREVIEW_BYTES,
@@ -111,9 +110,7 @@ pub(crate) use arkret_models_collaboration::sync_frames::client_sync::SyncReques
 #[cfg(test)]
 pub(crate) use arkret_models_crypto::MlsKeyPackageState;
 #[cfg(test)]
-pub(crate) use arkret_models_identity::{
-    ACCOUNT_HANDOFF_ALLOWED_OPERATIONS, Handle, SessionGrantProofKind,
-};
+pub(crate) use arkret_models_identity::{ACCOUNT_HANDOFF_ALLOWED_OPERATIONS, Handle};
 #[cfg(test)]
 pub(crate) use arkret_wire::{
     DeviceMessageId, ErrorEnvelope, NotificationId, NotificationKind, ProtocolKind,
@@ -154,11 +151,7 @@ pub(crate) mod models {
 }
 
 pub(crate) mod session_grant {
-    pub use arkret_auth::session_grant::SessionGrantProofFields;
-    pub(crate) use arkret_auth::session_grant::{
-        agent_key_proof_session_grant_request, did_proof_session_grant_request,
-        holder_proof_session_grant_request, oidc_session_grant_request,
-    };
+    pub(crate) use arkret_auth::session_grant::agent_key_proof_session_grant_request;
 }
 
 pub(crate) mod signatures {

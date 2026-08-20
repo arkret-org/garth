@@ -9,10 +9,7 @@ pub use engine::{
     BoxSessionFuture, REFRESH_SUCCESS_COOLDOWN_SECS, SessionEngine, SessionGrantState,
     SessionGrantTransport, SessionRefreshOptions,
 };
-pub use login::{
-    AgentKeyProofLogin, DidProofLogin, HolderProofLogin, LoginKind, OidcLogin, SessionProofFields,
-    SignedOidcLogin,
-};
+pub use login::{AgentKeyProofLogin, LoginKind};
 pub use provider::{AuthenticatedTransportFactory, SessionTransportProvider};
 pub use refresh::{
     GRANT_ROTATION_SKEW_SECS, POLL_INTERVAL_SECS, REFRESH_SKEW_SECS, RefreshDecision,

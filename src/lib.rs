@@ -39,10 +39,13 @@ pub mod subscribe;
 pub mod sync_client;
 pub mod websocket;
 pub use account_handoff::{
-    AccountHandoffDisposition, IdentityCreationNextStep, IdentityCreationReconciliation,
-    OidcAccountHandoffInput, account_handoff_disposition, identity_binding_challenge_request,
-    identity_creation_register_request, oidc_account_handoff_request, reconcile_identity_creation,
-    validate_identity_creation_outcome, verify_binding_receipt_at_issuance,
+    AccountHandoffDisposition, BoundSessionRoute, IdentityCreationNextStep,
+    IdentityCreationReconciliation, LocalEvidenceHydration, LocalEvidenceNormalization,
+    LocalEvidenceUnavailableReason, NormalizedLocalEvidence, OidcAccountHandoffInput,
+    ReturningDeviceCandidate, account_handoff_disposition, identity_binding_challenge_request,
+    identity_creation_register_request, normalize_local_evidence, oidc_account_handoff_request,
+    reconcile_identity_creation, route_bound_session, validate_identity_creation_outcome,
+    verify_binding_receipt_at_issuance,
 };
 pub use arkret_identity::{
     AuthorityDidHistoryResolver, AuthorityHistoryUnavailable, AuthorityHistoryVerificationError,
@@ -112,12 +115,11 @@ pub use service_route::{
     ServiceRouteEvaluator, ServiceRouteNoticeCandidate, ServiceRouteSource, ServiceRouteStateStore,
 };
 pub use session::{
-    AgentKeyProofLogin, AuthenticatedTransportFactory, DidProofLogin, GRANT_ROTATION_SKEW_SECS,
-    HolderProofLogin, LoginKind, NoopSessionGrantStore, OidcLogin, POLL_INTERVAL_SECS,
-    REFRESH_SKEW_SECS, RefreshDecision, SecureSessionGrantStore, SessionEngine,
-    SessionGrantRefreshState, SessionGrantState, SessionGrantStore, SessionGrantTransport,
-    SessionHandle, SessionProofFields, SessionRefreshOptions, SessionTransportProvider,
-    SignedOidcLogin, grant_due_for_rotation, grant_is_dead, refresh_decision,
+    AgentKeyProofLogin, AuthenticatedTransportFactory, GRANT_ROTATION_SKEW_SECS, LoginKind,
+    NoopSessionGrantStore, POLL_INTERVAL_SECS, REFRESH_SKEW_SECS, RefreshDecision,
+    SecureSessionGrantStore, SessionEngine, SessionGrantRefreshState, SessionGrantState,
+    SessionGrantStore, SessionGrantTransport, SessionHandle, SessionRefreshOptions,
+    SessionTransportProvider, grant_due_for_rotation, grant_is_dead, refresh_decision,
 };
 pub use signal::{
     PresenceObservation, PresenceProjection, PresenceStatus, SIGNAL_PLAINTEXT_KIND_CALL,

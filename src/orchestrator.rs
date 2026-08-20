@@ -1508,7 +1508,7 @@ mod tests {
     }
 
     fn event_frame() -> EventsSubscribeFrame {
-        let event = arkret_wire::test_support::raw_event(
+        let mut event = arkret_wire::test_support::raw_event(
             EventKind::MessageCreate.as_str(),
             crate::protocol::ScopeRef::Realm {
                 realm_id: realm_id(),
@@ -1529,6 +1529,35 @@ mod tests {
             }),
         )
         .unwrap();
+        let event_digest = arkret_wire::Hash::new(event.event_digest().unwrap()).unwrap();
+        let producer = arkret_wire::ProducerEventProof {
+            kind: arkret_wire::proof_kind::DETACHED_JWS.to_owned(),
+            verification_method: arkret_wire::DidUrl::new(
+                "did:webvh:z6mkfixture:alice.example#device-1",
+            )
+            .unwrap(),
+            event_digest: event_digest.clone(),
+            created_at: event.created_at,
+            domain: None,
+            audience: None,
+            proof_purpose: None,
+            jws: "header..producer".to_owned(),
+        };
+        let admission = arkret_wire::PrincipalServerAdmissionProof {
+            kind: arkret_wire::PrincipalServerAdmissionProofKind::PrincipalServerAdmission,
+            verification_method: arkret_wire::DidUrl::new("did:web:principal.example#admission-1")
+                .unwrap(),
+            event_digest,
+            producer_proof_digest:
+                arkret_wire::PrincipalServerAdmissionProof::producer_proof_digest(&producer)
+                    .unwrap(),
+            producer_verification_method: producer.verification_method.clone(),
+            producer_signing_key: arkret_wire::DidKey::new("did:key:z6MkhFixtureDeviceKey")
+                .unwrap(),
+            accepted_at: event.created_at,
+            jws: "header..admission".to_owned(),
+        };
+        event.proofs = vec![producer.into(), admission.into()];
         let mut framed = frame(
             EventsSubscribeFrameKind::Event,
             serde_json::to_value(event).unwrap(),

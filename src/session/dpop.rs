@@ -17,7 +17,7 @@ pub fn access_token_auth(
     access_token: impl Into<String>,
     signing_key: SigningKey,
 ) -> arkret_http_client::DpopAuth {
-    arkret_http_client::DpopAuth::with_access_token(
+    arkret_http_client::DpopAuth::with_dpop_token(
         access_token.into(),
         dpop_proof_callback(signing_key),
     )

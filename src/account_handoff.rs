@@ -6,8 +6,8 @@
 
 use crate::protocol::{
     AccountBindingReceipt, AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
-    AccountRegisterOutcome, AccountRegisterRequestBody, Base64UrlString, DidCoreId, DidFullId,
-    DidOperationSubmitRequestBody, Hash, IdentityBindingChallengeOutcome,
+    AccountRegisterOutcome, AccountRegisterRequestBody, Base64UrlString, DeviceId, DidCoreId,
+    DidFullId, DidOperationSubmitRequestBody, Hash, IdentityBindingChallengeOutcome,
     IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationCommandKind,
     IdentityCreationGoal, IdentityCreationLease, IdentityCreationLeaseState,
     IdentityCreationLocalArtifactKind, IdentityCreationRecoveryKeyState,
@@ -41,6 +41,123 @@ pub enum AccountHandoffDisposition {
         principal_id: DidCoreId,
         full_id: DidFullId,
     },
+}
+
+/// Host-local secure material observed after the store has been scoped and
+/// hydrated. The reference is opaque to Garth; only the host may dereference
+/// it into a signing capability.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReturningDeviceCandidate {
+    pub principal_id: DidFullId,
+    pub device_id: DeviceId,
+    pub signer_ref: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LocalEvidenceHydration {
+    Loading,
+    Ready,
+    Failed { reason: String },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LocalEvidenceUnavailableReason {
+    HydrationInProgress,
+    StorageFailure { reason: String },
+    InvalidSignerReference,
+    AmbiguousReturningDevices,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum NormalizedLocalEvidence {
+    ReturningDevice(ReturningDeviceCandidate),
+    NoReturningDevice,
+    Unavailable(LocalEvidenceUnavailableReason),
+}
+
+/// Result of local normalization. Foreign-account candidates are quarantined
+/// from the current transaction, never erased or interpreted as absence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LocalEvidenceNormalization {
+    pub evidence: NormalizedLocalEvidence,
+    pub quarantined_candidates: Vec<ReturningDeviceCandidate>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum BoundSessionRoute {
+    IssueOrReplay(ReturningDeviceCandidate),
+    DeviceSetupRequired,
+    Diagnostics(LocalEvidenceUnavailableReason),
+}
+
+/// Reduce fully hydrated host evidence to one canonical returning-device fact.
+///
+/// Loading and storage failure are explicit outcomes. A different account's
+/// candidate is quarantined, not deleted. Multiple distinct candidates for the
+/// authenticated principal are a contradiction and fail closed.
+pub fn normalize_local_evidence(
+    authenticated_principal: &DidFullId,
+    hydration: LocalEvidenceHydration,
+    candidates: impl IntoIterator<Item = ReturningDeviceCandidate>,
+) -> LocalEvidenceNormalization {
+    let mut quarantined_candidates = Vec::new();
+    let mut matching_candidates = Vec::new();
+    for candidate in candidates {
+        if &candidate.principal_id == authenticated_principal {
+            if !matching_candidates.contains(&candidate) {
+                matching_candidates.push(candidate);
+            }
+        } else {
+            quarantined_candidates.push(candidate);
+        }
+    }
+
+    let evidence =
+        match hydration {
+            LocalEvidenceHydration::Loading => NormalizedLocalEvidence::Unavailable(
+                LocalEvidenceUnavailableReason::HydrationInProgress,
+            ),
+            LocalEvidenceHydration::Failed { reason } => NormalizedLocalEvidence::Unavailable(
+                LocalEvidenceUnavailableReason::StorageFailure { reason },
+            ),
+            LocalEvidenceHydration::Ready => match matching_candidates.as_slice() {
+                [] => NormalizedLocalEvidence::NoReturningDevice,
+                [candidate] if candidate.signer_ref.trim().is_empty() => {
+                    NormalizedLocalEvidence::Unavailable(
+                        LocalEvidenceUnavailableReason::InvalidSignerReference,
+                    )
+                }
+                [candidate] => NormalizedLocalEvidence::ReturningDevice(candidate.clone()),
+                _ => NormalizedLocalEvidence::Unavailable(
+                    LocalEvidenceUnavailableReason::AmbiguousReturningDevices,
+                ),
+            },
+        };
+
+    LocalEvidenceNormalization {
+        evidence,
+        quarantined_candidates,
+    }
+}
+
+/// Route only a bound handoff. Identity-creation outcomes belong to their own
+/// state machine and are rejected here rather than coerced into device setup.
+pub fn route_bound_session(
+    disposition: &AccountHandoffDisposition,
+    normalization: LocalEvidenceNormalization,
+) -> Result<BoundSessionRoute> {
+    if !matches!(disposition, AccountHandoffDisposition::Bound { .. }) {
+        return Err(protocol(
+            "bound-session routing requires a bound account handoff",
+        ));
+    }
+    Ok(match normalization.evidence {
+        NormalizedLocalEvidence::ReturningDevice(candidate) => {
+            BoundSessionRoute::IssueOrReplay(candidate)
+        }
+        NormalizedLocalEvidence::NoReturningDevice => BoundSessionRoute::DeviceSetupRequired,
+        NormalizedLocalEvidence::Unavailable(reason) => BoundSessionRoute::Diagnostics(reason),
+    })
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -431,6 +548,107 @@ mod tests {
 
     fn core_id(value: &str) -> DidCoreId {
         crate::protocol::project_full_id_to_core_id(&did(value)).unwrap()
+    }
+
+    fn device(value: &str) -> DeviceId {
+        DeviceId::new(value.to_owned()).unwrap()
+    }
+
+    fn returning_candidate(
+        principal: &str,
+        device_value: &str,
+        signer_ref: &str,
+    ) -> ReturningDeviceCandidate {
+        ReturningDeviceCandidate {
+            principal_id: did(principal),
+            device_id: device(device_value),
+            signer_ref: signer_ref.to_owned(),
+        }
+    }
+
+    #[test]
+    fn local_evidence_normalization_admits_only_one_matching_signer() {
+        let alice = did("did:webvh:z6mkfixture:alice.example");
+        let bob_device = returning_candidate(
+            "did:webvh:z6mkfixture:bob.example",
+            "ak:device:01904100-0000-7000-8000-000000000031",
+            "secure:bob-device",
+        );
+        let alice_device = returning_candidate(
+            alice.as_str(),
+            "ak:device:01904100-0000-7000-8000-000000000030",
+            "secure:alice-device",
+        );
+        let normalized = normalize_local_evidence(
+            &alice,
+            LocalEvidenceHydration::Ready,
+            [bob_device.clone(), alice_device.clone()],
+        );
+
+        assert_eq!(
+            normalized.evidence,
+            NormalizedLocalEvidence::ReturningDevice(alice_device)
+        );
+        assert_eq!(normalized.quarantined_candidates, vec![bob_device]);
+    }
+
+    #[test]
+    fn local_evidence_loading_and_ambiguity_never_become_no_device() {
+        let alice = did("did:webvh:z6mkfixture:alice.example");
+        let first = returning_candidate(
+            alice.as_str(),
+            "ak:device:01904100-0000-7000-8000-000000000030",
+            "secure:alice-device-a",
+        );
+        let second = returning_candidate(
+            alice.as_str(),
+            "ak:device:01904100-0000-7000-8000-000000000032",
+            "secure:alice-device-b",
+        );
+
+        assert_eq!(
+            normalize_local_evidence(&alice, LocalEvidenceHydration::Loading, std::iter::empty(),)
+                .evidence,
+            NormalizedLocalEvidence::Unavailable(
+                LocalEvidenceUnavailableReason::HydrationInProgress
+            )
+        );
+        assert_eq!(
+            normalize_local_evidence(&alice, LocalEvidenceHydration::Ready, [first, second])
+                .evidence,
+            NormalizedLocalEvidence::Unavailable(
+                LocalEvidenceUnavailableReason::AmbiguousReturningDevices
+            )
+        );
+    }
+
+    #[test]
+    fn bound_session_route_keeps_device_setup_and_diagnostics_distinct() {
+        let full_id = did("did:webvh:z6mkfixture:alice.example");
+        let disposition = AccountHandoffDisposition::Bound {
+            principal_id: core_id(full_id.as_str()),
+            full_id: full_id.clone(),
+        };
+        let no_device =
+            normalize_local_evidence(&full_id, LocalEvidenceHydration::Ready, std::iter::empty());
+        assert_eq!(
+            route_bound_session(&disposition, no_device).unwrap(),
+            BoundSessionRoute::DeviceSetupRequired
+        );
+
+        let unavailable = normalize_local_evidence(
+            &full_id,
+            LocalEvidenceHydration::Failed {
+                reason: "secure store unavailable".to_owned(),
+            },
+            std::iter::empty(),
+        );
+        assert_eq!(
+            route_bound_session(&disposition, unavailable).unwrap(),
+            BoundSessionRoute::Diagnostics(LocalEvidenceUnavailableReason::StorageFailure {
+                reason: "secure store unavailable".to_owned(),
+            })
+        );
     }
 
     #[test]

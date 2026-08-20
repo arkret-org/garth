@@ -302,9 +302,12 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::protocol::{
-        DeviceId, DidCoreId, DidUrl, Error, Hash, SessionGrantOutcome, SessionGrantProofKind,
-        SessionGrantRefreshOutcome, SessionGrantRefreshProof, SessionGrantRefreshRequestBody,
-        SessionGrantRequestBody,
+        Base64UrlString, DeviceId, DidCoreId, DidUrl, Error, Hash, SessionGrantOutcome,
+        SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
+    };
+    use arkret_models_collaboration::session_grant_bodies::{
+        AgentSessionGrantRefreshRequest, AgentSessionRefreshProofContext,
+        UnsignedAgentSessionRefreshProof,
     };
     use chrono::{Duration, Utc};
 
@@ -390,6 +393,38 @@ mod tests {
         }
     }
 
+    fn refresh_options() -> SessionRefreshOptions {
+        let audience = DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap();
+        let proof = UnsignedAgentSessionRefreshProof {
+            context: AgentSessionRefreshProofContext::V1,
+            request_canonical_digest: Hash::new(
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+            )
+            .unwrap(),
+            audience: audience.clone(),
+            issued_at: Utc::now(),
+            expires_at: Utc::now() + Duration::minutes(5),
+            verification_method: DidUrl::new("did:webvh:z6mkfixture:agent.example#runtime-key-1")
+                .unwrap(),
+        }
+        .attach_signature(
+            Base64UrlString::new(arkret_canonical::base64url_encode([0_u8; 64])).unwrap(),
+        )
+        .unwrap();
+        SessionRefreshOptions {
+            request: Some(SessionGrantRefreshRequestBody::Agent(
+                AgentSessionGrantRefreshRequest {
+                    grant_jwt: "grant-1".to_owned(),
+                    audience: Some(audience),
+                    device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001")
+                        .unwrap(),
+                    agent_session_refresh_proof: proof,
+                },
+            )),
+            expected_dpop_jkt: Some("jkt-1".to_owned()),
+        }
+    }
+
     #[allow(clippy::type_complexity)]
     fn provider() -> (
         SessionTransportProvider<RefreshTransport, TokenFactory>,
@@ -409,30 +444,7 @@ mod tests {
             SessionTransportProvider::new(
                 SessionEngine::with_state(transport, state()),
                 factory,
-                SessionRefreshOptions {
-                    audience: Some(
-                        DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
-                    ),
-                    device_id: Some(
-                        DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
-                    ),
-                    proof: Some(SessionGrantRefreshProof {
-                        proof_kind: SessionGrantProofKind::DidBoundSignature,
-                        challenge: "refresh-challenge".to_owned(),
-                        request_canonical_digest: Hash::new("sha256:0000000000000000000000000000000000000000000000000000000000000000").unwrap(),
-                        audience: DidCoreId::new(
-                            "ak:did_core:webvh:z6mkfixture:service.example",
-                        )
-                        .unwrap(),
-                        issued_at: Utc::now(),
-                        expires_at: Utc::now() + Duration::minutes(5),
-                        signature: "refresh-proof-signature".to_owned(),
-                        verification_method: Some(
-                            DidUrl::new("did:webvh:z6mkfixture:alice.example#device-1").unwrap(),
-                        ),
-                    }),
-                    expected_dpop_jkt: Some("jkt-1".to_owned()),
-                },
+                refresh_options(),
             ),
             refresh_calls,
             factory_calls,
@@ -487,28 +499,7 @@ mod tests {
         let factory = TokenFactory {
             calls: Arc::new(Mutex::new(0)),
         };
-        let options = SessionRefreshOptions {
-            audience: Some(
-                DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
-            ),
-            device_id: state().device_id.clone(),
-            proof: Some(SessionGrantRefreshProof {
-                proof_kind: SessionGrantProofKind::DidBoundSignature,
-                challenge: "refresh-challenge".to_owned(),
-                request_canonical_digest: Hash::new(
-                    "sha256:0000000000000000000000000000000000000000000000000000000000000000",
-                )
-                .unwrap(),
-                audience: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
-                issued_at: Utc::now(),
-                expires_at: Utc::now() + chrono::Duration::minutes(5),
-                signature: "refresh-proof-signature".to_owned(),
-                verification_method: Some(
-                    DidUrl::new("did:webvh:z6mkfixture:alice.example#device-1").unwrap(),
-                ),
-            }),
-            expected_dpop_jkt: Some("jkt-1".to_owned()),
-        };
+        let options = refresh_options();
         let provider = SessionTransportProvider::with_store(
             SessionEngine::with_state(transport.clone(), state()),
             factory.clone(),

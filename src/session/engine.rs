@@ -5,8 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::protocol::{
     DeviceId, DidCoreId, Error, Result, SessionGrantId, SessionGrantOutcome,
-    SessionGrantRefreshOutcome, SessionGrantRefreshProof, SessionGrantRefreshRequestBody,
-    SessionGrantRequestBody,
+    SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -119,10 +118,8 @@ impl SessionGrantState {
         if outcome.device_id.as_ref() != Some(&request.device_id)
             || outcome.session_public_key != request.session_public_key
             || outcome.audience != request.audience
-            || outcome
-                .granted_scope
-                .iter()
-                .any(|scope| !request.allows_scope(scope))
+            || outcome.granted_scope
+                != arkret_models_identity::standard_initial_session_grant_scope()
         {
             return Err(protocol(
                 "initial Standard session grant does not match registration request",
@@ -150,9 +147,10 @@ impl SessionGrantState {
 
 #[derive(Clone, Debug, Default)]
 pub struct SessionRefreshOptions {
-    pub audience: Option<DidCoreId>,
-    pub device_id: Option<DeviceId>,
-    pub proof: Option<SessionGrantRefreshProof>,
+    /// Fully closed human or Agent refresh branch authored by the caller.
+    /// Keeping the branch together prevents impossible cross-products such as
+    /// a human device proof paired with Agent fields.
+    pub request: Option<SessionGrantRefreshRequestBody>,
     pub expected_dpop_jkt: Option<String>,
 }
 
@@ -356,9 +354,7 @@ fn refresh_request(
     current: &SessionGrantState,
     options: SessionRefreshOptions,
 ) -> Result<(SessionGrantRefreshRequestBody, String)> {
-    let audience = required(options.audience, "session refresh audience is required")?;
-    let device_id = required(options.device_id, "session refresh device_id is required")?;
-    let proof = required(options.proof, "session refresh proof is required")?;
+    let request = required(options.request, "session refresh request is required")?;
     let expected_dpop_jkt = required(
         options.expected_dpop_jkt,
         "session refresh DPoP key thumbprint is required",
@@ -367,10 +363,25 @@ fn refresh_request(
     if current.grant_jwt.trim().is_empty() {
         return Err(protocol("active session grant JWT is empty"));
     }
-    if current.audience != audience {
+    let (grant_jwt, audience, device_id) = match &request {
+        SessionGrantRefreshRequestBody::Human(request) => (
+            request.grant_jwt.as_str(),
+            request.audience.as_ref(),
+            &request.device_id,
+        ),
+        SessionGrantRefreshRequestBody::Agent(request) => (
+            request.grant_jwt.as_str(),
+            request.audience.as_ref(),
+            &request.device_id,
+        ),
+    };
+    if grant_jwt != current.grant_jwt {
+        return Err(protocol("session refresh predecessor JWT changed"));
+    }
+    if audience != Some(&current.audience) {
         return Err(protocol("session refresh audience changed"));
     }
-    if current.device_id.as_ref() != Some(&device_id) {
+    if current.device_id.as_ref() != Some(device_id) {
         return Err(protocol("session refresh device changed"));
     }
     if let Some(current_dpop_jkt) = current.dpop_jkt.as_deref()
@@ -379,15 +390,10 @@ fn refresh_request(
         return Err(protocol("session refresh DPoP key changed"));
     }
 
-    Ok((
-        SessionGrantRefreshRequestBody {
-            grant_jwt: current.grant_jwt.clone(),
-            audience: Some(audience),
-            device_id,
-            proof,
-        },
-        expected_dpop_jkt,
-    ))
+    request
+        .validate()
+        .map_err(|error| protocol(error.to_string()))?;
+    Ok((request, expected_dpop_jkt))
 }
 
 fn state_from_issue_outcome(
@@ -401,17 +407,30 @@ fn state_from_issue_outcome(
     if outcome.expires_at <= now {
         return Err(protocol("issued session grant is expired"));
     }
-    if outcome.principal_id != request.principal_id {
+    let (principal_id, device_id, request_audience) = match request {
+        SessionGrantRequestBody::Human(request) => (
+            &request.principal_id,
+            Some(&request.device_id),
+            &request.audience,
+        ),
+        SessionGrantRequestBody::Agent(request) => (
+            &request.principal_id,
+            Some(&request.device_id),
+            &request.proof.audience,
+        ),
+    };
+    if &outcome.principal_id != principal_id {
         return Err(protocol("issued session grant principal changed"));
     }
-    if request.device_id.as_ref() != outcome.device_id.as_ref() {
+    if device_id != outcome.device_id.as_ref() {
         return Err(protocol("issued session grant device changed"));
     }
     let audience = outcome.audience;
-    if audience != request.proof.audience {
+    if &audience != request_audience {
         return Err(protocol("issued session grant audience changed"));
     }
     let grant_id = outcome.session_grant_id;
+    let dpop_jkt = outcome.session_public_key.thumbprint_sha256()?;
     let session_public_key = outcome.session_public_key.into_string();
 
     Ok(SessionGrantState {
@@ -423,7 +442,7 @@ fn state_from_issue_outcome(
         audience,
         granted_scope: outcome.granted_scope,
         session_public_key: Some(session_public_key),
-        dpop_jkt: None,
+        dpop_jkt: Some(dpop_jkt),
     })
 }
 
@@ -452,12 +471,20 @@ fn state_from_refresh_outcome(
     if outcome.dpop_jkt != expected_dpop_jkt {
         return Err(protocol("refreshed session grant DPoP key changed"));
     }
-    if request.audience.as_ref() != Some(&outcome.audience) {
+    let (request_audience, request_device_id) = match request {
+        SessionGrantRefreshRequestBody::Human(request) => {
+            (request.audience.as_ref(), &request.device_id)
+        }
+        SessionGrantRefreshRequestBody::Agent(request) => {
+            (request.audience.as_ref(), &request.device_id)
+        }
+    };
+    if request_audience != Some(&outcome.audience) {
         return Err(protocol(
             "refreshed session grant audience mismatched request",
         ));
     }
-    if current.device_id.as_ref() != Some(&request.device_id) {
+    if current.device_id.as_ref() != Some(request_device_id) {
         return Err(protocol(
             "refreshed session grant device mismatched request",
         ));
@@ -494,15 +521,17 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::protocol::{
-        DidUrl, Hash, RealmId, SessionGrantAgentScopeRequest, SessionGrantDpopBindingProof,
-        SessionGrantProofKind, SessionGrantScopeDetails,
+        Base64UrlString, DidUrl, Hash, RealmId, SessionGrantAgentScopeRequest,
+        SessionGrantDpopBindingProof, SessionGrantScopeDetails,
+    };
+    use arkret_models_collaboration::session_grant_bodies::{
+        AgentSessionGrantRefreshRequest, AgentSessionRefreshProofContext,
+        UnsignedAgentSessionRefreshProof,
     };
     use chrono::Duration;
 
     use super::*;
-    use crate::session::{
-        AgentKeyProofLogin, DidProofLogin, HolderProofLogin, OidcLogin, SessionProofFields,
-    };
+    use crate::session::AgentKeyProofLogin;
 
     #[derive(Clone, Default)]
     struct MockSessionTransport {
@@ -596,66 +625,6 @@ mod tests {
         DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap()
     }
 
-    fn proof_fields() -> SessionProofFields {
-        SessionProofFields {
-            challenge: "session-grant-challenge-0001".to_owned(),
-            request_canonical_digest: digest(),
-            audience: audience(),
-            expires_at: Some(now() + Duration::minutes(5)),
-            signature: "proof-signature".to_owned(),
-            verification_method: Some(
-                DidUrl::new("did:webvh:z6mkfixture:alice.example#device-1").unwrap(),
-            ),
-        }
-    }
-
-    fn did_login() -> LoginKind {
-        LoginKind::DidProof(DidProofLogin {
-            principal_id: did(),
-            device_id: device_id(),
-            requested_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
-            dpop_binding_proof: Some(SessionGrantDpopBindingProof {
-                proof_jwt: "dpop-proof".to_owned(),
-            }),
-            applet_delegation: None,
-            proof: proof_fields(),
-        })
-    }
-
-    fn holder_login() -> LoginKind {
-        LoginKind::HolderProof(HolderProofLogin {
-            principal_id: did(),
-            device_id: Some(device_id()),
-            requested_scope: vec!["ak.self.account.read.viewer".to_owned()],
-            dpop_binding_proof: Some(SessionGrantDpopBindingProof {
-                proof_jwt: "holder-dpop-proof".to_owned(),
-            }),
-            applet_delegation: None,
-            proof: proof_fields(),
-        })
-    }
-
-    fn oidc_login() -> LoginKind {
-        LoginKind::Oidc(
-            OidcLogin {
-                principal_id: did(),
-                device_id: Some(device_id()),
-                requested_scope: Vec::new(),
-                challenge: "oidc-challenge".to_owned(),
-                audience: audience(),
-                issuer: "https://issuer.example".to_owned(),
-                client_id: "client-1".to_owned(),
-                redirect_uri: "https://app.example/callback".to_owned(),
-                state: "state-1".to_owned(),
-                nonce: "nonce-1".to_owned(),
-                authorization_code: "code-1".to_owned(),
-                code_verifier: "verifier-1".to_owned(),
-            }
-            .sign(|bytes| Ok(arkret_canonical::base64url_encode(bytes)))
-            .unwrap(),
-        )
-    }
-
     fn agent_login() -> LoginKind {
         LoginKind::AgentKeyProof(AgentKeyProofLogin {
             principal_id: did(),
@@ -732,28 +701,35 @@ mod tests {
         assert!(!handle_debug.contains(&handle.access_token));
     }
 
-    fn refresh_proof() -> SessionGrantRefreshProof {
-        SessionGrantRefreshProof {
-            proof_kind: SessionGrantProofKind::DidBoundSignature,
-            challenge: "refresh-challenge".to_owned(),
+    fn refresh_options_for(grant_jwt: &str) -> SessionRefreshOptions {
+        let proof = UnsignedAgentSessionRefreshProof {
+            context: AgentSessionRefreshProofContext::V1,
             request_canonical_digest: digest(),
             audience: audience(),
             issued_at: now(),
             expires_at: now() + Duration::minutes(5),
-            signature: "refresh-proof-signature".to_owned(),
-            verification_method: Some(
-                DidUrl::new("did:webvh:z6mkfixture:alice.example#device-1").unwrap(),
-            ),
+            verification_method: DidUrl::new("did:webvh:z6mkfixture:agent.example#runtime-key-1")
+                .unwrap(),
+        }
+        .attach_signature(
+            Base64UrlString::new(arkret_canonical::base64url_encode([0_u8; 64])).unwrap(),
+        )
+        .unwrap();
+        SessionRefreshOptions {
+            request: Some(SessionGrantRefreshRequestBody::Agent(
+                AgentSessionGrantRefreshRequest {
+                    grant_jwt: grant_jwt.to_owned(),
+                    audience: Some(audience()),
+                    device_id: device_id(),
+                    agent_session_refresh_proof: proof,
+                },
+            )),
+            expected_dpop_jkt: Some("jkt-1".to_owned()),
         }
     }
 
     fn refresh_options() -> SessionRefreshOptions {
-        SessionRefreshOptions {
-            audience: Some(audience()),
-            device_id: Some(device_id()),
-            proof: Some(refresh_proof()),
-            expected_dpop_jkt: Some("jkt-1".to_owned()),
-        }
+        refresh_options_for("grant-1")
     }
 
     fn refresh_outcome(token: &str, grant: SessionGrantId) -> SessionGrantRefreshOutcome {
@@ -773,59 +749,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn engine_exchanges_all_login_kinds() {
-        let transport = MockSessionTransport::with_issue_responses(vec![
-            Ok(issue_outcome(
-                "grant-agent",
-                grant_id(10),
-                did(),
-                Some(device_id()),
-            )),
-            Ok(issue_outcome(
-                "grant-holder",
-                grant_id(11),
-                did(),
-                Some(device_id()),
-            )),
-            Ok(issue_outcome(
-                "grant-oidc",
-                grant_id(12),
-                did(),
-                Some(device_id()),
-            )),
-            Ok(issue_outcome(
-                "grant-did",
-                grant_id(13),
-                did(),
-                Some(device_id()),
-            )),
-        ]);
+    async fn engine_exchanges_closed_agent_login() {
+        let transport = MockSessionTransport::with_issue_responses(vec![Ok(issue_outcome(
+            "grant-agent",
+            grant_id(10),
+            did(),
+            Some(device_id()),
+        ))]);
         let engine = SessionEngine::new(transport.clone());
 
-        engine.login(agent_login(), now()).await.unwrap();
-        engine.login(holder_login(), now()).await.unwrap();
-        engine.login(oidc_login(), now()).await.unwrap();
-        let handle = engine.login(did_login(), now()).await.unwrap();
+        let handle = engine.login(agent_login(), now()).await.unwrap();
 
-        assert_eq!(handle.access_token, "grant-did");
+        assert_eq!(handle.access_token, "grant-agent");
         let requests = transport.issue_requests();
-        assert_eq!(requests.len(), 4);
-        assert_eq!(
-            requests[0].proof.proof_kind,
-            SessionGrantProofKind::AgentKeyProof
-        );
-        assert_eq!(
-            requests[1].proof.proof_kind,
-            SessionGrantProofKind::PairedDeviceProof
-        );
-        assert_eq!(
-            requests[2].proof.proof_kind,
-            SessionGrantProofKind::OidcCodeExchange
-        );
-        assert_eq!(
-            requests[3].proof.proof_kind,
-            SessionGrantProofKind::DidBoundSignature
-        );
+        assert_eq!(requests.len(), 1);
+        assert!(matches!(requests[0], SessionGrantRequestBody::Agent(_)));
     }
 
     #[tokio::test]
@@ -837,7 +775,7 @@ mod tests {
             Some(device_id()),
         ))]);
         let engine = SessionEngine::new(transport.clone());
-        let request = did_login().into_session_grant_request().unwrap();
+        let request = agent_login().into_session_grant_request().unwrap();
 
         let handle = engine.login_request(request, now()).await.unwrap();
 
@@ -872,7 +810,7 @@ mod tests {
             let transport = MockSessionTransport::with_issue_responses(vec![Ok(outcome)]);
             let engine = SessionEngine::new(transport);
 
-            let result = engine.login(did_login(), now()).await;
+            let result = engine.login(agent_login(), now()).await;
 
             assert!(result.is_err());
             assert!(engine.current_state().is_none());
@@ -899,15 +837,7 @@ mod tests {
     async fn refresh_rejects_missing_required_inputs_without_transport() {
         let cases = vec![
             SessionRefreshOptions {
-                audience: None,
-                ..refresh_options()
-            },
-            SessionRefreshOptions {
-                device_id: None,
-                ..refresh_options()
-            },
-            SessionRefreshOptions {
-                proof: None,
+                request: None,
                 ..refresh_options()
             },
             SessionRefreshOptions {
@@ -940,8 +870,11 @@ mod tests {
         assert_eq!(handle.access_token, "grant-2");
         let requests = transport.refresh_requests();
         assert_eq!(requests.len(), 1);
-        assert_eq!(requests[0].grant_jwt, "grant-1");
-        assert_eq!(requests[0].audience.as_ref(), Some(&audience()));
+        let SessionGrantRefreshRequestBody::Agent(request) = &requests[0] else {
+            panic!("test authors the Agent refresh branch");
+        };
+        assert_eq!(request.grant_jwt, "grant-1");
+        assert_eq!(request.audience.as_ref(), Some(&audience()));
         let state = engine.current_state().unwrap();
         assert_eq!(state.grant_id, grant_id(2));
         assert_eq!(state.dpop_jkt.as_deref(), Some("jkt-1"));
@@ -1129,7 +1062,7 @@ mod tests {
         // Past the cooldown the due refresh fires again.
         let handle = engine
             .refresh_if_due(
-                refresh_options(),
+                refresh_options_for("grant-2"),
                 now() + Duration::seconds(REFRESH_SUCCESS_COOLDOWN_SECS),
             )
             .await
