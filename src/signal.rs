@@ -56,6 +56,79 @@ pub struct VerifiedSignalSenderKey {
 }
 
 impl VerifiedSignalSenderKey {
+    /// Production constructor: admit one directory-resolved signing key as
+    /// the verified sender key for `(actor_id, device_id)`.
+    ///
+    /// The caller (a [`SignalSenderKeyResolver`] implementation) remains
+    /// responsible for the host-state half of `signal.md` §1: resolving the
+    /// authoritative verify key from its *current* accepted device directory
+    /// and replaying the root-anchored PCR authorization chain, generation
+    /// and revocation state. That evidence lives outside this crate by
+    /// layering — garth holds no device directory or PCR state.
+    ///
+    /// What this constructor does enforce, fail-closed, is every completeness
+    /// condition of the evidence tuple that is decidable locally:
+    ///
+    /// * `authority` is structurally valid and its `principal_id` names
+    ///   `actor_id` — the exact-authority pair must be the sender's, never a
+    ///   bystander's;
+    /// * `verification_method` is a DID URL whose bare full DID projects to
+    ///   `actor_id` and whose fragment equals `device_id` verbatim (the §1
+    ///   directory-lookup completeness condition, mirrored from
+    ///   [`SignalEnvelope::validate_structural`] so a mis-bound key cannot be
+    ///   constructed even before an envelope exists);
+    /// * `public_key` decodes to a 32-byte Ed25519 verifying key, so
+    ///   malformed key material is rejected here instead of surfacing as a
+    ///   spurious signature failure later.
+    pub fn from_directory_evidence(
+        public_key: PublicKeyMaterial,
+        actor_id: DidCoreId,
+        device_id: crate::protocol::DeviceId,
+        verification_method: crate::protocol::DidUrl,
+        authority: PrincipalAuthorityKey,
+    ) -> Result<Self> {
+        authority
+            .validate()
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+        if authority.principal_id != actor_id {
+            return Err(Error::Protocol(
+                "signal sender authority principal_id does not name the sender actor".to_owned(),
+            ));
+        }
+        let (controller, fragment) =
+            verification_method
+                .as_str()
+                .split_once('#')
+                .ok_or_else(|| {
+                    Error::Protocol(
+                        "signal sender verification_method requires a DID URL fragment".to_owned(),
+                    )
+                })?;
+        let controller_core = crate::protocol::DidFullId::new(controller)
+            .map_err(|error| Error::Protocol(error.to_string()))
+            .and_then(|full| {
+                crate::protocol::project_full_id_to_core_id(&full)
+                    .map_err(|error| Error::Protocol(error.to_string()))
+            })?;
+        if controller_core != actor_id || fragment != device_id.as_str() {
+            return Err(Error::Protocol(
+                "signal sender verification_method controller or fragment does not match the directory key"
+                    .to_owned(),
+            ));
+        }
+        // Fail malformed key material closed at admission time.
+        public_key
+            .ed25519_bytes()
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+        Ok(Self {
+            public_key,
+            actor_id,
+            device_id,
+            verification_method,
+            authority,
+        })
+    }
+
     fn validate_for(&self, envelope: &SignalEnvelope) -> Result<()> {
         if self.actor_id != envelope.sender_actor_id
             || self.device_id != envelope.sender_device_id
@@ -632,6 +705,155 @@ mod tests {
                 public_key.clone(),
             ))
         }
+    }
+
+    fn directory_evidence_parts() -> (
+        PublicKeyMaterial,
+        DidCoreId,
+        DeviceId,
+        DidUrl,
+        PrincipalAuthorityKey,
+    ) {
+        let device_id = device("000000000005");
+        let public_key = PublicKeyMaterial::Ed25519Raw {
+            bytes: SigningKey::from_bytes(&[41; 32])
+                .verifying_key()
+                .to_bytes()
+                .to_vec(),
+        };
+        let verification_method =
+            DidUrl::new(format!("did:webvh:z6mkfixture:alice.example#{device_id}")).unwrap();
+        let authority = PrincipalAuthorityKey::new(
+            actor(),
+            DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
+        );
+        (
+            public_key,
+            actor(),
+            device_id,
+            verification_method,
+            authority,
+        )
+    }
+
+    #[test]
+    fn from_directory_evidence_admits_a_consistent_tuple() {
+        let (public_key, actor_id, device_id, verification_method, authority) =
+            directory_evidence_parts();
+        let key = VerifiedSignalSenderKey::from_directory_evidence(
+            public_key,
+            actor_id,
+            device_id,
+            verification_method,
+            authority,
+        )
+        .unwrap();
+        assert_eq!(key.actor_id, actor());
+        assert_eq!(key.device_id, device("000000000005"));
+    }
+
+    #[test]
+    fn from_directory_evidence_rejects_an_authority_pair_naming_another_principal() {
+        let (public_key, actor_id, device_id, verification_method, _) = directory_evidence_parts();
+        let foreign_authority = PrincipalAuthorityKey::new(
+            DidCoreId::new("ak:did_core:webvh:z6mkother").unwrap(),
+            DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
+        );
+        let error = VerifiedSignalSenderKey::from_directory_evidence(
+            public_key,
+            actor_id,
+            device_id,
+            verification_method,
+            foreign_authority,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error}").contains("authority principal_id"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn from_directory_evidence_rejects_a_fragment_naming_another_device() {
+        let (public_key, actor_id, _, verification_method, authority) = directory_evidence_parts();
+        let error = VerifiedSignalSenderKey::from_directory_evidence(
+            public_key,
+            actor_id,
+            device("000000000006"),
+            verification_method,
+            authority,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error}").contains("controller or fragment"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn from_directory_evidence_rejects_a_controller_projecting_to_another_actor() {
+        let (public_key, actor_id, device_id, _, authority) = directory_evidence_parts();
+        let foreign_method =
+            DidUrl::new(format!("did:webvh:z6mkother:mallory.example#{device_id}")).unwrap();
+        let error = VerifiedSignalSenderKey::from_directory_evidence(
+            public_key,
+            actor_id,
+            device_id,
+            foreign_method,
+            authority,
+        )
+        .unwrap_err();
+        assert!(
+            format!("{error}").contains("controller or fragment"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn from_directory_evidence_rejects_malformed_key_material() {
+        let (_, actor_id, device_id, verification_method, authority) = directory_evidence_parts();
+        let truncated = PublicKeyMaterial::Ed25519Raw {
+            bytes: vec![0u8; 16],
+        };
+        assert!(
+            VerifiedSignalSenderKey::from_directory_evidence(
+                truncated,
+                actor_id,
+                device_id,
+                verification_method,
+                authority,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn receiver_accepts_a_directory_evidence_key_end_to_end() {
+        let (envelope, public_key, plaintext) = signed_signal(
+            device("000000000005"),
+            presence_plaintext("online", 1),
+            SignalClass::Session,
+            30,
+            [42; 32],
+        );
+        let resolver = move |envelope: &SignalEnvelope| {
+            let authority = PrincipalAuthorityKey::new(
+                envelope.sender_actor_id.clone(),
+                DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
+            );
+            VerifiedSignalSenderKey::from_directory_evidence(
+                public_key.clone(),
+                envelope.sender_actor_id.clone(),
+                envelope.sender_device_id.clone(),
+                envelope.proof.verification_method.clone(),
+                authority,
+            )
+            .ok()
+        };
+        let accepted = SignalReceiver::new()
+            .accept(&envelope, &resolver, &FixedDecryptor(plaintext), sent_at())
+            .unwrap();
+        assert_eq!(accepted.kind, SIGNAL_PLAINTEXT_KIND_PRESENCE);
     }
 
     #[test]

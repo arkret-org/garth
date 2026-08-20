@@ -67,7 +67,6 @@ pub(crate) use arkret_models_identity::{
     UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
 };
 pub(crate) use arkret_state::resolver::RealmState;
-#[cfg(test)]
 pub(crate) use arkret_wire::project_full_id_to_core_id;
 pub use arkret_wire::{AuthorizationLease, IngressReceipt};
 pub(crate) use arkret_wire::{

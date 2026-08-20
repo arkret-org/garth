@@ -5,10 +5,8 @@
 //! separately encrypted staged material. Recovery secrets never enter this
 //! state.
 
-use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
 
 use arkret_models_crypto::TypedSecurityTransactionContinueRequest;
 use arkret_models_crypto::{BackupSeriesEraseOutcome, BackupSeriesEraseRequestBody};
@@ -183,54 +181,6 @@ pub trait SecurityTransactionStore: Clone + MaybeSendSync + 'static {
     /// public state so a crash cannot leave an unreachable secret behind.
     fn clear_staged_secret(&self, reference: &str) -> Result<()>;
     fn remove(&self, transaction_id: &TransactionId) -> Result<()>;
-}
-
-#[derive(Clone, Default)]
-pub struct MemorySecurityTransactionStore {
-    transactions: Arc<Mutex<BTreeMap<String, DurableSecurityTransaction>>>,
-    cleared_staged_secret_refs: Arc<Mutex<Vec<String>>>,
-}
-
-impl SecurityTransactionStore for MemorySecurityTransactionStore {
-    fn load(&self, transaction_id: &TransactionId) -> Result<Option<DurableSecurityTransaction>> {
-        Ok(self
-            .transactions
-            .lock()
-            .map_err(|_| Error::Protocol("security transaction store lock poisoned".to_owned()))?
-            .get(transaction_id.as_str())
-            .cloned())
-    }
-
-    fn save<'a>(
-        &'a self,
-        state: &'a DurableSecurityTransaction,
-    ) -> impl Future<Output = Result<()>> + crate::MaybeSend + 'a {
-        async move {
-            self.transactions
-                .lock()
-                .map_err(|_| {
-                    Error::Protocol("security transaction store lock poisoned".to_owned())
-                })?
-                .insert(state.transaction_id.as_str().to_owned(), state.clone());
-            Ok(())
-        }
-    }
-
-    fn clear_staged_secret(&self, reference: &str) -> Result<()> {
-        self.cleared_staged_secret_refs
-            .lock()
-            .map_err(|_| Error::Protocol("security transaction store lock poisoned".to_owned()))?
-            .push(reference.to_owned());
-        Ok(())
-    }
-
-    fn remove(&self, transaction_id: &TransactionId) -> Result<()> {
-        self.transactions
-            .lock()
-            .map_err(|_| Error::Protocol("security transaction store lock poisoned".to_owned()))?
-            .remove(transaction_id.as_str());
-        Ok(())
-    }
 }
 
 #[derive(Clone)]
@@ -682,15 +632,51 @@ fn validate_resource_binding(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
 
     fn transaction_id() -> TransactionId {
         TransactionId::new("ak:transaction:01904100-0000-7000-8000-abcdefabcdef").unwrap()
     }
 
-    #[tokio::test]
-    async fn memory_store_round_trips_only_public_coordination_state() {
-        let store = MemorySecurityTransactionStore::default();
+    /// Records `clear_staged_secret` calls so tests can observe the engine's
+    /// destroy-before-clear ordering without a real store implementation.
+    #[derive(Clone, Default)]
+    struct SpySecurityTransactionStore {
+        cleared_staged_secret_refs: Arc<Mutex<Vec<String>>>,
+    }
+
+    impl SecurityTransactionStore for SpySecurityTransactionStore {
+        fn load(
+            &self,
+            _transaction_id: &TransactionId,
+        ) -> Result<Option<DurableSecurityTransaction>> {
+            Ok(None)
+        }
+
+        fn save<'a>(
+            &'a self,
+            _state: &'a DurableSecurityTransaction,
+        ) -> impl Future<Output = Result<()>> + crate::MaybeSend + 'a {
+            async move { Ok(()) }
+        }
+
+        fn clear_staged_secret(&self, reference: &str) -> Result<()> {
+            self.cleared_staged_secret_refs
+                .lock()
+                .unwrap()
+                .push(reference.to_owned());
+            Ok(())
+        }
+
+        fn remove(&self, _transaction_id: &TransactionId) -> Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn durable_state_serializes_only_public_coordination_state() {
         let state = DurableSecurityTransaction {
             transaction_id: transaction_id(),
             canonical_create_request: br#"{"public_plan":true}"#.to_vec(),
@@ -702,15 +688,8 @@ mod tests {
             accepted_completion_grant_request: None,
             last_observed_resource: None,
         };
-        store.save(&state).await.unwrap();
-        let loaded = store.load(&state.transaction_id).unwrap().unwrap();
-        assert_eq!(loaded.canonical_create_request, br#"{"public_plan":true}"#);
-        assert_eq!(
-            loaded.staged_secret_ref.as_deref(),
-            Some("secure-store://recovery/staged-1")
-        );
         assert!(
-            !serde_json::to_vec(&loaded)
+            !serde_json::to_vec(&state)
                 .unwrap()
                 .windows("recovery secret".len())
                 .any(|window| window == b"recovery secret")
@@ -751,7 +730,7 @@ mod tests {
 
     #[test]
     fn terminal_observation_destroys_staged_secret_before_clearing_reference() {
-        let store = MemorySecurityTransactionStore::default();
+        let store = SpySecurityTransactionStore::default();
         let mut state = DurableSecurityTransaction {
             transaction_id: transaction_id(),
             canonical_create_request: br#"{"public_plan":true}"#.to_vec(),

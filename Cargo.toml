@@ -31,6 +31,9 @@ rustdoc-args = ["--cfg", "docsrs"]
 default = []
 native = ["dep:tokio"]
 wasm = ["dep:gloo-timers"]
+# Deterministic signed service-route fixtures for downstream host tests
+# (`service_route_material::test_fixture`). Never enable in production builds.
+route-material-test-support = []
 
 [lints]
 workspace = true

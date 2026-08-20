@@ -30,6 +30,7 @@ pub mod queued_record;
 pub mod runtime_journey;
 pub mod security_transaction;
 pub mod service_route;
+pub mod service_route_material;
 pub mod session;
 pub mod signal;
 pub mod signal_message_stream;
@@ -105,14 +106,18 @@ pub use queued_record::{
 };
 pub use runtime_journey::{ParticipationAction, ParticipationAdmissionFacts};
 pub use security_transaction::{
-    BoxSecurityTransactionFuture, DurableSecurityTransaction, MemorySecurityTransactionStore,
-    PendingSecurityTransactionContinue, SecurityTransactionEngine, SecurityTransactionProgress,
-    SecurityTransactionStore, SecurityTransactionTransport,
+    BoxSecurityTransactionFuture, DurableSecurityTransaction, PendingSecurityTransactionContinue,
+    SecurityTransactionEngine, SecurityTransactionProgress, SecurityTransactionStore,
+    SecurityTransactionTransport,
 };
 pub use service_route::{
     MemoryServiceRouteStateStore, RouteCandidateSource, RouteForkQuarantine, RouteResolution,
     ServiceDescribeBinding, ServiceRouteCandidate, ServiceRouteDurableSnapshot,
     ServiceRouteEvaluator, ServiceRouteNoticeCandidate, ServiceRouteSource, ServiceRouteStateStore,
+};
+pub use service_route_material::{
+    PrefetchedRouteSource, authenticate_fetched_record, describe_route_binding,
+    validate_route_binding, verify_client_method_evidence,
 };
 pub use session::{
     AgentKeyProofLogin, AuthenticatedTransportFactory, GRANT_ROTATION_SKEW_SECS, LoginKind,
