@@ -327,22 +327,47 @@ where
         T: EventsScanTransport + ?Sized,
         P: ClientProjector + ?Sized,
     {
+        self.bootstrap_realm_history_classified(transport, realm_id, projector, options)
+            .await
+            .map_err(ProjectedRunError::into_error)
+    }
+
+    /// Projector-attributed variant of [`Self::bootstrap_realm_history`]: a
+    /// failing projector callback surfaces as [`ProjectedRunError::Projector`]
+    /// so the orchestrator can classify it as `ProjectorFailure` instead of a
+    /// generic protocol violation.
+    pub(crate) async fn bootstrap_realm_history_classified<T, P>(
+        &self,
+        transport: &T,
+        realm_id: RealmId,
+        projector: &P,
+        options: ScanCatchupOptions,
+    ) -> ProjectedRunResult<crate::protocol::EventsQueryOutcome>
+    where
+        T: EventsScanTransport + ?Sized,
+        P: ClientProjector + ?Sized,
+    {
         let outcome = self
             .scan_realm_catchup_uncheckpointed_classified(transport, realm_id.clone(), options)
-            .await
-            .map_err(ProjectedRunError::into_error)?;
+            .await?;
 
         let decoder = crate::InboundDecoder::new();
         let mut batch = Vec::new();
         let mut accepted_ids = Vec::new();
         for (index, row) in outcome.events.iter().cloned().enumerate() {
             let event = row.into_event().ok_or_else(|| {
-                Error::Protocol(format!(
+                ProjectedRunError::Transport(Error::Protocol(format!(
                     "Realm history bootstrap requires complete Events; row {index} is redacted or reference-locked"
-                ))
+                )))
             })?;
-            let event_id = crate::protocol::verified_event_id(&event)?;
-            if self.event_cache_store.seen(event_id.clone()).await? {
+            let event_id =
+                crate::protocol::verified_event_id(&event).map_err(ProjectedRunError::Transport)?;
+            if self
+                .event_cache_store
+                .seen(event_id.clone())
+                .await
+                .map_err(ProjectedRunError::Store)?
+            {
                 continue;
             }
             match decoder.decode_event(event) {
@@ -356,9 +381,15 @@ where
             accepted_ids.push(event_id);
         }
         if !batch.is_empty() {
-            projector.project(batch).await?;
+            projector
+                .project(batch)
+                .await
+                .map_err(ProjectedRunError::Projector)?;
             for event_id in accepted_ids {
-                self.event_cache_store.remember(event_id).await?;
+                self.event_cache_store
+                    .remember(event_id)
+                    .await
+                    .map_err(ProjectedRunError::Store)?;
             }
         }
         Ok(outcome)
