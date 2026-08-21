@@ -1533,7 +1533,7 @@ mod tests {
         )
     }
 
-    fn event_frame() -> EventsSubscribeFrame {
+    fn accepted_event() -> arkret_wire::Event {
         let mut event = arkret_wire::test_support::raw_event(
             EventKind::MessageCreate.as_str(),
             crate::protocol::ScopeRef::Realm {
@@ -1605,29 +1605,7 @@ mod tests {
     }
 
     fn event_frame() -> EventsSubscribeFrame {
-        let event = accepted_event(
-            arkret_wire::test_support::raw_event(
-                EventKind::MessageCreate.as_str(),
-                crate::protocol::ScopeRef::Realm {
-                    realm_id: realm_id(),
-                },
-                event_actor_id(),
-                crate::protocol::DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
-                1,
-                Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
-                json!({
-                    "content": {"kind": "ak.content.text", "body": "hello"},
-                    "strand_id": arkret_wire::StrandId::from_event_id(
-                        &arkret_wire::EventId::from_digest(
-                            arkret_canonical::DigestSuite::Sha256,
-                            [2; 32],
-                        ),
-                    ),
-                    "track_name": "discussion"
-                }),
-            )
-            .unwrap(),
-        );
+        let event = accepted_event();
         let mut framed = frame(
             EventsSubscribeFrameKind::Event,
             serde_json::to_value(event).unwrap(),

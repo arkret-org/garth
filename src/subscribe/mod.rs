@@ -337,9 +337,15 @@ where
         T: EventsScanTransport + ?Sized,
         P: ClientProjector + ?Sized,
     {
-        self.bootstrap_realm_history_classified(transport, realm_id, projector, options)
-            .await
-            .map_err(ProjectedRunError::into_error)
+        self.bootstrap_realm_history_classified(
+            transport,
+            realm_id,
+            digest_suite,
+            projector,
+            options,
+        )
+        .await
+        .map_err(ProjectedRunError::into_error)
     }
 
     /// Projector-attributed variant of [`Self::bootstrap_realm_history`]: a
@@ -350,6 +356,7 @@ where
         &self,
         transport: &T,
         realm_id: RealmId,
+        digest_suite: arkret_canonical::DigestSuite,
         projector: &P,
         options: ScanCatchupOptions,
     ) -> ProjectedRunResult<crate::protocol::EventsQueryOutcome>
@@ -370,8 +377,14 @@ where
                     "Realm history bootstrap requires complete Events; row {index} is redacted or reference-locked"
                 )))
             })?;
-            let event_id = crate::protocol::verified_event_id(&event, digest_suite)?;
-            if self.event_cache_store.seen(event_id.clone()).await? {
+            let event_id = crate::protocol::verified_event_id(&event, digest_suite)
+                .map_err(ProjectedRunError::Transport)?;
+            if self
+                .event_cache_store
+                .seen(event_id.clone())
+                .await
+                .map_err(ProjectedRunError::Store)?
+            {
                 continue;
             }
             match decoder.decode_event(event) {
