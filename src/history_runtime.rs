@@ -7,9 +7,9 @@ use arkret_models_collaboration::history_key::{
     HistoryKeyRequestCreateOutcome, HistoryKeyRequestListOutcome, HistoryKeyRequestListQuery,
     HistoryKeyResponseAckOutcome, HistoryKeyResponseAckRequest, HistoryKeyResponseListOutcome,
     HistoryKeyResponseListQuery, HistoryKeyResponseSendOutcome, HistoryKeyResponseSendRequest,
-    HistoryKeySourceRelay, HistoryMailboxAckEntry, HistoryMailboxId, HistoryMailboxPageEntry,
-    HistoryMailboxRecordStatus, HistoryRequestId, HistoryResponseChunkDescriptor,
-    HistoryResponseId, SelfHistoryTraversalAccess, mailbox_capability_commitment,
+    HistoryKeySourceRelay, HistoryRequestId, HistoryResponseAckEntry,
+    HistoryResponseChunkDescriptor, HistoryResponseId, HistoryResponsePageEntry,
+    HistoryResponseRecordStatus, SelfHistoryTraversalAccess, response_capability_commitment,
 };
 use arkret_state::mls_governance_proof::MlsGovernanceVerificationCheckpoint;
 use arkret_wire::{Hash, SealBasis};
@@ -18,7 +18,7 @@ use serde::{Deserialize, Serialize};
 use crate::store::{SecretClass, SecretDurability, SecureKeyStore};
 use crate::{Error, MaybeSend, MaybeSendSync, PutSecretOptions, Result};
 
-const HISTORY_MAILBOX_CAPABILITY_PREFIX: &str = "arkret/history-mailbox-capability/v1/";
+const HISTORY_RESPONSE_CAPABILITY_PREFIX: &str = "arkret/history-response-capability/v1/";
 const HISTORY_RUNTIME_CAS_RETRY_LIMIT: usize = 16;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -29,23 +29,22 @@ pub struct DurableHistoryRequest {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub accepted: Option<HistoryKeyRequestCreateOutcome>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mailbox_capability_secret_ref: Option<String>,
+    pub response_capability_secret_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub mailbox: Option<DurableHistoryMailbox>,
+    pub response_stream: Option<DurableHistoryResponseStream>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verified_traversal_basis: Option<SealBasis>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct DurableHistoryMailbox {
-    pub reply_mailbox_id: HistoryMailboxId,
+pub struct DurableHistoryResponseStream {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub acknowledged_through_cursor: Option<String>,
     pub acknowledged_through_sequence: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_page: Option<HistoryKeyResponseListOutcome>,
-    pub pending_dispositions: BTreeMap<u64, HistoryMailboxAckEntry>,
+    pub pending_dispositions: BTreeMap<u64, HistoryResponseAckEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pending_ack: Option<HistoryKeyResponseAckRequest>,
     #[serde(default)]
@@ -167,14 +166,12 @@ pub trait HistoryRuntimeTransport: MaybeSendSync {
 
     fn list_responses<'a>(
         &'a self,
-        reply_mailbox_id: &'a HistoryMailboxId,
         capability_b64u: &'a str,
         query: &'a HistoryKeyResponseListQuery,
     ) -> impl Future<Output = Result<HistoryKeyResponseListOutcome>> + MaybeSend + 'a;
 
     fn acknowledge_responses<'a>(
         &'a self,
-        reply_mailbox_id: &'a HistoryMailboxId,
         capability_b64u: &'a str,
         request: &'a HistoryKeyResponseAckRequest,
     ) -> impl Future<Output = Result<HistoryKeyResponseAckOutcome>> + MaybeSend + 'a;
@@ -211,33 +208,31 @@ impl HistoryRuntimeTransport for arkret_http_client::Client {
 
     fn list_responses<'a>(
         &'a self,
-        reply_mailbox_id: &'a HistoryMailboxId,
         capability_b64u: &'a str,
         query: &'a HistoryKeyResponseListQuery,
     ) -> impl Future<Output = Result<HistoryKeyResponseListOutcome>> + MaybeSend + 'a {
         async move {
             Ok(self
-                .history_key_response_list(reply_mailbox_id, capability_b64u, query)
+                .history_key_response_list(capability_b64u, query)
                 .await?)
         }
     }
 
     fn acknowledge_responses<'a>(
         &'a self,
-        reply_mailbox_id: &'a HistoryMailboxId,
         capability_b64u: &'a str,
         request: &'a HistoryKeyResponseAckRequest,
     ) -> impl Future<Output = Result<HistoryKeyResponseAckOutcome>> + MaybeSend + 'a {
         async move {
             Ok(self
-                .history_key_response_ack(reply_mailbox_id, capability_b64u, request)
+                .history_key_response_ack(capability_b64u, request)
                 .await?)
         }
     }
 }
 
-pub trait HistoryMailboxCapabilityOpener: MaybeSendSync {
-    fn open_mailbox_capability<'a>(
+pub trait HistoryResponseCapabilityOpener: MaybeSendSync {
+    fn open_response_capability<'a>(
         &'a self,
         outcome: &'a HistoryKeyRequestCreateOutcome,
     ) -> impl Future<Output = Result<String>> + MaybeSend + 'a;
@@ -302,7 +297,7 @@ where
     ) -> Result<HistoryKeyRequestCreateOutcome>
     where
         T: HistoryRuntimeTransport,
-        O: HistoryMailboxCapabilityOpener,
+        O: HistoryResponseCapabilityOpener,
     {
         request.validate()?;
         let request_digest = request.request_digest()?;
@@ -320,8 +315,8 @@ where
                             request: request.clone(),
                             request_digest: request_digest.clone(),
                             accepted: None,
-                            mailbox_capability_secret_ref: None,
-                            mailbox: None,
+                            response_capability_secret_ref: None,
+                            response_stream: None,
                             verified_traversal_basis: None,
                         },
                     );
@@ -362,13 +357,13 @@ where
             .requests
             .get(&request_key)
             .ok_or_else(|| Error::Protocol("history request disappeared".to_owned()))?
-            .mailbox_capability_secret_ref
+            .response_capability_secret_ref
             .is_none();
         if capability_missing {
-            let capability = opener.open_mailbox_capability(&accepted).await?;
-            validate_opened_mailbox_capability(&accepted, &capability)?;
+            let capability = opener.open_response_capability(&accepted).await?;
+            validate_opened_response_capability(&accepted, &capability)?;
             let capability_ref =
-                history_mailbox_capability_secret_ref(&accepted.request_receipt.reply_mailbox_id);
+                history_response_capability_secret_ref(&accepted.request.request_id);
             secure_store
                 .put_secret(
                     &capability_ref,
@@ -384,15 +379,14 @@ where
                 if state.accepted.as_ref() != Some(&accepted) {
                     return Err(Error::IdempotencyConflict(request_key.clone()));
                 }
-                if let Some(existing_ref) = &state.mailbox_capability_secret_ref {
+                if let Some(existing_ref) = &state.response_capability_secret_ref {
                     if existing_ref != &capability_ref {
                         return Err(Error::IdempotencyConflict(request_key.clone()));
                     }
                     return Ok(());
                 }
-                state.mailbox_capability_secret_ref = Some(capability_ref.clone());
-                state.mailbox = Some(DurableHistoryMailbox {
-                    reply_mailbox_id: accepted.request_receipt.reply_mailbox_id.clone(),
+                state.response_capability_secret_ref = Some(capability_ref.clone());
+                state.response_stream = Some(DurableHistoryResponseStream {
                     acknowledged_through_cursor: None,
                     acknowledged_through_sequence: None,
                     pending_page: None,
@@ -549,7 +543,7 @@ where
         .await
     }
 
-    pub async fn acquire_mailbox_page<T>(
+    pub async fn acquire_response_page<T>(
         &self,
         transport: &T,
         secure_store: &dyn SecureKeyStore,
@@ -563,69 +557,70 @@ where
         let state = snapshot.requests.get(request_id.as_str()).ok_or_else(|| {
             Error::Protocol(format!("history request is not durable: {request_id}"))
         })?;
-        let mailbox = state.mailbox.as_ref().ok_or_else(|| {
-            Error::Protocol("history request mailbox is not initialized".to_owned())
+        let response_stream = state.response_stream.as_ref().ok_or_else(|| {
+            Error::Protocol("history request response stream is not initialized".to_owned())
         })?;
-        if let Some(page) = &mailbox.pending_page {
+        if let Some(page) = &response_stream.pending_page {
             return Ok(page.clone());
         }
         let capability_ref = state
-            .mailbox_capability_secret_ref
+            .response_capability_secret_ref
             .as_deref()
-            .ok_or_else(|| Error::Protocol("history mailbox capability is missing".to_owned()))?;
+            .ok_or_else(|| {
+                Error::Protocol("history response stream capability is missing".to_owned())
+            })?;
         let capability = secure_store.get_secret(capability_ref)?.ok_or_else(|| {
-            Error::Protocol("history mailbox capability bytes are missing".to_owned())
+            Error::Protocol("history response stream capability bytes are missing".to_owned())
         })?;
         let query = HistoryKeyResponseListQuery {
-            after: mailbox.acknowledged_through_cursor.clone(),
+            after: response_stream.acknowledged_through_cursor.clone(),
             limit,
         };
         query.validate()?;
-        let page = transport
-            .list_responses(&mailbox.reply_mailbox_id, &capability, &query)
-            .await?;
+        let page = transport.list_responses(&capability, &query).await?;
         page.validate()?;
         self.mutate(|snapshot| {
             let state = request_state_mut(snapshot, request_id)?;
-            let mailbox = state.mailbox.as_mut().ok_or_else(|| {
-                Error::Protocol("history request mailbox is not initialized".to_owned())
+            let response_stream = state.response_stream.as_mut().ok_or_else(|| {
+                Error::Protocol("history request response stream is not initialized".to_owned())
             })?;
-            if let Some(existing) = &mailbox.pending_page {
+            if let Some(existing) = &response_stream.pending_page {
                 return Ok(existing.clone());
             }
-            validate_page_after_high_water(mailbox, &page)?;
-            mailbox.pending_page = Some(page.clone());
-            mailbox.pending_dispositions.clear();
-            mailbox.pending_ack = None;
+            validate_page_after_high_water(response_stream, &page)?;
+            response_stream.pending_page = Some(page.clone());
+            response_stream.pending_dispositions.clear();
+            response_stream.pending_ack = None;
             Ok(page.clone())
         })
         .await
     }
 
-    pub async fn record_mailbox_disposition(
+    pub async fn record_response_disposition(
         &self,
         request_id: &HistoryRequestId,
-        disposition: HistoryMailboxAckEntry,
+        disposition: HistoryResponseAckEntry,
     ) -> Result<()> {
         self.mutate(|snapshot| {
             let state = request_state_mut(snapshot, request_id)?;
-            let mailbox = state.mailbox.as_mut().ok_or_else(|| {
-                Error::Protocol("history request mailbox is not initialized".to_owned())
+            let response_stream = state.response_stream.as_mut().ok_or_else(|| {
+                Error::Protocol("history request response stream is not initialized".to_owned())
             })?;
-            let page = mailbox
-                .pending_page
-                .as_ref()
-                .ok_or_else(|| Error::Protocol("history mailbox has no pending page".to_owned()))?;
+            let page = response_stream.pending_page.as_ref().ok_or_else(|| {
+                Error::Protocol("history response stream has no pending page".to_owned())
+            })?;
             validate_disposition_for_page(page, &disposition)?;
-            if let Some(existing) = mailbox.pending_dispositions.get(&disposition.sequence())
+            if let Some(existing) = response_stream
+                .pending_dispositions
+                .get(&disposition.sequence())
                 && existing != &disposition
             {
                 return Err(Error::IdempotencyConflict(format!(
-                    "history-mailbox-disposition:{}",
+                    "history-response-stream-disposition:{}",
                     disposition.sequence()
                 )));
             }
-            mailbox
+            response_stream
                 .pending_dispositions
                 .insert(disposition.sequence(), disposition.clone());
             Ok(())
@@ -647,7 +642,7 @@ where
     }
 
     /// Return the canonical ids of all durably accepted requests whose
-    /// mailbox can be polled. Ordering is deterministic by request id.
+    /// response_stream can be polled. Ordering is deterministic by request id.
     pub fn accepted_request_ids(&self) -> Result<Vec<HistoryRequestId>> {
         Ok(self
             .store
@@ -655,7 +650,7 @@ where
             .snapshot
             .requests
             .values()
-            .filter(|request| request.accepted.is_some() && request.mailbox.is_some())
+            .filter(|request| request.accepted.is_some() && request.response_stream.is_some())
             .map(|request| request.request.request_id.clone())
             .collect())
     }
@@ -666,10 +661,10 @@ where
         manifest_digest: &Hash,
     ) -> Result<Option<DurableVerifiedHistoryManifest>> {
         let request = self.durable_request(request_id)?;
-        let mailbox = request.mailbox.ok_or_else(|| {
-            Error::Protocol("history request mailbox is not initialized".to_owned())
+        let response_stream = request.response_stream.ok_or_else(|| {
+            Error::Protocol("history request response stream is not initialized".to_owned())
         })?;
-        Ok(mailbox
+        Ok(response_stream
             .verified_manifests
             .get(manifest_digest.as_str())
             .cloned())
@@ -682,10 +677,10 @@ where
     ) -> Result<()> {
         self.mutate(|snapshot| {
             let state = request_state_mut(snapshot, request_id)?;
-            let mailbox = state.mailbox.as_mut().ok_or_else(|| {
-                Error::Protocol("history request mailbox is not initialized".to_owned())
+            let response_stream = state.response_stream.as_mut().ok_or_else(|| {
+                Error::Protocol("history request response stream is not initialized".to_owned())
             })?;
-            match mailbox
+            match response_stream
                 .verified_manifests
                 .get(manifest.manifest_digest.as_str())
             {
@@ -694,7 +689,7 @@ where
                 )),
                 Some(_) => Ok(()),
                 None => {
-                    mailbox
+                    response_stream
                         .verified_manifests
                         .insert(manifest.manifest_digest.to_string(), manifest.clone());
                     Ok(())
@@ -713,32 +708,35 @@ where
     where
         T: HistoryRuntimeTransport,
     {
-        let (capability_ref, reply_mailbox_id, ack) = {
+        let (capability_ref, ack) = {
             self.mutate(|snapshot| {
                 let state = request_state_mut(snapshot, request_id)?;
                 let capability_ref =
-                    state.mailbox_capability_secret_ref.clone().ok_or_else(|| {
-                        Error::Protocol("history mailbox capability is missing".to_owned())
-                    })?;
-                let mailbox = state.mailbox.as_mut().ok_or_else(|| {
-                    Error::Protocol("history request mailbox is not initialized".to_owned())
+                    state
+                        .response_capability_secret_ref
+                        .clone()
+                        .ok_or_else(|| {
+                            Error::Protocol(
+                                "history response stream capability is missing".to_owned(),
+                            )
+                        })?;
+                let response_stream = state.response_stream.as_mut().ok_or_else(|| {
+                    Error::Protocol("history request response stream is not initialized".to_owned())
                 })?;
-                let ack = match &mailbox.pending_ack {
+                let ack = match &response_stream.pending_ack {
                     Some(ack) => ack.clone(),
-                    None => build_ack_for_pending_page(mailbox)?,
+                    None => build_ack_for_pending_page(response_stream)?,
                 };
-                mailbox.pending_ack = Some(ack.clone());
-                Ok((capability_ref, mailbox.reply_mailbox_id.clone(), ack))
+                response_stream.pending_ack = Some(ack.clone());
+                Ok((capability_ref, ack))
             })
             .await?
         };
         let capability = secure_store.get_secret(&capability_ref)?.ok_or_else(|| {
-            Error::Protocol("history mailbox capability bytes are missing".to_owned())
+            Error::Protocol("history response stream capability bytes are missing".to_owned())
         })?;
 
-        let outcome = transport
-            .acknowledge_responses(&reply_mailbox_id, &capability, &ack)
-            .await?;
+        let outcome = transport.acknowledge_responses(&capability, &ack).await?;
         outcome.validate()?;
         if outcome.acked_through_cursor != ack.high_water_cursor {
             return Err(Error::Protocol(
@@ -752,21 +750,21 @@ where
             .sequence();
         self.mutate(|snapshot| {
             let state = request_state_mut(snapshot, request_id)?;
-            let mailbox = state.mailbox.as_mut().ok_or_else(|| {
-                Error::Protocol("history request mailbox is not initialized".to_owned())
+            let response_stream = state.response_stream.as_mut().ok_or_else(|| {
+                Error::Protocol("history request response stream is not initialized".to_owned())
             })?;
-            if !advance_ack_high_water(mailbox, &ack.high_water_cursor, high_sequence)? {
+            if !advance_ack_high_water(response_stream, &ack.high_water_cursor, high_sequence)? {
                 return Ok(());
             }
-            if mailbox.pending_ack.as_ref() != Some(&ack) {
+            if response_stream.pending_ack.as_ref() != Some(&ack) {
                 return Err(Error::IdempotencyConflict(format!(
-                    "history-mailbox-ack:{}",
+                    "history-response-stream-ack:{}",
                     request_id.as_str()
                 )));
             }
-            mailbox.pending_page = None;
-            mailbox.pending_dispositions.clear();
-            mailbox.pending_ack = None;
+            response_stream.pending_page = None;
+            response_stream.pending_dispositions.clear();
+            response_stream.pending_ack = None;
             Ok(())
         })
         .await?;
@@ -865,20 +863,20 @@ fn validate_accepted_request(
     validate_receipt_bound_traversal(request, request_digest, accepted)
 }
 
-fn validate_opened_mailbox_capability(
+fn validate_opened_response_capability(
     accepted: &HistoryKeyRequestCreateOutcome,
     capability_b64u: &str,
 ) -> Result<()> {
     let receipt = &accepted.request_receipt;
     if accepted
-        .sealed_mailbox_capability
-        .sealed_capability_digest()?
-        != receipt.sealed_capability_digest
-        || mailbox_capability_commitment(&receipt.reply_mailbox_id, capability_b64u)?
-            != receipt.mailbox_capability_commitment
+        .sealed_history_response_capability
+        .sealed_response_capability_digest()?
+        != receipt.sealed_response_capability_digest
+        || response_capability_commitment(capability_b64u)?
+            != receipt.response_capability_commitment
     {
         return Err(Error::Protocol(
-            "opened history mailbox capability does not match request receipt".to_owned(),
+            "opened history response stream capability does not match request receipt".to_owned(),
         ));
     }
     Ok(())
@@ -999,10 +997,10 @@ fn scope_realm_id(
     }
 }
 
-fn history_mailbox_capability_secret_ref(reply_mailbox_id: &HistoryMailboxId) -> String {
+fn history_response_capability_secret_ref(request_id: &HistoryRequestId) -> String {
     format!(
-        "{HISTORY_MAILBOX_CAPABILITY_PREFIX}{}",
-        reply_mailbox_id.as_str()
+        "{HISTORY_RESPONSE_CAPABILITY_PREFIX}{}",
+        request_id.as_str()
     )
 }
 
@@ -1017,16 +1015,17 @@ fn request_state_mut<'a>(
 }
 
 fn validate_page_after_high_water(
-    mailbox: &DurableHistoryMailbox,
+    response_stream: &DurableHistoryResponseStream,
     page: &HistoryKeyResponseListOutcome,
 ) -> Result<()> {
     if let (Some(high), Some(first)) = (
-        mailbox.acknowledged_through_sequence,
+        response_stream.acknowledged_through_sequence,
         page.ack_entries.first(),
     ) && first.sequence() <= high
     {
         return Err(Error::Protocol(
-            "history mailbox page did not advance beyond acknowledged high-water".to_owned(),
+            "history response stream page did not advance beyond acknowledged high-water"
+                .to_owned(),
         ));
     }
     Ok(())
@@ -1034,19 +1033,21 @@ fn validate_page_after_high_water(
 
 fn validate_disposition_for_page(
     page: &HistoryKeyResponseListOutcome,
-    disposition: &HistoryMailboxAckEntry,
+    disposition: &HistoryResponseAckEntry,
 ) -> Result<()> {
     let entry = page
         .ack_entries
         .iter()
         .find(|entry| entry.sequence() == disposition.sequence())
         .ok_or_else(|| {
-            Error::Protocol("history mailbox disposition is outside pending page".to_owned())
+            Error::Protocol(
+                "history response stream disposition is outside pending page".to_owned(),
+            )
         })?;
     match (entry, disposition) {
         (
-            HistoryMailboxPageEntry::Record { record },
-            HistoryMailboxAckEntry::Record {
+            HistoryResponsePageEntry::Record { record },
+            HistoryResponseAckEntry::Record {
                 response_id,
                 record_digest,
                 ..
@@ -1057,8 +1058,8 @@ fn validate_disposition_for_page(
             Ok(())
         }
         (
-            HistoryMailboxPageEntry::Lost { lost_record },
-            HistoryMailboxAckEntry::Lost {
+            HistoryResponsePageEntry::Lost { lost_record },
+            HistoryResponseAckEntry::Lost {
                 response_id,
                 lost_record_digest,
                 ..
@@ -1069,38 +1070,40 @@ fn validate_disposition_for_page(
             Ok(())
         }
         _ => Err(Error::Protocol(
-            "history mailbox disposition does not bind the exact page entry".to_owned(),
+            "history response stream disposition does not bind the exact page entry".to_owned(),
         )),
     }
 }
 
 fn build_ack_for_pending_page(
-    mailbox: &DurableHistoryMailbox,
+    response_stream: &DurableHistoryResponseStream,
 ) -> Result<HistoryKeyResponseAckRequest> {
-    let page = mailbox
+    let page = response_stream
         .pending_page
         .as_ref()
-        .ok_or_else(|| Error::Protocol("history mailbox has no pending page".to_owned()))?;
+        .ok_or_else(|| Error::Protocol("history response stream has no pending page".to_owned()))?;
     if page.ack_entries.is_empty() {
         return Err(Error::Protocol(
-            "empty history mailbox page has nothing to acknowledge".to_owned(),
+            "empty history response stream page has nothing to acknowledge".to_owned(),
         ));
     }
     let mut ack_entries = Vec::with_capacity(page.ack_entries.len());
     for page_entry in &page.ack_entries {
-        let disposition = mailbox
+        let disposition = response_stream
             .pending_dispositions
             .get(&page_entry.sequence())
             .ok_or_else(|| {
-                Error::Protocol("history mailbox page is not fully processed before ACK".to_owned())
+                Error::Protocol(
+                    "history response stream page is not fully processed before ACK".to_owned(),
+                )
             })?
             .clone();
         validate_disposition_for_page(page, &disposition)?;
         ack_entries.push(disposition);
     }
     let high_water_cursor = match page.ack_entries.last().expect("page is non-empty") {
-        HistoryMailboxPageEntry::Record { record } => record.cursor.clone(),
-        HistoryMailboxPageEntry::Lost { lost_record } => lost_record.cursor.clone(),
+        HistoryResponsePageEntry::Record { record } => record.cursor.clone(),
+        HistoryResponsePageEntry::Lost { lost_record } => lost_record.cursor.clone(),
     };
     let request = HistoryKeyResponseAckRequest {
         ack_token: page.ack_token.clone(),
@@ -1112,16 +1115,16 @@ fn build_ack_for_pending_page(
 }
 
 fn advance_ack_high_water(
-    mailbox: &mut DurableHistoryMailbox,
+    response_stream: &mut DurableHistoryResponseStream,
     cursor: &str,
     sequence: u64,
 ) -> Result<bool> {
-    if let Some(current) = mailbox.acknowledged_through_sequence {
+    if let Some(current) = response_stream.acknowledged_through_sequence {
         if current > sequence {
             return Ok(false);
         }
         if current == sequence {
-            if mailbox.acknowledged_through_cursor.as_deref() != Some(cursor) {
+            if response_stream.acknowledged_through_cursor.as_deref() != Some(cursor) {
                 return Err(Error::Protocol(
                     "history ACK sequence is bound to two cursors".to_owned(),
                 ));
@@ -1129,26 +1132,26 @@ fn advance_ack_high_water(
             return Ok(false);
         }
     }
-    mailbox.acknowledged_through_cursor = Some(cursor.to_owned());
-    mailbox.acknowledged_through_sequence = Some(sequence);
+    response_stream.acknowledged_through_cursor = Some(cursor.to_owned());
+    response_stream.acknowledged_through_sequence = Some(sequence);
     Ok(true)
 }
 
 pub fn cryptographically_rejected_disposition(
-    entry: &HistoryMailboxPageEntry,
-) -> Result<HistoryMailboxAckEntry> {
+    entry: &HistoryResponsePageEntry,
+) -> Result<HistoryResponseAckEntry> {
     match entry {
-        HistoryMailboxPageEntry::Record { record } => Ok(HistoryMailboxAckEntry::Record {
+        HistoryResponsePageEntry::Record { record } => Ok(HistoryResponseAckEntry::Record {
             sequence: record.sequence,
             response_id: record.source_record.response_id.clone(),
             record_digest: record.record_digest.clone(),
-            status: HistoryMailboxRecordStatus::CryptographicallyRejected,
+            status: HistoryResponseRecordStatus::CryptographicallyRejected,
         }),
-        HistoryMailboxPageEntry::Lost { lost_record } => Ok(HistoryMailboxAckEntry::Lost {
+        HistoryResponsePageEntry::Lost { lost_record } => Ok(HistoryResponseAckEntry::Lost {
             sequence: lost_record.sequence,
             response_id: lost_record.response_id.clone(),
             lost_record_digest: lost_record.lost_record_digest()?,
-            status: arkret_models_collaboration::history_key::HistoryMailboxLostStatus::Value,
+            status: arkret_models_collaboration::history_key::HistoryResponseLostStatus::Value,
         }),
     }
 }
@@ -1167,13 +1170,8 @@ mod tests {
         }
     }
 
-    fn mailbox() -> DurableHistoryMailbox {
-        DurableHistoryMailbox {
-            reply_mailbox_id: HistoryMailboxId::new(format!(
-                "ak:history_mailbox:{}",
-                "a".repeat(22)
-            ))
-            .unwrap(),
+    fn response_stream() -> DurableHistoryResponseStream {
+        DurableHistoryResponseStream {
             acknowledged_through_cursor: None,
             acknowledged_through_sequence: None,
             pending_page: None,
@@ -1181,6 +1179,18 @@ mod tests {
             pending_ack: None,
             verified_manifests: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn response_capability_secret_ref_uses_indexeddb_only_prefix() {
+        let request_id = HistoryRequestId::new(
+            "ak:history_request:01964137-0000-7000-8000-000000000001".to_owned(),
+        )
+        .unwrap();
+        assert_eq!(
+            history_response_capability_secret_ref(&request_id),
+            "arkret/history-response-capability/v1/ak:history_request:01964137-0000-7000-8000-000000000001"
+        );
     }
 
     #[test]
@@ -1216,15 +1226,15 @@ mod tests {
 
     #[test]
     fn ack_high_water_never_rolls_back() {
-        let mut mailbox = mailbox();
-        assert!(advance_ack_high_water(&mut mailbox, "cursor-10", 10).unwrap());
-        assert!(!advance_ack_high_water(&mut mailbox, "cursor-9", 9).unwrap());
-        assert_eq!(mailbox.acknowledged_through_sequence, Some(10));
+        let mut response_stream = response_stream();
+        assert!(advance_ack_high_water(&mut response_stream, "cursor-10", 10).unwrap());
+        assert!(!advance_ack_high_water(&mut response_stream, "cursor-9", 9).unwrap());
+        assert_eq!(response_stream.acknowledged_through_sequence, Some(10));
         assert_eq!(
-            mailbox.acknowledged_through_cursor.as_deref(),
+            response_stream.acknowledged_through_cursor.as_deref(),
             Some("cursor-10")
         );
-        assert!(advance_ack_high_water(&mut mailbox, "other-cursor", 10).is_err());
+        assert!(advance_ack_high_water(&mut response_stream, "other-cursor", 10).is_err());
     }
 
     #[tokio::test]

@@ -89,8 +89,8 @@ pub use history_candidates::{
     MAX_RESIDENT_HISTORY_CANDIDATES_PER_EPOCH, MemoryHistoryCandidateStateStore,
 };
 pub use history_runtime::{
-    DurableHistoryMailbox, DurableHistoryRequest, DurableHistoryResponseAttempt,
-    DurableVerifiedHistoryManifest, HistoryMailboxCapabilityOpener, HistoryRuntime,
+    DurableHistoryRequest, DurableHistoryResponseAttempt, DurableHistoryResponseStream,
+    DurableVerifiedHistoryManifest, HistoryResponseCapabilityOpener, HistoryRuntime,
     HistoryRuntimeSnapshot, HistoryRuntimeStore, HistoryRuntimeTransport,
     MemoryHistoryRuntimeStore, ReceiptBoundHistoryTraversal, VerifiedHistoryTraversal,
     VersionedHistoryRuntimeSnapshot, cryptographically_rejected_disposition,
