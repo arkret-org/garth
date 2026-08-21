@@ -140,6 +140,62 @@ pub fn normalize_local_evidence(
     }
 }
 
+/// Host-normalized relation between one locally persisted identity-creation
+/// checkpoint and the sign-in transaction that is about to start.
+///
+/// Every field is a fact the host already proved against durable state; this
+/// stage never re-derives them from UI signals or bare `Option` presence.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RegistrationCheckpointFacts {
+    /// The checkpoint's authority, audience, account subject and transaction
+    /// identity all match the account handoff this sign-in continues.
+    pub continues_current_transaction: bool,
+    /// The continued handoff still carries the exact identity-creation lease
+    /// id and fence frozen into the checkpoint, or the server already bound
+    /// the identity this checkpoint created.
+    pub lease_matches: bool,
+    /// The identity-creation lease window observed on the continued handoff
+    /// has elapsed.
+    pub lease_expired: bool,
+    /// The Account Authority closed identity creation for this account without
+    /// adopting this checkpoint.
+    pub identity_creation_terminal: bool,
+}
+
+/// What a sign-in transaction may do with one persisted registration
+/// checkpoint before the Account Authority has spoken.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegistrationCheckpointDisposition {
+    /// Identity creation legitimately owns this authentication. The returning
+    /// device candidate is not part of this transaction's input.
+    ContinuesIdentityCreation,
+    /// Current-transaction temporary state that is provably fenced out,
+    /// expired or terminal. It may be erased in the same local commit and
+    /// never suppresses a returning device candidate.
+    DiscardStale,
+    /// The checkpoint belongs to another transaction or another account. It is
+    /// excluded from this transaction's input and retained untouched.
+    Quarantine,
+}
+
+/// Decide how a persisted registration checkpoint participates in the sign-in
+/// transaction that is starting.
+///
+/// Absence of a matching transaction is never authority to delete durable
+/// draft material, and a checkpoint that this transaction cannot continue can
+/// never suppress a returning device candidate.
+pub fn classify_registration_checkpoint(
+    facts: RegistrationCheckpointFacts,
+) -> RegistrationCheckpointDisposition {
+    if !facts.continues_current_transaction {
+        return RegistrationCheckpointDisposition::Quarantine;
+    }
+    if facts.identity_creation_terminal || facts.lease_expired || !facts.lease_matches {
+        return RegistrationCheckpointDisposition::DiscardStale;
+    }
+    RegistrationCheckpointDisposition::ContinuesIdentityCreation
+}
+
 /// Route only a bound handoff. Identity-creation outcomes belong to their own
 /// state machine and are rejected here rather than coerced into device setup.
 pub fn route_bound_session(
@@ -649,6 +705,86 @@ mod tests {
                 reason: "secure store unavailable".to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn registration_checkpoint_classification_is_exhaustive_over_its_facts() {
+        use RegistrationCheckpointDisposition as Disposition;
+
+        for continues in [false, true] {
+            for lease_matches in [false, true] {
+                for lease_expired in [false, true] {
+                    for terminal in [false, true] {
+                        let facts = RegistrationCheckpointFacts {
+                            continues_current_transaction: continues,
+                            lease_matches,
+                            lease_expired,
+                            identity_creation_terminal: terminal,
+                        };
+                        let expected = if !continues {
+                            Disposition::Quarantine
+                        } else if terminal || lease_expired || !lease_matches {
+                            Disposition::DiscardStale
+                        } else {
+                            Disposition::ContinuesIdentityCreation
+                        };
+                        assert_eq!(
+                            classify_registration_checkpoint(facts),
+                            expected,
+                            "{facts:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn only_a_live_current_transaction_checkpoint_owns_the_authentication() {
+        use RegistrationCheckpointDisposition as Disposition;
+
+        let live = RegistrationCheckpointFacts {
+            continues_current_transaction: true,
+            lease_matches: true,
+            lease_expired: false,
+            identity_creation_terminal: false,
+        };
+        assert_eq!(
+            classify_registration_checkpoint(live),
+            Disposition::ContinuesIdentityCreation
+        );
+
+        // A foreign account's draft is retained, never deleted, and never
+        // allowed to speak for this transaction.
+        assert_eq!(
+            classify_registration_checkpoint(RegistrationCheckpointFacts {
+                continues_current_transaction: false,
+                ..live
+            }),
+            Disposition::Quarantine
+        );
+        // Terminal, expired and fenced-out drafts are all erasable local
+        // temporaries of this same transaction.
+        for stale in [
+            RegistrationCheckpointFacts {
+                identity_creation_terminal: true,
+                ..live
+            },
+            RegistrationCheckpointFacts {
+                lease_expired: true,
+                ..live
+            },
+            RegistrationCheckpointFacts {
+                lease_matches: false,
+                ..live
+            },
+        ] {
+            assert_eq!(
+                classify_registration_checkpoint(stale),
+                Disposition::DiscardStale,
+                "{stale:?}"
+            );
+        }
     }
 
     #[test]

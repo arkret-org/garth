@@ -44,10 +44,11 @@ pub use account_handoff::{
     AccountHandoffDisposition, BoundSessionRoute, IdentityCreationNextStep,
     IdentityCreationReconciliation, LocalEvidenceHydration, LocalEvidenceNormalization,
     LocalEvidenceUnavailableReason, NormalizedLocalEvidence, OidcAccountHandoffInput,
-    ReturningDeviceCandidate, account_handoff_disposition, identity_binding_challenge_request,
-    identity_creation_register_request, normalize_local_evidence, oidc_account_handoff_request,
-    reconcile_identity_creation, route_bound_session, validate_identity_creation_outcome,
-    verify_binding_receipt_at_issuance,
+    RegistrationCheckpointDisposition, RegistrationCheckpointFacts, ReturningDeviceCandidate,
+    account_handoff_disposition, classify_registration_checkpoint,
+    identity_binding_challenge_request, identity_creation_register_request,
+    normalize_local_evidence, oidc_account_handoff_request, reconcile_identity_creation,
+    route_bound_session, validate_identity_creation_outcome, verify_binding_receipt_at_issuance,
 };
 pub use arkret_identity::{
     AuthorityDidHistoryResolver, AuthorityHistoryUnavailable, AuthorityHistoryVerificationError,
