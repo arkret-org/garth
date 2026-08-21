@@ -17,7 +17,13 @@ pub enum ClientEvent {
     },
     Backfill {
         realm_id: RealmId,
+        digest_suite: arkret_canonical::DigestSuite,
         outcome: EventsQueryOutcome,
+    },
+    RealmAccepted {
+        realm_id: RealmId,
+        digest_suite: arkret_canonical::DigestSuite,
+        event: Event,
     },
     Message(DecodedMessage),
     Event(Event),

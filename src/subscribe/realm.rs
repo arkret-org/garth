@@ -8,8 +8,8 @@ use crate::protocol::{
 
 use super::{ProjectedRunError, ProjectedRunResult};
 use crate::{
-    ClientEvent, ClientProjector, CursorScope, CursorStore, DecodedInbound, DurableInboxStore,
-    EventCacheStore, InboundDecoder, OpaqueCursor,
+    ClientEvent, ClientProjector, CursorScope, CursorStore, DurableInboxStore, EventCacheStore,
+    OpaqueCursor,
 };
 
 // Native builds keep boxed stream futures (and the frame source held across
@@ -102,7 +102,6 @@ pub enum RealmStreamStopReason {
 pub struct RealmEventsDriver<C, D> {
     cursor_store: C,
     event_cache_store: D,
-    decoder: InboundDecoder,
     service_id: Option<DidCoreId>,
 }
 
@@ -115,7 +114,6 @@ where
         Self {
             cursor_store,
             event_cache_store,
-            decoder: InboundDecoder::new(),
             service_id: None,
         }
     }
@@ -129,13 +127,14 @@ where
         &self,
         transport: &T,
         realm_id: RealmId,
+        digest_suite: arkret_canonical::DigestSuite,
         projector: &P,
     ) -> Result<RealmStreamStopReason>
     where
         T: RealmEventsTransport + ?Sized,
         P: ClientProjector + ?Sized,
     {
-        self.run_stream_classified(transport, realm_id, projector)
+        self.run_stream_classified(transport, realm_id, digest_suite, projector)
             .await
             .map_err(ProjectedRunError::into_error)
     }
@@ -145,6 +144,7 @@ where
         &self,
         transport: &T,
         realm_id: RealmId,
+        digest_suite: arkret_canonical::DigestSuite,
     ) -> Result<RealmStreamStopReason>
     where
         T: RealmEventsTransport + ?Sized,
@@ -173,9 +173,9 @@ where
                             serde_json::Value::Object(payload.into_iter().collect()),
                         )
                     {
-                        let event_id = crate::protocol::verified_event_id(&event)?;
+                        let event_id = crate::protocol::verified_event_id(&event, digest_suite)?;
                         if !self.event_cache_store.seen(event_id.clone()).await? {
-                            batch = self.decode_event_batch(event);
+                            batch = self.realm_event_batch(event, &realm_id, digest_suite);
                             remember_after_commit = Some(event_id);
                         }
                     }
@@ -240,6 +240,7 @@ where
         &self,
         transport: &T,
         realm_id: RealmId,
+        digest_suite: arkret_canonical::DigestSuite,
         projector: &P,
     ) -> ProjectedRunResult<RealmStreamStopReason>
     where
@@ -290,7 +291,7 @@ where
                             serde_json::Value::Object(payload.into_iter().collect()),
                         )
                     {
-                        let event_id = crate::protocol::verified_event_id(&event)
+                        let event_id = crate::protocol::verified_event_id(&event, digest_suite)
                             .map_err(ProjectedRunError::Transport)?;
                         if !self
                             .event_cache_store
@@ -298,7 +299,7 @@ where
                             .await
                             .map_err(ProjectedRunError::Store)?
                         {
-                            let batch = self.decode_event_batch(event);
+                            let batch = self.realm_event_batch(event, &realm_id, digest_suite);
                             if !batch.is_empty() {
                                 // Gate: project must persist before the cursor moves.
                                 projector
@@ -384,16 +385,17 @@ where
         Ok(RealmStreamStopReason::StreamEnded)
     }
 
-    /// Decode a wire event into the `ClientEvent`(s) a host projector consumes.
-    /// Fault-tolerant decode: an event whose business payload is invalid
-    /// degrades to a raw `ClientEvent::Event` for the host to inspect, rather
-    /// than erroring the loop (which would wedge the stream on the same frame
-    /// every reconnect).
-    fn decode_event_batch(&self, event: Event) -> Vec<ClientEvent> {
-        match self.decoder.decode_event(event) {
-            DecodedInbound::Message(message) => vec![ClientEvent::Message(*message)],
-            DecodedInbound::Event(event) => vec![ClientEvent::Event(*event)],
-        }
+    fn realm_event_batch(
+        &self,
+        event: Event,
+        realm_id: &RealmId,
+        digest_suite: arkret_canonical::DigestSuite,
+    ) -> Vec<ClientEvent> {
+        vec![ClientEvent::RealmAccepted {
+            realm_id: realm_id.clone(),
+            digest_suite,
+            event,
+        }]
     }
 
     fn scope(&self, realm_id: &RealmId) -> CursorScope {
@@ -505,7 +507,12 @@ mod tests {
     }
 
     fn accepted_event(mut event: Event) -> Event {
-        let event_digest = arkret_wire::Hash::new(event.event_digest().unwrap()).unwrap();
+        let event_digest = arkret_wire::Hash::new(
+            event
+                .event_digest_with_digest_suite(arkret_canonical::DigestSuite::Sha256)
+                .unwrap(),
+        )
+        .unwrap();
         let producer = arkret_wire::ProducerEventProof {
             kind: arkret_wire::proof_kind::DETACHED_JWS.to_owned(),
             verification_method: arkret_wire::DidUrl::new(
@@ -513,6 +520,8 @@ mod tests {
             )
             .unwrap(),
             event_digest: event_digest.clone(),
+            signer_resolution_evidence_ref: None,
+            signer_resolution_evidence_digest: None,
             created_at: event.created_at,
             domain: None,
             audience: None,
@@ -530,6 +539,16 @@ mod tests {
             producer_verification_method: producer.verification_method.clone(),
             producer_signing_key: arkret_wire::DidKey::new("did:key:z6MkhFixtureDeviceKey")
                 .unwrap(),
+            signer_resolution_evidence_ref: arkret_wire::SignerEvidenceRef::new(format!(
+                "ak:signer_evidence:sha256:{}",
+                "11".repeat(32)
+            ))
+            .unwrap(),
+            signer_resolution_evidence_digest: arkret_wire::Hash::new(format!(
+                "sha256:{}",
+                "11".repeat(32)
+            ))
+            .unwrap(),
             accepted_at: event.created_at,
             jws: "header..admission".to_owned(),
         };
@@ -593,7 +612,12 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store);
 
         let reason = driver
-            .run_stream(&transport, realm_id(), &projector)
+            .run_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await
             .unwrap();
 
@@ -612,7 +636,11 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let reason = driver
-            .run_stream_to_inbox(&transport, realm_id())
+            .run_stream_to_inbox(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+            )
             .await
             .unwrap();
 
@@ -648,7 +676,12 @@ mod tests {
         };
 
         let reason = driver
-            .run_stream(&transport, realm_id(), &projector)
+            .run_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await
             .unwrap();
 
@@ -677,7 +710,12 @@ mod tests {
         };
 
         let reason = driver
-            .run_stream(&transport, realm_id(), &projector)
+            .run_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await
             .unwrap();
 
@@ -708,7 +746,12 @@ mod tests {
         };
 
         let reason = driver
-            .run_stream(&transport, realm_id(), &projector)
+            .run_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await
             .unwrap();
 
@@ -744,7 +787,12 @@ mod tests {
         };
 
         let error = driver
-            .run_stream(&transport, realm_id(), &projector)
+            .run_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await
             .unwrap_err();
 
@@ -777,7 +825,12 @@ mod tests {
         };
 
         let error = driver
-            .run_stream(&transport, realm_id(), &projector)
+            .run_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await
             .unwrap_err();
 
@@ -805,7 +858,12 @@ mod tests {
         };
 
         let error = driver
-            .run_stream(&transport, realm_id(), &projector)
+            .run_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await
             .unwrap_err();
 
@@ -832,7 +890,12 @@ mod tests {
         };
 
         let error = driver
-            .run_stream(&transport, realm_id(), &projector)
+            .run_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await
             .unwrap_err();
 
@@ -858,7 +921,12 @@ mod tests {
         };
 
         let reason = driver
-            .run_stream(&transport, realm_id(), &projector)
+            .run_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await
             .unwrap();
 
@@ -924,7 +992,12 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let reason = driver
-            .run_stream(&transport, realm_id(), &projector)
+            .run_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await
             .unwrap();
 
@@ -964,7 +1037,12 @@ mod tests {
         let transport = VecTransport::new(vec![event_frame.clone(), completion.clone()]);
         assert!(
             driver
-                .run_stream(&transport, realm_id(), &failing)
+                .run_stream(
+                    &transport,
+                    realm_id(),
+                    arkret_canonical::DigestSuite::Sha256,
+                    &failing,
+                )
                 .await
                 .is_err()
         );
@@ -980,7 +1058,12 @@ mod tests {
         };
         let transport = VecTransport::new(vec![event_frame, completion]);
         let reason = driver
-            .run_stream(&transport, realm_id(), &succeeding)
+            .run_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &succeeding,
+            )
             .await
             .unwrap();
 
@@ -1020,7 +1103,12 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let reason = driver
-            .run_stream(&transport, realm_id(), &projector)
+            .run_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await
             .unwrap();
 
@@ -1074,7 +1162,12 @@ mod tests {
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let reason = driver
-            .run_stream(&transport, realm_id(), &projector)
+            .run_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await
             .unwrap();
 
@@ -1101,7 +1194,14 @@ mod tests {
         };
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
-        let result = driver.run_stream(&transport, realm_id(), &projector).await;
+        let result = driver
+            .run_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
+            .await;
 
         // The projector error aborts the loop...
         assert!(result.is_err());

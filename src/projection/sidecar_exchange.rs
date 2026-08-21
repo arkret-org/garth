@@ -664,8 +664,12 @@ mod tests {
                 .iter()
                 .map(|event_id| arkret_wire::EventRef::new(event_id.to_string(), "after")),
         );
-        event.refresh_content_bound_identity().unwrap();
-        let digest = event.event_digest().unwrap();
+        event
+            .refresh_content_bound_identity_with_digest_suite(arkret_canonical::DigestSuite::Sha256)
+            .unwrap();
+        let digest = event
+            .event_digest_with_digest_suite(arkret_canonical::DigestSuite::Sha256)
+            .unwrap();
         (event.event_id, digest)
     }
 

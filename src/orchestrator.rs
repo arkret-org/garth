@@ -283,6 +283,7 @@ where
         &self,
         provider: &TP,
         realm_id: RealmId,
+        digest_suite: arkret_canonical::DigestSuite,
         projector: &P,
         control: &SyncLoopControl,
         options: RunOptions,
@@ -326,7 +327,7 @@ where
                 }
             };
             match engine
-                .run_realm_stream_classified(&transport, realm_id.clone(), projector)
+                .run_realm_stream_classified(&transport, realm_id.clone(), digest_suite, projector)
                 .await
             {
                 Ok(RealmStreamStopReason::StreamEnded) => {
@@ -369,6 +370,7 @@ where
                         .bootstrap_realm_history(
                             &transport,
                             realm_id.clone(),
+                            digest_suite,
                             projector,
                             ScanCatchupOptions::default(),
                         )
@@ -412,6 +414,7 @@ where
                         .bootstrap_realm_history(
                             &transport,
                             realm_id.clone(),
+                            digest_suite,
                             projector,
                             ScanCatchupOptions::default(),
                         )
@@ -448,6 +451,7 @@ where
         &self,
         provider: &TP,
         realm_id: RealmId,
+        digest_suite: arkret_canonical::DigestSuite,
         control: &SyncLoopControl,
         options: RunOptions,
     ) -> RunResult<RunStopReason>
@@ -487,7 +491,7 @@ where
                 }
             };
             match engine
-                .run_realm_stream_to_inbox(&transport, realm_id.clone())
+                .run_realm_stream_to_inbox(&transport, realm_id.clone(), digest_suite)
                 .await
             {
                 Ok(RealmStreamStopReason::StreamEnded) => {
@@ -525,6 +529,7 @@ where
                         .bootstrap_realm_history_to_inbox(
                             &transport,
                             realm_id.clone(),
+                            digest_suite,
                             ScanCatchupOptions::default(),
                         )
                         .await
@@ -568,6 +573,7 @@ where
                         .bootstrap_realm_history_to_inbox(
                             &transport,
                             realm_id.clone(),
+                            digest_suite,
                             ScanCatchupOptions::default(),
                         )
                         .await
@@ -1529,7 +1535,12 @@ mod tests {
             }),
         )
         .unwrap();
-        let event_digest = arkret_wire::Hash::new(event.event_digest().unwrap()).unwrap();
+        let event_digest = arkret_wire::Hash::new(
+            event
+                .event_digest_with_digest_suite(arkret_canonical::DigestSuite::Sha256)
+                .unwrap(),
+        )
+        .unwrap();
         let producer = arkret_wire::ProducerEventProof {
             kind: arkret_wire::proof_kind::DETACHED_JWS.to_owned(),
             verification_method: arkret_wire::DidUrl::new(
@@ -1537,6 +1548,8 @@ mod tests {
             )
             .unwrap(),
             event_digest: event_digest.clone(),
+            signer_resolution_evidence_ref: None,
+            signer_resolution_evidence_digest: None,
             created_at: event.created_at,
             domain: None,
             audience: None,
@@ -1554,6 +1567,16 @@ mod tests {
             producer_verification_method: producer.verification_method.clone(),
             producer_signing_key: arkret_wire::DidKey::new("did:key:z6MkhFixtureDeviceKey")
                 .unwrap(),
+            signer_resolution_evidence_ref: arkret_wire::SignerEvidenceRef::new(format!(
+                "ak:signer_evidence:sha256:{}",
+                "11".repeat(32)
+            ))
+            .unwrap(),
+            signer_resolution_evidence_digest: arkret_wire::Hash::new(format!(
+                "sha256:{}",
+                "11".repeat(32)
+            ))
+            .unwrap(),
             accepted_at: event.created_at,
             jws: "header..admission".to_owned(),
         };
@@ -1602,6 +1625,7 @@ mod tests {
             .run_realm(
                 &provider,
                 realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
                 &projector,
                 &control,
                 RunOptions::default(),
@@ -1630,7 +1654,13 @@ mod tests {
         control.cancel();
 
         let stop = client
-            .run_realm_to_inbox(&provider, realm_id(), &control, RunOptions::default())
+            .run_realm_to_inbox(
+                &provider,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &control,
+                RunOptions::default(),
+            )
             .await
             .unwrap();
 
@@ -1659,7 +1689,13 @@ mod tests {
         let control = SyncLoopControl::new();
 
         let stop = client
-            .run_realm_to_inbox(&provider, realm_id(), &control, options())
+            .run_realm_to_inbox(
+                &provider,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &control,
+                options(),
+            )
             .await
             .unwrap();
 
@@ -1715,7 +1751,13 @@ mod tests {
         ]);
 
         let stop = client
-            .run_realm_to_inbox(&provider, realm_id(), &SyncLoopControl::new(), options())
+            .run_realm_to_inbox(
+                &provider,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &SyncLoopControl::new(),
+                options(),
+            )
             .await
             .unwrap();
 
@@ -1797,7 +1839,14 @@ mod tests {
         let (projector, calls) = projector(None, false);
 
         let stop = client
-            .run_realm(&provider, realm_id(), &projector, &control, options())
+            .run_realm(
+                &provider,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+                &control,
+                options(),
+            )
             .await
             .unwrap();
 
@@ -1828,7 +1877,14 @@ mod tests {
         let (projector, calls) = projector(None, false);
 
         let stop = client
-            .run_realm(&provider, realm_id(), &projector, &control, options())
+            .run_realm(
+                &provider,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+                &control,
+                options(),
+            )
             .await
             .unwrap();
 
@@ -1877,7 +1933,14 @@ mod tests {
         let (projector, calls) = projector(None, false);
 
         let stop = client
-            .run_realm(&provider, realm_id(), &projector, &control, options())
+            .run_realm(
+                &provider,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+                &control,
+                options(),
+            )
             .await
             .unwrap();
 
@@ -1920,7 +1983,14 @@ mod tests {
         let (projector, _) = projector(None, false);
 
         let error = client
-            .run_realm(&provider, realm_id(), &projector, &control, options())
+            .run_realm(
+                &provider,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+                &control,
+                options(),
+            )
             .await
             .unwrap_err();
 
@@ -1957,7 +2027,14 @@ mod tests {
         let (projector, _) = projector(None, false);
 
         let stop = client
-            .run_realm(&provider, realm_id(), &projector, &control, options())
+            .run_realm(
+                &provider,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+                &control,
+                options(),
+            )
             .await
             .unwrap();
 
@@ -1992,7 +2069,14 @@ mod tests {
         let (projector, calls) = projector(None, false);
 
         let stop = client
-            .run_realm(&provider, realm_id(), &projector, &control, options())
+            .run_realm(
+                &provider,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+                &control,
+                options(),
+            )
             .await
             .unwrap();
 
@@ -2020,7 +2104,14 @@ mod tests {
         let (projector, calls) = projector(None, true);
 
         let result = client
-            .run_realm(&provider, realm_id(), &projector, &control, options())
+            .run_realm(
+                &provider,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+                &control,
+                options(),
+            )
             .await;
 
         let error = result.unwrap_err();

@@ -9,12 +9,7 @@ pub(crate) use arkret_models_collaboration::account_lifecycle::{
     AccountRegisterOutcome, AccountRegisterRequestBody,
 };
 pub(crate) use arkret_models_collaboration::agent_operations::AgentRequestedScopeDisclosure;
-pub(crate) use arkret_models_collaboration::direct_conversation_ops::DirectConversationCoordinates;
-pub(crate) use arkret_models_collaboration::direct_conversation_repair::{
-    DirectConversationRepairDispatchRequest, DirectConversationRepairEnqueueOutcome,
-};
 pub(crate) use arkret_models_collaboration::event_query::EventsQueryOrder;
-pub(crate) use arkret_models_collaboration::events_payloads::MemberRepairRequestPayload;
 pub(crate) use arkret_models_collaboration::events_payloads::MessageCreatePayload;
 pub(crate) use arkret_models_collaboration::governance::agent_participation::ParticipationBits;
 pub(crate) use arkret_models_collaboration::http_bodies::{
@@ -77,10 +72,12 @@ pub(crate) use arkret_wire::{
     StrandId,
 };
 
-pub(crate) fn verified_event_id(event: &Event) -> Result<EventId> {
-    let digest_suite = event.event_id.digest_suite_code().digest_suite();
+pub(crate) fn verified_event_id(
+    event: &Event,
+    digest_suite: arkret_canonical::DigestSuite,
+) -> Result<EventId> {
     event.verify_event_id_matches_content_with_digest_suite(digest_suite)?;
-    event.validate_principal_server_admission_binding()?;
+    event.validate_principal_server_admission_binding(digest_suite)?;
     Ok(event.event_id.clone())
 }
 

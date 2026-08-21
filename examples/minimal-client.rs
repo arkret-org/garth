@@ -204,6 +204,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         .run_realm(
             &provider,
             realm_id,
+            arkret_canonical::DigestSuite::Sha256,
             &projector,
             &realm_control,
             RunOptions::default(),

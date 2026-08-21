@@ -16,14 +16,6 @@ use crate::protocol::{
     MlsWelcomeEnvelope, Result,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub enum MlsRecoveryAction {
-    UseLocalState,
-    ApplyCommits { from_epoch: u64, to_epoch: u64 },
-    ConsumeWelcome,
-    RequestEpochRecovery { missing_from_epoch: u64 },
-}
-
 /// Local processing state for an exact Welcome envelope.
 ///
 /// Receipt, admission, and successful MLS consumption are deliberately
@@ -35,12 +27,6 @@ pub enum MlsWelcomeState {
     Received,
     Accepted,
     Consumed,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MlsRecoveryPlan {
-    pub group_id: String,
-    pub action: MlsRecoveryAction,
 }
 
 // `MlsGroupStateRecord` moved to `arkret_models_crypto::mls_records` so the MLS
@@ -105,14 +91,6 @@ pub trait CryptoStore: Send + Sync + MlsGroupStateSink + MlsCommitSource {
         principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> Option<&StoredDeviceVerification>;
-    fn plan_mls_recovery(
-        &self,
-        group_id: &str,
-        local_epoch: Option<u64>,
-        required_epoch: u64,
-        principal_id: &DidCoreId,
-        device_id: &DeviceId,
-    ) -> MlsRecoveryPlan;
     fn export_backup_json(&self) -> Result<String>;
     fn import_backup_json(&mut self, backup: &str) -> Result<()>;
 }
@@ -355,53 +333,6 @@ impl CryptoStore for MemoryCryptoStore {
             .get(&(principal_id.clone(), device_id.clone()))
     }
 
-    fn plan_mls_recovery(
-        &self,
-        group_id: &str,
-        local_epoch: Option<u64>,
-        required_epoch: u64,
-        principal_id: &DidCoreId,
-        device_id: &DeviceId,
-    ) -> MlsRecoveryPlan {
-        let action = match local_epoch {
-            Some(epoch) if epoch >= required_epoch => MlsRecoveryAction::UseLocalState,
-            Some(epoch)
-                if (epoch.saturating_add(1)..=required_epoch).all(|next_epoch| {
-                    self.commits_for_group(group_id)
-                        .iter()
-                        .any(|commit| commit.epoch == next_epoch)
-                }) =>
-            {
-                MlsRecoveryAction::ApplyCommits {
-                    from_epoch: epoch.saturating_add(1),
-                    to_epoch: required_epoch,
-                }
-            }
-            _ if self
-                .welcomes_for_device(principal_id, device_id)
-                .into_iter()
-                .any(|welcome| {
-                    welcome.group_id == group_id
-                        && welcome.epoch == required_epoch
-                        && self.welcome_state(&welcome.welcome_hash)
-                            == Some(MlsWelcomeState::Accepted)
-                }) =>
-            {
-                MlsRecoveryAction::ConsumeWelcome
-            }
-            Some(epoch) => MlsRecoveryAction::RequestEpochRecovery {
-                missing_from_epoch: epoch.saturating_add(1),
-            },
-            None => MlsRecoveryAction::RequestEpochRecovery {
-                missing_from_epoch: required_epoch,
-            },
-        };
-        MlsRecoveryPlan {
-            group_id: group_id.to_owned(),
-            action,
-        }
-    }
-
     fn export_backup_json(&self) -> Result<String> {
         serde_json::to_string(self).map_err(Into::into)
     }
@@ -520,7 +451,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_crypto_store_plans_recovery_and_restores_backup() {
+    fn memory_crypto_store_restores_backup_and_welcome_acceptance() {
         let alice = did("alice");
         let device_id = device("phone");
         let mut store = MemoryCryptoStore::new();
@@ -544,15 +475,15 @@ mod tests {
         let welcome_hash = store.welcomes_for_device(&alice, &device_id)[0]
             .welcome_hash
             .clone();
-        let before_acceptance = store.plan_mls_recovery("group1", None, 1, &alice, &device_id);
-        assert!(matches!(
-            before_acceptance.action,
-            MlsRecoveryAction::RequestEpochRecovery { .. }
-        ));
+        assert_eq!(
+            store.welcome_state(&welcome_hash),
+            Some(MlsWelcomeState::Received)
+        );
         store.mark_welcome_accepted(&welcome_hash).unwrap();
-
-        let plan = store.plan_mls_recovery("group1", None, 1, &alice, &device_id);
-        assert!(matches!(plan.action, MlsRecoveryAction::ConsumeWelcome));
+        assert_eq!(
+            store.welcome_state(&welcome_hash),
+            Some(MlsWelcomeState::Accepted)
+        );
 
         let backup = store.export_backup_json().unwrap();
         let mut restored = MemoryCryptoStore::new();

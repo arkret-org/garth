@@ -163,13 +163,14 @@ where
         &self,
         transport: &T,
         realm_id: RealmId,
+        digest_suite: arkret_canonical::DigestSuite,
         projector: &P,
     ) -> Result<RealmStreamStopReason>
     where
         T: RealmEventsTransport + EventsScanTransport + ?Sized,
         P: ClientProjector + ?Sized,
     {
-        self.run_realm_stream_classified(transport, realm_id, projector)
+        self.run_realm_stream_classified(transport, realm_id, digest_suite, projector)
             .await
             .map_err(ProjectedRunError::into_error)
     }
@@ -179,6 +180,7 @@ where
         &self,
         transport: &T,
         realm_id: RealmId,
+        digest_suite: arkret_canonical::DigestSuite,
     ) -> Result<RealmStreamStopReason>
     where
         T: RealmEventsTransport + EventsScanTransport + ?Sized,
@@ -190,7 +192,7 @@ where
             driver = driver.with_service_id(service_id);
         }
         let reason = driver
-            .run_stream_to_inbox(transport, realm_id.clone())
+            .run_stream_to_inbox(transport, realm_id.clone(), digest_suite)
             .await?;
         match reason {
             // Keep the dropped-cursor recovery in the same atomic durability
@@ -217,11 +219,16 @@ where
                     )
                     .await
                     .map_err(ProjectedRunError::into_error)?;
+                verify_complete_realm_history(&outcome, digest_suite)?;
                 self.cursor_store
                     .commit(
                         scope,
                         Some(cursor.clone()),
-                        vec![ClientEvent::Backfill { realm_id, outcome }],
+                        vec![ClientEvent::Backfill {
+                            realm_id,
+                            digest_suite,
+                            outcome,
+                        }],
                     )
                     .await?;
                 Ok(RealmStreamStopReason::Dropped {
@@ -237,6 +244,7 @@ where
         &self,
         transport: &T,
         realm_id: RealmId,
+        digest_suite: arkret_canonical::DigestSuite,
         projector: &P,
     ) -> ProjectedRunResult<RealmStreamStopReason>
     where
@@ -249,7 +257,7 @@ where
             driver = driver.with_service_id(service_id);
         }
         let reason = driver
-            .run_stream_classified(transport, realm_id.clone(), projector)
+            .run_stream_classified(transport, realm_id.clone(), digest_suite, projector)
             .await?;
         match reason {
             // A cursorless dropped frame is rejected as a trace violation
@@ -280,6 +288,7 @@ where
                 projector
                     .project(vec![ClientEvent::Backfill {
                         realm_id: realm_id.clone(),
+                        digest_suite,
                         outcome,
                     }])
                     .await
@@ -320,6 +329,7 @@ where
         &self,
         transport: &T,
         realm_id: RealmId,
+        digest_suite: arkret_canonical::DigestSuite,
         projector: &P,
         options: ScanCatchupOptions,
     ) -> Result<crate::protocol::EventsQueryOutcome>
@@ -341,7 +351,7 @@ where
                     "Realm history bootstrap requires complete Events; row {index} is redacted or reference-locked"
                 ))
             })?;
-            let event_id = crate::protocol::verified_event_id(&event)?;
+            let event_id = crate::protocol::verified_event_id(&event, digest_suite)?;
             if self.event_cache_store.seen(event_id.clone()).await? {
                 continue;
             }
@@ -374,6 +384,7 @@ where
         &self,
         transport: &T,
         realm_id: RealmId,
+        digest_suite: arkret_canonical::DigestSuite,
         options: ScanCatchupOptions,
     ) -> Result<crate::protocol::EventsQueryOutcome>
     where
@@ -384,12 +395,14 @@ where
             .scan_realm_catchup_uncheckpointed_classified(transport, realm_id.clone(), options)
             .await
             .map_err(ProjectedRunError::into_error)?;
+        verify_complete_realm_history(&outcome, digest_suite)?;
         self.cursor_store
             .commit(
                 self.realm_scope(realm_id.clone()),
                 None,
                 vec![ClientEvent::Backfill {
                     realm_id,
+                    digest_suite,
                     outcome: outcome.clone(),
                 }],
             )
@@ -485,6 +498,21 @@ where
             realm_id,
         }
     }
+}
+
+fn verify_complete_realm_history(
+    outcome: &crate::protocol::EventsQueryOutcome,
+    digest_suite: arkret_canonical::DigestSuite,
+) -> Result<()> {
+    for (index, row) in outcome.events.iter().cloned().enumerate() {
+        let event = row.into_event().ok_or_else(|| {
+            Error::Protocol(format!(
+                "Realm history bootstrap requires complete Events; row {index} is redacted or reference-locked"
+            ))
+        })?;
+        crate::protocol::verified_event_id(&event, digest_suite)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -773,7 +801,12 @@ mod tests {
         let engine = SubscriptionEngine::new(executor.clone(), store.clone(), store.clone());
 
         let reason = engine
-            .run_realm_stream(&transport, realm_id(), &projector)
+            .run_realm_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await
             .unwrap();
 
@@ -825,7 +858,12 @@ mod tests {
             SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store.clone());
 
         let reason = engine
-            .run_realm_stream(&transport, realm_id(), &projector)
+            .run_realm_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await
             .unwrap();
 
@@ -865,7 +903,12 @@ mod tests {
             SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store.clone());
 
         let result = engine
-            .run_realm_stream(&transport, realm_id(), &projector)
+            .run_realm_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await;
 
         assert!(result.is_err());
@@ -895,6 +938,7 @@ mod tests {
             .bootstrap_realm_history(
                 &transport,
                 realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
                 &projector,
                 ScanCatchupOptions::default(),
             )
@@ -933,7 +977,12 @@ mod tests {
         };
 
         let error = engine
-            .run_realm_stream(&transport, realm_id(), &projector)
+            .run_realm_stream(
+                &transport,
+                realm_id(),
+                arkret_canonical::DigestSuite::Sha256,
+                &projector,
+            )
             .await
             .unwrap_err();
 

@@ -17,10 +17,11 @@ pub use error::{Error, Result};
 pub mod account_handoff;
 pub mod crypto_state_store;
 pub mod direct_conversation;
-pub mod direct_conversation_repair;
 pub mod event;
 pub mod executor;
 pub mod facade;
+pub mod history_candidates;
+pub mod history_runtime;
 pub mod inbound;
 pub mod maybe_send;
 pub mod orchestrator;
@@ -52,21 +53,25 @@ pub use arkret_identity::{
     VerifiedAccountBindingReceipt,
 };
 pub use arkret_models_collaboration::signal_message_stream::MESSAGE_STREAM_KIND;
+pub use arkret_models_collaboration::{
+    governance::realm_lifecycle::{CircleHistoryAccessPayload, HistoryAccessPayload},
+    history_key::{
+        HistoryGovernanceTraversalIntent, HistoryGovernanceTraversalRetention, HistoryKeyRequest,
+        HistoryKeyRequestReceipt, HistoryKeyResponseRecord, HistoryKeyResponseSendReceipt,
+        OrganizationRecoveryArchive, OrganizationRecoveryArchivePlaintext,
+        PeerHistoryTraversalAccess, SelfHistoryTraversalAccess,
+    },
+};
 /// The shared Arkret retry cadence (`arkret-retry`). The ladder, its jitter
 /// and the `Retry-After` floor are spec-normative; see that crate's docs.
 pub use arkret_retry::RetrySchedule as Backoff;
+pub use arkret_wire::HistoryAccess;
 pub use crypto_state_store::{
     CryptoStore, MemoryCryptoStore, MlsCommitSource, MlsEpochSecretRecord, MlsGroupStateRecord,
-    MlsGroupStateSink, MlsRecoveryAction, MlsRecoveryPlan, MlsWelcomeState,
-    StoredDeviceVerification,
+    MlsGroupStateSink, MlsWelcomeState, StoredDeviceVerification,
 };
 pub use direct_conversation::{
     DirectConversationFoundingAction, direct_conversation_founding_action,
-};
-pub use direct_conversation_repair::{
-    DirectConversationRepairAction, DirectConversationRepairPlanner, DirectConversationRepairRoute,
-    DirectConversationRepairSnapshot, DirectConversationRepairStage,
-    FrozenDirectConversationRepairDispatch, SelfRejoinAcceptance,
 };
 pub use event::{AccountUpdateContext, ClientEvent, ClientProjector};
 #[cfg(feature = "native")]
@@ -75,6 +80,20 @@ pub use executor::NativeExecutor;
 pub use executor::WasmExecutor;
 pub use executor::{Executor, HostClock, SystemClock};
 pub use facade::ArkretClient;
+pub use history_candidates::{
+    HISTORY_CANDIDATE_ATTRIBUTION_LIFETIME_SECONDS, HistoryCandidateEngine,
+    HistoryCandidateMaterialIndex, HistoryCandidateStateStore, HistoryCandidateStoreSnapshot,
+    MAX_HISTORY_EVENT_BINDINGS_PER_EPOCH, MAX_HISTORY_ORIGINS_PER_EPOCH,
+    MAX_HISTORY_ORIGINS_PER_MATERIAL, MAX_HISTORY_ORIGINS_PER_QUOTA_DOMAIN,
+    MAX_RESIDENT_HISTORY_CANDIDATES_PER_EPOCH, MemoryHistoryCandidateStateStore,
+};
+pub use history_runtime::{
+    DurableHistoryMailbox, DurableHistoryRequest, DurableHistoryResponseAttempt,
+    DurableVerifiedHistoryManifest, HistoryMailboxCapabilityOpener, HistoryRuntime,
+    HistoryRuntimeSnapshot, HistoryRuntimeStore, HistoryRuntimeTransport,
+    MemoryHistoryRuntimeStore, ReceiptBoundHistoryTraversal, VerifiedHistoryTraversal,
+    VersionedHistoryRuntimeSnapshot, cryptographically_rejected_disposition,
+};
 pub use inbound::{DecodedInbound, DecodedMessage, InboundDecoder};
 pub use maybe_send::{MaybeSend, MaybeSendSync};
 pub use orchestrator::{

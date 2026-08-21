@@ -65,14 +65,16 @@ impl AuthoringGeneration {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueuedEventIntent {
+    pub digest_suite: arkret_canonical::DigestSuite,
     pub intent: EventIntent,
 }
 
 impl QueuedEventIntent {
-    pub fn new(intent: EventIntent) -> Self {
+    pub fn new(intent: EventIntent, digest_suite: arkret_canonical::DigestSuite) -> Self {
         // A CBA basis the producer did not pin is per-attempt state: each retry
         // re-reads the Seal view it authors against.
         Self {
+            digest_suite,
             intent: intent.without_cba_basis(),
         }
     }
@@ -82,8 +84,14 @@ impl QueuedEventIntent {
     /// A pre-join `ak.invite.accept` cannot re-resolve the membership-gated
     /// Realm Seal view, so the join-candidate basis its author resolved is part
     /// of the operation, not of one attempt at it.
-    pub fn with_pinned_cba_basis(intent: EventIntent) -> Self {
-        Self { intent }
+    pub fn with_pinned_cba_basis(
+        intent: EventIntent,
+        digest_suite: arkret_canonical::DigestSuite,
+    ) -> Self {
+        Self {
+            digest_suite,
+            intent,
+        }
     }
 
     pub fn digest(&self) -> Result<Hash> {
@@ -342,7 +350,10 @@ impl QueuedSdkEvent {
         let event_id = envelope.event_id().clone();
         let message_id = MessageId::from_event_id(&event_id);
         let canonical_signed_event_bytes = arkret_canonical::canonical_json_bytes(&envelope)?;
-        let intent = QueuedEventIntent::new(EventIntent::from_authored(envelope.event()));
+        let intent = QueuedEventIntent::new(
+            EventIntent::from_authored(envelope.event()),
+            envelope.digest_suite(),
+        );
         let intent_digest = intent.digest()?;
         let queued = Self {
             intent,
@@ -408,9 +419,10 @@ impl QueuedSdkEvent {
             }
             if attempt.transport_idempotency_key.is_empty()
                 || attempt.canonical_body_bytes.is_empty()
+                || attempt.envelope.digest_suite() != self.intent.digest_suite
             {
                 return Err(Error::Protocol(
-                    "queued SDK authored attempt must carry immutable transport identity and bytes"
+                    "queued SDK authored attempt must carry immutable transport identity, bytes, and digest suite"
                         .to_owned(),
                 ));
             }
