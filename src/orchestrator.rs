@@ -367,7 +367,7 @@ where
                             Self::fail(provider, RunErrorClass::StoreFailure, error)
                         })?;
                     engine
-                        .bootstrap_realm_history(
+                        .bootstrap_realm_history_classified(
                             &transport,
                             realm_id.clone(),
                             digest_suite,
@@ -375,7 +375,7 @@ where
                             ScanCatchupOptions::default(),
                         )
                         .await
-                        .map_err(|error| Self::fail(provider, classify_error(&error), error))?;
+                        .map_err(|error| Self::fail_projected(provider, error))?;
                     cursor_recovery_attempted = true;
                     let delay =
                         backoff.next_delay_with_hint(reconnect_after_ms.map(Duration::from_millis));
@@ -411,7 +411,7 @@ where
                             Self::fail(provider, RunErrorClass::StoreFailure, error)
                         })?;
                     engine
-                        .bootstrap_realm_history(
+                        .bootstrap_realm_history_classified(
                             &transport,
                             realm_id.clone(),
                             digest_suite,
@@ -419,7 +419,7 @@ where
                             ScanCatchupOptions::default(),
                         )
                         .await
-                        .map_err(|error| Self::fail(provider, classify_error(&error), error))?;
+                        .map_err(|error| Self::fail_projected(provider, error))?;
                     cursor_recovery_attempted = true;
                     backoff.reset();
                 }
@@ -1172,6 +1172,26 @@ where
         });
         RunError { class, source }
     }
+
+    /// Classify a projected run loop error by its origin: store and projector
+    /// failures keep their attribution instead of being flattened through
+    /// [`classify_error`], which only sees the bare protocol error.
+    fn fail_projected<TP: TransportProvider + ?Sized>(
+        provider: &TP,
+        error: ProjectedRunError,
+    ) -> RunError {
+        match error {
+            ProjectedRunError::Store(error) => {
+                Self::fail(provider, RunErrorClass::StoreFailure, error)
+            }
+            ProjectedRunError::Transport(error) => {
+                Self::fail(provider, classify_error(&error), error)
+            }
+            ProjectedRunError::Projector(error) => {
+                Self::fail(provider, RunErrorClass::ProjectorFailure, error)
+            }
+        }
+    }
 }
 
 #[cfg(all(test, feature = "native"))]
@@ -1581,6 +1601,33 @@ mod tests {
             jws: "header..admission".to_owned(),
         };
         event.proofs = vec![producer.into(), admission.into()];
+        event
+    }
+
+    fn event_frame() -> EventsSubscribeFrame {
+        let event = accepted_event(
+            arkret_wire::test_support::raw_event(
+                EventKind::MessageCreate.as_str(),
+                crate::protocol::ScopeRef::Realm {
+                    realm_id: realm_id(),
+                },
+                event_actor_id(),
+                crate::protocol::DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
+                1,
+                Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
+                json!({
+                    "content": {"kind": "ak.content.text", "body": "hello"},
+                    "strand_id": arkret_wire::StrandId::from_event_id(
+                        &arkret_wire::EventId::from_digest(
+                            arkret_canonical::DigestSuite::Sha256,
+                            [2; 32],
+                        ),
+                    ),
+                    "track_name": "discussion"
+                }),
+            )
+            .unwrap(),
+        );
         let mut framed = frame(
             EventsSubscribeFrameKind::Event,
             serde_json::to_value(event).unwrap(),
