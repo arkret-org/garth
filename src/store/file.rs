@@ -67,6 +67,7 @@ struct FileState {
     deliveries: VecDeque<PendingDelivery>,
     outbound: crate::sync_client::SendQueueSnapshot,
     stamp_floors: BTreeMap<String, StampFloor>,
+    accepted_mls_artifacts: crate::VersionedAcceptedMlsArtifactSnapshot,
 }
 
 impl FileStore {
@@ -551,6 +552,40 @@ impl DurableInboxStore for FileStore {
     }
 }
 
+impl crate::AcceptedMlsArtifactStore for FileStore {
+    fn load_accepted_mls_artifacts(&self) -> Result<crate::VersionedAcceptedMlsArtifactSnapshot> {
+        self.read(|inner| crate::VersionedAcceptedMlsArtifactSnapshot {
+            revision: inner.state.accepted_mls_artifacts.revision,
+            snapshot: inner.state.accepted_mls_artifacts.snapshot.clone(),
+        })
+    }
+
+    fn compare_and_swap_accepted_mls_artifacts<'a>(
+        &'a self,
+        expected_revision: u64,
+        snapshot: &'a crate::AcceptedMlsArtifactSnapshot,
+    ) -> impl Future<Output = Result<bool>> + crate::MaybeSend + 'a {
+        async move {
+            self.mutate(|inner| {
+                if inner.state.accepted_mls_artifacts.revision != expected_revision {
+                    return Ok(false);
+                }
+                inner.state.accepted_mls_artifacts.revision = inner
+                    .state
+                    .accepted_mls_artifacts
+                    .revision
+                    .checked_add(1)
+                    .ok_or_else(|| {
+                        Error::Protocol("accepted MLS artifact revision overflow".to_owned())
+                    })?;
+                inner.state.accepted_mls_artifacts.snapshot = snapshot.clone();
+                Ok(true)
+            })
+            .await?
+        }
+    }
+}
+
 impl MonotonicStampStore for FileStore {
     fn load_floor(
         &self,
@@ -589,9 +624,10 @@ impl MonotonicStampStore for FileStore {
 #[cfg(test)]
 mod tests {
     use crate::protocol::{
-        DeviceId, DidCoreId, EventId, NotificationDelta, NotificationDeltaAction, NotificationId,
-        NotificationKind, RealmId,
+        DeviceId, DidCoreId, EventId, EventKind, Hlc, NotificationDelta, NotificationDeltaAction,
+        NotificationId, NotificationKind, RealmId, ScopeRef,
     };
+    use crate::{AcceptedMlsArtifactStore, DurableAcceptedMlsArtifact, QueuedMlsSnapshot};
 
     use super::*;
 
@@ -624,6 +660,70 @@ mod tests {
             realm_id: RealmId::new("ak:realm:AfuGzJo578BJKgyC0bGwDqxsCPVeZViXjoIRGcW7-S6x")
                 .unwrap(),
         }
+    }
+
+    #[tokio::test]
+    async fn accepted_mls_ready_snapshot_survives_process_reopen() {
+        let path = temp_path("accepted-mls-reopen");
+        let _ = std::fs::remove_file(&path);
+        let realm_id =
+            RealmId::new("ak:realm:AdkQ-RmB1a8zyc52yl9GWAsodQ_EUle1WAVZqbO7pc19").unwrap();
+        let scope = ScopeRef::Realm {
+            realm_id: realm_id.clone(),
+        };
+        let group_id = scope.canonical_mls_group_id().unwrap();
+        let event = arkret_wire::test_support::raw_event(
+            EventKind::MlsGenesis.as_str(),
+            scope.clone(),
+            DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
+            DidCoreId::new("ak:did_core:webvh:z6mkfixture:server.example").unwrap(),
+            1,
+            Hlc::new("01970e589d21-0001-a13f9c2e").unwrap(),
+            serde_json::json!({}),
+        )
+        .unwrap();
+        let event_key = event.event_id.to_string();
+        let mut snapshot = crate::AcceptedMlsArtifactSnapshot::default();
+        snapshot.artifacts.insert(
+            event_key.clone(),
+            DurableAcceptedMlsArtifact {
+                event_digest: event.event_id.identity_key().event_digest(),
+                winning_transition_ref: event.event_id.clone(),
+                event,
+                snapshot: QueuedMlsSnapshot {
+                    realm_id: realm_id.to_string(),
+                    group_id: group_id.clone(),
+                    epoch: 0,
+                    group_state_event_id: EventId::new(event_key.clone()).ok(),
+                    salt_hex: "01".to_owned(),
+                    ciphertext_hex: "02".to_owned(),
+                    mac_hex: "03".to_owned(),
+                    recorded_at: chrono::Utc::now(),
+                    epoch_started_at: chrono::Utc::now(),
+                    app_messages_observed: 0,
+                    aead_version: 1,
+                },
+            },
+        );
+        snapshot.ready_groups.insert(
+            format!("{}\u{1f}{group_id}", serde_json::to_string(&scope).unwrap()),
+            event_key,
+        );
+        {
+            let store = FileStore::open(&path).unwrap();
+            assert!(
+                store
+                    .compare_and_swap_accepted_mls_artifacts(0, &snapshot)
+                    .await
+                    .unwrap()
+            );
+        }
+        let reopened = FileStore::open(&path).unwrap();
+        let durable = reopened.load_accepted_mls_artifacts().unwrap();
+        assert_eq!(durable.revision, 1);
+        assert_eq!(durable.snapshot, snapshot);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("json.lock"));
     }
 
     #[tokio::test]

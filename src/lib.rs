@@ -71,8 +71,11 @@ pub use arkret_models_collaboration::{
 pub use arkret_retry::RetrySchedule;
 pub use arkret_wire::{HistoryAccess, HistoryEffectiveScope, OrganizationRecoveryArchive};
 pub use crypto_state_store::{
-    CryptoStore, MemoryCryptoStore, MlsCommitSource, MlsEpochSecretRecord, MlsGroupStateRecord,
-    MlsGroupStateSink, MlsWelcomeState, StoredDeviceVerification,
+    AcceptedMlsArtifactApplicator, AcceptedMlsArtifactCommit, AcceptedMlsArtifactCommitOutcome,
+    AcceptedMlsArtifactConsumer, AcceptedMlsArtifactSnapshot, AcceptedMlsArtifactStore,
+    CryptoStore, DurableAcceptedMlsArtifact, MemoryCryptoStore, MlsCommitSource,
+    MlsEpochSecretRecord, MlsGroupStateRecord, MlsGroupStateSink, MlsWelcomeState,
+    StoredDeviceVerification, VersionedAcceptedMlsArtifactSnapshot,
 };
 pub use direct_conversation::{
     DirectConversationFoundingAction, direct_conversation_founding_action,
