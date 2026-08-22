@@ -91,8 +91,6 @@ pub trait CryptoStore: Send + Sync + MlsGroupStateSink + MlsCommitSource {
         principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> Option<&StoredDeviceVerification>;
-    fn export_backup_json(&self) -> Result<String>;
-    fn import_backup_json(&mut self, backup: &str) -> Result<()>;
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -332,15 +330,6 @@ impl CryptoStore for MemoryCryptoStore {
         self.device_verifications
             .get(&(principal_id.clone(), device_id.clone()))
     }
-
-    fn export_backup_json(&self) -> Result<String> {
-        serde_json::to_string(self).map_err(Into::into)
-    }
-
-    fn import_backup_json(&mut self, backup: &str) -> Result<()> {
-        *self = serde_json::from_str(backup)?;
-        Ok(())
-    }
 }
 
 #[cfg(test)]
@@ -448,47 +437,6 @@ mod tests {
                 .is_err()
         );
         assert_eq!(store.mls_group_state("group1").unwrap().epoch, 5);
-    }
-
-    #[test]
-    fn memory_crypto_store_restores_backup_and_welcome_acceptance() {
-        let alice = did("alice");
-        let device_id = device("phone");
-        let mut store = MemoryCryptoStore::new();
-        store
-            .put_welcome(MlsWelcomeEnvelope {
-                group_id: "group1".to_owned(),
-                epoch: 1,
-                recipient: crate::protocol::MlsEndpointIdentity::human_device(
-                    alice.clone(),
-                    device_id.clone(),
-                ),
-                welcome: "welcome".to_owned(),
-                welcome_hash: Hash::new(
-                    "sha256:2222222222222222222222222222222222222222222222222222222222222222",
-                )
-                .unwrap(),
-                ratchet_tree: None,
-            })
-            .unwrap();
-
-        let welcome_hash = store.welcomes_for_device(&alice, &device_id)[0]
-            .welcome_hash
-            .clone();
-        assert_eq!(
-            store.welcome_state(&welcome_hash),
-            Some(MlsWelcomeState::Received)
-        );
-        store.mark_welcome_accepted(&welcome_hash).unwrap();
-        assert_eq!(
-            store.welcome_state(&welcome_hash),
-            Some(MlsWelcomeState::Accepted)
-        );
-
-        let backup = store.export_backup_json().unwrap();
-        let mut restored = MemoryCryptoStore::new();
-        restored.import_backup_json(&backup).unwrap();
-        assert_eq!(restored.welcomes_for_device(&alice, &device_id).len(), 1);
     }
 
     #[test]
