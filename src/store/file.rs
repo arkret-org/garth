@@ -101,10 +101,6 @@ impl FileStore {
         self.read(|inner| inner.path.clone())
     }
 
-    pub async fn ensure_created(&self) -> Result<()> {
-        self.mutate(|_| ()).await
-    }
-
     /// Return whether the durable outbound queue contains non-terminal work.
     ///
     /// This is a read-only preflight for hosts that periodically drain both

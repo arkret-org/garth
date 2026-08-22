@@ -223,10 +223,6 @@ where
         &mut self.store
     }
 
-    pub fn clear_ephemeral_cache(&mut self) {
-        self.cache.clear();
-    }
-
     /// Resolve in the normative order. Invalid signed material is terminal and
     /// never downgraded to a later source; unavailable sources return `None`.
     pub fn resolve<R: ServiceRouteSource>(
