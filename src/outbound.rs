@@ -475,12 +475,8 @@ mod tests {
     use arkret_wire::{DidCoreId, DidFullId, EventKind, Hlc, ScopeRef, project_full_id_to_core_id};
 
     fn actor_id() -> DidCoreId {
-        DidCoreId::from(
-            project_full_id_to_core_id(
-                &DidFullId::new("did:webvh:z6mkfixture:alice.example").unwrap(),
-            )
-            .unwrap(),
-        )
+        project_full_id_to_core_id(&DidFullId::new("did:webvh:z6mkfixture:alice.example").unwrap())
+            .unwrap()
     }
     use serde_json::Value;
 
@@ -505,7 +501,7 @@ mod tests {
                 .with_timezone(&chrono::Utc),
         )
         .unwrap();
-        QueuedRecord::SdkEvent(
+        QueuedRecord::SdkEvent(Box::new(
             crate::QueuedSdkEvent::unauthored(
                 crate::QueuedEventIntent::new(
                     arkret_event_draft::EventIntent::from_authored(&event),
@@ -522,7 +518,7 @@ mod tests {
                 None,
             )
             .unwrap(),
-        )
+        ))
     }
 
     #[derive(Clone)]

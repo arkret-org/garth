@@ -10,7 +10,7 @@ use crate::{Error, Result};
 /// The only legal next action after a query-only Direct Conversation resolve.
 #[derive(Debug)]
 pub enum DirectConversationFoundingAction {
-    Submit(DirectConversationFoundingUnitSubmission),
+    Submit(Box<DirectConversationFoundingUnitSubmission>),
     AwaitFounder,
     Existing(DirectConversationCoordinates),
     Blocked,
@@ -40,7 +40,7 @@ pub fn direct_conversation_founding_action(
                 .expect("the typed founding carrier always contains exactly four Events");
             DirectConversationFoundingPlan::from_events(exact)
                 .map_err(|error| Error::Protocol(error.to_string()))?;
-            Ok(DirectConversationFoundingAction::Submit(prepared))
+            Ok(DirectConversationFoundingAction::Submit(Box::new(prepared)))
         }
         DirectConversationResolveOutcome::AwaitingFounder { .. } => {
             Ok(DirectConversationFoundingAction::AwaitFounder)

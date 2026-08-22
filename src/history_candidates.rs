@@ -15,6 +15,7 @@ use arkret_wire::{
     HistoryCandidateMaterialRecord, HistoryEffectiveScope,
 };
 use chrono::{DateTime, Utc};
+use std::collections::BTreeSet;
 
 use crate::store::{SecretClass, SecretDurability, SecureKeyStore};
 use crate::{Error, PutSecretOptions, Result};
@@ -99,6 +100,7 @@ where
         attribution: HistoryCandidateOriginAttribution,
         now: DateTime<Utc>,
     ) -> Result<bool> {
+        self.reconcile_candidate_secrets(secure_store)?;
         let material_key = attribution.material_key().clone();
         material_key.validate()?;
         let actual_digest = Hash::new(arkret_wire::canonical::sha256_digest(secret))?;
@@ -135,6 +137,27 @@ where
             secure_store.delete_secret(&history_candidate_secret_key(evicted)?)?;
         }
         Ok(plan.resident)
+    }
+
+    /// Remove bytes left by a crash after the durable secret write but before
+    /// the ledger commit. A ledger row is the only ready marker for candidate
+    /// material; unreferenced bytes are never treated as candidates.
+    pub fn reconcile_candidate_secrets(&self, secure_store: &dyn SecureKeyStore) -> Result<usize> {
+        let referenced = self
+            .store
+            .load_history_candidate_state()?
+            .resident
+            .iter()
+            .map(|resident| history_candidate_secret_key(&resident.material_key))
+            .collect::<Result<BTreeSet<_>>>()?;
+        let mut removed = 0;
+        for key in secure_store.list_secret_keys(Some(HISTORY_CANDIDATE_SECRET_PREFIX))? {
+            if !referenced.contains(&key) {
+                secure_store.delete_secret(&key)?;
+                removed += 1;
+            }
+        }
+        Ok(removed)
     }
 
     pub fn record_event_binding(
@@ -219,22 +242,15 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn candidate_store_is_event_local_and_does_not_promote_epoch_winner() {
-        let secret_store = crate::MemorySecureKeyStore::new();
-        let mut engine = HistoryCandidateEngine::new(MemoryHistoryCandidateStateStore::new());
-        let now = Utc::now();
-        let secret = [7_u8; 32];
-        let digest = Hash::new(arkret_wire::canonical::sha256_digest(secret)).unwrap();
+    fn attribution(secret: &[u8], now: DateTime<Utc>) -> HistoryCandidateOriginAttribution {
         let effective_scope = scope();
-        let key = HistoryCandidateMaterialKey {
-            mls_group_id: effective_scope.canonical_mls_group_id().unwrap(),
-            effective_scope,
-            epoch: 4,
-            candidate_digest: digest.clone(),
-        };
-        let attribution = HistoryCandidateOriginAttribution::ResponseSender {
-            material_key: key.clone(),
+        HistoryCandidateOriginAttribution::ResponseSender {
+            material_key: HistoryCandidateMaterialKey {
+                mls_group_id: effective_scope.canonical_mls_group_id().unwrap(),
+                effective_scope,
+                epoch: 4,
+                candidate_digest: Hash::new(arkret_wire::canonical::sha256_digest(secret)).unwrap(),
+            },
             origin_quota_domain: ResponseSenderQuotaDomain {
                 source_sender_domain: "ak:device:sender".to_owned(),
             },
@@ -248,7 +264,18 @@ mod tests {
             first_observed_at: now,
             expires_at: now
                 + chrono::Duration::seconds(HISTORY_STORE_LIMITS.origin_attribution_ttl_seconds),
-        };
+        }
+    }
+
+    #[tokio::test]
+    async fn candidate_store_is_event_local_and_does_not_promote_epoch_winner() {
+        let secret_store = crate::MemorySecureKeyStore::new();
+        let mut engine = HistoryCandidateEngine::new(MemoryHistoryCandidateStateStore::new());
+        let now = Utc::now();
+        let secret = [7_u8; 32];
+        let attribution = attribution(&secret, now);
+        let key = attribution.material_key().clone();
+        let digest = key.candidate_digest.clone();
         assert!(
             engine
                 .receive_external_candidate(&secret_store, &secret, attribution, now)
@@ -292,6 +319,66 @@ mod tests {
                     &key.mls_group_id,
                     key.epoch,
                 )
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    struct FailFirstSaveStore {
+        ledger: HistoryMaterialLedger,
+        fail_first_save: bool,
+    }
+
+    impl HistoryCandidateStateStore for FailFirstSaveStore {
+        fn load_history_candidate_state(&self) -> Result<HistoryMaterialLedger> {
+            Ok(self.ledger.clone())
+        }
+
+        fn save_history_candidate_state(&mut self, ledger: &HistoryMaterialLedger) -> Result<()> {
+            if self.fail_first_save {
+                self.fail_first_save = false;
+                return Err(Error::Protocol("injected ledger commit failure".to_owned()));
+            }
+            self.ledger = ledger.clone();
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn retry_reconciles_secret_written_before_failed_ledger_commit() {
+        let secret_store = crate::MemorySecureKeyStore::new();
+        let mut engine = HistoryCandidateEngine::new(FailFirstSaveStore {
+            ledger: HistoryMaterialLedger::default(),
+            fail_first_save: true,
+        });
+        let now = Utc::now();
+        let secret = [9_u8; 32];
+        let attribution = attribution(&secret, now);
+
+        assert!(
+            engine
+                .receive_external_candidate(&secret_store, &secret, attribution.clone(), now)
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            secret_store
+                .list_secret_keys(Some(HISTORY_CANDIDATE_SECRET_PREFIX))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            engine
+                .receive_external_candidate(&secret_store, &secret, attribution, now)
+                .await
+                .unwrap()
+        );
+        assert_eq!(engine.store().ledger.resident.len(), 1);
+        assert_eq!(
+            secret_store
+                .list_secret_keys(Some(HISTORY_CANDIDATE_SECRET_PREFIX))
                 .unwrap()
                 .len(),
             1

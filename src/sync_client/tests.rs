@@ -107,7 +107,7 @@ fn queued_record(realm_id: &RealmId, payload: Value) -> crate::QueuedRecord {
             .with_timezone(&chrono::Utc),
     )
     .unwrap();
-    crate::QueuedRecord::SdkEvent(
+    crate::QueuedRecord::SdkEvent(Box::new(
         crate::QueuedSdkEvent::unauthored(
             crate::QueuedEventIntent::new(
                 arkret_event_draft::EventIntent::from_authored(&event),
@@ -124,7 +124,7 @@ fn queued_record(realm_id: &RealmId, payload: Value) -> crate::QueuedRecord {
             None,
         )
         .unwrap(),
-    )
+    ))
 }
 
 trait SendQueueTestExt {

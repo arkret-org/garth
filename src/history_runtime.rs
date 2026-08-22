@@ -62,26 +62,10 @@ pub struct DurableVerifiedHistoryManifest {
     pub chunks: Vec<HistoryResponseChunkDescriptor>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub enum DurableHistoryResponseAttempt {
-    Direct {
-        request: HistoryKeyResponseSendRequest,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        receipt: Option<HistoryKeyResponseSendOutcome>,
-    },
-    Relay {
-        relay: HistoryKeySourceRelay,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        receipt: Option<HistoryKeyResponseSendOutcome>,
-    },
-}
-
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HistoryRuntimeSnapshot {
     pub requests: BTreeMap<String, DurableHistoryRequest>,
-    pub response_attempts: BTreeMap<String, DurableHistoryResponseAttempt>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -415,134 +399,6 @@ where
         Ok(outcome)
     }
 
-    pub async fn send_response_exact<T>(
-        &self,
-        transport: &T,
-        request: HistoryKeyResponseSendRequest,
-    ) -> Result<HistoryKeyResponseSendOutcome>
-    where
-        T: HistoryRuntimeTransport,
-    {
-        request.validate()?;
-        let key = request.response_id.as_str().to_owned();
-        let stored_receipt = self
-            .mutate(|snapshot| match snapshot.response_attempts.get(&key) {
-                Some(DurableHistoryResponseAttempt::Direct {
-                    request: existing,
-                    receipt,
-                }) if existing == &request => Ok(receipt.clone()),
-                Some(_) => Err(Error::IdempotencyConflict(key.clone())),
-                None => {
-                    snapshot.response_attempts.insert(
-                        key.clone(),
-                        DurableHistoryResponseAttempt::Direct {
-                            request: request.clone(),
-                            receipt: None,
-                        },
-                    );
-                    Ok(None)
-                }
-            })
-            .await?;
-        if let Some(receipt) = stored_receipt {
-            return Ok(receipt);
-        }
-        let receipt = transport.send_response(&request).await?;
-        receipt.validate()?;
-        if receipt.response_id != request.response_id {
-            return Err(Error::Protocol(
-                "history response receipt changed response_id".to_owned(),
-            ));
-        }
-        self.mutate(|snapshot| {
-            let Some(DurableHistoryResponseAttempt::Direct {
-                request: existing,
-                receipt: stored,
-            }) = snapshot.response_attempts.get_mut(&key)
-            else {
-                return Err(Error::IdempotencyConflict(key.clone()));
-            };
-            if existing != &request {
-                return Err(Error::IdempotencyConflict(key.clone()));
-            }
-            match stored {
-                Some(existing) if existing != &receipt => {
-                    Err(Error::IdempotencyConflict(key.clone()))
-                }
-                Some(existing) => Ok(existing.clone()),
-                None => {
-                    *stored = Some(receipt.clone());
-                    Ok(receipt.clone())
-                }
-            }
-        })
-        .await
-    }
-
-    pub async fn relay_response_exact<T>(
-        &self,
-        transport: &T,
-        relay: HistoryKeySourceRelay,
-    ) -> Result<HistoryKeyResponseSendOutcome>
-    where
-        T: HistoryRuntimeTransport,
-    {
-        relay.validate()?;
-        let key = relay.response.response_id.as_str().to_owned();
-        let stored_receipt = self
-            .mutate(|snapshot| match snapshot.response_attempts.get(&key) {
-                Some(DurableHistoryResponseAttempt::Relay {
-                    relay: existing,
-                    receipt,
-                }) if existing == &relay => Ok(receipt.clone()),
-                Some(_) => Err(Error::IdempotencyConflict(key.clone())),
-                None => {
-                    snapshot.response_attempts.insert(
-                        key.clone(),
-                        DurableHistoryResponseAttempt::Relay {
-                            relay: relay.clone(),
-                            receipt: None,
-                        },
-                    );
-                    Ok(None)
-                }
-            })
-            .await?;
-        if let Some(receipt) = stored_receipt {
-            return Ok(receipt);
-        }
-        let receipt = transport.relay_response(&relay).await?;
-        receipt.validate()?;
-        if receipt.response_id != relay.response.response_id {
-            return Err(Error::Protocol(
-                "history relay receipt changed response_id".to_owned(),
-            ));
-        }
-        self.mutate(|snapshot| {
-            let Some(DurableHistoryResponseAttempt::Relay {
-                relay: existing,
-                receipt: stored,
-            }) = snapshot.response_attempts.get_mut(&key)
-            else {
-                return Err(Error::IdempotencyConflict(key.clone()));
-            };
-            if existing != &relay {
-                return Err(Error::IdempotencyConflict(key.clone()));
-            }
-            match stored {
-                Some(existing) if existing != &receipt => {
-                    Err(Error::IdempotencyConflict(key.clone()))
-                }
-                Some(existing) => Ok(existing.clone()),
-                None => {
-                    *stored = Some(receipt.clone());
-                    Ok(receipt.clone())
-                }
-            }
-        })
-        .await
-    }
-
     pub async fn acquire_response_page<T>(
         &self,
         transport: &T,
@@ -629,16 +485,13 @@ where
     }
 
     pub fn durable_request(&self, request_id: &HistoryRequestId) -> Result<DurableHistoryRequest> {
-        Ok(self
-            .store
+        self.store
             .load_history_runtime()?
             .snapshot
             .requests
             .get(request_id.as_str())
             .cloned()
-            .ok_or_else(|| {
-                Error::Protocol(format!("history request is not durable: {request_id}"))
-            })?)
+            .ok_or_else(|| Error::Protocol(format!("history request is not durable: {request_id}")))
     }
 
     /// Return the canonical ids of all durably accepted requests whose

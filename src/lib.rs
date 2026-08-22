@@ -20,7 +20,9 @@ pub mod direct_conversation;
 pub mod event;
 pub mod executor;
 pub mod facade;
+pub mod history_backup;
 pub mod history_candidates;
+pub mod history_outbox;
 pub mod history_runtime;
 pub mod inbound;
 pub mod maybe_send;
@@ -82,15 +84,26 @@ pub use executor::NativeExecutor;
 pub use executor::WasmExecutor;
 pub use executor::{Executor, HostClock, SystemClock};
 pub use facade::ArkretClient;
+pub use history_backup::{
+    HistoryBackupRestoreOutcome, pack_local_authoritative_history_backup,
+    restore_history_backup_into_candidates,
+};
 pub use history_candidates::{
     HistoryCandidateEngine, HistoryCandidateStateStore, MemoryHistoryCandidateStateStore,
 };
+pub use history_outbox::{
+    DurableHistorySourceAttempt, DurableStagedHistoryRecord, HistorySourceAttemptBundle,
+    HistorySourceAttemptIdentity, HistorySourceAttemptStatus, HistorySourceBlobStore,
+    HistorySourceOutboundRecord, HistorySourceOutbox, HistorySourceOutboxSnapshot,
+    HistorySourceOutboxStore, MemoryHistorySourceBlobStore, MemoryHistorySourceOutboxStore,
+    VersionedHistorySourceOutboxSnapshot,
+};
 pub use history_runtime::{
-    DurableHistoryRequest, DurableHistoryResponseAttempt, DurableHistoryResponseStream,
-    DurableVerifiedHistoryManifest, HistoryResponseCapabilityOpener, HistoryRuntime,
-    HistoryRuntimeSnapshot, HistoryRuntimeStore, HistoryRuntimeTransport,
-    MemoryHistoryRuntimeStore, ReceiptBoundHistoryTraversal, VerifiedHistoryTraversal,
-    VersionedHistoryRuntimeSnapshot, cryptographically_rejected_disposition,
+    DurableHistoryRequest, DurableHistoryResponseStream, DurableVerifiedHistoryManifest,
+    HistoryResponseCapabilityOpener, HistoryRuntime, HistoryRuntimeSnapshot, HistoryRuntimeStore,
+    HistoryRuntimeTransport, MemoryHistoryRuntimeStore, ReceiptBoundHistoryTraversal,
+    VerifiedHistoryTraversal, VersionedHistoryRuntimeSnapshot,
+    cryptographically_rejected_disposition,
 };
 pub use inbound::{DecodedInbound, DecodedMessage, InboundDecoder};
 pub use maybe_send::{MaybeSend, MaybeSendSync};

@@ -61,12 +61,10 @@ mod tests {
                 realm_id: RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO")
                     .unwrap(),
             },
-            DidCoreId::from(
-                arkret_wire::project_full_id_to_core_id(
-                    &DidFullId::new("did:webvh:z6mkfixture:alice.example").unwrap(),
-                )
-                .unwrap(),
-            ),
+            arkret_wire::project_full_id_to_core_id(
+                &DidFullId::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            )
+            .unwrap(),
             DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
             1,
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),

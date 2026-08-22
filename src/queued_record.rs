@@ -550,7 +550,7 @@ pub enum QueuedRealmBootstrap {
     DirectConversationPrepared {
         local_operation_id: String,
         transport_idempotency_key: String,
-        first_event: Event,
+        first_event: Box<Event>,
         canonical_signed_unit_bytes: Vec<u8>,
         #[serde(deserialize_with = "deserialize_required_nullable")]
         accepted_outcome_bytes: Option<Vec<u8>>,
@@ -589,7 +589,7 @@ impl QueuedRealmBootstrap {
         let queued = Self::DirectConversationPrepared {
             transport_idempotency_key: local_operation_id.clone(),
             local_operation_id,
-            first_event: submission.events[0].event.clone(),
+            first_event: Box::new(submission.events[0].event.clone()),
             canonical_signed_unit_bytes,
             accepted_outcome_bytes: None,
             founding_finality_confirmed: false,
@@ -627,7 +627,7 @@ impl QueuedRealmBootstrap {
             if local_operation_id.trim().is_empty()
                 || transport_idempotency_key != local_operation_id
                 || submission.idempotency_key.as_str() != local_operation_id
-                || &submission.events[0].event != first_event
+                || &submission.events[0].event != first_event.as_ref()
             {
                 return Err(Error::Protocol(
                     "queued Direct Conversation founding identity mismatch".to_owned(),
@@ -871,8 +871,8 @@ fn validate_realm_bootstrap_intent(events: &[Event]) -> Result<()> {
     deny_unknown_fields
 )]
 pub enum QueuedRecord {
-    SdkEvent(QueuedSdkEvent),
-    RealmBootstrap(QueuedRealmBootstrap),
+    SdkEvent(Box<QueuedSdkEvent>),
+    RealmBootstrap(Box<QueuedRealmBootstrap>),
 }
 
 impl QueuedRecord {
