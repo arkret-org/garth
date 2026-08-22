@@ -579,7 +579,7 @@ mod tests {
     }
 
     fn controller() -> DidCoreId {
-        DidCoreId::new("ak:did_core:webvh:z6mkcontroller:example.com:users:alice").unwrap()
+        DidCoreId::new("ak:did_core:webvh:z6mkcontroller").unwrap()
     }
 
     fn agent_s() -> DidCoreId {
