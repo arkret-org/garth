@@ -8,7 +8,7 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use arkret_models_crypto::TypedSecurityTransactionContinueRequest;
+use arkret_models_crypto::SecurityTransactionContinueRequest;
 use arkret_models_crypto::{BackupSeriesEraseOutcome, BackupSeriesEraseRequestBody};
 use arkret_wire::{
     Hash, IssueRecoveryCompletionGrantOutcome, IssueRecoveryCompletionGrantRequest,
@@ -39,7 +39,7 @@ pub trait SecurityTransactionTransport: MaybeSendSync {
     fn continue_security_transaction<'a>(
         &'a self,
         transaction_id: &'a TransactionId,
-        request: &'a TypedSecurityTransactionContinueRequest,
+        request: &'a SecurityTransactionContinueRequest,
     ) -> BoxSecurityTransactionFuture<'a, SecurityTransaction>;
 
     fn erase_backup_series<'a>(
@@ -79,7 +79,7 @@ impl SecurityTransactionTransport for arkret_http_client::Client {
     fn continue_security_transaction<'a>(
         &'a self,
         transaction_id: &'a TransactionId,
-        request: &'a TypedSecurityTransactionContinueRequest,
+        request: &'a SecurityTransactionContinueRequest,
     ) -> BoxSecurityTransactionFuture<'a, SecurityTransaction> {
         Box::pin(async move {
             self.continue_security_transaction(transaction_id, request)
@@ -219,7 +219,7 @@ fn reconcile_terminal_continue(
         .pending_continue
         .as_ref()
         .expect("terminal pending continuation was checked");
-    let request: TypedSecurityTransactionContinueRequest = serde_json::from_value(
+    let request: SecurityTransactionContinueRequest = serde_json::from_value(
         arkret_canonical::parse_canonical_json(&pending.canonical_request)?,
     )
     .map_err(|error| {
@@ -340,7 +340,7 @@ where
     pub async fn continue_transaction(
         &self,
         transaction_id: &TransactionId,
-        request: &TypedSecurityTransactionContinueRequest,
+        request: &SecurityTransactionContinueRequest,
     ) -> Result<SecurityTransaction> {
         let mut local = self.store.load(transaction_id)?.ok_or_else(|| {
             Error::Protocol(format!(
@@ -393,7 +393,7 @@ where
         let Some(pending) = local.pending_continue else {
             return Ok(None);
         };
-        let request: TypedSecurityTransactionContinueRequest = serde_json::from_value(
+        let request: SecurityTransactionContinueRequest = serde_json::from_value(
             arkret_canonical::parse_canonical_json(&pending.canonical_request)?,
         )
         .map_err(|error| {
