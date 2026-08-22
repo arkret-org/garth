@@ -69,6 +69,26 @@ pub struct DurableAcceptedMlsArtifact {
     pub event_digest: Hash,
     pub winning_transition_ref: EventId,
     pub snapshot: QueuedMlsSnapshot,
+    pub history_secret: QueuedMlsHistorySecret,
+}
+
+/// Host-encrypted history material committed atomically with an accepted MLS
+/// post-state. Garth treats the ciphertext as opaque.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QueuedMlsHistorySecret {
+    pub group_id: String,
+    pub epoch: u64,
+    pub transition_ref: EventId,
+    pub ciphertext: Vec<u8>,
+}
+
+/// Fully prepared local material for one checkpoint-proven MLS artifact.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PreparedAcceptedMlsArtifact {
+    pub snapshot: QueuedMlsSnapshot,
+    pub history_secret: QueuedMlsHistorySecret,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -76,6 +96,7 @@ pub struct DurableAcceptedMlsArtifact {
 pub struct AcceptedMlsArtifactSnapshot {
     pub artifacts: BTreeMap<String, DurableAcceptedMlsArtifact>,
     pub ready_groups: BTreeMap<String, String>,
+    pub history_secrets: BTreeMap<String, QueuedMlsHistorySecret>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -100,15 +121,16 @@ pub trait AcceptedMlsArtifactStore: Clone + MaybeSendSync + 'static {
 /// Provider boundary invoked only after the Event has been recovered from a
 /// complete verified checkpoint and proven to be the checkpoint's winning
 /// transition (or a Welcome bound to that transition). Implementations MUST
-/// derive the returned encrypted snapshot solely from the Event and previous
-/// durable snapshot; a CAS retry may invoke `apply` again and MUST NOT publish
-/// readiness or mutate an authoritative provider state itself.
+/// derive the returned material from the Event, previous durable snapshot and
+/// host-owned durable staging/secure-key inputs. A CAS retry may invoke
+/// `prepare` again; preparation MUST NOT publish readiness, persist history
+/// material, consume staging, or mutate an authoritative provider state.
 pub trait AcceptedMlsArtifactApplicator: MaybeSendSync {
-    fn apply(
-        &self,
-        event: &Event,
-        previous: Option<&QueuedMlsSnapshot>,
-    ) -> Result<QueuedMlsSnapshot>;
+    fn prepare<'a>(
+        &'a self,
+        event: &'a Event,
+        previous: Option<&'a QueuedMlsSnapshot>,
+    ) -> impl Future<Output = Result<PreparedAcceptedMlsArtifact>> + MaybeSend + 'a;
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -155,6 +177,12 @@ where
         if artifact.snapshot.group_id != group_id || artifact.snapshot.aead_version != 1 {
             return Err(Error::Protocol(
                 "accepted MLS ready index references a mismatched snapshot".to_owned(),
+            ));
+        }
+        let history_key = history_secret_key(&artifact.history_secret);
+        if state.history_secrets.get(&history_key) != Some(&artifact.history_secret) {
+            return Err(Error::Protocol(
+                "accepted MLS ready artifact has no exact durable history secret".to_owned(),
             ));
         }
         Ok(Some(artifact.snapshot.clone()))
@@ -241,17 +269,28 @@ where
                 }
                 AcceptedMlsApplication::Welcome => previous.map(|artifact| &artifact.snapshot),
             };
-            let snapshot = applicator.apply(&accepted.event, previous_snapshot)?;
-            validate_applied_snapshot(&accepted, &snapshot)?;
+            let prepared = applicator
+                .prepare(&accepted.event, previous_snapshot)
+                .await?;
+            validate_prepared_artifact(&accepted, &prepared)?;
             let artifact = DurableAcceptedMlsArtifact {
                 event: accepted.event.clone(),
                 event_digest: accepted.event_digest.clone(),
                 winning_transition_ref: accepted.winning_transition_ref.clone(),
-                snapshot,
+                snapshot: prepared.snapshot,
+                history_secret: prepared.history_secret,
             };
             let mut next = current.snapshot;
             next.artifacts.insert(event_key.clone(), artifact.clone());
             next.ready_groups.insert(ready_key, event_key);
+            let secret = artifact.history_secret.clone();
+            let secret_key = history_secret_key(&secret);
+            if let Some(existing) = next.history_secrets.get(&secret_key)
+                && existing != &secret
+            {
+                return Err(Error::IdempotencyConflict(secret_key));
+            }
+            next.history_secrets.insert(secret_key, secret);
             if self
                 .store
                 .compare_and_swap_accepted_mls_artifacts(current.revision, &next)
@@ -415,10 +454,11 @@ fn verified_accepted_artifact(
     })
 }
 
-fn validate_applied_snapshot(
+fn validate_prepared_artifact(
     accepted: &VerifiedAcceptedMlsArtifact,
-    snapshot: &QueuedMlsSnapshot,
+    prepared: &PreparedAcceptedMlsArtifact,
 ) -> Result<()> {
+    let snapshot = &prepared.snapshot;
     if snapshot.group_id != accepted.group_id
         || snapshot.epoch != accepted.epoch
         || snapshot.group_state_event_id.as_ref() != Some(&accepted.winning_transition_ref)
@@ -431,7 +471,26 @@ fn validate_applied_snapshot(
             "applied MLS snapshot does not bind the accepted winning artifact".to_owned(),
         ));
     }
+    if snapshot.admission_epoch > snapshot.epoch {
+        return Err(Error::Protocol(
+            "accepted MLS snapshot admission epoch exceeds its current epoch".to_owned(),
+        ));
+    }
+    let secret = &prepared.history_secret;
+    if secret.group_id != accepted.group_id
+        || secret.epoch != accepted.epoch
+        || secret.transition_ref != accepted.winning_transition_ref
+        || secret.ciphertext.is_empty()
+    {
+        return Err(Error::Protocol(
+            "accepted MLS history secret is not bound to the winning transition".to_owned(),
+        ));
+    }
     Ok(())
+}
+
+fn history_secret_key(secret: &QueuedMlsHistorySecret) -> String {
+    format!("{}\u{1f}{:020}", secret.group_id, secret.epoch)
 }
 
 fn ready_group_key(scope: &ScopeRef, group_id: &str) -> Result<String> {
@@ -796,45 +855,62 @@ mod tests {
     }
 
     impl AcceptedMlsArtifactApplicator for TestApplicator {
-        fn apply(
-            &self,
-            event: &Event,
-            previous: Option<&QueuedMlsSnapshot>,
-        ) -> Result<QueuedMlsSnapshot> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            let (epoch, transition) = match event.kind {
-                EventKind::MlsGenesis => (0, event.event_id.clone()),
-                EventKind::MlsCommit => (1, event.event_id.clone()),
-                EventKind::MlsWelcome => {
-                    let previous = previous.ok_or_else(|| {
-                        Error::Protocol("test Welcome lacks a prior snapshot".to_owned())
-                    })?;
-                    (
-                        previous.epoch,
-                        previous.group_state_event_id.clone().ok_or_else(|| {
-                            Error::Protocol("test prior snapshot lacks transition".to_owned())
-                        })?,
-                    )
-                }
-                _ => {
-                    return Err(Error::Protocol(
-                        "test applicator received a non-MLS artifact".to_owned(),
-                    ));
-                }
-            };
-            Ok(QueuedMlsSnapshot {
-                realm_id: "realm".to_owned(),
-                group_id: self.group_id.clone(),
-                epoch,
-                group_state_event_id: Some(transition),
-                salt_hex: "01".to_owned(),
-                ciphertext_hex: "02".to_owned(),
-                mac_hex: "03".to_owned(),
-                recorded_at: Utc::now(),
-                epoch_started_at: Utc::now(),
-                app_messages_observed: 0,
-                aead_version: 1,
-            })
+        fn prepare<'a>(
+            &'a self,
+            event: &'a Event,
+            previous: Option<&'a QueuedMlsSnapshot>,
+        ) -> impl Future<Output = Result<PreparedAcceptedMlsArtifact>> + MaybeSend + 'a {
+            async move {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                let (epoch, admission_epoch, transition) = match event.kind {
+                    EventKind::MlsGenesis => (0, 0, event.event_id.clone()),
+                    EventKind::MlsCommit => {
+                        let previous = previous.ok_or_else(|| {
+                            Error::Protocol("test Commit lacks a prior snapshot".to_owned())
+                        })?;
+                        (1, previous.admission_epoch, event.event_id.clone())
+                    }
+                    EventKind::MlsWelcome => {
+                        let previous = previous.ok_or_else(|| {
+                            Error::Protocol("test Welcome lacks a prior snapshot".to_owned())
+                        })?;
+                        (
+                            previous.epoch,
+                            previous.admission_epoch,
+                            previous.group_state_event_id.clone().ok_or_else(|| {
+                                Error::Protocol("test prior snapshot lacks transition".to_owned())
+                            })?,
+                        )
+                    }
+                    _ => {
+                        return Err(Error::Protocol(
+                            "test applicator received a non-MLS artifact".to_owned(),
+                        ));
+                    }
+                };
+                Ok(PreparedAcceptedMlsArtifact {
+                    history_secret: QueuedMlsHistorySecret {
+                        group_id: self.group_id.clone(),
+                        epoch,
+                        transition_ref: transition.clone(),
+                        ciphertext: vec![4],
+                    },
+                    snapshot: QueuedMlsSnapshot {
+                        realm_id: "realm".to_owned(),
+                        group_id: self.group_id.clone(),
+                        epoch,
+                        admission_epoch,
+                        group_state_event_id: Some(transition),
+                        salt_hex: "01".to_owned(),
+                        ciphertext_hex: "02".to_owned(),
+                        mac_hex: "03".to_owned(),
+                        recorded_at: Utc::now(),
+                        epoch_started_at: Utc::now(),
+                        app_messages_observed: 0,
+                        aead_version: 1,
+                    },
+                })
+            }
         }
     }
 
@@ -942,6 +1018,7 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(ready.epoch, 1);
+        assert_eq!(ready.admission_epoch, 0);
         assert_eq!(ready.group_state_event_id, Some(commit.event_id));
         assert_eq!(applicator.calls.load(Ordering::SeqCst), 3);
         assert_eq!(
@@ -952,6 +1029,15 @@ mod tests {
                 .artifacts
                 .len(),
             3
+        );
+        assert_eq!(
+            store
+                .load_accepted_mls_artifacts()
+                .unwrap()
+                .snapshot
+                .history_secrets
+                .len(),
+            2
         );
     }
 
@@ -1024,6 +1110,15 @@ mod tests {
                 .ready_snapshot(&scope, &group_id)
                 .unwrap()
                 .is_none()
+        );
+        assert!(
+            consumer
+                .store()
+                .load_accepted_mls_artifacts()
+                .unwrap()
+                .snapshot
+                .history_secrets
+                .is_empty()
         );
     }
 

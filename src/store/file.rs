@@ -690,10 +690,17 @@ mod tests {
                 event_digest: event.event_id.identity_key().event_digest(),
                 winning_transition_ref: event.event_id.clone(),
                 event,
+                history_secret: crate::QueuedMlsHistorySecret {
+                    group_id: group_id.clone(),
+                    epoch: 0,
+                    transition_ref: EventId::new(event_key.clone()).unwrap(),
+                    ciphertext: vec![4],
+                },
                 snapshot: QueuedMlsSnapshot {
                     realm_id: realm_id.to_string(),
                     group_id: group_id.clone(),
                     epoch: 0,
+                    admission_epoch: 0,
                     group_state_event_id: EventId::new(event_key.clone()).ok(),
                     salt_hex: "01".to_owned(),
                     ciphertext_hex: "02".to_owned(),
@@ -707,7 +714,16 @@ mod tests {
         );
         snapshot.ready_groups.insert(
             format!("{}\u{1f}{group_id}", serde_json::to_string(&scope).unwrap()),
-            event_key,
+            event_key.clone(),
+        );
+        snapshot.history_secrets.insert(
+            format!("{group_id}\u{1f}{:020}", 0),
+            crate::QueuedMlsHistorySecret {
+                group_id: group_id.clone(),
+                epoch: 0,
+                transition_ref: EventId::new(event_key).unwrap(),
+                ciphertext: vec![4],
+            },
         );
         {
             let store = FileStore::open(&path).unwrap();

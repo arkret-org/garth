@@ -144,7 +144,7 @@ pub struct QueuedMlsSnapshot {
     pub realm_id: String,
     pub group_id: String,
     pub epoch: u64,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub admission_epoch: u64,
     pub group_state_event_id: Option<EventId>,
     pub salt_hex: String,
     pub ciphertext_hex: String,
