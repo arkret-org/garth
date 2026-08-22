@@ -4,9 +4,8 @@ use arkret_canonical::canonical::{canonical_json_bytes, canonical_sha256};
 use arkret_models_collaboration::history_key::{
     EventCandidateBinding, EventCandidateBindingKey, EventCandidateBindingOutcome,
     HistoryCandidateMaterialKey, HistoryCandidateMaterialRecord, HistoryCandidateOriginAttribution,
-    HistoryEffectiveScope,
 };
-use arkret_wire::Hash;
+use arkret_wire::{Hash, HistoryEffectiveScope};
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -595,7 +594,7 @@ mod tests {
     use arkret_models_collaboration::history_key::{
         HistoryResponseId, ResponseSenderOriginRef, ResponseSenderQuotaDomain,
     };
-    use arkret_wire::{EventId, RealmId};
+    use arkret_wire::{EventId, HistoryEffectiveScope, RealmId};
 
     fn hash(byte: char) -> Hash {
         Hash::new(format!("sha256:{}", byte.to_string().repeat(64))).unwrap()

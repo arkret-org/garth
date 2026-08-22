@@ -985,15 +985,10 @@ fn seal_ids_contain_basis<'a>(
     basis.leaves.iter().all(|leaf| accepted.contains(leaf))
 }
 
-fn scope_realm_id(
-    scope: &arkret_models_collaboration::history_key::HistoryEffectiveScope,
-) -> arkret_wire::RealmId {
+fn scope_realm_id(scope: &arkret_wire::HistoryEffectiveScope) -> arkret_wire::RealmId {
     match scope {
-        arkret_models_collaboration::history_key::HistoryEffectiveScope::Realm { realm_id }
-        | arkret_models_collaboration::history_key::HistoryEffectiveScope::Circle {
-            realm_id,
-            ..
-        } => realm_id.clone(),
+        arkret_wire::HistoryEffectiveScope::Realm { realm_id }
+        | arkret_wire::HistoryEffectiveScope::Circle { realm_id, .. } => realm_id.clone(),
     }
 }
 

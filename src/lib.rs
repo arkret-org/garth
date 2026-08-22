@@ -60,14 +60,14 @@ pub use arkret_models_collaboration::{
     history_key::{
         HistoryGovernanceTraversalIntent, HistoryGovernanceTraversalRetention, HistoryKeyRequest,
         HistoryKeyRequestReceipt, HistoryKeyResponseRecord, HistoryKeyResponseSendReceipt,
-        OrganizationRecoveryArchive, OrganizationRecoveryArchivePlaintext,
-        PeerHistoryTraversalAccess, SelfHistoryTraversalAccess,
+        OrganizationRecoveryArchivePlaintext, PeerHistoryTraversalAccess,
+        SelfHistoryTraversalAccess,
     },
 };
 /// The shared Arkret retry cadence (`arkret-retry`). The ladder, its jitter
 /// and the `Retry-After` floor are spec-normative; see that crate's docs.
 pub use arkret_retry::RetrySchedule as Backoff;
-pub use arkret_wire::HistoryAccess;
+pub use arkret_wire::{HistoryAccess, HistoryEffectiveScope, OrganizationRecoveryArchive};
 pub use crypto_state_store::{
     CryptoStore, MemoryCryptoStore, MlsCommitSource, MlsEpochSecretRecord, MlsGroupStateRecord,
     MlsGroupStateSink, MlsWelcomeState, StoredDeviceVerification,
