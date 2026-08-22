@@ -176,8 +176,8 @@ pub use store::{
     BoundedSeenWindow, CursorScope, CursorStore, DEFAULT_SEEN_EVENTS_CAPACITY, DeliveryErrorClass,
     DeliveryId, DurableInboxStore, EventCacheStore, MAX_DELIVERY_ERROR_BYTES,
     MAX_PENDING_DELIVERIES, MAX_PENDING_READ, MemorySecureKeyStore, MemoryStore, OpaqueCursor,
-    PendingDelivery, PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter, SecretBytes,
-    SecretClass, SecretDurability, SecureKeyStore, SecureKeyStoreBackendInfo, SecureKeyStoreError,
+    PendingDelivery, PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter, SecretClass,
+    SecretDurability, SecureKeyStore, SecureKeyStoreBackendInfo, SecureKeyStoreError,
 };
 pub use subscribe::{
     BoxRealmStreamFuture, BoxSignalStreamFuture, EventsScanRequest, EventsScanTransport,

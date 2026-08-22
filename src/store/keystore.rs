@@ -6,7 +6,6 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use crate::protocol::{Error, KeyBytes, KeyStore, KeyStoreError};
 use thiserror::Error;
-use zeroize::Zeroizing;
 
 use crate::MaybeSendSync;
 
@@ -14,8 +13,6 @@ use crate::MaybeSendSync;
 type BoxSecureStoreFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 #[cfg(target_arch = "wasm32")]
 type BoxSecureStoreFuture<'a, T> = Pin<Box<dyn Future<Output = T> + 'a>>;
-
-pub type SecretBytes = Zeroizing<Vec<u8>>;
 
 /// Durability expectation a caller attaches to a secret write.
 ///
@@ -151,7 +148,7 @@ pub trait SecureKeyStore: MaybeSendSync + 'static {
         }
     }
 
-    fn get_secret_bytes(&self, key: &str) -> SecureKeyStoreResult<Option<SecretBytes>>;
+    fn get_secret_bytes(&self, key: &str) -> SecureKeyStoreResult<Option<KeyBytes>>;
     fn delete_secret(&self, key: &str) -> SecureKeyStoreResult<()>;
     fn list_secret_keys(&self, prefix: Option<&str>) -> SecureKeyStoreResult<Vec<String>>;
     fn backend_info(&self) -> SecureKeyStoreBackendInfo;
@@ -185,7 +182,7 @@ pub trait SecureKeyStore: MaybeSendSync + 'static {
 
 #[derive(Clone, Debug, Default)]
 pub struct MemorySecureKeyStore {
-    inner: Arc<Mutex<BTreeMap<String, SecretBytes>>>,
+    inner: Arc<Mutex<BTreeMap<String, KeyBytes>>>,
 }
 
 impl MemorySecureKeyStore {
@@ -206,7 +203,7 @@ impl MemorySecureKeyStore {
 
     fn with_map<T>(
         &self,
-        f: impl FnOnce(&mut BTreeMap<String, SecretBytes>) -> T,
+        f: impl FnOnce(&mut BTreeMap<String, KeyBytes>) -> T,
     ) -> SecureKeyStoreResult<T> {
         let mut guard = self
             .inner
@@ -219,11 +216,11 @@ impl MemorySecureKeyStore {
 impl SecureKeyStore for MemorySecureKeyStore {
     fn store_secret_bytes(&self, key: &str, value: &[u8]) -> SecureKeyStoreResult<()> {
         self.with_map(|map| {
-            map.insert(key.to_owned(), SecretBytes::new(value.to_vec()));
+            map.insert(key.to_owned(), KeyBytes::new(value.to_vec()));
         })
     }
 
-    fn get_secret_bytes(&self, key: &str) -> SecureKeyStoreResult<Option<SecretBytes>> {
+    fn get_secret_bytes(&self, key: &str) -> SecureKeyStoreResult<Option<KeyBytes>> {
         self.with_map(|map| map.get(key).cloned())
     }
 
@@ -325,7 +322,7 @@ where
             .map_err(|err| SecureKeyStoreError::Backend(err.to_string()))
     }
 
-    fn get_secret_bytes(&self, key: &str) -> SecureKeyStoreResult<Option<SecretBytes>> {
+    fn get_secret_bytes(&self, key: &str) -> SecureKeyStoreResult<Option<KeyBytes>> {
         match self.inner.load(key) {
             Ok(bytes) => Ok(Some(bytes)),
             Err(err) if err.is_not_found() => Ok(None),
