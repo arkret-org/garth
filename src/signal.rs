@@ -27,9 +27,8 @@ use serde_json::Value;
 use crate::MaybeSendSync;
 use crate::protocol::signatures::{PublicKeyMaterial, verify_ed25519_signal_proof};
 use crate::protocol::{
-    DidCoreId, Error, PrincipalAuthorityKey, Result, ScopeRef, SdkSignalPlaintext, SignalEnvelope,
-    SignalSequence, SignalSequenceDecision, SignalSequenceHighWater, canonical,
-    open_signal_plaintext,
+    DidCoreId, Error, PrincipalAuthorityKey, Result, ScopeRef, SignalEnvelope, SignalSequence,
+    SignalSequenceDecision, SignalSequenceHighWater, canonical, open_signal_plaintext,
 };
 use crate::store::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
 
@@ -232,7 +231,7 @@ pub struct SignalPlaintext {
     /// select the corresponding closed schema by `kind` and drop anything else
     /// as `schema_violation`, and forbids hand-parsing a plaintext by field
     /// name. Consumers match this union to access profile fields.
-    pub payload: SdkSignalPlaintext,
+    pub payload: arkret_models_collaboration::signal_plaintext::SignalPlaintext,
     /// Outer `sent_at`, the reference instant for the plaintext TTL and the
     /// tie-breaker for `status_message` selection (`profiles-presence.md`
     /// §3.3).
@@ -280,7 +279,9 @@ impl SignalPlaintext {
     /// The decrypted `ak.receipt.read` profile, if this is one.
     pub fn read_receipt(&self) -> Option<&crate::protocol::ReadReceipt> {
         match &self.payload {
-            SdkSignalPlaintext::ReadReceipt(receipt) => Some(receipt),
+            arkret_models_collaboration::signal_plaintext::SignalPlaintext::ReadReceipt(
+                receipt,
+            ) => Some(receipt),
             _ => None,
         }
     }
@@ -288,7 +289,9 @@ impl SignalPlaintext {
     /// The decrypted `ak.presence` profile, if this is one.
     pub fn presence(&self) -> Option<&crate::protocol::PresencePlaintext> {
         match &self.payload {
-            SdkSignalPlaintext::Presence(presence) => Some(presence),
+            arkret_models_collaboration::signal_plaintext::SignalPlaintext::Presence(presence) => {
+                Some(presence)
+            }
             _ => None,
         }
     }
@@ -296,7 +299,9 @@ impl SignalPlaintext {
     /// The decrypted `ak.typing` profile, if this is one.
     pub fn typing(&self) -> Option<&crate::protocol::TypingPlaintext> {
         match &self.payload {
-            SdkSignalPlaintext::Typing(typing) => Some(typing),
+            arkret_models_collaboration::signal_plaintext::SignalPlaintext::Typing(typing) => {
+                Some(typing)
+            }
             _ => None,
         }
     }

@@ -109,7 +109,9 @@ impl MessageStreamProjection {
             )));
         }
         let frame = match &plaintext.payload {
-            crate::protocol::SdkSignalPlaintext::MessageStream(frame) => frame,
+            arkret_models_collaboration::signal_plaintext::SignalPlaintext::MessageStream(
+                frame,
+            ) => frame,
             _ => {
                 return Err(Error::Protocol(
                     "message stream projection received a non-message-stream payload".to_owned(),
@@ -436,7 +438,9 @@ mod tests {
             actor_id: actor(),
             payload_sequence,
             ttl_ms: None,
-            payload: crate::protocol::SdkSignalPlaintext::MessageStream(frame),
+            payload: arkret_models_collaboration::signal_plaintext::SignalPlaintext::MessageStream(
+                frame,
+            ),
             sent_at: at(0),
             expires_at: at(30),
             scope_ref: ScopeRef::Realm {

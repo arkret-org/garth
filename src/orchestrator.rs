@@ -28,8 +28,8 @@ use crate::subscribe::{
     SignalStreamStopReason, SignalStreamTransport,
 };
 use crate::{
-    ArkretClient, Backoff, ClientProjector, CursorStore, DurableInboxStore, EventCacheStore,
-    Executor, HostClock,
+    ArkretClient, ClientProjector, CursorStore, DurableInboxStore, EventCacheStore, Executor,
+    HostClock, RetrySchedule,
     subscribe::account::{account_updates_to_events, account_updates_to_events_with_origin},
 };
 
@@ -295,7 +295,7 @@ where
     {
         let backoff_seed = stable_backoff_seed(self.backoff_seed, 0xA11C_E001, &realm_id);
         let engine = self.subscription_engine().with_control(control.clone());
-        let mut backoff = Backoff::new(options.min_backoff, options.max_backoff)
+        let mut backoff = RetrySchedule::new(options.min_backoff, options.max_backoff)
             .with_jitter(options.jitter_ratio, backoff_seed);
         // One reset may legitimately be needed for a persisted cursor. A
         // second invalid-cursor response before a healthy stream result is a
@@ -462,7 +462,7 @@ where
     {
         let backoff_seed = stable_backoff_seed(self.backoff_seed, 0xA11C_E001, &realm_id);
         let engine = self.subscription_engine().with_control(control.clone());
-        let mut backoff = Backoff::new(options.min_backoff, options.max_backoff)
+        let mut backoff = RetrySchedule::new(options.min_backoff, options.max_backoff)
             .with_jitter(options.jitter_ratio, backoff_seed);
         let mut cursor_recovery_attempted = false;
         loop {
@@ -626,7 +626,7 @@ where
             .restore_account_loop(scope.clone())
             .await
             .map_err(|error| Self::fail(provider, RunErrorClass::StoreFailure, error))?;
-        let mut provide_backoff = Backoff::new(options.min_backoff, options.max_backoff)
+        let mut provide_backoff = RetrySchedule::new(options.min_backoff, options.max_backoff)
             .with_jitter(
                 options.jitter_ratio,
                 account_backoff_seed(self.backoff_seed, &scope),
@@ -745,7 +745,7 @@ where
             .restore_account_loop(scope.clone())
             .await
             .map_err(|error| Self::fail(provider, RunErrorClass::StoreFailure, error))?;
-        let mut backoff = Backoff::new(options.min_backoff, options.max_backoff).with_jitter(
+        let mut backoff = RetrySchedule::new(options.min_backoff, options.max_backoff).with_jitter(
             options.jitter_ratio,
             account_backoff_seed(self.backoff_seed, &scope),
         );
@@ -904,7 +904,7 @@ where
             .restore_account_loop(scope.clone())
             .await
             .map_err(|error| Self::fail(provider, RunErrorClass::StoreFailure, error))?;
-        let mut backoff = Backoff::new(options.min_backoff, options.max_backoff).with_jitter(
+        let mut backoff = RetrySchedule::new(options.min_backoff, options.max_backoff).with_jitter(
             options.jitter_ratio,
             account_backoff_seed(self.backoff_seed, &scope),
         );
@@ -1024,7 +1024,7 @@ where
         let mut driver = SignalStreamDriver::new();
         // Tagged so the Signal rail's reconnect jitter does not move in
         // lockstep with the account and realm rails of the same client.
-        let mut backoff = Backoff::new(options.min_backoff, options.max_backoff).with_jitter(
+        let mut backoff = RetrySchedule::new(options.min_backoff, options.max_backoff).with_jitter(
             options.jitter_ratio,
             stable_backoff_seed(self.backoff_seed, 0x5169_4E41, "signal"),
         );
@@ -1131,7 +1131,7 @@ where
         &self,
         provider: &TP,
         control: &SyncLoopControl,
-        backoff: &mut Backoff,
+        backoff: &mut RetrySchedule,
     ) -> RunResult<UnauthorizedRecovery> {
         provider.observe(RunEvent::Refreshing);
         match provider.recover_unauthorized().await {

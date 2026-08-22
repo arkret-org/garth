@@ -66,7 +66,7 @@ pub use arkret_models_collaboration::{
 };
 /// The shared Arkret retry cadence (`arkret-retry`). The ladder, its jitter
 /// and the `Retry-After` floor are spec-normative; see that crate's docs.
-pub use arkret_retry::RetrySchedule as Backoff;
+pub use arkret_retry::RetrySchedule;
 pub use arkret_wire::{HistoryAccess, HistoryEffectiveScope, OrganizationRecoveryArchive};
 pub use crypto_state_store::{
     CryptoStore, MemoryCryptoStore, MlsCommitSource, MlsEpochSecretRecord, MlsGroupStateRecord,
@@ -111,9 +111,7 @@ pub use projection::{ProjectionMount, RealmStateReducer};
 /// a consumer has to be able to name the variant it matches, and
 /// `open_signal_plaintext` is the only admitted way to turn decrypted bytes
 /// into one.
-pub use protocol::{
-    PresencePlaintext, ReadReceipt, SdkSignalPlaintext, TypingPlaintext, open_signal_plaintext,
-};
+pub use protocol::{PresencePlaintext, ReadReceipt, TypingPlaintext, open_signal_plaintext};
 pub use queued_record::{
     AuthoringAuthorityModel, AuthoringGeneration, MlsAdmissionStage, QueuedAuthoredEventAttempt,
     QueuedEventIntent, QueuedMlsSnapshot, QueuedMlsWelcomes, QueuedPostAcceptAction,

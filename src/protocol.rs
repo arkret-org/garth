@@ -28,8 +28,8 @@ pub(crate) use arkret_models_collaboration::signal_message_stream::{
 /// because [`crate::signal::SignalPlaintext`] carries the typed profile on a
 /// public field: a consumer has to be able to name the variant it matches.
 pub use arkret_models_collaboration::signal_plaintext::{
-    PresencePlaintext, ReadReceipt, SignalPlaintext as SdkSignalPlaintext, SignalSequence,
-    SignalSequenceDecision, SignalSequenceHighWater, TypingPlaintext, open_signal_plaintext,
+    PresencePlaintext, ReadReceipt, SignalSequence, SignalSequenceDecision,
+    SignalSequenceHighWater, TypingPlaintext, open_signal_plaintext,
 };
 pub(crate) use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountStreamInterrupt, AccountSubscribeBatch, AccountSubscribeFrameKind,

@@ -444,7 +444,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
 fn local_retry_delay(transaction_id: &str, attempts: u32) -> Duration {
     let mut hasher = DefaultHasher::new();
     transaction_id.hash(&mut hasher);
-    let mut backoff = crate::Backoff::new(Duration::from_secs(1), Duration::from_secs(60))
+    let mut backoff = crate::RetrySchedule::new(Duration::from_secs(1), Duration::from_secs(60))
         .with_jitter(0.2, hasher.finish());
     let mut delay = Duration::from_secs(1);
     for _ in 0..attempts.max(1) {
