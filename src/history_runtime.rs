@@ -6,7 +6,7 @@ use arkret_models_collaboration::history_key::{
     HistoryGovernanceTraversalIntent, HistoryGovernanceTraversalRetention, HistoryKeyRequest,
     HistoryKeyRequestCreateOutcome, HistoryKeyRequestListOutcome, HistoryKeyRequestListQuery,
     HistoryKeyResponseAckOutcome, HistoryKeyResponseAckRequest, HistoryKeyResponseListOutcome,
-    HistoryKeyResponseListQuery, HistoryKeyResponseSendOutcome, HistoryKeyResponseSendRequest,
+    HistoryKeyResponseListQuery, HistoryKeyResponseSendReceipt, HistoryKeyResponseSendRequest,
     HistoryKeySourceRelay, HistoryRequestId, HistoryResponseAckEntry,
     HistoryResponseChunkDescriptor, HistoryResponseId, HistoryResponsePageEntry,
     HistoryResponseRecordStatus, SelfHistoryTraversalAccess, response_capability_commitment,
@@ -141,12 +141,12 @@ pub trait HistoryRuntimeTransport: MaybeSendSync {
     fn send_response<'a>(
         &'a self,
         request: &'a HistoryKeyResponseSendRequest,
-    ) -> impl Future<Output = Result<HistoryKeyResponseSendOutcome>> + MaybeSend + 'a;
+    ) -> impl Future<Output = Result<HistoryKeyResponseSendReceipt>> + MaybeSend + 'a;
 
     fn relay_response<'a>(
         &'a self,
         relay: &'a HistoryKeySourceRelay,
-    ) -> impl Future<Output = Result<HistoryKeyResponseSendOutcome>> + MaybeSend + 'a;
+    ) -> impl Future<Output = Result<HistoryKeyResponseSendReceipt>> + MaybeSend + 'a;
 
     fn list_responses<'a>(
         &'a self,
@@ -179,14 +179,14 @@ impl HistoryRuntimeTransport for arkret_http_client::Client {
     fn send_response<'a>(
         &'a self,
         request: &'a HistoryKeyResponseSendRequest,
-    ) -> impl Future<Output = Result<HistoryKeyResponseSendOutcome>> + MaybeSend + 'a {
+    ) -> impl Future<Output = Result<HistoryKeyResponseSendReceipt>> + MaybeSend + 'a {
         async move { Ok(self.history_key_response_send(request).await?) }
     }
 
     fn relay_response<'a>(
         &'a self,
         relay: &'a HistoryKeySourceRelay,
-    ) -> impl Future<Output = Result<HistoryKeyResponseSendOutcome>> + MaybeSend + 'a {
+    ) -> impl Future<Output = Result<HistoryKeyResponseSendReceipt>> + MaybeSend + 'a {
         async move { Ok(self.peer_history_key_response_relay(relay).await?) }
     }
 

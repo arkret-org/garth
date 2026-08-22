@@ -10,7 +10,7 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use arkret_models_collaboration::history_key::{
-    HistoryKeyResponseContent, HistoryKeyResponseSendOutcome, HistoryKeyResponseSendRequest,
+    HistoryKeyResponseContent, HistoryKeyResponseSendReceipt, HistoryKeyResponseSendRequest,
     HistoryKeySourceRelay, HistoryRequestId, HistoryResponseId,
 };
 use arkret_wire::Hash;
@@ -103,7 +103,7 @@ pub struct DurableHistorySourceAttempt {
     pub expires_at: DateTime<Utc>,
     pub staged_bytes: u64,
     pub records: Vec<DurableStagedHistoryRecord>,
-    pub receipts: BTreeMap<String, HistoryKeyResponseSendOutcome>,
+    pub receipts: BTreeMap<String, HistoryKeyResponseSendReceipt>,
     pub status: HistorySourceAttemptStatus,
 }
 
@@ -820,7 +820,7 @@ mod tests {
         fn send_response<'a>(
             &'a self,
             request: &'a HistoryKeyResponseSendRequest,
-        ) -> impl Future<Output = Result<HistoryKeyResponseSendOutcome>> + MaybeSend + 'a {
+        ) -> impl Future<Output = Result<HistoryKeyResponseSendReceipt>> + MaybeSend + 'a {
             async move {
                 let mut sent = self.sent.lock().unwrap();
                 sent.push(request.response_id.clone());
@@ -831,7 +831,7 @@ mod tests {
         fn relay_response<'a>(
             &'a self,
             _relay: &'a HistoryKeySourceRelay,
-        ) -> impl Future<Output = Result<HistoryKeyResponseSendOutcome>> + MaybeSend + 'a {
+        ) -> impl Future<Output = Result<HistoryKeyResponseSendReceipt>> + MaybeSend + 'a {
             async { unreachable!("test attempt uses direct routing") }
         }
 
