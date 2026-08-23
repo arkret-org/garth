@@ -230,7 +230,6 @@ pub enum BoundCompletionMaterial {
     GrantBindingKey,
     SessionGrant,
     RecoveryEvidence,
-    HpkePrivateKey,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
