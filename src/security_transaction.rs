@@ -109,7 +109,7 @@ impl SecurityTransactionTransport for arkret_http_client::Client {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingSecurityTransactionContinue {
-    pub step: SecurityTransactionStep,
+    pub expected_accepted_step_count: u8,
     pub canonical_request: Vec<u8>,
 }
 
@@ -152,7 +152,7 @@ impl DurableSecurityTransaction {
             |resource| SecurityTransactionProgress {
                 transaction_id: resource.transaction_id.clone(),
                 state: Some(resource.state),
-                next_required_step: resource.next_required_step,
+                next_required_step: resource.next_required_step().ok().flatten(),
                 accepted_step_count: resource.accepted_steps.len(),
                 terminal: resource.state.is_terminal(),
             },
@@ -207,27 +207,24 @@ fn reconcile_terminal_continue(
     local: &mut DurableSecurityTransaction,
     resource: &SecurityTransaction,
 ) -> Result<()> {
-    if resource.state != SecurityTransactionState::Completed
-        || local
-            .pending_continue
-            .as_ref()
-            .is_none_or(|pending| pending.step != SecurityTransactionStep::IssueTerminalReceipt)
-    {
+    if resource.state != SecurityTransactionState::Completed {
         return Ok(());
     }
-    let pending = local
-        .pending_continue
-        .as_ref()
-        .expect("terminal pending continuation was checked");
+    let Some(pending) = local.pending_continue.as_ref() else {
+        return Ok(());
+    };
     let request: SecurityTransactionContinueRequest = serde_json::from_value(
         arkret_canonical::parse_canonical_json(&pending.canonical_request)?,
     )
     .map_err(|error| {
         Error::Protocol(format!("stored terminal continuation is invalid: {error}"))
     })?;
-    let attestation = request.client_attestation.as_ref().ok_or_else(|| {
-        Error::Protocol("stored terminal continuation omitted its attestation".to_owned())
-    })?;
+    let Some(attestation) = request.client_attestation.as_ref() else {
+        return Ok(());
+    };
+    if attestation.step != SecurityTransactionStep::IssueTerminalReceipt {
+        return Ok(());
+    }
     let completion = resource
         .terminal_result
         .as_ref()
@@ -350,7 +347,7 @@ where
         })?;
         let canonical_request = arkret_canonical::canonical_json_bytes(request)?;
         let pending = PendingSecurityTransactionContinue {
-            step: request.expected_next_step,
+            expected_accepted_step_count: request.expected_accepted_step_count,
             canonical_request: canonical_request.clone(),
         };
         if local
@@ -359,9 +356,9 @@ where
             .is_some_and(|existing| existing != &pending)
         {
             return Err(Error::IdempotencyConflict(format!(
-                "{}:{:?}",
+                "{}:{}",
                 transaction_id.as_str(),
-                request.expected_next_step
+                request.expected_accepted_step_count
             )));
         }
         local.pending_continue = Some(pending);
@@ -371,7 +368,12 @@ where
             .transport
             .continue_security_transaction(transaction_id, request)
             .await?;
-        if request.expected_next_step == SecurityTransactionStep::IssueTerminalReceipt
+        if request
+            .client_attestation
+            .as_ref()
+            .is_some_and(|attestation| {
+                attestation.step == SecurityTransactionStep::IssueTerminalReceipt
+            })
             && resource.state == SecurityTransactionState::Completed
         {
             local.accepted_terminal_continue = Some(canonical_request);
@@ -401,9 +403,10 @@ where
                 "stored security transaction continuation is invalid: {error}"
             ))
         })?;
-        if request.expected_next_step != pending.step {
+        if request.expected_accepted_step_count != pending.expected_accepted_step_count {
             return Err(Error::Protocol(
-                "stored security transaction continuation changed its step".to_owned(),
+                "stored security transaction continuation changed its accepted-step count"
+                    .to_owned(),
             ));
         }
         self.continue_transaction(transaction_id, &request)
