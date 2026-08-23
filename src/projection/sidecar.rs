@@ -41,6 +41,19 @@ impl SidecarProjectionFold {
         should_replace
     }
 
+    pub fn view_state(
+        &self,
+        controller_id: &str,
+        realm_id: &RealmId,
+        strand_id: &StrandId,
+    ) -> Option<&AgentSidecarViewState> {
+        self.view_states.get(&(
+            controller_id.to_owned(),
+            realm_id.to_string(),
+            strand_id.to_string(),
+        ))
+    }
+
     /// Install one deterministic Event-fold result. There is no LWW and no
     /// cross-device merge: the fold of the local accepted history is always
     /// authoritative for its exchange, so the entry is replaced wholesale.
@@ -54,19 +67,6 @@ impl SidecarProjectionFold {
     /// The projection is always rebuildable from private history.
     pub fn remove_exchange(&mut self, exchange_id: &str) -> Option<AgentSidecarExchangeProjection> {
         self.exchanges.remove(exchange_id)
-    }
-
-    pub fn view_state(
-        &self,
-        controller_id: &str,
-        realm_id: &RealmId,
-        strand_id: &StrandId,
-    ) -> Option<&AgentSidecarViewState> {
-        self.view_states.get(&(
-            controller_id.to_owned(),
-            realm_id.to_string(),
-            strand_id.to_string(),
-        ))
     }
 
     pub fn exchanges_for_track<'a>(

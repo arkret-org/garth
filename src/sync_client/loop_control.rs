@@ -420,12 +420,6 @@ impl SyncLoop {
         self
     }
 
-    /// Set the filter sent with each request.
-    pub fn with_filter(mut self, filter: SyncFilter) -> Self {
-        self.filter = Some(filter);
-        self
-    }
-
     /// Set a frontier the server should wait for before returning.
     pub fn with_wait_for(mut self, wait_for: impl Into<String>) -> Self {
         self.wait_for = Some(wait_for.into());

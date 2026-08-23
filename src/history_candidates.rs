@@ -70,10 +70,6 @@ where
         &mut self.store
     }
 
-    pub fn into_store(self) -> S {
-        self.store
-    }
-
     pub fn event_binding(
         &self,
         event_binding_key: &EventCandidateBindingKey,
