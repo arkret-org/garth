@@ -84,13 +84,6 @@ impl Error {
                 .iter()
                 .any(|marker| error.error.message.to_ascii_lowercase().contains(marker)))
     }
-
-    pub fn as_key_store_error(&self) -> Option<&KeyStoreError> {
-        match self {
-            Self::KeyStore(error) => Some(error),
-            _ => None,
-        }
-    }
 }
 
 impl From<arkret_identifiers::IdentifierError> for Error {
