@@ -29,6 +29,7 @@ use arkret_models_collaboration::sync_frames::websocket_binding::{
 use arkret_models_collaboration::sync_frames::websocket_session::{
     WebSocketConnectionState, WebSocketFrameCodec, WebSocketServerEvent,
 };
+use arkret_wire::DomainSeparationId;
 use arkret_wire::websocket_binding::{
     WEBSOCKET_AUTHENTICATION_DEADLINE_MS, WebSocketCloseCode, WebSocketOperationId,
     WebSocketTransportError,
@@ -510,6 +511,10 @@ fn handshake_limits(advertised_max_frame_bytes: u32) -> WebSocketConnectionLimit
 /// proof without garth needing an RNG seam of its own.
 fn fresh_jti(connection_id: &str, nonce: &str, sequence: u32) -> String {
     arkret_canonical::canonical::sha256_base64url(
-        format!("ak.websocket-auth.v1|{connection_id}|{nonce}|{sequence}").as_bytes(),
+        format!(
+            "{}|{connection_id}|{nonce}|{sequence}",
+            DomainSeparationId::WEBSOCKET_AUTH_V1
+        )
+        .as_bytes(),
     )
 }
