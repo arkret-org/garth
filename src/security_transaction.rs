@@ -146,6 +146,7 @@ impl DurableSecurityTransaction {
                 transaction_id: self.transaction_id.clone(),
                 state: None,
                 next_required_step: None,
+                requires_device_attestation: false,
                 accepted_step_count: 0,
                 terminal: false,
             },
@@ -153,6 +154,9 @@ impl DurableSecurityTransaction {
                 transaction_id: resource.transaction_id.clone(),
                 state: Some(resource.state),
                 next_required_step: resource.next_required_step().ok().flatten(),
+                requires_device_attestation: resource
+                    .requires_device_attestation()
+                    .unwrap_or(false),
                 accepted_step_count: resource.accepted_steps.len(),
                 terminal: resource.state.is_terminal(),
             },
@@ -165,6 +169,7 @@ pub struct SecurityTransactionProgress {
     pub transaction_id: TransactionId,
     pub state: Option<SecurityTransactionState>,
     pub next_required_step: Option<SecurityTransactionStep>,
+    pub requires_device_attestation: bool,
     pub accepted_step_count: usize,
     pub terminal: bool,
 }
@@ -715,6 +720,7 @@ mod tests {
         let progress = state.progress();
         assert_eq!(progress.state, None);
         assert_eq!(progress.next_required_step, None);
+        assert!(!progress.requires_device_attestation);
         assert_eq!(progress.accepted_step_count, 0);
         assert!(!progress.terminal);
     }
