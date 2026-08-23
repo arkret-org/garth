@@ -12,7 +12,7 @@ use arkret_models_crypto::SecurityTransactionContinueRequest;
 use arkret_models_crypto::{BackupSeriesEraseOutcome, BackupSeriesEraseRequestBody};
 use arkret_wire::{
     Hash, IssueRecoveryCompletionGrantOutcome, IssueRecoveryCompletionGrantRequest,
-    SecurityTransaction, SecurityTransactionCreateRequest, SecurityTransactionState,
+    SecurityTransaction, SecurityTransactionCreateRequest, SecurityTransactionResultKind,
     SecurityTransactionStep, TransactionId,
 };
 use serde::{Deserialize, Serialize};
@@ -144,21 +144,19 @@ impl DurableSecurityTransaction {
         self.last_observed_resource.as_ref().map_or(
             SecurityTransactionProgress {
                 transaction_id: self.transaction_id.clone(),
-                state: None,
+                terminal_kind: None,
                 next_required_step: None,
                 requires_device_attestation: false,
                 accepted_step_count: 0,
-                terminal: false,
             },
             |resource| SecurityTransactionProgress {
                 transaction_id: resource.transaction_id.clone(),
-                state: Some(resource.state),
+                terminal_kind: resource.terminal_kind(),
                 next_required_step: resource.next_required_step().ok().flatten(),
                 requires_device_attestation: resource
                     .requires_device_attestation()
                     .unwrap_or(false),
                 accepted_step_count: resource.accepted_steps.len(),
-                terminal: resource.state.is_terminal(),
             },
         )
     }
@@ -167,11 +165,10 @@ impl DurableSecurityTransaction {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SecurityTransactionProgress {
     pub transaction_id: TransactionId,
-    pub state: Option<SecurityTransactionState>,
+    pub terminal_kind: Option<SecurityTransactionResultKind>,
     pub next_required_step: Option<SecurityTransactionStep>,
     pub requires_device_attestation: bool,
     pub accepted_step_count: usize,
-    pub terminal: bool,
 }
 
 pub trait SecurityTransactionStore: Clone + MaybeSendSync + 'static {
@@ -197,11 +194,9 @@ pub struct SecurityTransactionEngine<T, S> {
 fn clear_terminal_staged_secret<S: SecurityTransactionStore>(
     store: &S,
     local: &mut DurableSecurityTransaction,
-    state: SecurityTransactionState,
+    terminal: bool,
 ) -> Result<()> {
-    if state.is_terminal()
-        && let Some(reference) = local.staged_secret_ref.as_deref()
-    {
+    if terminal && let Some(reference) = local.staged_secret_ref.as_deref() {
         store.clear_staged_secret(reference)?;
         local.staged_secret_ref = None;
     }
@@ -212,7 +207,7 @@ fn reconcile_terminal_continue(
     local: &mut DurableSecurityTransaction,
     resource: &SecurityTransaction,
 ) -> Result<()> {
-    if resource.state != SecurityTransactionState::Completed {
+    if !resource.is_completed() {
         return Ok(());
     }
     let Some(pending) = local.pending_continue.as_ref() else {
@@ -274,7 +269,7 @@ where
     ) -> Result<SecurityTransaction> {
         validate_resource_binding(local, &resource)?;
         reconcile_terminal_continue(local, &resource)?;
-        clear_terminal_staged_secret(&self.store, local, resource.state)?;
+        clear_terminal_staged_secret(&self.store, local, resource.is_terminal())?;
         local.last_observed_resource = Some(resource.clone());
         self.store.save(local).await?;
         Ok(resource)
@@ -379,7 +374,7 @@ where
             .is_some_and(|attestation| {
                 attestation.step == SecurityTransactionStep::IssueTerminalReceipt
             })
-            && resource.state == SecurityTransactionState::Completed
+            && resource.is_completed()
         {
             local.accepted_terminal_continue = Some(canonical_request);
         }
@@ -508,7 +503,7 @@ where
                 "recovery completion grant requires an authoritative terminal resource".to_owned(),
             )
         })?;
-        if resource.state != SecurityTransactionState::Completed
+        if !resource.is_completed()
             || resource
                 .terminal_result
                 .as_ref()
@@ -718,11 +713,10 @@ mod tests {
             last_observed_resource: None,
         };
         let progress = state.progress();
-        assert_eq!(progress.state, None);
+        assert_eq!(progress.terminal_kind, None);
         assert_eq!(progress.next_required_step, None);
         assert!(!progress.requires_device_attestation);
         assert_eq!(progress.accepted_step_count, 0);
-        assert!(!progress.terminal);
     }
 
     #[test]
@@ -752,13 +746,11 @@ mod tests {
             last_observed_resource: None,
         };
 
-        clear_terminal_staged_secret(&store, &mut state, SecurityTransactionState::Running)
-            .unwrap();
+        clear_terminal_staged_secret(&store, &mut state, false).unwrap();
         assert!(state.staged_secret_ref.is_some());
         assert!(store.cleared_staged_secret_refs.lock().unwrap().is_empty());
 
-        clear_terminal_staged_secret(&store, &mut state, SecurityTransactionState::Completed)
-            .unwrap();
+        clear_terminal_staged_secret(&store, &mut state, true).unwrap();
         assert!(state.staged_secret_ref.is_none());
         assert_eq!(
             store.cleared_staged_secret_refs.lock().unwrap().as_slice(),
