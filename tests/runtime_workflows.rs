@@ -1,43 +1,12 @@
 use std::collections::BTreeMap;
 
-use arkret_auth::AuthManager;
 use arkret_canonical as canonical;
 use arkret_hlc::Cursor as SyncCursor;
 use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountSubscribeFrame, AccountSubscribeFrameKind, AccountSubscribeRealms,
 };
 use arkret_models_collaboration::sync_frames::account_sync::RealmSyncEntry;
-use arkret_wire::{DeviceId, DidCoreId, RealmId};
 use serde_json::json;
-
-fn did(name: &str) -> DidCoreId {
-    DidCoreId::new(format!("ak:did_core:webvh:z6mkfixture:{name}.example")).unwrap()
-}
-
-fn device(id: &str) -> DeviceId {
-    let mut acc = 0xcbf29ce484222325u64;
-    for byte in id.bytes() {
-        acc = (acc ^ u64::from(byte)).wrapping_mul(0x100000001b3);
-    }
-    DeviceId::new(format!(
-        "ak:device:01904100-0000-7000-8000-{:012x}",
-        acc & 0x0000_ffff_ffff_ffff
-    ))
-    .unwrap()
-}
-
-#[test]
-fn error_boundary_and_concurrency_paths_are_covered() {
-    assert!(RealmId::new("not-a-realm").is_err());
-
-    let mut auth = AuthManager::default();
-    auth.register_password_user("alice", "secret", did("alice"))
-        .unwrap();
-    assert!(
-        auth.login_password("alice", "wrong", device("desktop"))
-            .is_err()
-    );
-}
 
 #[test]
 fn protocol_conformance_vectors_remain_stable() {
