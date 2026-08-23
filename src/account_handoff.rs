@@ -196,6 +196,163 @@ pub fn classify_registration_checkpoint(
     RegistrationCheckpointDisposition::ContinuesIdentityCreation
 }
 
+/// Three-state observation of one durable or server-authored onboarding fact.
+///
+/// A backend read failure is deliberately not equivalent to absence. Hosts
+/// must surface [`BoundCompletionResumeReadError`] as retryable storage/server
+/// diagnostics instead of routing to identity recovery or abandonment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundCompletionMaterialState {
+    Present,
+    Absent,
+    ReadError,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundCompletionHandoffState {
+    ActiveBound,
+    MissingOrExpired,
+    ReadError,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundCompletionCheckpointStage {
+    Accepted,
+    RecoveryMaterialComplete,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundCompletionMaterial {
+    Handoff,
+    RecoveryPolicy,
+    DeviceId,
+    SigningSeed,
+    GrantBindingKey,
+    SessionGrant,
+    RecoveryEvidence,
+    HpkePrivateKey,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BoundCompletionResumeReadError {
+    pub material: BoundCompletionMaterial,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundCompletionContradiction {
+    AuthorityMismatch,
+    DeviceSlotConflict,
+    CompletedStageMissingEvidence,
+}
+
+/// Durable local inventory plus the server facts needed to resume a bound
+/// identity-creation transaction.
+///
+/// `hpke_private_key` is diagnostic-only in this classifier. Its repair and
+/// KeyPackage rotation semantics belong to the MLS recovery transaction, but
+/// retaining it here ensures every transition can record the complete custody
+/// inventory without letting an HPKE absence bypass the Recovery Key gate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BoundCompletionResumeFacts {
+    pub handoff: BoundCompletionHandoffState,
+    pub checkpoint_stage: BoundCompletionCheckpointStage,
+    pub recovery_policy: BoundCompletionMaterialState,
+    pub device_id: BoundCompletionMaterialState,
+    pub signing_seed: BoundCompletionMaterialState,
+    pub grant_binding_key: BoundCompletionMaterialState,
+    pub session_grant: BoundCompletionMaterialState,
+    pub recovery_evidence: BoundCompletionMaterialState,
+    pub hpke_private_key: BoundCompletionMaterialState,
+    pub authority_matches: bool,
+    pub device_slot_matches: bool,
+    pub grant_matches_account: bool,
+    pub grant_is_live: bool,
+    pub grant_binding_matches_handoff: bool,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BoundCompletionResumeDisposition {
+    RestoreRuntime,
+    ReissueGrant,
+    RecoverWithPolicy,
+    StrandedIdentity,
+    ReauthRequired,
+    Contradiction {
+        reason: BoundCompletionContradiction,
+    },
+}
+
+/// Classify a bound onboarding continuation from proved local and server facts.
+///
+/// This function never infers server truth from local absence. In particular,
+/// a missing signer becomes `StrandedIdentity` only after the host has also
+/// proved that the server has no active recovery policy. Any read error is
+/// returned before a disposition is selected.
+pub fn classify_bound_completion_resume(
+    facts: BoundCompletionResumeFacts,
+) -> std::result::Result<BoundCompletionResumeDisposition, BoundCompletionResumeReadError> {
+    use BoundCompletionMaterial as Material;
+    use BoundCompletionMaterialState as State;
+
+    if facts.handoff == BoundCompletionHandoffState::ReadError {
+        return Err(BoundCompletionResumeReadError {
+            material: Material::Handoff,
+        });
+    }
+    for (material, state) in [
+        (Material::RecoveryPolicy, facts.recovery_policy),
+        (Material::DeviceId, facts.device_id),
+        (Material::SigningSeed, facts.signing_seed),
+        (Material::GrantBindingKey, facts.grant_binding_key),
+        (Material::SessionGrant, facts.session_grant),
+        (Material::RecoveryEvidence, facts.recovery_evidence),
+    ] {
+        if state == State::ReadError {
+            return Err(BoundCompletionResumeReadError { material });
+        }
+    }
+
+    if !facts.authority_matches {
+        return Ok(BoundCompletionResumeDisposition::Contradiction {
+            reason: BoundCompletionContradiction::AuthorityMismatch,
+        });
+    }
+    if !facts.device_slot_matches {
+        return Ok(BoundCompletionResumeDisposition::Contradiction {
+            reason: BoundCompletionContradiction::DeviceSlotConflict,
+        });
+    }
+    if facts.checkpoint_stage == BoundCompletionCheckpointStage::RecoveryMaterialComplete
+        && facts.recovery_evidence == State::Absent
+    {
+        return Ok(BoundCompletionResumeDisposition::Contradiction {
+            reason: BoundCompletionContradiction::CompletedStageMissingEvidence,
+        });
+    }
+    if facts.handoff == BoundCompletionHandoffState::MissingOrExpired {
+        return Ok(BoundCompletionResumeDisposition::ReauthRequired);
+    }
+    if facts.signing_seed == State::Absent {
+        return Ok(if facts.recovery_policy == State::Present {
+            BoundCompletionResumeDisposition::RecoverWithPolicy
+        } else {
+            BoundCompletionResumeDisposition::StrandedIdentity
+        });
+    }
+
+    let runtime_is_restorable = facts.device_id == State::Present
+        && facts.grant_binding_key == State::Present
+        && facts.session_grant == State::Present
+        && facts.grant_matches_account
+        && facts.grant_is_live
+        && facts.grant_binding_matches_handoff;
+    Ok(if runtime_is_restorable {
+        BoundCompletionResumeDisposition::RestoreRuntime
+    } else {
+        BoundCompletionResumeDisposition::ReissueGrant
+    })
+}
+
 /// Route only a bound handoff. Identity-creation outcomes belong to their own
 /// state machine and are rejected here rather than coerced into device setup.
 pub fn route_bound_session(
@@ -783,6 +940,173 @@ mod tests {
                 classify_registration_checkpoint(stale),
                 Disposition::DiscardStale,
                 "{stale:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bound_completion_resume_classification_is_exhaustive_over_material_states() {
+        use BoundCompletionCheckpointStage as Stage;
+        use BoundCompletionHandoffState as Handoff;
+        use BoundCompletionMaterialState as Material;
+        use BoundCompletionResumeDisposition as Disposition;
+
+        let states = [Material::Present, Material::Absent, Material::ReadError];
+        for handoff in [
+            Handoff::ActiveBound,
+            Handoff::MissingOrExpired,
+            Handoff::ReadError,
+        ] {
+            for stage in [Stage::Accepted, Stage::RecoveryMaterialComplete] {
+                for recovery_policy in states {
+                    for device_id in states {
+                        for signing_seed in states {
+                            for grant_binding_key in states {
+                                for session_grant in states {
+                                    for recovery_evidence in states {
+                                        for hpke_private_key in states {
+                                            let facts = BoundCompletionResumeFacts {
+                                                handoff,
+                                                checkpoint_stage: stage,
+                                                recovery_policy,
+                                                device_id,
+                                                signing_seed,
+                                                grant_binding_key,
+                                                session_grant,
+                                                recovery_evidence,
+                                                hpke_private_key,
+                                                authority_matches: true,
+                                                device_slot_matches: true,
+                                                grant_matches_account: true,
+                                                grant_is_live: true,
+                                                grant_binding_matches_handoff: true,
+                                            };
+                                            let classified =
+                                                classify_bound_completion_resume(facts);
+                                            let has_read_error = handoff == Handoff::ReadError
+                                                || [
+                                                    recovery_policy,
+                                                    device_id,
+                                                    signing_seed,
+                                                    grant_binding_key,
+                                                    session_grant,
+                                                    recovery_evidence,
+                                                ]
+                                                .contains(&Material::ReadError);
+                                            if has_read_error {
+                                                assert!(classified.is_err(), "{facts:?}");
+                                                continue;
+                                            }
+                                            let expected = if stage
+                                                == Stage::RecoveryMaterialComplete
+                                                && recovery_evidence == Material::Absent
+                                            {
+                                                Disposition::Contradiction {
+                                                    reason: BoundCompletionContradiction::CompletedStageMissingEvidence,
+                                                }
+                                            } else if handoff == Handoff::MissingOrExpired {
+                                                Disposition::ReauthRequired
+                                            } else if signing_seed == Material::Absent {
+                                                if recovery_policy == Material::Present {
+                                                    Disposition::RecoverWithPolicy
+                                                } else {
+                                                    Disposition::StrandedIdentity
+                                                }
+                                            } else if device_id == Material::Present
+                                                && grant_binding_key == Material::Present
+                                                && session_grant == Material::Present
+                                            {
+                                                Disposition::RestoreRuntime
+                                            } else {
+                                                Disposition::ReissueGrant
+                                            };
+                                            assert_eq!(classified.unwrap(), expected, "{facts:?}");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bound_completion_resume_routes_contradictions_and_stale_grants_without_guessing() {
+        let live = BoundCompletionResumeFacts {
+            handoff: BoundCompletionHandoffState::ActiveBound,
+            checkpoint_stage: BoundCompletionCheckpointStage::Accepted,
+            recovery_policy: BoundCompletionMaterialState::Absent,
+            device_id: BoundCompletionMaterialState::Present,
+            signing_seed: BoundCompletionMaterialState::Present,
+            grant_binding_key: BoundCompletionMaterialState::Present,
+            session_grant: BoundCompletionMaterialState::Present,
+            recovery_evidence: BoundCompletionMaterialState::Absent,
+            hpke_private_key: BoundCompletionMaterialState::Absent,
+            authority_matches: true,
+            device_slot_matches: true,
+            grant_matches_account: true,
+            grant_is_live: true,
+            grant_binding_matches_handoff: true,
+        };
+        assert_eq!(
+            classify_bound_completion_resume(live).unwrap(),
+            BoundCompletionResumeDisposition::RestoreRuntime
+        );
+        for reissue in [
+            BoundCompletionResumeFacts {
+                session_grant: BoundCompletionMaterialState::Absent,
+                ..live
+            },
+            BoundCompletionResumeFacts {
+                grant_is_live: false,
+                ..live
+            },
+            BoundCompletionResumeFacts {
+                grant_binding_matches_handoff: false,
+                ..live
+            },
+        ] {
+            assert_eq!(
+                classify_bound_completion_resume(reissue).unwrap(),
+                BoundCompletionResumeDisposition::ReissueGrant
+            );
+        }
+        for (facts, reason) in [
+            (
+                BoundCompletionResumeFacts {
+                    authority_matches: false,
+                    ..live
+                },
+                BoundCompletionContradiction::AuthorityMismatch,
+            ),
+            (
+                BoundCompletionResumeFacts {
+                    device_slot_matches: false,
+                    ..live
+                },
+                BoundCompletionContradiction::DeviceSlotConflict,
+            ),
+        ] {
+            assert_eq!(
+                classify_bound_completion_resume(facts).unwrap(),
+                BoundCompletionResumeDisposition::Contradiction { reason }
+            );
+        }
+        for hpke_private_key in [
+            BoundCompletionMaterialState::Present,
+            BoundCompletionMaterialState::Absent,
+            BoundCompletionMaterialState::ReadError,
+        ] {
+            assert_eq!(
+                classify_bound_completion_resume(BoundCompletionResumeFacts {
+                    hpke_private_key,
+                    ..live
+                })
+                .unwrap(),
+                BoundCompletionResumeDisposition::RestoreRuntime,
+                "HPKE custody is diagnostic-only for onboarding completion"
             );
         }
     }
