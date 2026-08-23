@@ -413,6 +413,11 @@ fn state_from_issue_outcome(
             Some(&request.device_id),
             &request.audience,
         ),
+        SessionGrantRequestBody::Recovery(request) => (
+            &request.principal_id,
+            Some(&request.device_id),
+            &request.audience,
+        ),
         SessionGrantRequestBody::Agent(request) => (
             &request.principal_id,
             Some(&request.device_id),

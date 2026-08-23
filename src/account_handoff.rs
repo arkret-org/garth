@@ -196,7 +196,7 @@ pub fn classify_registration_checkpoint(
     RegistrationCheckpointDisposition::ContinuesIdentityCreation
 }
 
-/// Three-state observation of one durable or server-authored onboarding fact.
+/// Closed observation of one durable or server-authored onboarding fact.
 ///
 /// A backend read failure is deliberately not equivalent to absence. Hosts
 /// must surface [`BoundCompletionResumeReadError`] as retryable storage/server
@@ -206,6 +206,7 @@ pub enum BoundCompletionMaterialState {
     Present,
     Absent,
     ReadError,
+    NotRequired,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -285,8 +286,8 @@ pub enum BoundCompletionResumeDisposition {
 ///
 /// This function never infers server truth from local absence. In particular,
 /// a missing signer becomes `StrandedIdentity` only after the host has also
-/// proved that the server has no active recovery policy. Any read error is
-/// returned before a disposition is selected.
+/// proved that the server has no active recovery policy. Recovery-policy state
+/// is not required while the accepted signer is present.
 pub fn classify_bound_completion_resume(
     facts: BoundCompletionResumeFacts,
 ) -> std::result::Result<BoundCompletionResumeDisposition, BoundCompletionResumeReadError> {
@@ -299,14 +300,13 @@ pub fn classify_bound_completion_resume(
         });
     }
     for (material, state) in [
-        (Material::RecoveryPolicy, facts.recovery_policy),
         (Material::DeviceId, facts.device_id),
         (Material::SigningSeed, facts.signing_seed),
         (Material::GrantBindingKey, facts.grant_binding_key),
         (Material::SessionGrant, facts.session_grant),
         (Material::RecoveryEvidence, facts.recovery_evidence),
     ] {
-        if state == State::ReadError {
+        if matches!(state, State::ReadError | State::NotRequired) {
             return Err(BoundCompletionResumeReadError { material });
         }
     }
@@ -332,6 +332,11 @@ pub fn classify_bound_completion_resume(
         return Ok(BoundCompletionResumeDisposition::ReauthRequired);
     }
     if facts.signing_seed == State::Absent {
+        if matches!(facts.recovery_policy, State::ReadError | State::NotRequired) {
+            return Err(BoundCompletionResumeReadError {
+                material: Material::RecoveryPolicy,
+            });
+        }
         return Ok(if facts.recovery_policy == State::Present {
             BoundCompletionResumeDisposition::RecoverWithPolicy
         } else {
@@ -951,13 +956,19 @@ mod tests {
         use BoundCompletionResumeDisposition as Disposition;
 
         let states = [Material::Present, Material::Absent, Material::ReadError];
+        let recovery_policy_states = [
+            Material::Present,
+            Material::Absent,
+            Material::ReadError,
+            Material::NotRequired,
+        ];
         for handoff in [
             Handoff::ActiveBound,
             Handoff::MissingOrExpired,
             Handoff::ReadError,
         ] {
             for stage in [Stage::Accepted, Stage::RecoveryMaterialComplete] {
-                for recovery_policy in states {
+                for recovery_policy in recovery_policy_states {
                     for device_id in states {
                         for signing_seed in states {
                             for grant_binding_key in states {
@@ -982,9 +993,9 @@ mod tests {
                                             };
                                             let classified =
                                                 classify_bound_completion_resume(facts);
-                                            let has_read_error = handoff == Handoff::ReadError
+                                            let required_material_unavailable = handoff
+                                                == Handoff::ReadError
                                                 || [
-                                                    recovery_policy,
                                                     device_id,
                                                     signing_seed,
                                                     grant_binding_key,
@@ -992,7 +1003,7 @@ mod tests {
                                                     recovery_evidence,
                                                 ]
                                                 .contains(&Material::ReadError);
-                                            if has_read_error {
+                                            if required_material_unavailable {
                                                 assert!(classified.is_err(), "{facts:?}");
                                                 continue;
                                             }
@@ -1005,6 +1016,14 @@ mod tests {
                                                 }
                                             } else if handoff == Handoff::MissingOrExpired {
                                                 Disposition::ReauthRequired
+                                            } else if signing_seed == Material::Absent
+                                                && matches!(
+                                                    recovery_policy,
+                                                    Material::ReadError | Material::NotRequired
+                                                )
+                                            {
+                                                assert!(classified.is_err(), "{facts:?}");
+                                                continue;
                                             } else if signing_seed == Material::Absent {
                                                 if recovery_policy == Material::Present {
                                                     Disposition::RecoverWithPolicy
@@ -1036,7 +1055,7 @@ mod tests {
         let live = BoundCompletionResumeFacts {
             handoff: BoundCompletionHandoffState::ActiveBound,
             checkpoint_stage: BoundCompletionCheckpointStage::Accepted,
-            recovery_policy: BoundCompletionMaterialState::Absent,
+            recovery_policy: BoundCompletionMaterialState::NotRequired,
             device_id: BoundCompletionMaterialState::Present,
             signing_seed: BoundCompletionMaterialState::Present,
             grant_binding_key: BoundCompletionMaterialState::Present,
