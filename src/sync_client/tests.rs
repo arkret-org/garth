@@ -43,7 +43,7 @@ fn approval_notifications(notification_id: &str, expires_at: &str) -> Notificati
         items: vec![NotificationDelta {
             id: NotificationId::new(notification_id).unwrap(),
             notification_kind: NotificationKind::Agent,
-            action: NotificationDeltaAction::Add,
+            action: NotificationDeltaAction::Upsert,
             data: Some(NotificationData::AgentRuntimeApproval(
                 AgentRuntimeApprovalNotificationData {
                     kind: AccountNotificationDataKind::AgentRuntimeApproval,
@@ -611,7 +611,7 @@ fn processor_applies_notification_add_update_and_remove_deltas() {
     let mut update = sync_response("s-update");
     let mut update_notifications =
         approval_notifications(notification_id, "2026-07-13T10:20:00.000Z");
-    update_notifications.items[0].action = NotificationDeltaAction::Update;
+    update_notifications.items[0].action = NotificationDeltaAction::Upsert;
     delta_mut(&mut update).notifications = Some(update_notifications);
     processor.process(update).unwrap();
     let serialized =

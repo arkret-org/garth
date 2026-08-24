@@ -378,7 +378,7 @@ fn verified_accepted_artifact(
                 payload.mls_group_id.to_string(),
                 payload.epoch,
                 AcceptedMlsApplication::Welcome,
-                payload.commit_ref,
+                Some(payload.commit_ref),
             )
         }
         _ => {
