@@ -223,9 +223,7 @@ mod tests {
     use arkret_models_collaboration::history_key::{
         HistoryResponseId, ResponseSenderOriginRef, ResponseSenderQuotaDomain,
     };
-    use arkret_wire::{
-        EventCandidateBindingOutcome, EventId, HISTORY_STORE_LIMITS, HistoryEffectiveScope, RealmId,
-    };
+    use arkret_wire::{EventCandidateBindingOutcome, EventId, HistoryEffectiveScope, RealmId};
 
     fn hash(byte: char) -> Hash {
         Hash::new(format!("sha256:{}", byte.to_string().repeat(64))).unwrap()
@@ -258,8 +256,6 @@ mod tests {
                 source_record_digest: hash('1'),
             },
             first_observed_at: now,
-            expires_at: now
-                + chrono::Duration::seconds(HISTORY_STORE_LIMITS.origin_attribution_ttl_seconds),
         }
     }
 
@@ -284,7 +280,6 @@ mod tests {
             epoch: key.epoch,
             event_id: EventId::new("ak:event:AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
                 .unwrap(),
-            event_digest: hash('2'),
             verified_sender_domain: "ak:device:sender".to_owned(),
         };
         engine
