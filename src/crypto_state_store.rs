@@ -378,7 +378,7 @@ fn verified_accepted_artifact(
                 payload.mls_group_id.to_string(),
                 payload.epoch,
                 AcceptedMlsApplication::Welcome,
-                payload.commit_ref,
+                Some(payload.commit_ref),
             )
         }
         _ => {
@@ -1158,7 +1158,7 @@ mod tests {
                 claim_id: None,
                 created_at: Utc::now(),
                 expires_at: None,
-                device_signature: None,
+                endpoint_signature: None,
                 last_resort: false,
             })
             .unwrap();

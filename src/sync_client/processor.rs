@@ -149,7 +149,7 @@ impl SyncResponseProcessor {
             if let Some(container) = frame.notifications {
                 for notification in container.items {
                     match notification.action {
-                        NotificationDeltaAction::Add | NotificationDeltaAction::Update => {
+                        NotificationDeltaAction::Upsert => {
                             self.notifications
                                 .insert(notification.id.as_str().to_owned(), notification.clone());
                         }
