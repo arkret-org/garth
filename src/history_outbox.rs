@@ -38,7 +38,21 @@ pub enum HistorySourceOutboundRecord {
     },
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HistorySourceRoute {
+    Direct,
+    Relay,
+}
+
 impl HistorySourceOutboundRecord {
+    pub fn route(&self) -> HistorySourceRoute {
+        match self {
+            Self::Direct { .. } => HistorySourceRoute::Direct,
+            Self::Relay { .. } => HistorySourceRoute::Relay,
+        }
+    }
+
     pub fn response(&self) -> &HistoryKeyResponseSendRequest {
         match self {
             Self::Direct { request } => request,
@@ -90,6 +104,7 @@ pub enum HistorySourceAttemptStatus {
 pub struct DurableStagedHistoryRecord {
     pub response_id: HistoryResponseId,
     pub chunk_index: Option<u64>,
+    pub route: HistorySourceRoute,
     pub blob_digest: Hash,
     pub canonical_bytes: u64,
 }
@@ -331,6 +346,29 @@ where
             .cloned())
     }
 
+    /// Snapshot every durable ready-marker identity in canonical storage-key
+    /// order. Hosts use this after startup and on retry ticks; the records
+    /// themselves are always reconstructed from their immutable blobs.
+    pub fn ready_attempt_identities(
+        &self,
+        route: HistorySourceRoute,
+    ) -> Result<Vec<HistorySourceAttemptIdentity>> {
+        Ok(self
+            .store
+            .load_history_source_outbox()?
+            .snapshot
+            .attempts
+            .values()
+            .filter(|attempt| {
+                attempt
+                    .records
+                    .first()
+                    .is_some_and(|record| record.route == route)
+            })
+            .map(|attempt| attempt.identity.clone())
+            .collect())
+    }
+
     /// Replay the complete ready attempt. Each accepted receipt is made
     /// durable before the next record is sent, so restart resumes at the first
     /// missing receipt and never reconstructs or resigns bytes.
@@ -475,6 +513,7 @@ struct PreparedAttempt {
 
 fn prepare_attempt(bundle: HistorySourceAttemptBundle) -> Result<PreparedAttempt> {
     bundle.manifest.validate()?;
+    let attempt_route = bundle.manifest.route();
     let manifest_request = bundle.manifest.response();
     let HistoryKeyResponseContent::Manifest(manifest) = &manifest_request.content else {
         return Err(Error::Protocol(
@@ -501,6 +540,11 @@ fn prepare_attempt(bundle: HistorySourceAttemptBundle) -> Result<PreparedAttempt
     outbound.push((bundle.manifest, None));
     for (descriptor, record) in manifest_descriptors.iter().zip(bundle.chunks) {
         record.validate()?;
+        if record.route() != attempt_route {
+            return Err(Error::Protocol(
+                "history source attempt mixes self-send and peer-relay routes".to_owned(),
+            ));
+        }
         let response = record.response();
         let HistoryKeyResponseContent::Chunk(chunk) = &response.content else {
             return Err(Error::Protocol(
@@ -548,6 +592,7 @@ fn prepare_attempt(bundle: HistorySourceAttemptBundle) -> Result<PreparedAttempt
         let staged = DurableStagedHistoryRecord {
             response_id,
             chunk_index,
+            route: record.route(),
             blob_digest: Hash::new(arkret_wire::canonical::sha256_digest(&bytes))?,
             canonical_bytes: u64::try_from(bytes.len()).map_err(|_| {
                 Error::Protocol("history source record length overflows".to_owned())
@@ -976,6 +1021,29 @@ mod tests {
         };
         chunk.ciphertext = "Aw".to_owned();
         assert!(outbox.stage_attempt(&blobs, changed).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn ready_attempt_discovery_is_route_partitioned() {
+        let outbox = HistorySourceOutbox::new(MemoryHistorySourceOutboxStore::new());
+        let blobs = MemoryHistorySourceBlobStore::new();
+        let identity = outbox
+            .stage_attempt(&blobs, attempt_bundle())
+            .await
+            .unwrap();
+
+        assert_eq!(
+            outbox
+                .ready_attempt_identities(HistorySourceRoute::Direct)
+                .unwrap(),
+            vec![identity]
+        );
+        assert!(
+            outbox
+                .ready_attempt_identities(HistorySourceRoute::Relay)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]

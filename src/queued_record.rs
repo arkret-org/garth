@@ -216,14 +216,13 @@ impl QueuedMlsWelcomes {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "action", rename_all = "snake_case", deny_unknown_fields)]
 pub enum QueuedPostAcceptAction {
-    MlsSnapshot {
-        realm_id: String,
-        snapshot: QueuedMlsSnapshot,
-    },
     MlsAdmission {
         realm_id: String,
         actor_id: String,
         device_id: String,
+        /// Exact signed Add proposal Events submitted atomically with the
+        /// Commit. They are durable here before the first transport attempt.
+        proposal_events: Vec<AuthoredEvent>,
         /// Durable protocol phase. Ingress acceptance is not finality: both
         /// the Commit and the Welcome batch wait for a covering accepted Seal
         /// before the next phase is allowed to run.
@@ -461,11 +460,11 @@ impl QueuedSdkEvent {
         }
         if let Some(action) = self.post_accept.as_ref() {
             let (realm_id, snapshot) = match action {
-                QueuedPostAcceptAction::MlsSnapshot { realm_id, snapshot } => (realm_id, snapshot),
                 QueuedPostAcceptAction::MlsAdmission {
                     realm_id,
                     actor_id,
                     device_id,
+                    proposal_events,
                     stage,
                     commit_ingress_receipts: _,
                     commit_was_duplicate: _,
@@ -475,6 +474,59 @@ impl QueuedSdkEvent {
                     if actor_id.trim().is_empty() || device_id.trim().is_empty() {
                         return Err(Error::Protocol(
                             "queued MLS admission actor and device must be non-empty".to_owned(),
+                        ));
+                    }
+                    if proposal_events.is_empty()
+                        || proposal_events.iter().any(|event| {
+                            event.kind != EventKind::MlsProposal
+                                || event.realm_id.as_str() != realm_id
+                                || event.proofs.is_empty()
+                        })
+                    {
+                        return Err(Error::Protocol(
+                            "queued MLS admission requires signed same-Realm Add proposal Events"
+                                .to_owned(),
+                        ));
+                    }
+                    let commit = self.authored_attempt.as_ref().ok_or_else(|| {
+                        Error::Protocol(
+                            "queued MLS admission requires its authored Commit".to_owned(),
+                        )
+                    })?;
+                    let commit_proposal_refs = commit
+                        .envelope
+                        .payload
+                        .get("proposal_refs")
+                        .and_then(serde_json::Value::as_array)
+                        .ok_or_else(|| {
+                            Error::Protocol(
+                                "queued MLS admission Commit has no proposal_refs".to_owned(),
+                            )
+                        })?
+                        .iter()
+                        .map(|value| {
+                            value
+                                .as_str()
+                                .ok_or_else(|| {
+                                    Error::Protocol(
+                                        "queued MLS admission Commit proposal ref is not a string"
+                                            .to_owned(),
+                                    )
+                                })
+                                .and_then(|value| {
+                                    EventId::new(value.to_owned())
+                                        .map_err(|error| Error::Protocol(error.to_string()))
+                                })
+                        })
+                        .collect::<Result<Vec<_>>>()?;
+                    let proposal_refs = proposal_events
+                        .iter()
+                        .map(|event| event.event_id().clone())
+                        .collect::<Vec<_>>();
+                    if commit_proposal_refs != proposal_refs {
+                        return Err(Error::Protocol(
+                            "queued MLS admission Commit does not reference its exact proposal Events"
+                                .to_owned(),
                         ));
                     }
                     if welcomes

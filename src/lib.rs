@@ -97,8 +97,8 @@ pub use history_outbox::{
     DurableHistorySourceAttempt, DurableStagedHistoryRecord, HistorySourceAttemptBundle,
     HistorySourceAttemptIdentity, HistorySourceAttemptStatus, HistorySourceBlobStore,
     HistorySourceOutboundRecord, HistorySourceOutbox, HistorySourceOutboxSnapshot,
-    HistorySourceOutboxStore, MemoryHistorySourceBlobStore, MemoryHistorySourceOutboxStore,
-    VersionedHistorySourceOutboxSnapshot,
+    HistorySourceOutboxStore, HistorySourceRoute, MemoryHistorySourceBlobStore,
+    MemoryHistorySourceOutboxStore, VersionedHistorySourceOutboxSnapshot,
 };
 pub use history_runtime::{
     DurableHistoryRequest, DurableHistoryResponseStream, DurableVerifiedHistoryManifest,

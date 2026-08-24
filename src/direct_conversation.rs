@@ -58,3 +58,34 @@ pub fn direct_conversation_founding_action(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn suspended_existing_realm_never_reopens_founding() {
+        let outcome: DirectConversationResolveOutcome = serde_json::from_value(serde_json::json!({
+            "state": "suspended",
+            "coordinates": {
+                "pair_key": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "realm_id": "ak:realm:ASZ8VNF9qzH4Hcjd-1qOOKONYlZmfQOIRvMYdkQ0XXBH",
+                "main_strand_id": "ak:strand:AcsXlJSItqSzy43Swu0nFz2ijj4Yaf0RgjmoTeivRt8M",
+                "binding_event_ref": "ak:event:AZ6GqZWWvnQ2KFwbBD-MenomzWNz-31MUAuKzBXIP0zv"
+            },
+            "blockers": ["mls_reconcile_required"]
+        }))
+        .expect("suspended Direct Conversation outcome");
+
+        let action = direct_conversation_founding_action(&outcome, None)
+            .expect("suspended outcome is a closed existing coordinate");
+
+        let DirectConversationFoundingAction::Existing(coordinates) = action else {
+            panic!("suspended pair must never produce a founding submission");
+        };
+        assert_eq!(
+            coordinates.realm_id.as_str(),
+            "ak:realm:ASZ8VNF9qzH4Hcjd-1qOOKONYlZmfQOIRvMYdkQ0XXBH"
+        );
+    }
+}
