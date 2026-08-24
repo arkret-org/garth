@@ -597,23 +597,22 @@ fn processor_tracks_limited_timelines_and_to_device_ack() {
 }
 
 #[test]
-fn processor_applies_notification_add_update_and_remove_deltas() {
+fn processor_applies_notification_upsert_and_remove_deltas() {
     let notification_id = "ak:notification:01964137-0000-7000-8000-000000000001";
     let mut processor = SyncResponseProcessor::new();
-    let mut add = sync_response("s-add");
-    delta_mut(&mut add).notifications = Some(approval_notifications(
+    let mut initial_upsert = sync_response("s-upsert-initial");
+    delta_mut(&mut initial_upsert).notifications = Some(approval_notifications(
         notification_id,
         "2026-07-13T10:15:00.000Z",
     ));
-    processor.process(add).unwrap();
+    processor.process(initial_upsert).unwrap();
     assert!(processor.notification(notification_id).is_some());
 
-    let mut update = sync_response("s-update");
-    let mut update_notifications =
+    let mut replacement_upsert = sync_response("s-upsert-replacement");
+    let replacement_notifications =
         approval_notifications(notification_id, "2026-07-13T10:20:00.000Z");
-    update_notifications.items[0].action = NotificationDeltaAction::Upsert;
-    delta_mut(&mut update).notifications = Some(update_notifications);
-    processor.process(update).unwrap();
+    delta_mut(&mut replacement_upsert).notifications = Some(replacement_notifications);
+    processor.process(replacement_upsert).unwrap();
     let serialized =
         serde_json::to_value(processor.notification(notification_id).unwrap()).unwrap();
     assert_eq!(serialized["data"]["expires_at"], "2026-07-13T10:20:00.000Z");

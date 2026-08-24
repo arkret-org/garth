@@ -801,7 +801,7 @@ pub(crate) mod test_publication {
                 EventId::new("ak:event:ATqrupSFYozzL7O90hPaSlvHmLnxxSRiRUZA4RgeuZpD".to_owned())
                     .unwrap(),
             ],
-            service_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:ingress.example").unwrap(),
+            service_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture").unwrap(),
             authority_set_ref: authority_set("ak.authority_set.realm_ingress.v1"),
             proofs: Vec::new(),
         };
