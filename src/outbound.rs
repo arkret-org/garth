@@ -615,7 +615,10 @@ mod tests {
             ]))),
         };
         assert!(matches!(
-            engine.submit_next_with_fence(&submitter, &NoopGenerationFence, Utc::now()).await.unwrap(),
+            engine
+                .submit_next_with_fence(&submitter, &NoopGenerationFence, Utc::now())
+                .await
+                .unwrap(),
             OutboundEngineOutcome::Accepted(_)
         ));
         assert_eq!(engine.snapshot().await.unwrap().items.len(), 1);
@@ -650,7 +653,10 @@ mod tests {
             ]))),
         };
 
-        let prepared = engine.submit_next_with_fence(&submitter, &NoopGenerationFence, Utc::now()).await.unwrap();
+        let prepared = engine
+            .submit_next_with_fence(&submitter, &NoopGenerationFence, Utc::now())
+            .await
+            .unwrap();
         assert!(matches!(prepared, OutboundEngineOutcome::Prepared(_)));
         let snapshot = engine.snapshot().await.unwrap();
         assert_eq!(snapshot.items[0].transaction_id, "local-operation-1");
@@ -661,7 +667,10 @@ mod tests {
         assert!(!snapshot.items[0].canonical_payload_bytes.is_empty());
 
         assert!(matches!(
-            engine.submit_next_with_fence(&submitter, &NoopGenerationFence, Utc::now()).await.unwrap(),
+            engine
+                .submit_next_with_fence(&submitter, &NoopGenerationFence, Utc::now())
+                .await
+                .unwrap(),
             OutboundEngineOutcome::Accepted(_)
         ));
     }
@@ -711,7 +720,10 @@ mod tests {
             ]))),
         };
 
-        let outcome = engine.submit_next_with_fence(&submitter, &NoopGenerationFence, Utc::now()).await.unwrap();
+        let outcome = engine
+            .submit_next_with_fence(&submitter, &NoopGenerationFence, Utc::now())
+            .await
+            .unwrap();
         assert!(matches!(outcome, OutboundEngineOutcome::RetryAt { .. }));
         let item = engine.snapshot().await.unwrap().items.remove(0);
         assert_eq!(item.attempts, 1);
@@ -754,7 +766,12 @@ mod tests {
         assert!(failed.remote_event_id.is_none());
 
         let outcome = engine
-            .submit_next_with_fence_and_hook(&submitter, &NoopGenerationFence, &hook, Utc::now() + chrono::Duration::seconds(2))
+            .submit_next_with_fence_and_hook(
+                &submitter,
+                &NoopGenerationFence,
+                &hook,
+                Utc::now() + chrono::Duration::seconds(2),
+            )
             .await
             .unwrap();
         assert!(matches!(outcome, OutboundEngineOutcome::Duplicate(_)));
@@ -844,7 +861,10 @@ mod tests {
             ]))),
         };
         assert!(matches!(
-            reopened.submit_next_with_fence(&submitter, &NoopGenerationFence, Utc::now()).await.unwrap(),
+            reopened
+                .submit_next_with_fence(&submitter, &NoopGenerationFence, Utc::now())
+                .await
+                .unwrap(),
             OutboundEngineOutcome::Duplicate(_)
         ));
         let _ = std::fs::remove_file(path);
