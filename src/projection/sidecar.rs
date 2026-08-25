@@ -63,25 +63,6 @@ impl SidecarProjectionFold {
         Ok(())
     }
 
-    /// Drop one cached exchange (e.g. after a failed cache frontier check).
-    /// The projection is always rebuildable from private history.
-    pub fn remove_exchange(&mut self, exchange_id: &str) -> Option<AgentSidecarExchangeProjection> {
-        self.exchanges.remove(exchange_id)
-    }
-
-    pub fn exchanges_for_track<'a>(
-        &'a self,
-        realm_id: &'a RealmId,
-        strand_id: &'a StrandId,
-        track_name: &'a str,
-    ) -> impl Iterator<Item = &'a AgentSidecarExchangeProjection> + 'a {
-        self.exchanges.values().filter(move |exchange| {
-            exchange.source_track_ref.realm_id == *realm_id
-                && exchange.source_track_ref.strand_id == *strand_id
-                && exchange.source_track_ref.track_name == track_name
-        })
-    }
-
     /// Enumerate the complete locally folded exchange projection for one
     /// Realm. Results are stable in canonical exchange-id order because the
     /// cache is keyed by `exchange_id`; callers can replace a persisted UI
@@ -448,20 +429,12 @@ mod tests {
         fold.apply_folded_exchange(refolded.clone()).unwrap();
         let realm_id =
             RealmId::new("ak:realm:AWk_ywNSTc6WhrGkRSaK84HThnFXKBAy3vQ_RLJZ4kCY").unwrap();
-        let strand_id = StrandId::from_event_id(&event_id("31"));
-        let stored = fold
-            .exchanges_for_track(&realm_id, &strand_id, "discussion")
-            .next()
-            .unwrap();
+        let stored = fold.exchanges_for_realm(&realm_id).next().unwrap();
         assert_eq!(stored.participating_agent_ids.len(), 1);
 
         let mut invalid = initial;
         invalid.status = AgentSidecarExchangeStatus::Complete;
         assert!(fold.apply_folded_exchange(invalid).is_err());
-        assert!(
-            fold.remove_exchange("Abcdefghijklmnopqrstuv").is_some(),
-            "cache entries are disposable"
-        );
     }
 
     #[test]

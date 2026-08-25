@@ -153,8 +153,9 @@ For writes, `OutboundEngine` persists the SDK `SendQueue` state machine. Enqueue
 the already stable transaction/prepared-event payload, then implement
 `OutboundSubmitter`; accepted and duplicate outcomes both finalize the same
 queue item, while retry deadlines survive restart. If acceptance must commit a
-host-owned durable side effect, implement `OutboundPostAcceptHook` and call
-`submit_next_with_hook`: Garth invokes it after accepted/duplicate but before
+host-owned durable side effect, implement `OutboundPostAcceptHook` and pass it
+to `submit_next_with_fence_and_hook`: Garth invokes it after accepted/duplicate
+but before
 marking the item sent. Hook failure leaves the item retryable, so a duplicate
 response after restart can idempotently finish the host commit. MLS encryption
 and snapshot semantics remain host-owned; Garth owns only this ordering gate.

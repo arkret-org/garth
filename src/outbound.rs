@@ -44,8 +44,10 @@ pub enum OutboundGenerationFenceDecision {
     Quarantine { reason: String },
 }
 
+#[cfg(test)]
 struct NoopGenerationFence;
 
+#[cfg(test)]
 impl OutboundGenerationFence for NoopGenerationFence {
     fn evaluate(&self, _item: &SendQueueItem) -> Result<OutboundGenerationFenceDecision> {
         Ok(OutboundGenerationFenceDecision::Current)
@@ -206,33 +208,6 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
     pub async fn compact_terminal_before(&self, cutoff: DateTime<Utc>) -> Result<usize> {
         self.store
             .mutate_outbound(move |queue| Ok(queue.prune_terminal_before(cutoff)))
-            .await
-    }
-
-    pub async fn submit_next<T: OutboundSubmitter + ?Sized>(
-        &self,
-        submitter: &T,
-        now: DateTime<Utc>,
-    ) -> Result<OutboundEngineOutcome> {
-        self.submit_next_with_fence_and_hook(
-            submitter,
-            &NoopGenerationFence,
-            &NoopPostAcceptHook,
-            now,
-        )
-        .await
-    }
-
-    pub async fn submit_next_with_hook<
-        T: OutboundSubmitter + ?Sized,
-        H: OutboundPostAcceptHook + ?Sized,
-    >(
-        &self,
-        submitter: &T,
-        hook: &H,
-        now: DateTime<Utc>,
-    ) -> Result<OutboundEngineOutcome> {
-        self.submit_next_with_fence_and_hook(submitter, &NoopGenerationFence, hook, now)
             .await
     }
 
@@ -640,7 +615,7 @@ mod tests {
             ]))),
         };
         assert!(matches!(
-            engine.submit_next(&submitter, Utc::now()).await.unwrap(),
+            engine.submit_next_with_fence(&submitter, &NoopGenerationFence, Utc::now()).await.unwrap(),
             OutboundEngineOutcome::Accepted(_)
         ));
         assert_eq!(engine.snapshot().await.unwrap().items.len(), 1);
@@ -675,7 +650,7 @@ mod tests {
             ]))),
         };
 
-        let prepared = engine.submit_next(&submitter, Utc::now()).await.unwrap();
+        let prepared = engine.submit_next_with_fence(&submitter, &NoopGenerationFence, Utc::now()).await.unwrap();
         assert!(matches!(prepared, OutboundEngineOutcome::Prepared(_)));
         let snapshot = engine.snapshot().await.unwrap();
         assert_eq!(snapshot.items[0].transaction_id, "local-operation-1");
@@ -686,7 +661,7 @@ mod tests {
         assert!(!snapshot.items[0].canonical_payload_bytes.is_empty());
 
         assert!(matches!(
-            engine.submit_next(&submitter, Utc::now()).await.unwrap(),
+            engine.submit_next_with_fence(&submitter, &NoopGenerationFence, Utc::now()).await.unwrap(),
             OutboundEngineOutcome::Accepted(_)
         ));
     }
@@ -705,7 +680,7 @@ mod tests {
             .unwrap();
 
         let outcome = engine
-            .submit_next(&FailingSubmitter, Utc::now())
+            .submit_next_with_fence(&FailingSubmitter, &NoopGenerationFence, Utc::now())
             .await
             .unwrap();
         assert!(matches!(outcome, OutboundEngineOutcome::RetryAt { .. }));
@@ -736,7 +711,7 @@ mod tests {
             ]))),
         };
 
-        let outcome = engine.submit_next(&submitter, Utc::now()).await.unwrap();
+        let outcome = engine.submit_next_with_fence(&submitter, &NoopGenerationFence, Utc::now()).await.unwrap();
         assert!(matches!(outcome, OutboundEngineOutcome::RetryAt { .. }));
         let item = engine.snapshot().await.unwrap().items.remove(0);
         assert_eq!(item.attempts, 1);
@@ -770,7 +745,7 @@ mod tests {
         let hook = FailingOncePostAcceptHook::default();
 
         let outcome = engine
-            .submit_next_with_hook(&submitter, &hook, Utc::now())
+            .submit_next_with_fence_and_hook(&submitter, &NoopGenerationFence, &hook, Utc::now())
             .await
             .unwrap();
         assert!(matches!(outcome, OutboundEngineOutcome::RetryAt { .. }));
@@ -779,7 +754,7 @@ mod tests {
         assert!(failed.remote_event_id.is_none());
 
         let outcome = engine
-            .submit_next_with_hook(&submitter, &hook, Utc::now() + chrono::Duration::seconds(2))
+            .submit_next_with_fence_and_hook(&submitter, &NoopGenerationFence, &hook, Utc::now() + chrono::Duration::seconds(2))
             .await
             .unwrap();
         assert!(matches!(outcome, OutboundEngineOutcome::Duplicate(_)));
@@ -869,7 +844,7 @@ mod tests {
             ]))),
         };
         assert!(matches!(
-            reopened.submit_next(&submitter, Utc::now()).await.unwrap(),
+            reopened.submit_next_with_fence(&submitter, &NoopGenerationFence, Utc::now()).await.unwrap(),
             OutboundEngineOutcome::Duplicate(_)
         ));
         let _ = std::fs::remove_file(path);

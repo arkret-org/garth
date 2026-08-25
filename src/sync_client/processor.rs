@@ -17,7 +17,6 @@ pub struct SyncResponseProcessor {
     pending_recovery_actions: BTreeSet<SyncRecoveryAction>,
     account_data: BTreeMap<String, Event>,
     notifications: BTreeMap<String, NotificationDelta>,
-    last_token: Option<String>,
 }
 
 /// Recovery work the application must schedule after reliable to-device
@@ -53,7 +52,6 @@ impl SyncResponseProcessor {
                 "account subscribe batch requires a non-empty cursor".to_owned(),
             ));
         }
-        self.last_token = Some(batch.cursor);
 
         let mut realm_updates = Vec::new();
         let mut malformed_realms = Vec::new();
@@ -221,10 +219,6 @@ impl SyncResponseProcessor {
 
     pub fn limited_timelines(&self) -> Vec<&LimitedTimelineState> {
         self.limited_timelines.values().collect()
-    }
-
-    pub fn last_token(&self) -> Option<&str> {
-        self.last_token.as_deref()
     }
 
     pub fn account_data(&self, key: &str) -> Option<&Event> {

@@ -159,22 +159,6 @@ where
             .await
     }
 
-    pub async fn run_realm_stream<T, P>(
-        &self,
-        transport: &T,
-        realm_id: RealmId,
-        digest_suite: arkret_canonical::DigestSuite,
-        projector: &P,
-    ) -> Result<RealmStreamStopReason>
-    where
-        T: RealmEventsTransport + EventsScanTransport + ?Sized,
-        P: ClientProjector + ?Sized,
-    {
-        self.run_realm_stream_classified(transport, realm_id, digest_suite, projector)
-            .await
-            .map_err(ProjectedRunError::into_error)
-    }
-
     /// Realm subscription with atomic cursor + durable-inbox delivery.
     pub async fn run_realm_stream_to_inbox<T>(
         &self,
@@ -305,51 +289,12 @@ where
         }
     }
 
-    pub async fn scan_realm_catchup<T>(
-        &self,
-        transport: &T,
-        realm_id: RealmId,
-        options: ScanCatchupOptions,
-    ) -> Result<crate::protocol::EventsQueryOutcome>
-    where
-        T: EventsScanTransport + ?Sized,
-    {
-        let mut scan = ScanCatchup::new(self.cursor_store.clone());
-        if let Some(service_id) = self.service_id.clone() {
-            scan = scan.with_service_id(service_id);
-        }
-        scan.scan_realm_catchup(transport, realm_id, options).await
-    }
-
     /// Scan durable Realm history and project it without writing the scan
     /// cursor into the Realm subscription cursor slot. Scan and subscribe
     /// cursors carry different filter digests and are not interchangeable;
     /// the subsequent stream establishes and checkpoints its own cursor.
-    pub async fn bootstrap_realm_history<T, P>(
-        &self,
-        transport: &T,
-        realm_id: RealmId,
-        digest_suite: arkret_canonical::DigestSuite,
-        projector: &P,
-        options: ScanCatchupOptions,
-    ) -> Result<crate::protocol::EventsQueryOutcome>
-    where
-        T: EventsScanTransport + ?Sized,
-        P: ClientProjector + ?Sized,
-    {
-        self.bootstrap_realm_history_classified(
-            transport,
-            realm_id,
-            digest_suite,
-            projector,
-            options,
-        )
-        .await
-        .map_err(ProjectedRunError::into_error)
-    }
-
-    /// Projector-attributed variant of [`Self::bootstrap_realm_history`]: a
-    /// failing projector callback surfaces as [`ProjectedRunError::Projector`]
+    ///
+    /// A failing projector callback surfaces as [`ProjectedRunError::Projector`]
     /// so the orchestrator can classify it as `ProjectorFailure` instead of a
     /// generic protocol violation.
     pub(crate) async fn bootstrap_realm_history_classified<T, P>(
@@ -457,11 +402,8 @@ where
     where
         T: EventsScanTransport + ?Sized,
     {
-        let mut scan = ScanCatchup::new(self.cursor_store.clone());
-        if let Some(service_id) = self.service_id.clone() {
-            scan = scan.with_service_id(service_id);
-        }
-        scan.scan_realm_catchup_uncheckpointed_classified(transport, realm_id, options)
+        ScanCatchup::new()
+            .scan_realm_catchup_uncheckpointed_classified(transport, realm_id, options)
             .await
     }
 
@@ -498,28 +440,11 @@ where
         }
     }
 
-    /// Discard every continuation position used to rebuild a Realm stream.
-    /// Subscribe and scan cursors are bound to different request filters, but
-    /// either can expire while the application is offline. Recovery must clear
-    /// both before performing a fresh history bootstrap.
+    /// Discard the continuation position used to rebuild a Realm stream.
+    /// The subscribe cursor can expire while the application is offline, so
+    /// recovery must clear it before performing a fresh history bootstrap.
     pub(crate) async fn clear_realm_history_cursors(&self, realm_id: RealmId) -> Result<()> {
-        self.cursor_store
-            .clear(self.realm_scope(realm_id.clone()))
-            .await?;
-        self.clear_realm_scan_cursor(realm_id).await
-    }
-
-    /// Clear only the scan continuation after a durable-inbox baseline commit.
-    /// The subscribe cursor is replaced by that atomic commit and must not be
-    /// cleared in a preceding, crash-visible step.
-    pub(crate) async fn clear_realm_scan_cursor(&self, realm_id: RealmId) -> Result<()> {
-        self.cursor_store
-            .clear(CursorScope::RealmEventsScan {
-                service_id: self.service_id.clone(),
-                realm_id,
-                order: None,
-            })
-            .await
+        self.cursor_store.clear(self.realm_scope(realm_id)).await
     }
 
     pub(crate) fn account_scope(&self, actor_id: DidCoreId, device_id: DeviceId) -> CursorScope {
@@ -839,13 +764,14 @@ mod tests {
         let engine = SubscriptionEngine::new(executor.clone(), store.clone(), store.clone());
 
         let reason = engine
-            .run_realm_stream(
+            .run_realm_stream_classified(
                 &transport,
                 realm_id(),
                 arkret_canonical::DigestSuite::Sha256,
                 &projector,
             )
             .await
+            .map_err(ProjectedRunError::into_error)
             .unwrap();
 
         assert_eq!(
@@ -896,13 +822,14 @@ mod tests {
             SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store.clone());
 
         let reason = engine
-            .run_realm_stream(
+            .run_realm_stream_classified(
                 &transport,
                 realm_id(),
                 arkret_canonical::DigestSuite::Sha256,
                 &projector,
             )
             .await
+            .map_err(ProjectedRunError::into_error)
             .unwrap();
 
         assert_eq!(
@@ -941,7 +868,7 @@ mod tests {
             SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store.clone());
 
         let result = engine
-            .run_realm_stream(
+            .run_realm_stream_classified(
                 &transport,
                 realm_id(),
                 arkret_canonical::DigestSuite::Sha256,
@@ -973,7 +900,7 @@ mod tests {
             SubscriptionEngine::new(RecordingExecutor::default(), store.clone(), store.clone());
 
         let outcome = engine
-            .bootstrap_realm_history(
+            .bootstrap_realm_history_classified(
                 &transport,
                 realm_id(),
                 arkret_canonical::DigestSuite::Sha256,
@@ -981,6 +908,7 @@ mod tests {
                 ScanCatchupOptions::default(),
             )
             .await
+            .map_err(ProjectedRunError::into_error)
             .unwrap();
 
         assert_eq!(
@@ -1015,13 +943,14 @@ mod tests {
         };
 
         let error = engine
-            .run_realm_stream(
+            .run_realm_stream_classified(
                 &transport,
                 realm_id(),
                 arkret_canonical::DigestSuite::Sha256,
                 &projector,
             )
             .await
+            .map_err(ProjectedRunError::into_error)
             .unwrap_err();
 
         assert!(error.to_string().contains("dropped_missing_cursor"));

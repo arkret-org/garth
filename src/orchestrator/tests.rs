@@ -552,17 +552,8 @@ async fn run_realm_to_inbox_replaces_expired_cursor_with_durable_baseline() {
         service_id: None,
         realm_id: realm_id(),
     };
-    let scan_scope = CursorScope::RealmEventsScan {
-        service_id: None,
-        realm_id: realm_id(),
-        order: None,
-    };
     store
         .save(realm_scope.clone(), "ak:cursor:expired-stream".to_owned())
-        .await
-        .unwrap();
-    store
-        .save(scan_scope.clone(), "ak:cursor:expired-scan".to_owned())
         .await
         .unwrap();
     let client = test_client(RecordingExecutor::default(), store.clone());
@@ -594,7 +585,6 @@ async fn run_realm_to_inbox_replaces_expired_cursor_with_durable_baseline() {
         }
     );
     assert!(store.load(realm_scope).await.unwrap().is_none());
-    assert!(store.load(scan_scope).await.unwrap().is_none());
     let pending = store.pending(10).await.unwrap();
     assert_eq!(pending.len(), 1);
     assert!(matches!(
@@ -732,17 +722,8 @@ async fn run_realm_clears_all_cursors_bootstraps_and_reconnects_after_cursor_exp
         service_id: None,
         realm_id: realm_id(),
     };
-    let scan_scope = CursorScope::RealmEventsScan {
-        service_id: None,
-        realm_id: realm_id(),
-        order: None,
-    };
     store
         .save(realm_scope.clone(), "ak:cursor:expired-stream".to_owned())
-        .await
-        .unwrap();
-    store
-        .save(scan_scope.clone(), "ak:cursor:expired-scan".to_owned())
         .await
         .unwrap();
     let client = test_client(RecordingExecutor::default(), store.clone());
@@ -778,7 +759,6 @@ async fn run_realm_clears_all_cursors_bootstraps_and_reconnects_after_cursor_exp
     );
     assert_eq!(provider.calls(), 2);
     assert!(store.load(realm_scope).await.unwrap().is_none());
-    assert!(store.load(scan_scope).await.unwrap().is_none());
     assert_eq!(*calls.lock().unwrap(), 0);
     assert!(provider.events().contains(&RunEvent::CursorReset));
 }

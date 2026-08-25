@@ -219,10 +219,6 @@ where
         &self.store
     }
 
-    pub fn store_mut(&mut self) -> &mut S {
-        &mut self.store
-    }
-
     /// Resolve in the normative order. Invalid signed material is terminal and
     /// never downgraded to a later source; unavailable sources return `None`.
     pub fn resolve<R: ServiceRouteSource>(

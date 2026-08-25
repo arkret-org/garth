@@ -534,12 +534,6 @@ where
                         )
                         .await
                         .map_err(|error| Self::fail(provider, classify_error(&error), error))?;
-                    engine
-                        .clear_realm_scan_cursor(realm_id.clone())
-                        .await
-                        .map_err(|error| {
-                            Self::fail(provider, RunErrorClass::StoreFailure, error)
-                        })?;
                     provider.observe(RunEvent::DeliveryPending);
                     cursor_recovery_attempted = true;
                     let delay =
@@ -578,12 +572,6 @@ where
                         )
                         .await
                         .map_err(|error| Self::fail(provider, classify_error(&error), error))?;
-                    engine
-                        .clear_realm_scan_cursor(realm_id.clone())
-                        .await
-                        .map_err(|error| {
-                            Self::fail(provider, RunErrorClass::StoreFailure, error)
-                        })?;
                     provider.observe(RunEvent::DeliveryPending);
                     cursor_recovery_attempted = true;
                     backoff.reset();

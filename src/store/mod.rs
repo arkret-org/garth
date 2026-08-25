@@ -43,11 +43,6 @@ pub enum CursorScope {
         service_id: Option<DidCoreId>,
         realm_id: RealmId,
     },
-    RealmEventsScan {
-        service_id: Option<DidCoreId>,
-        realm_id: RealmId,
-        order: Option<String>,
-    },
     DeviceMessages {
         service_id: Option<DidCoreId>,
         actor_id: DidCoreId,

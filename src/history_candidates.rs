@@ -66,10 +66,6 @@ where
         &self.store
     }
 
-    pub fn store_mut(&mut self) -> &mut S {
-        &mut self.store
-    }
-
     pub fn event_binding(
         &self,
         event_binding_key: &EventCandidateBindingKey,

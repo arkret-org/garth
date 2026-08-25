@@ -468,31 +468,6 @@ where
         })
         .await
     }
-
-    /// Delete content-addressed blobs not referenced by any durable ready
-    /// marker. This closes crashes after blob staging but before marker commit.
-    pub fn reconcile_orphan_blobs<B>(&self, blobs: &B) -> Result<usize>
-    where
-        B: HistorySourceBlobStore,
-    {
-        let referenced = self
-            .store
-            .load_history_source_outbox()?
-            .snapshot
-            .attempts
-            .values()
-            .flat_map(|attempt| attempt.records.iter())
-            .map(|record| history_blob_key(&record.blob_digest))
-            .collect::<BTreeSet<_>>();
-        let mut removed = 0;
-        for key in blobs.list_history_blob_keys()? {
-            if key.starts_with(HISTORY_OUTBOX_BLOB_PREFIX) && !referenced.contains(&key) {
-                blobs.delete_history_blob(&key)?;
-                removed += 1;
-            }
-        }
-        Ok(removed)
-    }
 }
 
 fn same_staged_attempt(
@@ -958,7 +933,6 @@ mod tests {
                 .attempts
                 .is_empty()
         );
-        assert_eq!(outbox.reconcile_orphan_blobs(&blobs).unwrap(), 1);
 
         blobs.fail_at(usize::MAX);
         let identity = outbox
