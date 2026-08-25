@@ -21,8 +21,6 @@ pub mod event;
 pub mod executor;
 pub mod facade;
 pub mod history_candidates;
-pub mod history_outbox;
-pub mod history_runtime;
 pub mod inbound;
 pub mod maybe_send;
 pub mod orchestrator;
@@ -92,20 +90,6 @@ pub use executor::{Executor, HostClock, SystemClock};
 pub use facade::ArkretClient;
 pub use history_candidates::{
     HistoryCandidateEngine, HistoryCandidateStateStore, MemoryHistoryCandidateStateStore,
-};
-pub use history_outbox::{
-    DurableHistorySourceAttempt, DurableStagedHistoryRecord, HistorySourceAttemptBundle,
-    HistorySourceAttemptIdentity, HistorySourceAttemptStatus, HistorySourceBlobStore,
-    HistorySourceOutboundRecord, HistorySourceOutbox, HistorySourceOutboxSnapshot,
-    HistorySourceOutboxStore, HistorySourceRoute, MemoryHistorySourceBlobStore,
-    MemoryHistorySourceOutboxStore, VersionedHistorySourceOutboxSnapshot,
-};
-pub use history_runtime::{
-    DurableHistoryRequest, DurableHistoryResponseStream, DurableVerifiedHistoryManifest,
-    HistoryResponseCapabilityOpener, HistoryRuntime, HistoryRuntimeSnapshot, HistoryRuntimeStore,
-    HistoryRuntimeTransport, MemoryHistoryRuntimeStore, ReceiptBoundHistoryTraversal,
-    VerifiedHistoryTraversal, VersionedHistoryRuntimeSnapshot,
-    cryptographically_rejected_disposition,
 };
 pub use inbound::{DecodedInbound, DecodedMessage, InboundDecoder};
 pub use maybe_send::{MaybeSend, MaybeSendSync};
@@ -180,10 +164,10 @@ pub use store::{
 pub use subscribe::{
     BoxRealmStreamFuture, BoxSignalStreamFuture, EventsScanRequest, EventsScanTransport,
     RealmEventsDriver, RealmEventsFrameSource, RealmEventsTransport, RealmStreamStopReason,
-    ScanCatchup, ScanCatchupOptions, SignalReceiveHandlers, SignalRejection, SignalRunError,
-    SignalRunResult, SignalSink, SignalStreamDriver, SignalStreamFrameSource,
-    SignalStreamStopReason, SignalStreamTransport, SubscriptionEngine, SubscriptionLoopDriver,
-    SubscriptionStopReason, account_updates_to_events,
+    ScanCatchupOptions, SignalReceiveHandlers, SignalRejection, SignalRunError, SignalRunResult,
+    SignalSink, SignalStreamDriver, SignalStreamFrameSource, SignalStreamStopReason,
+    SignalStreamTransport, SubscriptionEngine, SubscriptionLoopDriver, SubscriptionStopReason,
+    account_updates_to_events,
 };
 pub use sync_client::{
     AsyncSyncTransport, BackoffConfig, BackpressureConfig, BoxSyncFuture, CancellationToken,

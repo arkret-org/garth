@@ -67,7 +67,6 @@ serde_json = {version = "1.0.150",default-features = false,features = ["std"]}
 thiserror = {version = "2.0.18",default-features = false}
 tokio = {version = "1.52.3",default-features = false,features = ["rt", "sync", "time"],optional = true}
 zeroize = {version = "1.8.2",default-features = false,features = ["derive"]}
-uuid = {version = "1.23",default-features = false,features = ["std", "v7"]}
 url = {version = "2.5",default-features = false}
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
@@ -76,6 +75,7 @@ gloo-timers = {version = "0.3",default-features = false,features = ["futures"],o
 [dev-dependencies]
 arkret-wire = {version = "0.3.0",path = "../arkret-rust-sdk/crates/wire",default-features = false,features = ["test-support"]}
 tokio = {version = "1.52.3",default-features = false,features = ["macros", "rt", "sync", "time"]}
+uuid = {version = "1.23",default-features = false,features = ["std", "v7"]}
 
 [[example]]
 name = "minimal-client"

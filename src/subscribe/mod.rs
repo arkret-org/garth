@@ -17,7 +17,7 @@ pub use realm::{
     BoxRealmStreamFuture, RealmEventsDriver, RealmEventsFrameSource, RealmEventsTransport,
     RealmStreamStopReason,
 };
-pub use scan::{EventsScanRequest, EventsScanTransport, ScanCatchup, ScanCatchupOptions};
+pub use scan::{EventsScanRequest, EventsScanTransport, ScanCatchupOptions};
 pub use signal::{
     BoxSignalStreamFuture, SignalReceiveHandlers, SignalRejection, SignalRunError, SignalRunResult,
     SignalSink, SignalStreamDriver, SignalStreamFrameSource, SignalStreamStopReason,
@@ -402,9 +402,7 @@ where
     where
         T: EventsScanTransport + ?Sized,
     {
-        ScanCatchup::new()
-            .scan_realm_catchup_uncheckpointed_classified(transport, realm_id, options)
-            .await
+        scan::scan_realm_catchup_uncheckpointed_classified(transport, realm_id, options).await
     }
 
     async fn save_realm_cursor_after_project(

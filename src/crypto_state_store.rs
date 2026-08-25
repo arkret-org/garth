@@ -1131,8 +1131,10 @@ mod tests {
         store
             .put_mls_group_state(MlsGroupStateRecord {
                 group_id: "group1".to_owned(),
-                principal_id: alice.clone(),
-                device_id: device_id.clone(),
+                endpoint: crate::protocol::MlsEndpointIdentity::human_device(
+                    alice.clone(),
+                    device_id.clone(),
+                ),
                 epoch: 3,
                 serialized_state: b"state".to_vec(),
                 updated_at: Utc::now(),
@@ -1158,7 +1160,6 @@ mod tests {
                 claim_id: None,
                 created_at: Utc::now(),
                 expires_at: None,
-                endpoint_signature: None,
                 last_resort: false,
             })
             .unwrap();
@@ -1186,8 +1187,10 @@ mod tests {
         store
             .put_mls_group_state(MlsGroupStateRecord {
                 group_id: "group1".to_owned(),
-                principal_id: alice.clone(),
-                device_id: device_id.clone(),
+                endpoint: crate::protocol::MlsEndpointIdentity::human_device(
+                    alice.clone(),
+                    device_id.clone(),
+                ),
                 epoch: 5,
                 serialized_state: b"newer".to_vec(),
                 updated_at: Utc::now(),
@@ -1197,8 +1200,7 @@ mod tests {
             store
                 .put_mls_group_state(MlsGroupStateRecord {
                     group_id: "group1".to_owned(),
-                    principal_id: alice,
-                    device_id,
+                    endpoint: crate::protocol::MlsEndpointIdentity::human_device(alice, device_id),
                     epoch: 4,
                     serialized_state: b"older".to_vec(),
                     updated_at: Utc::now(),

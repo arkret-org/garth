@@ -95,69 +95,59 @@ impl Default for ScanCatchupOptions {
 /// subscribe cursors carry different filter digests and are not
 /// interchangeable, so a scan never writes a cursor slot; the caller supplies
 /// any resume position explicitly through [`ScanCatchupOptions::after`].
-#[derive(Clone, Debug, Default)]
-pub struct ScanCatchup;
+pub(crate) async fn scan_realm_catchup_uncheckpointed_classified<T>(
+    transport: &T,
+    realm_id: RealmId,
+    options: ScanCatchupOptions,
+) -> ProjectedRunResult<EventsQueryOutcome>
+where
+    T: EventsScanTransport + ?Sized,
+{
+    let mut after = options.after;
+    let mut aggregate = EventsQueryOutcome {
+        events: Vec::new(),
+        snapshot_bootstrap: None,
+        prev_cursor: None,
+        next_cursor: None,
+        has_more: false,
+        range_completeness: None,
+    };
+    let max_pages = options.max_pages.max(1);
 
-impl ScanCatchup {
-    pub fn new() -> Self {
-        Self
-    }
-
-    pub(crate) async fn scan_realm_catchup_uncheckpointed_classified<T>(
-        &self,
-        transport: &T,
-        realm_id: RealmId,
-        options: ScanCatchupOptions,
-    ) -> ProjectedRunResult<EventsQueryOutcome>
-    where
-        T: EventsScanTransport + ?Sized,
-    {
-        let mut after = options.after;
-        let mut aggregate = EventsQueryOutcome {
-            events: Vec::new(),
-            snapshot_bootstrap: None,
-            prev_cursor: None,
-            next_cursor: None,
-            has_more: false,
-            range_completeness: None,
-        };
-        let max_pages = options.max_pages.max(1);
-
-        for _ in 0..max_pages {
-            let mut outcome = transport
-                .scan_events(EventsScanRequest {
-                    realm_id: realm_id.clone(),
-                    before: options.before.clone(),
-                    after,
-                    order: options.order,
-                    limit: options.limit,
-                })
-                .await
-                .map_err(ProjectedRunError::Transport)?;
-            if aggregate.prev_cursor.is_none() {
-                aggregate.prev_cursor = outcome.prev_cursor.clone();
-            }
-            if aggregate.snapshot_bootstrap.is_none() {
-                aggregate.snapshot_bootstrap = outcome.snapshot_bootstrap.take();
-            }
-            let next_cursor = outcome.next_cursor.clone();
-            let has_more = outcome.has_more;
-            if aggregate.range_completeness.is_none() {
-                aggregate.range_completeness = outcome.range_completeness.take();
-            }
-            aggregate.events.append(&mut outcome.events);
-            aggregate.next_cursor = next_cursor.clone();
-            aggregate.has_more = has_more;
-
-            match (has_more, next_cursor) {
-                (true, Some(next)) => after = Some(next),
-                _ => return Ok(aggregate),
-            }
+    for _ in 0..max_pages {
+        let mut outcome = transport
+            .scan_events(EventsScanRequest {
+                realm_id: realm_id.clone(),
+                before: options.before.clone(),
+                after,
+                order: options.order,
+                limit: options.limit,
+            })
+            .await
+            .map_err(ProjectedRunError::Transport)?;
+        if aggregate.prev_cursor.is_none() {
+            aggregate.prev_cursor = outcome.prev_cursor.clone();
         }
+        if aggregate.snapshot_bootstrap.is_none() {
+            aggregate.snapshot_bootstrap = outcome.snapshot_bootstrap.take();
+        }
+        let next_cursor = outcome.next_cursor.clone();
+        let has_more = outcome.has_more;
+        if aggregate.range_completeness.is_none() {
+            aggregate.range_completeness = outcome.range_completeness.take();
+        }
+        aggregate.events.append(&mut outcome.events);
+        aggregate.next_cursor = next_cursor.clone();
+        aggregate.has_more = has_more;
 
-        aggregate.has_more = true;
-        Ok(aggregate)
+        match (has_more, next_cursor) {
+            (true, Some(next)) => after = Some(next),
+            _ => return Ok(aggregate),
+        }
     }
+
+    aggregate.has_more = true;
+    Ok(aggregate)
 }
 
 #[cfg(test)]
@@ -197,16 +187,14 @@ mod tests {
             async move { Ok(responses_for_transport.lock().unwrap().pop_front().unwrap()) }
         };
 
-        let catchup = ScanCatchup::new();
-        let response = catchup
-            .scan_realm_catchup_uncheckpointed_classified(
-                &transport,
-                realm_id(),
-                ScanCatchupOptions::default(),
-            )
-            .await
-            .map_err(ProjectedRunError::into_error)
-            .unwrap();
+        let response = scan_realm_catchup_uncheckpointed_classified(
+            &transport,
+            realm_id(),
+            ScanCatchupOptions::default(),
+        )
+        .await
+        .map_err(ProjectedRunError::into_error)
+        .unwrap();
 
         assert!(!response.has_more);
         assert_eq!(response.next_cursor.as_deref(), Some("ak:cursor:p3"));
