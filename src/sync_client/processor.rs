@@ -45,6 +45,13 @@ impl SyncResponseProcessor {
     /// Process an ordered, validated account-subscribe catch-up batch without
     /// folding its canonical frames through an alternate wire model.
     pub fn process(&mut self, batch: AccountSubscribeBatch) -> Result<SyncUpdates> {
+        let mut staged = self.clone();
+        let updates = staged.process_staged(batch)?;
+        *self = staged;
+        Ok(updates)
+    }
+
+    fn process_staged(&mut self, batch: AccountSubscribeBatch) -> Result<SyncUpdates> {
         if batch.cursor.trim().is_empty() {
             return Err(Error::Protocol(
                 "account subscribe batch requires a non-empty cursor".to_owned(),
@@ -116,7 +123,7 @@ impl SyncResponseProcessor {
                 if container.lost.unwrap_or(false) {
                     to_device_lost = true;
                 }
-                to_device_limited = container.limited.unwrap_or(false);
+                to_device_limited |= container.limited.unwrap_or(false);
                 if container.ack_token.is_some() {
                     to_device_ack_token = container.ack_token;
                 }

@@ -482,6 +482,7 @@ impl SyncLoop {
                     })
                 {
                     self.token = None;
+                    self.processor.clear();
                 }
                 SyncLoopStep::Updates(Box::new(updates))
             }

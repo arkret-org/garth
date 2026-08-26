@@ -291,31 +291,42 @@ where
                             serde_json::Value::Object(payload.into_iter().collect()),
                         )
                     {
-                        let event_id = crate::protocol::verified_event_id(&event, digest_suite)
-                            .map_err(ProjectedRunError::Transport)?;
-                        if !self
-                            .event_cache_store
-                            .seen(event_id.clone())
-                            .await
-                            .map_err(ProjectedRunError::Store)?
-                        {
-                            let batch = self.realm_event_batch(event, &realm_id, digest_suite);
-                            if !batch.is_empty() {
-                                // Gate: project must persist before the cursor moves.
-                                projector
-                                    .project(batch)
+                        match crate::protocol::verified_event_id(&event, digest_suite) {
+                            Ok(event_id) => {
+                                if !self
+                                    .event_cache_store
+                                    .seen(event_id.clone())
                                     .await
-                                    .map_err(ProjectedRunError::Projector)?;
+                                    .map_err(ProjectedRunError::Store)?
+                                {
+                                    let batch =
+                                        self.realm_event_batch(event, &realm_id, digest_suite);
+                                    if !batch.is_empty() {
+                                        // Gate: project must persist before the cursor moves.
+                                        projector
+                                            .project(batch)
+                                            .await
+                                            .map_err(ProjectedRunError::Projector)?;
+                                    }
+                                    // Remember only after a successful projection: a
+                                    // projector error must leave BOTH the cursor and
+                                    // the dedupe cache untouched, so the redelivered
+                                    // frame is projected again instead of being
+                                    // silently swallowed by dedupe.
+                                    self.event_cache_store
+                                        .remember(event_id)
+                                        .await
+                                        .map_err(ProjectedRunError::Store)?;
+                                }
                             }
-                            // Remember only after a successful projection: a
-                            // projector error must leave BOTH the cursor and
-                            // the dedupe cache untouched, so the redelivered
-                            // frame is projected again instead of being
-                            // silently swallowed by dedupe.
-                            self.event_cache_store
-                                .remember(event_id)
-                                .await
-                                .map_err(ProjectedRunError::Store)?;
+                            Err(error) => {
+                                tracing::warn!(
+                                    %error,
+                                    event_id = %event.event_id,
+                                    realm_id = %realm_id,
+                                    "skipping invalid event frame while advancing its durable cursor"
+                                );
+                            }
                         }
                     }
                 }
