@@ -427,8 +427,8 @@ impl ServiceRouteSource for PrefetchedRouteSource {
 /// signing key is deterministic.
 #[cfg(any(test, feature = "route-material-test-support"))]
 pub mod test_fixture {
-    use arkret_models_discovery::SupportedBinding;
-    use arkret_wire::{DidFullId, DidUrl, TrustDomainId};
+    use arkret_models_discovery::{OperationBinding, SupportedBinding};
+    use arkret_wire::{DidFullId, DidUrl, ServiceOperationId, TrustDomainId};
     use chrono::Duration;
     use ed25519_dalek::SigningKey;
 
@@ -518,8 +518,18 @@ pub mod test_fixture {
             registered_kind,
         );
         describe.service_resolution = commitment;
-        describe.supported_bindings =
-            vec![SupportedBinding::new(BindingKind::HttpJson).with_base_url(base_url)];
+        describe.operation_bindings = vec![
+            OperationBinding::current_http_json(ServiceOperationId::ServerReadDescribe).unwrap(),
+        ];
+        describe.supported_bindings = vec![
+            SupportedBinding::new(BindingKind::HttpJson)
+                .with_base_url(base_url)
+                .with_extra(
+                    "operations",
+                    serde_json::json!([ServiceOperationId::SERVER_READ_DESCRIBE]),
+                )
+                .with_extra("extension_profile_required", serde_json::Value::Null),
+        ];
         SignedRouteFixture {
             service_id,
             record,
