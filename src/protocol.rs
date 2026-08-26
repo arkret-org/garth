@@ -96,10 +96,10 @@ pub(crate) use arkret_models_collaboration::sync_frames::account_subscribe::{
 };
 #[cfg(test)]
 pub(crate) use arkret_models_collaboration::sync_frames::account_sync::{
-    AccountNotificationDataKind, AccountSubscribeUnreadCounts,
-    AgentRuntimeApprovalNotificationData, AgentRuntimeApprovalNotificationRemovalData,
-    AgentRuntimeApprovalRemovalReason, DeviceMessageContainer, EventContainer,
-    NotificationContainer, NotificationData, RealmSyncEntry,
+    AccountSubscribeUnreadCounts, AgentRuntimeApprovalNotificationData,
+    AgentRuntimeApprovalNotificationRemovalData, AgentRuntimeApprovalRemovalReason,
+    DeviceMessageContainer, EventContainer, NotificationContainer, NotificationData,
+    RealmSyncEntry,
 };
 #[cfg(test)]
 pub(crate) use arkret_models_collaboration::sync_frames::client_sync::SyncRequestBody;
@@ -108,9 +108,7 @@ pub(crate) use arkret_models_crypto::MlsKeyPackageState;
 #[cfg(test)]
 pub(crate) use arkret_models_identity::{ACCOUNT_HANDOFF_ALLOWED_OPERATIONS, Handle};
 #[cfg(test)]
-pub(crate) use arkret_wire::{
-    DeviceMessageId, ErrorEnvelope, NotificationId, NotificationKind, ProtocolKind,
-};
+pub(crate) use arkret_wire::{DeviceMessageId, ErrorEnvelope, NotificationId, ProtocolKind};
 
 pub(crate) mod canonical {
     pub(crate) use arkret_canonical::{canonical_json_bytes, canonical_sha256};
@@ -161,6 +159,5 @@ pub(crate) mod signatures {
 pub(crate) mod sync {
     pub(crate) use arkret_models_collaboration::sync_frames::client_sync::{
         LimitedTimelineState, RealmUpdate, SyncFilter, SyncGap, SyncRequestBody, SyncUpdates,
-        ToDeviceAck, ToDeviceAckStatus,
     };
 }

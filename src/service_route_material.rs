@@ -33,7 +33,7 @@ use arkret_models_identity::{
     AuthenticatedServiceResolution, DidDocument, ResolutionCommitment,
     ResolutionDidBindingEvidenceKind, ResolutionDidBindingEvidenceReceipt,
     ResolutionMethodEvidenceBoundary, ResolutionMethodHistoryEvidence, ServiceResolutionRecord,
-    canonical_service_current_record_path,
+    canonical_service_current_record_path, route_binding_describe_digest,
 };
 use arkret_wire::{BindingKind, DidCoreId, Hash, ServiceKind};
 use chrono::{DateTime, Utc};
@@ -42,17 +42,6 @@ use crate::service_route::{
     ServiceDescribeBinding, ServiceRouteCandidate, ServiceRouteNoticeCandidate, ServiceRouteSource,
 };
 use crate::{Error, Result};
-
-/// Canonical route-binding projection whose digest is committed as
-/// `describe_digest` (`service-surface.md` §2.6): only
-/// `{service_id, service_kind, service_resolution, http_json_base_url}`.
-#[derive(serde::Serialize)]
-struct RouteBindingProjection<'a> {
-    service_id: &'a DidCoreId,
-    service_kind: &'a str,
-    service_resolution: ResolutionCommitment,
-    http_json_base_url: &'a str,
-}
 
 fn canonical_document_digest(document: &DidDocument) -> Result<Hash> {
     Ok(Hash::new(arkret_canonical::canonical_sha256(document)?)?)
@@ -86,18 +75,16 @@ pub fn validate_route_binding(record: &ServiceResolutionRecord) -> Result<()> {
             "service_route_current_record_url_not_derived_from_base".to_owned(),
         ));
     }
-    let digest = Hash::new(arkret_canonical::canonical_sha256(
-        &RouteBindingProjection {
-            service_id: &record.record.service_id,
-            service_kind: &record.record.service_kind,
-            service_resolution: ResolutionCommitment {
-                full_id: record.record.full_id.clone(),
-                method_history_head: record.record.method_history_head.clone(),
-                version_id: record.record.version_id.clone(),
-            },
-            http_json_base_url: &record.record.base_url,
+    let digest = route_binding_describe_digest(
+        &record.record.service_id,
+        &record.record.service_kind,
+        &ResolutionCommitment {
+            full_id: record.record.full_id.clone(),
+            method_history_head: record.record.method_history_head.clone(),
+            version_id: record.record.version_id.clone(),
         },
-    )?)?;
+        &record.record.base_url,
+    )?;
     if digest != record.record.describe_digest {
         return Err(Error::Protocol(
             "service_route_describe_binding_digest_mismatch".to_owned(),
@@ -324,14 +311,12 @@ pub fn describe_route_binding(
             "service_route_describe_base_mismatch".to_owned(),
         ));
     }
-    let digest = Hash::new(arkret_canonical::canonical_sha256(
-        &RouteBindingProjection {
-            service_id: &description.service_id,
-            service_kind: registered_kind.as_str(),
-            service_resolution: description.service_resolution.clone(),
-            http_json_base_url: advertised_base.as_str(),
-        },
-    )?)?;
+    let digest = route_binding_describe_digest(
+        &description.service_id,
+        registered_kind.as_str(),
+        &description.service_resolution,
+        advertised_base.as_str(),
+    )?;
     if digest != record.record.describe_digest {
         return Err(Error::Protocol(
             "service_route_describe_binding_digest_mismatch".to_owned(),
@@ -494,16 +479,9 @@ pub mod test_fixture {
             method_history_head: document_digest.as_str().to_owned(),
             version_id: format!("synthetic-jcs-sha256:{hex}"),
         };
-        let describe_digest = Hash::new(
-            arkret_canonical::canonical_sha256(&RouteBindingProjection {
-                service_id: &service_id,
-                service_kind,
-                service_resolution: commitment.clone(),
-                http_json_base_url: &base_url,
-            })
-            .unwrap(),
-        )
-        .unwrap();
+        let describe_digest =
+            route_binding_describe_digest(&service_id, service_kind, &commitment, &base_url)
+                .unwrap();
         let record = arkret_signatures::service_resolution::sign_service_resolution_record(
             arkret_models_identity::ServiceResolutionRecordCore {
                 service_id: service_id.clone(),
@@ -813,18 +791,15 @@ mod tests {
             "https://media.example/{}",
             canonical_service_current_record_path(&service_id).trim_start_matches('/')
         );
-        record.record.describe_digest = Hash::new(
-            arkret_canonical::canonical_sha256(&RouteBindingProjection {
-                service_id: &service_id,
-                service_kind: "media_service",
-                service_resolution: ResolutionCommitment {
-                    full_id,
-                    method_history_head: record.record.method_history_head.clone(),
-                    version_id: record.record.version_id.clone(),
-                },
-                http_json_base_url: &record.record.base_url,
-            })
-            .unwrap(),
+        record.record.describe_digest = route_binding_describe_digest(
+            &service_id,
+            "media_service",
+            &ResolutionCommitment {
+                full_id,
+                method_history_head: record.record.method_history_head.clone(),
+                version_id: record.record.version_id.clone(),
+            },
+            &record.record.base_url,
         )
         .unwrap();
         assert!(

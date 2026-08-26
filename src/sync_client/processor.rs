@@ -10,8 +10,6 @@ use super::*;
 pub struct SyncResponseProcessor {
     realms: BTreeMap<RealmId, ProcessedRealm>,
     limited_timelines: BTreeMap<RealmId, LimitedTimelineState>,
-    to_device: VecDeque<DeviceMessageEnvelope>,
-    to_device_acks: BTreeMap<String, ToDeviceAck>,
     changed_device_lists: BTreeSet<DidCoreId>,
     left_device_lists: BTreeSet<DidCoreId>,
     pending_recovery_actions: BTreeSet<SyncRecoveryAction>,
@@ -125,10 +123,7 @@ impl SyncResponseProcessor {
                 if container.next_cursor.is_some() {
                     to_device_next_cursor = container.next_cursor;
                 }
-                for message in container.messages {
-                    self.to_device.push_back(message.clone());
-                    to_device.push(message);
-                }
+                to_device.extend(container.messages);
             }
             if let Some(changes) = frame.device_lists {
                 changed_device_lists.extend(changes.changed.iter().cloned());
@@ -190,31 +185,6 @@ impl SyncResponseProcessor {
 
     pub fn realm(&self, realm_id: &RealmId) -> Option<&ProcessedRealm> {
         self.realms.get(realm_id)
-    }
-
-    pub fn drain_to_device(&mut self) -> Vec<DeviceMessageEnvelope> {
-        self.to_device.drain(..).collect()
-    }
-
-    pub fn acknowledge_to_device(
-        &mut self,
-        device_message_id: impl Into<String>,
-        device_id: DeviceId,
-        status: ToDeviceAckStatus,
-    ) -> ToDeviceAck {
-        let device_message_id = device_message_id.into();
-        let ack = ToDeviceAck {
-            device_message_id: device_message_id.clone(),
-            device_id,
-            status,
-            acknowledged_at: Utc::now(),
-        };
-        self.to_device_acks.insert(device_message_id, ack.clone());
-        ack
-    }
-
-    pub fn to_device_ack(&self, device_message_id: &str) -> Option<&ToDeviceAck> {
-        self.to_device_acks.get(device_message_id)
     }
 
     pub fn limited_timelines(&self) -> Vec<&LimitedTimelineState> {

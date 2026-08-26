@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::protocol::{AccountStreamInterrupt, AccountSubscribeBatch, Error, SyncRequestBody};
 use crate::protocol::{
     ErrorEnvelope, EventKind, EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind,
-    Hlc, NotificationDelta, NotificationDeltaAction, NotificationId, NotificationKind, RealmId,
+    Hlc, NotificationDelta, NotificationDeltaAction, NotificationId, RealmId,
 };
 use serde_json::{Value, json};
 
@@ -605,7 +605,6 @@ async fn account_engine_cancel_preserves_preexisting_pending_delivery() {
             vec![ClientEvent::Notification(NotificationDelta {
                 id: NotificationId::new("ak:notification:01964137-0000-7000-8000-000000000011")
                     .unwrap(),
-                notification_kind: NotificationKind::Agent,
                 action: NotificationDeltaAction::Remove,
                 data: None,
             })],

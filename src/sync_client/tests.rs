@@ -1,18 +1,18 @@
 use std::collections::BTreeMap;
 
 use crate::protocol::{
-    AccountSubscribeRealms, AccountSubscribeUnreadCounts, DeviceMessageContainer,
-    DeviceMessageSender, ErrorEnvelope, EventContainer, ProtocolKind, RealmSyncEntry,
+    AccountSubscribeRealms, AccountSubscribeUnreadCounts, DeviceId, DeviceMessageContainer,
+    DeviceMessageEnvelope, DeviceMessageSender, ErrorEnvelope, EventContainer, ProtocolKind,
+    RealmSyncEntry,
 };
 use arkret_wire::{DidCoreId, EventKind, Hlc, OpaqueLocalId, ScopeRef};
 use serde_json::{Value, json};
 
 use super::*;
 use crate::protocol::{
-    AccountNotificationDataKind, AgentRuntimeApprovalNotificationData,
-    AgentRuntimeApprovalNotificationRemovalData, AgentRuntimeApprovalRemovalReason,
-    DeviceMessageId, NotificationContainer, NotificationData, NotificationId, NotificationKind,
-    RealmId,
+    AgentRuntimeApprovalNotificationData, AgentRuntimeApprovalNotificationRemovalData,
+    AgentRuntimeApprovalRemovalReason, DeviceMessageId, NotificationContainer, NotificationData,
+    NotificationId, RealmId,
 };
 
 fn sync_response(cursor: &str) -> AccountSubscribeBatch {
@@ -42,11 +42,9 @@ fn approval_notifications(notification_id: &str, expires_at: &str) -> Notificati
     NotificationContainer {
         items: vec![NotificationDelta {
             id: NotificationId::new(notification_id).unwrap(),
-            notification_kind: NotificationKind::Agent,
             action: NotificationDeltaAction::Upsert,
             data: Some(NotificationData::AgentRuntimeApproval(
                 AgentRuntimeApprovalNotificationData {
-                    kind: AccountNotificationDataKind::AgentRuntimeApproval,
                     approval_request_id: OpaqueLocalId::new(
                         "agent_runtime_approval:01964137-0000-7000-8000-000000000001",
                     )
@@ -470,7 +468,7 @@ fn processor_dispatches_all_update_categories() {
             .notification_count,
         3
     );
-    assert_eq!(processor.drain_to_device().len(), 1);
+    assert_eq!(updates.to_device.len(), 1);
     assert_eq!(updates.to_device_ack_token.as_deref(), Some("ack-sync-1"));
     assert!(updates.to_device_limited);
     assert_eq!(
@@ -546,7 +544,7 @@ fn summary_less_realm_delta_preserves_durable_processor_summary() {
 // `crate::signal`.
 
 #[test]
-fn processor_tracks_limited_timelines_and_to_device_ack() {
+fn processor_tracks_limited_timelines() {
     let realm_id = "ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV";
     let parsed_realm_id = RealmId::new(realm_id).unwrap();
     let event = arkret_wire::test_support::raw_event(
@@ -579,11 +577,6 @@ fn processor_tracks_limited_timelines_and_to_device_ack() {
 
     let mut processor = SyncResponseProcessor::new();
     processor.process(response).unwrap();
-    let ack = processor.acknowledge_to_device(
-        "devmsg1",
-        DeviceId::new("ak:device:01904100-0000-7000-8000-000000000005").unwrap(),
-        ToDeviceAckStatus::Processed,
-    );
 
     assert_eq!(
         processor
@@ -593,7 +586,6 @@ fn processor_tracks_limited_timelines_and_to_device_ack() {
         1
     );
     assert_eq!(processor.limited_timelines().len(), 1);
-    assert_eq!(processor.to_device_ack("devmsg1"), Some(&ack));
 }
 
 #[test]
@@ -621,11 +613,9 @@ fn processor_applies_notification_upsert_and_remove_deltas() {
     delta_mut(&mut remove).notifications = Some(NotificationContainer {
         items: vec![NotificationDelta {
             id: NotificationId::new(notification_id).unwrap(),
-            notification_kind: NotificationKind::Agent,
             action: NotificationDeltaAction::Remove,
             data: Some(NotificationData::AgentRuntimeApprovalRemoval(
                 AgentRuntimeApprovalNotificationRemovalData {
-                    kind: AccountNotificationDataKind::AgentRuntimeApproval,
                     reason: AgentRuntimeApprovalRemovalReason::Approved,
                 },
             )),

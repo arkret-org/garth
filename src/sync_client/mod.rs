@@ -18,14 +18,13 @@ use serde_json::Value;
 #[cfg(test)]
 use crate::protocol::AccountSubscribeFrame;
 use crate::protocol::sync::{
-    LimitedTimelineState, RealmUpdate, SyncFilter, SyncRequestBody, SyncUpdates, ToDeviceAck,
-    ToDeviceAckStatus,
+    LimitedTimelineState, RealmUpdate, SyncFilter, SyncRequestBody, SyncUpdates,
 };
 use crate::protocol::{
     AccountStreamInterrupt, AccountSubscribeBatch, AccountSubscribeDeviceListChanges,
-    AccountSubscribeFrameKind, AccountSubscribeRealmSummary, AuthorizationLease, DeviceId,
-    DeviceMessageEnvelope, DidCoreId, Error, Event, EventId, IngressReceipt, NotificationDelta,
-    NotificationDeltaAction, RealmId, Result, Timeline, canonical,
+    AccountSubscribeFrameKind, AccountSubscribeRealmSummary, AuthorizationLease, DidCoreId, Error,
+    Event, EventId, IngressReceipt, NotificationDelta, NotificationDeltaAction, RealmId, Result,
+    Timeline, canonical,
 };
 
 mod loop_control;
