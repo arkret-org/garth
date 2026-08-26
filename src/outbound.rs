@@ -572,15 +572,7 @@ mod tests {
     /// accepted submission (`offline-publication.md` §2.1).
     fn accepted_receipt() -> crate::protocol::IngressReceipt {
         let issued_at = Utc::now() - chrono::Duration::minutes(5);
-        let lease = crate::sync_client::test_publication::lease(
-            realm_id(),
-            issued_at,
-            issued_at + chrono::Duration::hours(1),
-        );
-        crate::sync_client::test_publication::receipt(
-            &lease,
-            issued_at + chrono::Duration::minutes(1),
-        )
+        crate::sync_client::test_publication::receipt(issued_at + chrono::Duration::minutes(1))
     }
 
     fn event_id() -> EventId {

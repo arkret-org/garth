@@ -541,23 +541,16 @@ impl SendQueue {
         remote_event_id: EventId,
         ingress_receipts: Vec<IngressReceipt>,
     ) -> Result<()> {
-        let expected_lease_id = self
+        let expects_receipt = self
             .get(transaction_id)
             .and_then(|item| item.authorization_lease.as_ref())
-            .map(|lease| lease.authorization_lease_id.clone());
+            .is_some();
         for receipt in &ingress_receipts {
             receipt.validate_structural()?;
-            if let Some(lease_id) = &expected_lease_id
-                && &receipt.authorization_lease_id != lease_id
-            {
-                return Err(Error::Protocol(
-                    "ingress receipt does not cite the bound authorization lease".to_owned(),
-                ));
-            }
         }
         let item = self.item_mut(transaction_id)?;
         if item.ingress_receipts.is_empty() {
-            if expected_lease_id.is_some() && ingress_receipts.is_empty() {
+            if expects_receipt && ingress_receipts.is_empty() {
                 return Err(Error::Protocol(
                     "an accepted submission must carry at least one ingress receipt".to_owned(),
                 ));
@@ -783,26 +776,19 @@ pub(crate) mod test_publication {
         lease
     }
 
-    pub(crate) fn receipt(
-        lease: &AuthorizationLease,
-        received_at: DateTime<Utc>,
-    ) -> IngressReceipt {
+    pub(crate) fn receipt(received_at: DateTime<Utc>) -> IngressReceipt {
         let mut receipt = IngressReceipt {
             receipt_id: ReceiptId::new("ak:receipt:01904100-0000-7000-8000-cccccccccccc").unwrap(),
             event_digest: Hash::new(format!("sha256:{}", "d".repeat(64))).unwrap(),
-            authorization_lease_id: lease.authorization_lease_id.clone(),
             qualified_ingress_id: DidFullId::new(
                 "did:webvh:z6mkfixture:ingress.example".to_owned(),
             )
             .unwrap(),
             received_at,
-            ingress_basis: lease.basis_ref.clone(),
             ingress_frontier: vec![
                 EventId::new("ak:event:ATqrupSFYozzL7O90hPaSlvHmLnxxSRiRUZA4RgeuZpD".to_owned())
                     .unwrap(),
             ],
-            service_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture").unwrap(),
-            authority_set_ref: authority_set("ak.authority_set.realm_ingress.v1"),
             proofs: Vec::new(),
         };
         let digest = receipt.receipt_digest().unwrap();
@@ -812,13 +798,6 @@ pub(crate) mod test_publication {
             received_at,
         )];
         receipt
-    }
-
-    fn authority_set(id: &str) -> AuthoritySetRef {
-        AuthoritySetRef {
-            authority_set_id: id.to_owned(),
-            authority_set_digest: Hash::new(format!("sha256:{}", "e".repeat(64))).unwrap(),
-        }
     }
 
     fn realm_admission_policy(scope_ref: ScopeRef, action: &str) -> AuthoritySetPolicy {

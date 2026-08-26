@@ -78,7 +78,7 @@ fn accepted_receipt() -> arkret_wire::IngressReceipt {
     let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
     let lease = publication_lease(realm_id);
     let received_at = lease.issued_at + chrono::Duration::minutes(1);
-    super::send_queue::test_publication::receipt(&lease, received_at)
+    super::send_queue::test_publication::receipt(received_at)
 }
 
 fn event_id(seed: u8) -> EventId {
@@ -1018,11 +1018,9 @@ fn send_queue_keeps_the_original_receipt_across_an_idempotent_retry() {
         .bind_authorization_lease("txn1", lease.clone())
         .unwrap();
     let original = super::send_queue::test_publication::receipt(
-        &lease,
         lease.issued_at + chrono::Duration::minutes(1),
     );
     let re_signed = super::send_queue::test_publication::receipt(
-        &lease,
         lease.issued_at + chrono::Duration::minutes(30),
     );
     let event_id = event_id(1);
@@ -1035,34 +1033,6 @@ fn send_queue_keeps_the_original_receipt_across_an_idempotent_retry() {
     let item = queue.get("txn1").unwrap();
     assert_eq!(item.status, SendQueueStatus::Sent);
     assert_eq!(item.ingress_receipts, vec![original]);
-}
-
-#[test]
-fn send_queue_rejects_a_receipt_for_another_lease() {
-    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
-    let mut queue = SendQueue::new();
-    queue
-        .enqueue_test_record(Some("txn1".to_owned()), realm_id.clone(), json!({"a": 1}))
-        .unwrap();
-    let lease = publication_lease(realm_id.clone());
-    queue
-        .bind_authorization_lease("txn1", lease.clone())
-        .unwrap();
-    let mut other_lease = publication_lease(realm_id);
-    other_lease.authorization_lease_id = arkret_wire::AuthorizationLeaseId::new(
-        "ak:authorization_lease:01904100-0000-7000-8000-dddddddddddd",
-    )
-    .unwrap();
-    let foreign = super::send_queue::test_publication::receipt(
-        &other_lease,
-        lease.issued_at + chrono::Duration::minutes(1),
-    );
-
-    let error = queue
-        .mark_sent("txn1", event_id(1), vec![foreign])
-        .unwrap_err();
-
-    assert!(format!("{error}").contains("does not cite the bound authorization lease"));
 }
 
 #[test]

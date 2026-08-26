@@ -166,50 +166,34 @@ pub enum MlsAdmissionStage {
 
 /// The Welcome batch bound to an MLS admission Commit.
 ///
-/// A Welcome names the Commit by its FINAL `event_id`, so the batch cannot be
-/// authored until the Commit is. This carries that ordering in the type instead
-/// of leaving unsigned envelopes around whose ids a later pass had to rewrite:
-/// `Pending` holds semantic intents with no identity to rewrite, and `Authored`
-/// holds the exact bytes that ship.
+/// Exact signed Welcome Events bound to an authored MLS admission Commit.
+/// They are frozen before the Commit's first network write so producer-side
+/// envelope-size preflight and crash replay cover the complete admission unit.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "phase", rename_all = "snake_case", deny_unknown_fields)]
-pub enum QueuedMlsWelcomes {
-    Pending { intents: Vec<EventIntent> },
-    Authored { events: Vec<AuthoredEvent> },
+#[serde(deny_unknown_fields)]
+pub struct QueuedMlsWelcomes {
+    pub events: Vec<AuthoredEvent>,
 }
 
 impl QueuedMlsWelcomes {
     pub fn len(&self) -> usize {
-        match self {
-            Self::Pending { intents } => intents.len(),
-            Self::Authored { events } => events.len(),
-        }
+        self.events.len()
     }
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    pub fn pending(&self) -> Option<&[EventIntent]> {
-        match self {
-            Self::Pending { intents } => Some(intents),
-            Self::Authored { .. } => None,
-        }
-    }
-
-    pub fn authored(&self) -> Option<&[AuthoredEvent]> {
-        match self {
-            Self::Pending { .. } => None,
-            Self::Authored { events } => Some(events),
-        }
+    pub fn authored(&self) -> &[AuthoredEvent] {
+        &self.events
     }
 
     /// Every Realm this batch writes into, for the scope check below.
     fn realm_ids(&self) -> Vec<Option<&RealmId>> {
-        match self {
-            Self::Pending { intents } => intents.iter().map(EventIntent::realm_id_opt).collect(),
-            Self::Authored { events } => events.iter().map(|event| Some(&event.realm_id)).collect(),
-        }
+        self.events
+            .iter()
+            .map(|event| Some(&event.realm_id))
+            .collect()
     }
 }
 
@@ -465,7 +449,7 @@ impl QueuedSdkEvent {
                     actor_id,
                     device_id,
                     proposal_events,
-                    stage,
+                    stage: _,
                     commit_ingress_receipts: _,
                     commit_was_duplicate: _,
                     welcomes,
@@ -538,26 +522,15 @@ impl QueuedSdkEvent {
                             "queued MLS admission Welcome belongs to another Realm".to_owned(),
                         ));
                     }
-                    // The stage and the Welcome phase are two views of the same
-                    // fact, so they must agree. `AuthoredEvent` already proves
-                    // each authored Welcome carries its own content-bound id;
-                    // all that is left is the signature.
-                    let welcomes_authored = matches!(
-                        stage,
-                        MlsAdmissionStage::WelcomesAuthored
-                            | MlsAdmissionStage::WelcomesAcceptedWaitingSeal
-                    );
-                    match welcomes {
-                        QueuedMlsWelcomes::Authored { events }
-                            if welcomes_authored
-                                && events.iter().all(|event| !event.proofs.is_empty()) => {}
-                        QueuedMlsWelcomes::Pending { .. } if !welcomes_authored => {}
-                        _ => {
-                            return Err(Error::Protocol(
-                                "queued MLS admission Welcome authoring phase is inconsistent"
-                                    .to_owned(),
-                            ));
-                        }
+                    if welcomes.is_empty()
+                        || welcomes.authored().iter().any(|event| {
+                            event.kind != EventKind::MlsWelcome || event.proofs.is_empty()
+                        })
+                    {
+                        return Err(Error::Protocol(
+                            "queued MLS admission requires signed Welcome Events before Commit submission"
+                                .to_owned(),
+                        ));
                     }
                     (realm_id, snapshot)
                 }
