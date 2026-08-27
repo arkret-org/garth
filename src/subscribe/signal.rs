@@ -1,4 +1,4 @@
-//! Live receive rail for `ak.self.signal.stream.subscribe` (`zh/sync/signal.md`
+//! Live receive rail for `ak.self.signal.stream.subscribe.v1` (`zh/sync/signal.md`
 //! §4.1).
 //!
 //! The Signal rail is deliberately the poorest of the three subscribe surfaces:

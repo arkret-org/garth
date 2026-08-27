@@ -435,7 +435,7 @@ impl SyncLoop {
     /// Build the next long-poll request.
     ///
     /// The loop's `timeout` is intentionally not part of the wire request:
-    /// `ak.self.account.stream.subscribe` has no client-supplied long-poll
+    /// `ak.self.account.stream.subscribe.v1` has no client-supplied long-poll
     /// timeout parameter (client-sync.md §2 — the wait window is a server /
     /// deployment default). It only feeds snapshot persistence and the
     /// caller's own scheduling.

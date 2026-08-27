@@ -35,7 +35,7 @@ use arkret_models_identity::{
     ResolutionMethodEvidenceBoundary, ResolutionMethodHistoryEvidence, ServiceResolutionRecord,
     canonical_service_current_record_path, route_binding_describe_digest,
 };
-use arkret_wire::{BindingKind, DidCoreId, Hash, ServiceKind};
+use arkret_wire::{DidCoreId, Hash, ServiceKind};
 use chrono::{DateTime, Utc};
 
 use crate::service_route::{
@@ -287,11 +287,17 @@ pub fn describe_route_binding(
             "service_route_describe_commitment_mismatch".to_owned(),
         ));
     }
-    let mut http_json_bindings = description
-        .supported_bindings
-        .iter()
-        .filter(|binding| binding.kind == BindingKind::HttpJson);
-    let binding = http_json_bindings.next().ok_or_else(|| {
+    let mut http_json_bindings =
+        description
+            .transport_bindings
+            .iter()
+            .filter_map(|binding| match binding {
+                arkret_models_discovery::TransportBinding::HttpJson { base_url, .. } => {
+                    Some(base_url.as_str())
+                }
+                _ => None,
+            });
+    let advertised_base_raw = http_json_bindings.next().ok_or_else(|| {
         Error::Protocol("service_route_describe_missing_http_json_binding".to_owned())
     })?;
     if http_json_bindings.next().is_some() {
@@ -299,9 +305,6 @@ pub fn describe_route_binding(
             "service_route_describe_ambiguous_http_json_binding".to_owned(),
         ));
     }
-    let advertised_base_raw = binding.base_url.as_deref().ok_or_else(|| {
-        Error::Protocol("service_route_describe_http_json_binding_without_base".to_owned())
-    })?;
     let advertised_base = CanonicalServiceUrl::canonicalize(advertised_base_raw)
         .map_err(|error| Error::Protocol(error.to_string()))?;
     if advertised_base.as_str() != advertised_base_raw
@@ -427,8 +430,8 @@ impl ServiceRouteSource for PrefetchedRouteSource {
 /// signing key is deterministic.
 #[cfg(any(test, feature = "route-material-test-support"))]
 pub mod test_fixture {
-    use arkret_models_discovery::{OperationBinding, SupportedBinding};
-    use arkret_wire::{DidFullId, DidUrl, ServiceOperationId, TrustDomainId};
+    use arkret_models_discovery::TransportBinding;
+    use arkret_wire::{DidFullId, DidUrl, TrustDomainId};
     use chrono::Duration;
     use ed25519_dalek::SigningKey;
 
@@ -516,20 +519,13 @@ pub mod test_fixture {
             full_id,
             TrustDomainId::new(format!("ak:trust_domain:{host}")).unwrap(),
             registered_kind,
+            vec![format!("ak.operation_bundle.{service_kind}.describe.v1")],
+            vec![TransportBinding::HttpJson {
+                base_url,
+                extension_profile_required: (),
+            }],
         );
         describe.service_resolution = commitment;
-        describe.operation_bindings = vec![
-            OperationBinding::current_http_json(ServiceOperationId::ServerReadDescribe).unwrap(),
-        ];
-        describe.supported_bindings = vec![
-            SupportedBinding::new(BindingKind::HttpJson)
-                .with_base_url(base_url)
-                .with_extra(
-                    "operations",
-                    serde_json::json!([ServiceOperationId::SERVER_READ_DESCRIBE]),
-                )
-                .with_extra("extension_profile_required", serde_json::Value::Null),
-        ];
         SignedRouteFixture {
             service_id,
             record,
@@ -617,7 +613,12 @@ mod tests {
         let now = now_fixture();
         let fixture = signed_web_route_fixture("media.example", "media_service", now, 0, None, 31);
         let mut describe = fixture.describe.clone();
-        describe.supported_bindings[0].base_url = Some("https://other.example/".to_owned());
+        let arkret_models_discovery::TransportBinding::HttpJson { base_url, .. } =
+            &mut describe.transport_bindings[0]
+        else {
+            panic!("fixture must use HTTP/JSON transport");
+        };
+        *base_url = "https://other.example/".to_owned();
         assert!(describe_route_binding(&fixture.record, &describe, now).is_err());
         assert!(describe_route_binding(&fixture.record, &fixture.describe, now).is_ok());
     }

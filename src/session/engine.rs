@@ -634,7 +634,7 @@ mod tests {
         LoginKind::AgentKeyProof(AgentKeyProofLogin {
             principal_id: did(),
             device_id: device_id(),
-            requested_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
+            requested_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             agent_key_authorization_ref: agent_key_authorization_ref(),
             agent_scope_request: SessionGrantAgentScopeRequest {
                 realm_ids: vec![
@@ -674,7 +674,7 @@ mod tests {
             )
             .unwrap(),
             audience: audience(),
-            granted_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
+            granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             scope_details: None::<SessionGrantScopeDetails>,
         }
     }
@@ -687,7 +687,7 @@ mod tests {
             grant_jwt: "grant-1".to_owned(),
             expires_at: now() + Duration::minutes(20),
             audience: audience(),
-            granted_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
+            granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             session_public_key: Some("session-public-key".to_owned()),
             dpop_jkt: Some("jkt-1".to_owned()),
         }
@@ -747,7 +747,7 @@ mod tests {
             .unwrap(),
             expires_at: now() + Duration::hours(1),
             audience: audience(),
-            scopes: vec!["ak.self.events.stream.subscribe".to_owned()],
+            scopes: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             dpop_jkt: "jkt-1".to_owned(),
             previous_session_grant_id: grant_id(1),
         }

@@ -83,7 +83,7 @@ mod tests {
         let request = LoginKind::AgentKeyProof(AgentKeyProofLogin {
             principal_id: did(),
             device_id: device_id(),
-            requested_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
+            requested_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             agent_key_authorization_ref: agent_key_authorization_ref(),
             agent_scope_request: SessionGrantAgentScopeRequest {
                 realm_ids: vec![

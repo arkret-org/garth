@@ -123,7 +123,7 @@ mod tests {
             grant_jwt: "secret-grant".to_owned(),
             expires_at: Utc::now() + Duration::hours(1),
             audience: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
-            granted_scope: vec!["ak.self.events.stream.subscribe".to_owned()],
+            granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             session_public_key: Some("session-public-key".to_owned()),
             dpop_jkt: Some("jkt-1".to_owned()),
         }

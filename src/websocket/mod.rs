@@ -44,6 +44,4 @@ pub use arkret_models_collaboration::sync_frames::websocket_session::{
     WebSocketConsumerHandoff, WebSocketConsumerOwner, WebSocketFallbackPolicy,
     WebSocketHandshakeFailure, WebSocketTransportDecision,
 };
-pub use arkret_models_discovery::websocket_binding::{
-    WebSocketBindingDescriptor, select_websocket_binding,
-};
+pub use arkret_models_discovery::websocket_binding::select_websocket_binding;
