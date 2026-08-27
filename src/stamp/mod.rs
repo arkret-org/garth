@@ -2,7 +2,7 @@
 //!
 //! A host MUST NOT mint these from a wall-clock string or an in-memory-only
 //! counter: both regress across a process restart, and a wall clock that steps
-//! backward could reissue an `hlc` tuple. `encoding.md` 搂7 forbids reusing an
+//! backward could reissue an `hlc` tuple. `encoding.md` §7 forbids reusing an
 //! emitted HLC tuple, so this module keeps a durable HLC floor.
 //!
 //! Actor sequence allocation deliberately does not live here. A host derives
@@ -12,7 +12,7 @@
 //! - `hlc` is a per-`(realm, device)` generator. The physical component is unix
 //!   milliseconds; the durable floor makes it monotonic across restarts and
 //!   immune to a backward wall clock. The `node_id` segment is the SDK's
-//!   Realm-scoped pseudonymous derivation (`encoding.md` 搂7).
+//!   Realm-scoped pseudonymous derivation (`encoding.md` §7).
 //!
 //! The HLC advance is driven by a [`HostClock`] rather than the SDK
 //! `HlcGenerator`'s advancing entry points, which read `SystemTime::now()` and
@@ -26,9 +26,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{HostClock, MaybeSendSync};
 
-/// 16-bit logical counter ceiling (`encoding.md` 搂7: 4 lowercase hex digits).
+/// 16-bit logical counter ceiling (`encoding.md` §7: 4 lowercase hex digits).
 const MAX_LOGICAL: u32 = crate::protocol::hlc::HLC_MAX_LOGICAL;
-/// 48-bit physical millisecond ceiling (`encoding.md` 搂7: 12 lowercase hex).
+/// 48-bit physical millisecond ceiling (`encoding.md` §7: 12 lowercase hex).
 const MAX_PHYSICAL: u64 = crate::protocol::hlc::HLC_MAX_PHYSICAL_MS;
 
 /// Identity of one Realm/device HLC chain under an optional service and actor
@@ -135,7 +135,7 @@ where
     /// Build an allocator using the host system clock. `local_node_secret` is
     /// the Realm-scoped local secret feeding the HLC `node_id` derivation; it
     /// MUST NOT be a principal DID, public handle, or any cross-Realm-stable
-    /// identifier (`encoding.md` 搂7).
+    /// identifier (`encoding.md` §7).
     pub fn new(store: S, scope: StampScope, local_node_secret: &[u8]) -> Self {
         Self::with_clock(store, scope, local_node_secret, crate::SystemClock)
     }
@@ -205,9 +205,9 @@ pub struct RemoteStamp {
 /// - `now_ms > floor`: jump to the newer physical time, reset logical.
 /// - `now_ms <= floor` (clock stalled or rolled back): hold the physical floor
 ///   and bump logical, so the tuple stays strictly greater and is never reused.
-/// - logical saturated: fail with `hlc_logical_overflow`. `encoding.md` 搂7
-///   permits exactly two responses 鈥?wait for a larger `unix_ms`, or abort the
-///   write with a local transient error for the caller to retry 鈥?and
+/// - logical saturated: fail with `hlc_logical_overflow`. `encoding.md` §7
+///   permits exactly two responses: wait for a larger `unix_ms`, or abort the
+///   write with a local transient error for the caller to retry; it
 ///   explicitly forbids faking a larger wall clock to escape the overflow. A
 ///   wasm host cannot block, so this takes the error path (the same one the
 ///   SDK's non-blocking `HlcGenerator::try_generate` takes).
@@ -241,7 +241,7 @@ fn hlc_parts(hlc: &Hlc) -> Result<(u64, u32)> {
 }
 
 /// Derive the 8-hex `node_id` through the SDK so the derivation stays
-/// single-sourced (`encoding.md` 搂7). The advancing generator entry points read
+/// single-sourced (`encoding.md` §7). The advancing generator entry points read
 /// the system clock and panic on wasm, but `with_initial_time(..).current()`
 /// only formats the seeded state, so it is clock-free and wasm-safe.
 fn derive_node_id(realm_id: &str, device_id: &str, local_node_secret: &[u8]) -> String {

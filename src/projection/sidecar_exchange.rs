@@ -1,4 +1,5 @@
-//! Deterministic Sidecar exchange Event fold (`zh/models/sidecar.md` §7.2.4).
+//! Deterministic Sidecar exchange Event fold (`zh/models/sidecar.md` §8 and
+//! the `ak.vector.sidecar.exchange_projection_recovery.v1` conformance vector).
 //!
 //! Exchange truth lives only in accepted native Sidecar Events:
 //! the controller request binding, validated Agent binding Events, and
@@ -7,7 +8,7 @@
 //! Nothing here reads or writes Account Data, and given the same accepted
 //! Event set every conforming device MUST produce a bit-identical projection.
 //!
-//! Callers are responsible for the decrypt-side gates of §7.2.2 checks 1–2:
+//! Callers are responsible for the decrypt-side scope and context gates:
 //! every fact passed in MUST already come from an Event whose effective scope
 //! is this exact Sidecar and whose source context matches the projection,
 //! with a binding that passed closed-schema validation.
@@ -65,15 +66,16 @@ pub struct SidecarExchangeControlFact {
     pub actor_id: DidCoreId,
     pub actor_seq: u64,
     pub event_digest: String,
-    /// Top-level `refs[role=after]` targets of the carrying Event. §7.2.3
-    /// requires an `after` ref for every `basis_event_ids` entry; controls
+    /// Top-level `refs[role=after]` targets of the carrying Event. The closed
+    /// exchange binding requires an `after` ref for every `basis_event_ids` entry; controls
     /// whose outer refs do not cover their plaintext basis are invalid.
     pub refs_after: Vec<EventId>,
     pub control: AgentSidecarExchangeControl,
 }
 
 /// Whether a persisted local cache may be used against the currently
-/// verified local Event history (`zh/models/sidecar.md` §7.2.4).
+/// verified local Event history
+/// (`ak.vector.sidecar.exchange_projection_recovery.v1`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SidecarExchangeCacheDecision {
     /// The cache commits to exactly the local contributing Event set.
@@ -116,7 +118,7 @@ struct CanonicalRequest<'a> {
     fact: &'a SidecarExchangeRequestFact,
 }
 
-/// §7.2.1 canonical request selection: controller-authored facts only, lowest
+/// Canonical request selection: controller-authored facts only, lowest
 /// accepted `actor_seq` survives; same-sequence siblings resolve to the
 /// bytewise-max `event_digest`. Higher-sequence duplicates of the same
 /// `exchange_id` are retry duplicates and never fold.
@@ -185,7 +187,7 @@ pub fn fold_sidecar_exchange(
     let context = &request.context;
     let addressed: BTreeSet<&DidCoreId> = context.addressed_agent_ids.iter().collect();
 
-    // §7.2.2 Agent binding validation. Facts arrive scope/strand-verified;
+    // Agent binding validation. Facts arrive scope/strand-verified;
     // the fold enforces binding integrity, exchange identity, actor
     // eligibility, causal request refs, and Event-id idempotence.
     let mut responses: BTreeMap<String, &SidecarExchangeAgentFact> = BTreeMap::new();
@@ -216,7 +218,7 @@ pub fn fold_sidecar_exchange(
             continue;
         }
         // Checks 1–4 passed: the actor joins the bookkeeping union whether or
-        // not it is addressed or causally well-formed (§7.2.2: participation
+        // not it is addressed or causally well-formed: participation
         // accrues outside checks 5/6/7). Echo eligibility additionally
         // requires an addressed actor (check 5), role=user_facing_response
         // (check 6), and a top-level after-ref to the request (check 7).
@@ -229,7 +231,7 @@ pub fn fold_sidecar_exchange(
         }
     }
 
-    // §7.2.3 control fold: controller-authored accepted chain order only.
+    // Control fold: controller-authored accepted chain order only.
     let mut control_groups: BTreeMap<u64, Vec<&SidecarExchangeControlFact>> = BTreeMap::new();
     for fact in controls {
         if fact.actor_id != scope.controller_id
@@ -258,7 +260,7 @@ pub fn fold_sidecar_exchange(
         if terminal.is_some() {
             continue;
         }
-        // §7.2.3 basis validation (every control): the outer Event refs MUST
+        // Basis validation for every control: the outer Event refs MUST
         // carry role=after for every basis entry, every basis head must be a
         // locally verified exchange fact, and the canonical request must be
         // covered by the basis causal closure. Unknown basis heads mean the
@@ -294,7 +296,7 @@ pub fn fold_sidecar_exchange(
         }
         let closure = basis_causal_closure(fact, &accepted_agent_facts, &accepted_controls);
         if !closure.contains(request.event_id.as_str()) {
-            // §7.2.3: the canonical request MUST be causally covered.
+            // The canonical request MUST be causally covered.
             continue;
         }
         match fact.control.action {
@@ -319,7 +321,7 @@ pub fn fold_sidecar_exchange(
                 }
             }
             _ => {
-                // §7.2.3: a terminal's response_event_ids must be EXACTLY the
+                // A terminal's response_event_ids must be EXACTLY the
                 // basis-covered validated user-facing response set. Any
                 // mismatch in either direction invalidates the control.
                 let listed: BTreeSet<&str> = fact
@@ -1161,7 +1163,7 @@ mod tests {
         assert_eq!(
             projection.participating_agent_ids,
             vec![agent_s()],
-            "checks 1-4 alone accrue participation (§7.2.2)"
+            "the core validation checks alone accrue participation"
         );
         assert!(
             projection.user_facing_response_event_ids.is_empty(),
@@ -1181,7 +1183,7 @@ mod tests {
             0x34,
         );
         // Empty close whose basis covers a validated response: invalid in
-        // §7.2.3 ("exactly the basis-covered validated set"), so the
+        // the closed binding ("exactly the basis-covered validated set"), so the
         // exchange stays responding instead of forking to failed.
         let invalid_empty_close =
             control_fact(0x36, 3, "cc", close_control(vec![event_id(0x35)], vec![]));
@@ -1237,7 +1239,7 @@ mod tests {
         assert_eq!(
             projection.status,
             AgentSidecarExchangeStatus::Delivered,
-            "outer refs must carry role=after for every basis entry (§7.2.3)"
+            "outer refs must carry role=after for every basis entry"
         );
     }
 

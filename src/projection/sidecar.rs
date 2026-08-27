@@ -12,7 +12,8 @@ use crate::protocol::{EventId, RealmId, Result, StrandId};
 /// projections are deterministic local Event-fold outputs
 /// ([`super::sidecar_exchange::fold_sidecar_exchange`]): they never arrive
 /// over the account stream, never merge across devices, and each refold
-/// replaces the cached entry wholesale (`zh/models/sidecar.md` §7.2.4).
+/// replaces the cached entry wholesale (`zh/models/sidecar.md` §8;
+/// `ak.vector.sidecar.exchange_projection_recovery.v1`).
 #[derive(Clone, Debug, Default)]
 pub struct SidecarProjectionFold {
     view_states: BTreeMap<(String, String, String), AgentSidecarViewState>,
