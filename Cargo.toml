@@ -20,7 +20,7 @@ license = "Apache-2.0"
 name = "garth"
 readme = "README.md"
 repository = "https://github.com/arkret-org/garth"
-rust-version = "1.97"
+rust-version = "1.98"
 version = "0.3.0"
 
 [package.metadata.docs.rs]
