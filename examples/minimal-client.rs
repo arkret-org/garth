@@ -154,7 +154,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             expires_at: Utc::now() + Duration::hours(1),
             audience: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec![
-                arkret_wire::CapabilityActionId::SELF_EVENTS_STREAM_SUBSCRIBE.to_owned(),
+                arkret_wire::CapabilityActionId::SELF_EVENTS_STREAM_SUBSCRIBE_V1.to_owned(),
             ],
             session_public_key: Some("reference-public-key".to_owned()),
             dpop_jkt: Some("reference-jkt".to_owned()),
