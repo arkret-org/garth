@@ -435,6 +435,9 @@ where
         query.validate()?;
         let page = transport.list_responses(&capability, &query).await?;
         page.validate()?;
+        if page.ack_entries.is_empty() {
+            return Ok(page);
+        }
         self.mutate(|snapshot| {
             let state = request_state_mut(snapshot, request_id)?;
             let response_stream = state.response_stream.as_mut().ok_or_else(|| {
@@ -968,7 +971,9 @@ fn build_ack_for_pending_page(
         HistoryResponsePageEntry::Lost { lost_record } => lost_record.cursor.clone(),
     };
     let request = HistoryKeyResponseAckRequest {
-        ack_token: page.ack_token.clone(),
+        ack_token: page.ack_token.clone().ok_or_else(|| {
+            Error::Protocol("non-empty history response page omitted ack_token".to_owned())
+        })?,
         high_water_cursor,
         ack_entries,
     };

@@ -10,8 +10,8 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use arkret_models_collaboration::history_key::{
-    HistoryKeyResponseContent, HistoryKeyResponseSendReceipt, HistoryKeyResponseSendRequest,
-    HistoryKeySourceRelay, HistoryRequestId, HistoryResponseId,
+    EpochRange, HistoryKeyResponseContent, HistoryKeyResponseSendReceipt,
+    HistoryKeyResponseSendRequest, HistoryKeySourceRelay, HistoryRequestId, HistoryResponseId,
 };
 use arkret_wire::Hash;
 use chrono::{DateTime, Utc};
@@ -114,6 +114,8 @@ pub struct DurableStagedHistoryRecord {
 pub struct DurableHistorySourceAttempt {
     pub identity: HistorySourceAttemptIdentity,
     pub manifest_admission_digest: Hash,
+    #[serde(default)]
+    pub covered_ranges: Vec<EpochRange>,
     #[serde(with = "arkret_wire::serde_helpers::canonical_timestamp")]
     pub expires_at: DateTime<Utc>,
     pub staged_bytes: u64,
@@ -347,8 +349,8 @@ where
     }
 
     /// Return every durable attempt for one request/source partition. Hosts
-    /// use this to keep source discovery single-flight across poll ticks and
-    /// restarts without deriving a second set of signed response ids.
+    /// use the recorded coverage to avoid restaging live ranges while still
+    /// allowing a later manifest for newly available material.
     pub fn attempts_for_request_source(
         &self,
         request_id: &HistoryRequestId,
@@ -498,6 +500,7 @@ fn same_staged_attempt(
 ) -> bool {
     existing.identity == staged.identity
         && existing.manifest_admission_digest == staged.manifest_admission_digest
+        && existing.covered_ranges == staged.covered_ranges
         && existing.expires_at == staged.expires_at
         && existing.staged_bytes == staged.staged_bytes
         && existing.records == staged.records
@@ -525,6 +528,10 @@ fn prepare_attempt(bundle: HistorySourceAttemptBundle) -> Result<PreparedAttempt
         ));
     }
     let manifest_descriptors = manifest.chunks.clone();
+    let covered_ranges = manifest_descriptors
+        .iter()
+        .map(|descriptor| descriptor.covered_epoch_range)
+        .collect();
     let manifest_binding = manifest_request.clone();
     let expires_at = manifest_request.expires_at;
     let identity = HistorySourceAttemptIdentity {
@@ -602,6 +609,7 @@ fn prepare_attempt(bundle: HistorySourceAttemptBundle) -> Result<PreparedAttempt
         attempt: DurableHistorySourceAttempt {
             identity,
             manifest_admission_digest: bundle.manifest_admission_digest,
+            covered_ranges,
             expires_at,
             staged_bytes: staged_bytes as u64,
             records,
@@ -961,7 +969,14 @@ mod tests {
             .stage_attempt(&blobs, attempt_bundle())
             .await
             .unwrap();
-        assert!(outbox.attempt(&identity).unwrap().is_some());
+        let attempt = outbox.attempt(&identity).unwrap().unwrap();
+        assert_eq!(
+            attempt.covered_ranges,
+            vec![EpochRange {
+                from_epoch: 0,
+                to_epoch: 1,
+            }]
+        );
     }
 
     #[tokio::test]
