@@ -68,8 +68,8 @@ impl RealmEventsTransport for arkret_http_client::Client {
             // A cursorless subscribe starts at the live tail. Supplying a
             // durable cursor requests bounded catch-up from that position.
             // Keep the HTTP client's validator in agreement with the driver.
-            let mut options = arkret_http_client::EventsSubscribeOptions::new()
-                .realm(realm_id.as_str().to_owned());
+            let mut options =
+                arkret_http_client::EventsSubscribeOptions::new().realm(realm_id.clone());
             if let Some(after) = after {
                 options = options.after(after.to_owned()).catchup(true);
             }

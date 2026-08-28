@@ -110,19 +110,20 @@ mod tests {
     use chrono::{Duration, Utc};
 
     use super::*;
-    use crate::protocol::{DeviceId, DidCoreId, SessionGrantId};
+    use crate::protocol::{DeviceId, DidCoreId, ServiceAccountId, SessionGrantId};
     use crate::{MemorySecureKeyStore, SecureKeyStore};
 
     fn state() -> SessionGrantState {
         SessionGrantState {
             principal_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
+            service_account_id: ServiceAccountId::new("account-1").unwrap(),
             device_id: Some(
                 DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
             ),
             grant_id: SessionGrantId::from_issuance_digest([1_u8; 32]),
             grant_jwt: "secret-grant".to_owned(),
             expires_at: Utc::now() + Duration::hours(1),
-            audience: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+            audience_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             session_public_key: Some("session-public-key".to_owned()),
             dpop_jkt: Some("jkt-1".to_owned()),

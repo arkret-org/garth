@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::protocol::{
-    DeviceId, DidCoreId, Error, Result, SessionGrantId, SessionGrantOutcome,
+    DeviceId, DidCoreId, Error, Result, ServiceAccountId, SessionGrantId, SessionGrantOutcome,
     SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
 };
 use chrono::{DateTime, Utc};
@@ -62,6 +62,8 @@ pub struct SessionGrantState {
     #[zeroize(skip)]
     pub principal_id: DidCoreId,
     #[zeroize(skip)]
+    pub service_account_id: ServiceAccountId,
+    #[zeroize(skip)]
     pub device_id: Option<DeviceId>,
     #[zeroize(skip)]
     pub grant_id: SessionGrantId,
@@ -69,7 +71,7 @@ pub struct SessionGrantState {
     #[zeroize(skip)]
     pub expires_at: DateTime<Utc>,
     #[zeroize(skip)]
-    pub audience: DidCoreId,
+    pub audience_id: DidCoreId,
     #[zeroize(skip)]
     pub granted_scope: Vec<String>,
     /// The session public key reported by the Account Authority when the grant
@@ -86,11 +88,12 @@ impl fmt::Debug for SessionGrantState {
         formatter
             .debug_struct("SessionGrantState")
             .field("principal_id", &self.principal_id)
+            .field("service_account_id", &self.service_account_id)
             .field("device_id", &self.device_id)
             .field("grant_id", &self.grant_id)
             .field("grant_jwt", &"[REDACTED]")
             .field("expires_at", &self.expires_at)
-            .field("audience", &self.audience)
+            .field("audience_id", &self.audience_id)
             .field("granted_scope", &self.granted_scope)
             .field("session_public_key", &self.session_public_key)
             .field("dpop_jkt", &self.dpop_jkt)
@@ -127,11 +130,12 @@ impl SessionGrantState {
         }
         Ok(Self {
             principal_id: outcome.principal_id,
+            service_account_id: outcome.service_account_id,
             device_id: outcome.device_id,
             grant_id: outcome.session_grant_id,
             grant_jwt: outcome.session_grant,
             expires_at: outcome.expires_at,
-            audience: outcome.audience_id,
+            audience_id: outcome.audience_id,
             granted_scope: outcome.granted_scope,
             session_public_key: Some(outcome.session_public_key.into_string()),
             dpop_jkt: Some(request.session_public_key.thumbprint_sha256()?),
@@ -378,7 +382,7 @@ fn refresh_request(
     if grant_jwt != current.grant_jwt {
         return Err(protocol("session refresh predecessor JWT changed"));
     }
-    if audience != Some(&current.audience) {
+    if audience != Some(&current.audience_id) {
         return Err(protocol("session refresh audience changed"));
     }
     if current.device_id.as_ref() != Some(device_id) {
@@ -440,11 +444,12 @@ fn state_from_issue_outcome(
 
     Ok(SessionGrantState {
         principal_id: outcome.principal_id,
+        service_account_id: outcome.service_account_id,
         device_id: outcome.device_id,
         grant_id,
         grant_jwt: outcome.session_grant,
         expires_at: outcome.expires_at,
-        audience,
+        audience_id: audience,
         granted_scope: outcome.granted_scope,
         session_public_key: Some(session_public_key),
         dpop_jkt: Some(dpop_jkt),
@@ -464,11 +469,14 @@ fn state_from_refresh_outcome(
     if outcome.expires_at <= now {
         return Err(protocol("refreshed session grant is expired"));
     }
-    if outcome.audience_id != current.audience {
+    if outcome.audience_id != current.audience_id {
         return Err(protocol("refreshed session grant audience changed"));
     }
     if outcome.previous_session_grant_id != current.grant_id {
         return Err(protocol("refreshed session grant chain changed"));
+    }
+    if outcome.service_account_id != current.service_account_id {
+        return Err(protocol("refreshed session grant service account changed"));
     }
     if outcome.session_grant_id == current.grant_id {
         return Err(protocol("refreshed session grant id was replayed"));
@@ -497,11 +505,12 @@ fn state_from_refresh_outcome(
 
     Ok(SessionGrantState {
         principal_id: current.principal_id.clone(),
+        service_account_id: outcome.service_account_id,
         device_id: current.device_id.clone(),
         grant_id: outcome.session_grant_id,
         grant_jwt: outcome.grant_jwt,
         expires_at: outcome.expires_at,
-        audience: outcome.audience_id,
+        audience_id: outcome.audience_id,
         granted_scope: outcome.scopes,
         session_public_key: Some(outcome.session_public_key.into_string()),
         dpop_jkt: Some(outcome.dpop_jkt),
@@ -651,7 +660,7 @@ mod tests {
                 .unwrap(),
             challenge: "agent-challenge".to_owned(),
             nonce: "agent-nonce".to_owned(),
-            audience: audience(),
+            audience_id: audience(),
             expires_at: now() + Duration::minutes(5),
             signature: "agent-signature".to_owned(),
         })
@@ -665,6 +674,7 @@ mod tests {
     ) -> SessionGrantOutcome {
         SessionGrantOutcome {
             principal_id,
+            service_account_id: ServiceAccountId::new("account-1").unwrap(),
             device_id,
             session_grant: token.to_owned(),
             expires_at: now() + Duration::hours(1),
@@ -682,11 +692,12 @@ mod tests {
     fn active_state() -> SessionGrantState {
         SessionGrantState {
             principal_id: principal_id(),
+            service_account_id: ServiceAccountId::new("account-1").unwrap(),
             device_id: Some(device_id()),
             grant_id: grant_id(1),
             grant_jwt: "grant-1".to_owned(),
             expires_at: now() + Duration::minutes(20),
-            audience: audience(),
+            audience_id: audience(),
             granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             session_public_key: Some("session-public-key".to_owned()),
             dpop_jkt: Some("jkt-1".to_owned()),
@@ -740,6 +751,7 @@ mod tests {
     fn refresh_outcome(token: &str, grant: SessionGrantId) -> SessionGrantRefreshOutcome {
         SessionGrantRefreshOutcome {
             session_grant_id: grant,
+            service_account_id: ServiceAccountId::new("account-1").unwrap(),
             grant_jwt: token.to_owned(),
             session_public_key: arkret_models_identity::CanonicalSessionPublicJwk::new(
                 r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,

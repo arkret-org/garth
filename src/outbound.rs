@@ -486,7 +486,10 @@ mod tests {
                 None,
                 crate::AuthoringGeneration {
                     authority_model: crate::AuthoringAuthorityModel::AcceptedDevice,
-                    authority_principal_id: "ak:did_core:webvh:z6mkfixture".to_owned(),
+                    authority_principal_id: arkret_wire::DidCoreId::new(
+                        "ak:did_core:webvh:z6mkfixture",
+                    )
+                    .unwrap(),
                     generation_ref,
                 },
                 None,

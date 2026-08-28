@@ -116,7 +116,10 @@ fn queued_record(realm_id: &RealmId, payload: Value) -> crate::QueuedRecord {
             None,
             crate::AuthoringGeneration {
                 authority_model: crate::AuthoringAuthorityModel::AcceptedDevice,
-                authority_principal_id: "ak:did_core:webvh:z6mkfixture:alice.example".to_owned(),
+                authority_principal_id: arkret_wire::DidCoreId::new(
+                    "ak:did_core:webvh:z6mkfixture:alice.example",
+                )
+                .unwrap(),
                 generation_ref: "test-generation".to_owned(),
             },
             None,

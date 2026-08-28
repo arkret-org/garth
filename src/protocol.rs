@@ -67,8 +67,8 @@ pub use arkret_wire::{AuthorizationLease, IngressReceipt};
 pub(crate) use arkret_wire::{
     Base64UrlString, DeviceId, Did, DidCoreId, DidUrl, Event, EventId, EventKind, Hash, Hlc,
     MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit, PrincipalAuthorityKey, RealmId,
-    RequestId, ScopeRef, SealId, SessionGrantId, SidecarId, SignalEnvelope, SignalStreamFrame,
-    StrandId,
+    RequestId, ScopeRef, SealId, ServiceAccountId, SessionGrantId, SidecarId, SignalEnvelope,
+    SignalStreamFrame, StrandId,
 };
 
 pub(crate) fn verified_event_id(

@@ -105,7 +105,7 @@ where
 {
     let mut after = options.after;
     let mut aggregate = EventsQueryOutcome {
-        event_read_rows: Vec::new(),
+        events: Vec::new(),
         snapshot_bootstrap: None,
         prev_cursor: None,
         next_cursor: None,
@@ -136,9 +136,7 @@ where
         if aggregate.range_completeness.is_none() {
             aggregate.range_completeness = outcome.range_completeness.take();
         }
-        aggregate
-            .event_read_rows
-            .append(&mut outcome.event_read_rows);
+        aggregate.events.append(&mut outcome.events);
         aggregate.next_cursor = next_cursor.clone();
         aggregate.has_more = has_more;
 
@@ -165,7 +163,7 @@ mod tests {
 
     fn outcome(next_cursor: Option<&str>, has_more: bool) -> EventsQueryOutcome {
         EventsQueryOutcome {
-            event_read_rows: Vec::new(),
+            events: Vec::new(),
             snapshot_bootstrap: None,
             prev_cursor: None,
             next_cursor: next_cursor.map(str::to_owned),

@@ -152,7 +152,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             grant_id: SessionGrantId::from_issuance_digest([1_u8; 32]),
             grant_jwt: "reference-grant".to_owned(),
             expires_at: Utc::now() + Duration::hours(1),
-            audience: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+            audience_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec![
                 arkret_wire::CapabilityActionId::SELF_EVENTS_STREAM_SUBSCRIBE_V1.to_owned(),
             ],

@@ -316,7 +316,7 @@ where
         let decoder = crate::InboundDecoder::new();
         let mut batch = Vec::new();
         let mut accepted_ids = Vec::new();
-        for (index, row) in outcome.event_read_rows.iter().cloned().enumerate() {
+        for (index, row) in outcome.events.iter().cloned().enumerate() {
             let event = row.into_event().ok_or_else(|| {
                 ProjectedRunError::Transport(Error::Protocol(format!(
                     "Realm history bootstrap requires complete Events; row {index} is redacted or reference-locked"
@@ -465,7 +465,7 @@ fn verify_complete_realm_history(
     outcome: &crate::protocol::EventsQueryOutcome,
     digest_suite: arkret_canonical::DigestSuite,
 ) -> Result<()> {
-    for (index, row) in outcome.event_read_rows.iter().cloned().enumerate() {
+    for (index, row) in outcome.events.iter().cloned().enumerate() {
         let event = row.into_event().ok_or_else(|| {
             Error::Protocol(format!(
                 "Realm history bootstrap requires complete Events; row {index} is redacted or reference-locked"
@@ -520,7 +520,7 @@ mod tests {
 
     fn backfill_outcome(next_cursor: Option<&str>) -> EventsQueryOutcome {
         EventsQueryOutcome {
-            event_read_rows: Vec::new(),
+            events: Vec::new(),
             snapshot_bootstrap: None,
             prev_cursor: None,
             next_cursor: next_cursor.map(str::to_owned),

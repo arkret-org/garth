@@ -17,7 +17,7 @@ pub struct AgentKeyProofLogin {
     pub verification_method: DidUrl,
     pub challenge: String,
     pub nonce: String,
-    pub audience: DidCoreId,
+    pub audience_id: DidCoreId,
     pub expires_at: DateTime<Utc>,
     pub signature: String,
 }
@@ -35,7 +35,7 @@ impl AgentKeyProofLogin {
             self.verification_method,
             self.challenge,
             self.nonce,
-            self.audience,
+            self.audience_id,
             self.expires_at,
             self.signature,
         )?)
@@ -100,7 +100,7 @@ mod tests {
                 .unwrap(),
             challenge: "agent-challenge".to_owned(),
             nonce: "agent-nonce".to_owned(),
-            audience: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+            audience_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             expires_at: expires_at(),
             signature: "agent-signature".to_owned(),
         })

@@ -302,8 +302,9 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::protocol::{
-        Base64UrlString, DeviceId, DidCoreId, DidUrl, Error, Hash, SessionGrantOutcome,
-        SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
+        Base64UrlString, DeviceId, DidCoreId, DidUrl, Error, Hash, ServiceAccountId,
+        SessionGrantOutcome, SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody,
+        SessionGrantRequestBody,
     };
     use arkret_models_collaboration::session_grant_bodies::{
         AgentSessionGrantRefreshRequest, AgentSessionRefreshProofContext,
@@ -361,13 +362,14 @@ mod tests {
     fn state() -> SessionGrantState {
         SessionGrantState {
             principal_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
+            service_account_id: ServiceAccountId::new("account-1").unwrap(),
             device_id: Some(
                 DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
             ),
             grant_id: grant_id(1),
             grant_jwt: "grant-1".to_owned(),
             expires_at: Utc::now() + Duration::hours(2),
-            audience: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+            audience_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             session_public_key: Some("session-public-key".to_owned()),
             dpop_jkt: Some("jkt-1".to_owned()),
@@ -377,6 +379,7 @@ mod tests {
     fn refresh_outcome() -> SessionGrantRefreshOutcome {
         SessionGrantRefreshOutcome {
             session_grant_id: grant_id(2),
+            service_account_id: ServiceAccountId::new("account-1").unwrap(),
             grant_jwt: "grant-2".to_owned(),
             session_public_key: arkret_models_identity::CanonicalSessionPublicJwk::new(
                 r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,

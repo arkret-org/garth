@@ -20,8 +20,8 @@ use std::collections::BTreeSet;
 #[derive(Clone, Debug)]
 pub struct OidcAccountHandoffInput {
     pub request_id: RequestId,
-    pub audience: crate::protocol::DidCoreId,
-    pub issuer: String,
+    pub audience_id: crate::protocol::DidCoreId,
+    pub issuer_uri: String,
     pub client_id: String,
     pub redirect_uri: String,
     pub state: String,
@@ -534,8 +534,8 @@ pub fn oidc_account_handoff_request(
             // The authorization transaction nonce is the protocol challenge
             // for this code-exchange transcript.
             challenge: input.nonce.clone(),
-            audience_id: input.audience,
-            issuer_uri: input.issuer,
+            audience_id: input.audience_id,
+            issuer_uri: input.issuer_uri,
             client_id: input.client_id,
             redirect_uri: input.redirect_uri,
             state: input.state,
@@ -646,7 +646,7 @@ pub fn identity_creation_register_request(
             lease_fence: challenge.lease_fence,
             dpop_jkt: challenge.dpop_jkt.clone(),
             audience_id: challenge.audience_id.clone(),
-            origin_uri: challenge.origin_uri.clone(),
+            origin: challenge.origin.clone(),
             trust_domain: challenge.trust_domain.clone(),
             issued_at: challenge.issued_at,
             expires_at: challenge.expires_at,
@@ -1144,11 +1144,11 @@ mod tests {
                     "ak:request:01964137-0000-7000-8000-000000000001".to_owned(),
                 )
                 .unwrap(),
-                audience: crate::protocol::DidCoreId::new(
+                audience_id: crate::protocol::DidCoreId::new(
                     "ak:did_core:webvh:z6mkfixture:service.example",
                 )
                 .unwrap(),
-                issuer: "https://auth.example".to_owned(),
+                issuer_uri: "https://auth.example".to_owned(),
                 client_id: "inkson".to_owned(),
                 redirect_uri: "https://app.example/auth/callback".to_owned(),
                 state: "state".to_owned(),

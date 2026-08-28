@@ -24,7 +24,7 @@ pub enum AuthoringAuthorityModel {
 #[serde(deny_unknown_fields)]
 pub struct AuthoringGeneration {
     pub authority_model: AuthoringAuthorityModel,
-    pub authority_principal_id: String,
+    pub authority_principal_id: DidCoreId,
     pub generation_ref: String,
 }
 
@@ -47,7 +47,7 @@ impl AuthoringGeneration {
         }))?;
         Ok(Self {
             authority_model: AuthoringAuthorityModel::ManagedAgent,
-            authority_principal_id: controller.to_owned(),
+            authority_principal_id: DidCoreId::new(controller.to_owned())?,
             generation_ref,
         })
     }
@@ -381,6 +381,7 @@ impl QueuedSdkEvent {
             || self
                 .authoring_generation
                 .authority_principal_id
+                .as_str()
                 .trim()
                 .is_empty()
             || self.authoring_generation.generation_ref.trim().is_empty()
