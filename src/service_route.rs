@@ -170,8 +170,8 @@ impl RouteResolution {
 
     /// Exact authenticated record, method-history evidence and normalized DID
     /// document accepted by this evaluator. Keeping this material behind the
-    /// evaluator-produced token prevents consumers from supplying a bare full
-    /// DID or an unrelated DID document as service authority.
+    /// evaluator-produced token prevents consumers from supplying an
+    /// unverified DID or an unrelated DID document as service authority.
     #[must_use]
     pub const fn authenticated_resolution(&self) -> &AuthenticatedServiceResolution {
         &self.authenticated_resolution
@@ -473,7 +473,7 @@ where
         let route = ServiceRouteCacheEntry {
             service_id: durable.service_id.clone(),
             service_kind: durable.service_kind.clone(),
-            full_id: record.record.full_id.clone(),
+            did: record.record.did.clone(),
             method_history_head: record.record.method_history_head.clone(),
             version_id: record.record.version_id.clone(),
             record_sequence: record.record.record_sequence,
@@ -635,7 +635,7 @@ mod tests {
         ResolutionMethodEvidenceBoundary, ResolutionMethodHistoryEvidence,
         ServiceResolutionRecordCore,
     };
-    use arkret_wire::{DidFullId, DidUrl};
+    use arkret_wire::{Did, DidUrl};
     use chrono::TimeZone as _;
     use ed25519_dalek::SigningKey;
 
@@ -647,11 +647,11 @@ mod tests {
 
     fn route_fixture(service_kind: &str) -> AuthenticatedServiceResolution {
         let signing_key = SigningKey::from_bytes(&[31_u8; 32]);
-        let full_id = DidFullId::new("did:web:media.example").unwrap();
-        let service_id = arkret_wire::project_full_id_to_core_id(&full_id).unwrap();
-        let method = DidUrl::new(format!("{full_id}#signing-1")).unwrap();
+        let did = Did::new("did:web:media.example").unwrap();
+        let service_id = arkret_wire::project_did_to_core_id(&did).unwrap();
+        let method = DidUrl::new(format!("{did}#signing-1")).unwrap();
         let document = DidDocument {
-            id: full_id.clone(),
+            id: did.clone(),
             verification_methods: BTreeMap::from([(
                 method.to_string(),
                 arkret_canonical::ed25519_pubkey_to_did_key_multibase(
@@ -670,7 +670,7 @@ mod tests {
             ServiceResolutionRecordCore {
                 service_id,
                 service_kind: service_kind.to_owned(),
-                full_id,
+                did,
                 method_history_head: "did-web-document-sha256:fixture".to_owned(),
                 version_id: "did-web-document-sha256:fixture".to_owned(),
                 resolution_event_ref: format!("did-web-document-sha256:{}", "1".repeat(64)),
@@ -797,7 +797,7 @@ mod tests {
         assert_eq!(first.source(), RouteCandidateSource::CurrentRecord);
         assert_eq!(
             first.authenticated_resolution().normalized_did_document.id,
-            first.route().full_id
+            first.route().did
         );
 
         source.calls.clear();
@@ -826,7 +826,7 @@ mod tests {
         let cache = ServiceRouteCacheEntry {
             service_id,
             service_kind: "principal_server".to_owned(),
-            full_id: arkret_wire::DidFullId::new("did:web:service.example").unwrap(),
+            did: arkret_wire::Did::new("did:web:service.example").unwrap(),
             method_history_head: "head".to_owned(),
             version_id: "version".to_owned(),
             record_sequence: 3,

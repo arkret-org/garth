@@ -79,7 +79,7 @@ pub fn validate_route_binding(record: &ServiceResolutionRecord) -> Result<()> {
         &record.record.service_id,
         &record.record.service_kind,
         &ResolutionCommitment {
-            full_id: record.record.full_id.clone(),
+            did: record.record.did.clone(),
             method_history_head: record.record.method_history_head.clone(),
             version_id: record.record.version_id.clone(),
         },
@@ -105,7 +105,7 @@ pub fn verify_client_method_evidence(
     if now >= record.expires_at {
         return Err(Error::Protocol("service_route_record_expired".to_owned()));
     }
-    if resolution.normalized_did_document.id != record.full_id {
+    if resolution.normalized_did_document.id != record.did {
         return Err(Error::Protocol(
             "service_route_document_identity_mismatch".to_owned(),
         ));
@@ -131,7 +131,7 @@ pub fn verify_client_method_evidence(
             "service_route_evidence_document_digest_mismatch".to_owned(),
         ));
     }
-    match record.full_id.method() {
+    match record.did.method() {
         "web" => {
             if !matches!(
                 resolution.method_history_evidence,
@@ -157,14 +157,14 @@ pub fn verify_client_method_evidence(
                     "service_route_evidence_kind_mismatch".to_owned(),
                 ));
             }
-            let full_id_digest = Hash::new(arkret_canonical::sha256_digest(
-                record.full_id.as_str().as_bytes(),
+            let did_digest = Hash::new(arkret_canonical::sha256_digest(
+                record.did.as_str().as_bytes(),
             ))?;
             validate_synthetic_method_coordinates(
                 record,
-                &full_id_digest,
-                "synthetic-full-id-sha256:",
-                "did-key-full-id-sha256:",
+                &did_digest,
+                "synthetic-did-sha256:",
+                "did-key-did-sha256:",
             )
         }
         _ => Err(Error::Protocol(
@@ -206,7 +206,7 @@ fn evidence_boundary(
 /// into a verified [`AuthenticatedServiceResolution`].
 ///
 /// `document` MUST be the exact DID document the host fetched for
-/// `record.full_id` through its own method-scoped, SSRF-guarded transport
+/// `record.did` through its own method-scoped, SSRF-guarded transport
 /// (for `did:web`: the validated `did.json`; for `did:key`: the deterministic
 /// expansion). Everything is re-derived and re-verified here — a mismatched or
 /// stale record fails closed.
@@ -223,7 +223,7 @@ pub fn authenticate_fetched_record(
         document_digest: document_digest.clone(),
         method_proofs: Vec::new(),
     };
-    let method_history_evidence = match record.record.full_id.method() {
+    let method_history_evidence = match record.record.did.method() {
         "web" => ResolutionMethodHistoryEvidence::DidWebDocument {
             adapter_version: "did:web:1".to_owned(),
             boundary: evidence_boundary(&record.record),
@@ -279,7 +279,7 @@ pub fn describe_route_binding(
     if description.protocol_version != arkret_wire::PROTOCOL_VERSION
         || description.service_id != record.record.service_id
         || description.service_kind != registered_kind
-        || description.service_resolution.full_id != record.record.full_id
+        || description.service_resolution.did != record.record.did
         || description.service_resolution.method_history_head != record.record.method_history_head
         || description.service_resolution.version_id != record.record.version_id
     {
@@ -431,7 +431,7 @@ impl ServiceRouteSource for PrefetchedRouteSource {
 #[cfg(any(test, feature = "route-material-test-support"))]
 pub mod test_fixture {
     use arkret_models_discovery::TransportBinding;
-    use arkret_wire::{DidFullId, DidUrl, TrustDomainId};
+    use arkret_wire::{Did, DidUrl, TrustDomainId};
     use chrono::Duration;
     use ed25519_dalek::SigningKey;
 
@@ -456,11 +456,11 @@ pub mod test_fixture {
         key_seed: u8,
     ) -> SignedRouteFixture {
         let signing_key = SigningKey::from_bytes(&[key_seed; 32]);
-        let full_id = DidFullId::new(format!("did:web:{host}")).unwrap();
-        let service_id = arkret_wire::project_full_id_to_core_id(&full_id).unwrap();
-        let method = DidUrl::new(format!("{full_id}#signing-1")).unwrap();
+        let did = Did::new(format!("did:web:{host}")).unwrap();
+        let service_id = arkret_wire::project_did_to_core_id(&did).unwrap();
+        let method = DidUrl::new(format!("{did}#signing-1")).unwrap();
         let document = DidDocument {
-            id: full_id.clone(),
+            id: did.clone(),
             verification_methods: BTreeMap::from([(
                 method.to_string(),
                 arkret_canonical::ed25519_pubkey_to_did_key_multibase(
@@ -478,7 +478,7 @@ pub mod test_fixture {
         let hex = digest_hex(&document_digest).unwrap().to_owned();
         let base_url = format!("https://{host}/");
         let commitment = ResolutionCommitment {
-            full_id: full_id.clone(),
+            did: did.clone(),
             method_history_head: document_digest.as_str().to_owned(),
             version_id: format!("synthetic-jcs-sha256:{hex}"),
         };
@@ -489,7 +489,7 @@ pub mod test_fixture {
             arkret_models_identity::ServiceResolutionRecordCore {
                 service_id: service_id.clone(),
                 service_kind: service_kind.to_owned(),
-                full_id: full_id.clone(),
+                did: did.clone(),
                 method_history_head: commitment.method_history_head.clone(),
                 version_id: commitment.version_id.clone(),
                 resolution_event_ref: format!("did-web-document-sha256:{hex}"),
@@ -516,7 +516,7 @@ pub mod test_fixture {
             .find(|kind| kind.as_str() == service_kind)
             .expect("fixture service kind must be registered");
         let mut describe = ServiceDescribe::development(
-            full_id,
+            did,
             TrustDomainId::new(format!("ak:trust_domain:{host}")).unwrap(),
             registered_kind,
             vec![format!("ak.operation_bundle.{service_kind}.describe.v1")],
@@ -538,7 +538,7 @@ pub mod test_fixture {
 
 #[cfg(test)]
 mod tests {
-    use arkret_wire::DidFullId;
+    use arkret_wire::Did;
     use chrono::{Duration, TimeZone as _};
 
     use super::test_fixture::signed_web_route_fixture;
@@ -790,13 +790,13 @@ mod tests {
     fn webvh_record_has_no_client_adapter_yet_and_fails_closed() {
         let now = now_fixture();
         let fixture = signed_web_route_fixture("media.example", "media_service", now, 0, None, 31);
-        // Retarget the record to a webvh full id with a consistent route
+        // Retarget the record to a webvh DID with a consistent route
         // binding, so the failure is attributable to the missing adapter and
         // not to an earlier binding mismatch.
-        let full_id = DidFullId::new("did:webvh:QmExampleScidValue123456:media.example").unwrap();
-        let service_id = arkret_wire::project_full_id_to_core_id(&full_id).unwrap();
+        let did = Did::new("did:webvh:QmExampleScidValue123456:media.example").unwrap();
+        let service_id = arkret_wire::project_did_to_core_id(&did).unwrap();
         let mut record = fixture.record.clone();
-        record.record.full_id = full_id.clone();
+        record.record.did = did.clone();
         record.record.service_id = service_id.clone();
         record.record.current_record_url = format!(
             "https://media.example/{}",
@@ -806,7 +806,7 @@ mod tests {
             &service_id,
             "media_service",
             &ResolutionCommitment {
-                full_id,
+                did,
                 method_history_head: record.record.method_history_head.clone(),
                 version_id: record.record.version_id.clone(),
             },

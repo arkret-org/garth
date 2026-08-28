@@ -71,7 +71,7 @@ impl VerifiedSignalSenderKey {
     /// * `authority` is structurally valid and its `principal_id` names
     ///   `actor_id` — the exact-authority pair must be the sender's, never a
     ///   bystander's;
-    /// * `verification_method` is a DID URL whose bare full DID projects to
+    /// * `verification_method` is a DID URL whose DID projects to
     ///   `actor_id` and whose fragment equals `device_id` verbatim (the §1
     ///   directory-lookup completeness condition, mirrored from
     ///   [`SignalEnvelope::validate_structural`] so a mis-bound key cannot be
@@ -103,10 +103,10 @@ impl VerifiedSignalSenderKey {
                         "signal sender verification_method requires a DID URL fragment".to_owned(),
                     )
                 })?;
-        let controller_core = crate::protocol::DidFullId::new(controller)
+        let controller_core = crate::protocol::Did::new(controller)
             .map_err(|error| Error::Protocol(error.to_string()))
-            .and_then(|full| {
-                crate::protocol::project_full_id_to_core_id(&full)
+            .and_then(|did| {
+                crate::protocol::project_did_to_core_id(&did)
                     .map_err(|error| Error::Protocol(error.to_string()))
             })?;
         if controller_core != actor_id || fragment != device_id.as_str() {

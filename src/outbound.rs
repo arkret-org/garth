@@ -447,11 +447,10 @@ mod tests {
 
     use super::*;
     use crate::MemoryStore;
-    use arkret_wire::{DidCoreId, DidFullId, EventKind, Hlc, ScopeRef, project_full_id_to_core_id};
+    use arkret_wire::{Did, DidCoreId, EventKind, Hlc, ScopeRef, project_did_to_core_id};
 
     fn actor_id() -> DidCoreId {
-        project_full_id_to_core_id(&DidFullId::new("did:webvh:z6mkfixture:alice.example").unwrap())
-            .unwrap()
+        project_did_to_core_id(&Did::new("did:webvh:z6mkfixture:alice.example").unwrap()).unwrap()
     }
     use serde_json::Value;
 

@@ -732,9 +732,9 @@ pub(crate) mod test_publication {
     use arkret_wire::{
         AuthoritySetAuthorizationRule, AuthoritySetIssuer, AuthoritySetIssuerRole,
         AuthoritySetPolicy, AuthoritySetPolicyKind, AuthoritySetPolicySource, AuthoritySetRef,
-        AuthoritySetSourceKind, AuthorizationLease, AuthorizationLeaseId, DeviceId, DidCoreId,
-        DidFullId, DidUrl, EventId, Hash, IngressReceipt, LeaseBasisRef, PayloadProof, ReceiptId,
-        RiskTier, ScopeRef, SealId,
+        AuthoritySetSourceKind, AuthorizationLease, AuthorizationLeaseId, DeviceId, Did, DidCoreId,
+        DidUrl, EventId, Hash, IngressReceipt, LeaseBasisRef, PayloadProof, ReceiptId, RiskTier,
+        ScopeRef, SealId,
     };
 
     use crate::protocol::RealmId;
@@ -780,10 +780,8 @@ pub(crate) mod test_publication {
         let mut receipt = IngressReceipt {
             receipt_id: ReceiptId::new("ak:receipt:01904100-0000-7000-8000-cccccccccccc").unwrap(),
             event_digest: Hash::new(format!("sha256:{}", "d".repeat(64))).unwrap(),
-            qualified_ingress_id: DidFullId::new(
-                "did:webvh:z6mkfixture:ingress.example".to_owned(),
-            )
-            .unwrap(),
+            qualified_ingress_did: Did::new("did:webvh:z6mkfixture:ingress.example".to_owned())
+                .unwrap(),
             received_at,
             ingress_frontier: vec![
                 EventId::new("ak:event:ATqrupSFYozzL7O90hPaSlvHmLnxxSRiRUZA4RgeuZpD".to_owned())

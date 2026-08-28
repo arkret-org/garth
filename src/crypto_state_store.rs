@@ -802,7 +802,7 @@ mod tests {
     use super::*;
     use crate::protocol::{Hash, RealmId};
 
-    fn did(name: &str) -> DidCoreId {
+    fn principal_id(name: &str) -> DidCoreId {
         DidCoreId::new(format!("ak:did_core:webvh:z6mkfixture:{name}.example")).unwrap()
     }
 
@@ -929,8 +929,8 @@ mod tests {
                 realm_id: RealmId::new("ak:realm:AdkQ-RmB1a8zyc52yl9GWAsodQ_EUle1WAVZqbO7pc19")
                     .unwrap(),
             },
-            did("alice"),
-            did("server"),
+            principal_id("alice"),
+            principal_id("server"),
             sequence,
             Hlc::new(format!("01970e589d21-{sequence:04x}-a13f9c2e")).unwrap(),
             json!({}),
@@ -1132,7 +1132,7 @@ mod tests {
 
     #[test]
     fn memory_crypto_store_roundtrips_mls_records_and_verification() {
-        let alice = did("alice");
+        let alice = principal_id("alice");
         let device_id = device("phone");
         let mut store = MemoryCryptoStore::new();
 
@@ -1189,7 +1189,7 @@ mod tests {
 
     #[test]
     fn crypto_store_rejects_group_state_rollback() {
-        let alice = did("alice");
+        let alice = principal_id("alice");
         let device_id = device("phone");
         let mut store = MemoryCryptoStore::new();
         store
@@ -1220,7 +1220,7 @@ mod tests {
 
     #[test]
     fn memory_crypto_store_deduplicates_welcomes_and_commits() {
-        let alice = did("alice");
+        let alice = principal_id("alice");
         let device_id = device("phone");
         let mut store = MemoryCryptoStore::new();
         let welcome = MlsWelcomeEnvelope {

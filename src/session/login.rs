@@ -61,7 +61,7 @@ mod tests {
 
     use super::*;
 
-    fn did() -> DidCoreId {
+    fn principal_id() -> DidCoreId {
         DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()
     }
 
@@ -81,7 +81,7 @@ mod tests {
     #[test]
     fn agent_key_proof_login_builds_bound_request() {
         let request = LoginKind::AgentKeyProof(AgentKeyProofLogin {
-            principal_id: did(),
+            principal_id: principal_id(),
             device_id: device_id(),
             requested_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             agent_key_authorization_ref: agent_key_authorization_ref(),

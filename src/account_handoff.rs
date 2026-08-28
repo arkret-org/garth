@@ -6,8 +6,8 @@
 
 use crate::protocol::{
     AccountBindingReceipt, AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
-    AccountRegisterOutcome, AccountRegisterRequestBody, Base64UrlString, DeviceId, DidCoreId,
-    DidFullId, DidOperationSubmitRequestBody, Hash, IdentityBindingChallengeOutcome,
+    AccountRegisterOutcome, AccountRegisterRequestBody, Base64UrlString, DeviceId, Did, DidCoreId,
+    DidOperationSubmitRequestBody, Hash, IdentityBindingChallengeOutcome,
     IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationCommandKind,
     IdentityCreationGoal, IdentityCreationLease, IdentityCreationLeaseState,
     IdentityCreationLocalArtifactKind, IdentityCreationRecoveryKeyState,
@@ -39,7 +39,7 @@ pub enum AccountHandoffDisposition {
     },
     Bound {
         principal_id: DidCoreId,
-        full_id: DidFullId,
+        did: Did,
     },
 }
 
@@ -48,7 +48,7 @@ pub enum AccountHandoffDisposition {
 /// it into a signing capability.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReturningDeviceCandidate {
-    pub principal_id: DidFullId,
+    pub principal_id: DidCoreId,
     pub device_id: DeviceId,
     pub signer_ref: String,
 }
@@ -96,14 +96,14 @@ pub enum BoundSessionRoute {
 /// candidate is quarantined, not deleted. Multiple distinct candidates for the
 /// authenticated principal are a contradiction and fail closed.
 pub fn normalize_local_evidence(
-    authenticated_principal: &DidFullId,
+    authenticated_principal_id: &DidCoreId,
     hydration: LocalEvidenceHydration,
     candidates: impl IntoIterator<Item = ReturningDeviceCandidate>,
 ) -> LocalEvidenceNormalization {
     let mut quarantined_candidates = Vec::new();
     let mut matching_candidates = Vec::new();
     for candidate in candidates {
-        if &candidate.principal_id == authenticated_principal {
+        if &candidate.principal_id == authenticated_principal_id {
             if !matching_candidates.contains(&candidate) {
                 matching_candidates.push(candidate);
             }
@@ -515,12 +515,9 @@ pub fn account_handoff_disposition(
             retry_after_ms: *retry_after_ms,
             expires_at: *expires_at,
         },
-        AccountHandoffBinding::Bound {
-            principal_id,
-            full_id,
-        } => AccountHandoffDisposition::Bound {
+        AccountHandoffBinding::Bound { principal_id, did } => AccountHandoffDisposition::Bound {
             principal_id: principal_id.clone(),
-            full_id: full_id.clone(),
+            did: did.clone(),
         },
     })
 }
@@ -574,12 +571,12 @@ pub fn identity_binding_challenge_request(
     initial_session.validate()?;
     let create = pcr_genesis_unit.create();
     let authorize = pcr_genesis_unit.founding_authorize();
-    let full_id = did_operation.did.clone();
+    let did = did_operation.did.clone();
     let request = IdentityBindingChallengeRequestBody {
         request_id,
         identity_creation_lease_id: lease.identity_creation_lease_id.clone(),
         lease_fence: lease.fence,
-        full_id,
+        did,
         did_operation,
         pcr_realm_id: create.realm_id.clone(),
         realm_create_payload_digest: Hash::new(crate::protocol::canonical::canonical_sha256(
@@ -610,7 +607,7 @@ pub fn identity_creation_register_request(
             .map_err(|error| protocol(error.to_string()))?;
     if &challenge.account_subject != expected_account_subject
         || challenge.principal_id != validated.principal_id
-        || challenge.full_id != did_operation.did
+        || challenge.did != did_operation.did
         || challenge.operation_digest != validated.operation_digest
         || challenge.did_version_id != validated.did_version_id
         || challenge.log_head_digest != validated.log_head_digest
@@ -635,7 +632,7 @@ pub fn identity_creation_register_request(
             purpose: challenge.purpose,
             account_subject: challenge.account_subject.clone(),
             principal_id: challenge.principal_id.clone(),
-            full_id: challenge.full_id.clone(),
+            did: challenge.did.clone(),
             operation_digest: challenge.operation_digest.clone(),
             did_version_id: challenge.did_version_id.clone(),
             log_head_digest: challenge.log_head_digest.clone(),
@@ -662,14 +659,14 @@ pub fn identity_creation_register_request(
     .map_err(|error| protocol(error.to_string()))?;
     let request = AccountRegisterRequestBody {
         principal_id: challenge.principal_id.clone(),
-        full_id: challenge.full_id.clone(),
+        did: challenge.did.clone(),
         display_name,
         device_id: None,
         proof: None,
         identity_creation: Some(IdentityCreationRegistration {
             identity_creation_lease_id: challenge.identity_creation_lease_id.clone(),
             lease_fence: challenge.lease_fence,
-            full_id: challenge.full_id.clone(),
+            did: challenge.did.clone(),
             did_operation,
             registration_did_evidence_draft,
             control_proof,
@@ -711,7 +708,7 @@ pub fn validate_identity_creation_outcome(
     receipt.validate_shape()?;
     if receipt.account_subject != registration.control_proof.account_subject
         || receipt.principal_id != request.principal_id
-        || receipt.full_id != request.full_id
+        || receipt.did != request.did
         || receipt.identity_creation_lease_id.as_deref()
             != Some(registration.identity_creation_lease_id.as_str())
         || receipt.lease_fence != Some(registration.lease_fence)
@@ -736,13 +733,13 @@ mod tests {
 
     fn lease(state: IdentityCreationLeaseState) -> IdentityCreationLease {
         let reserved_identity = state.has_reserved_identity().then(|| {
-            let full_id = did("did:webvh:z6mkfixture:alice.example");
+            let did = did("did:webvh:z6mkfixture:alice.example");
             crate::protocol::ReservedIdentityCreation {
-                principal_id: core_id(full_id.as_str()),
-                full_id: full_id.clone(),
+                principal_id: core_id(did.as_str()),
+                did: did.clone(),
                 operation_digest: Hash::new(format!("sha256:{}", "a".repeat(64))).unwrap(),
                 did_operation: crate::protocol::DidOperationSubmitRequestBody {
-                    did: full_id,
+                    did: did,
                     did_method: arkret_models_identity::DidMethodName::Webvh,
                     seq: None,
                     prev_event_digest: None,
@@ -759,12 +756,12 @@ mod tests {
         }
     }
 
-    fn did(value: &str) -> DidFullId {
-        DidFullId::new(value.to_owned()).unwrap()
+    fn did(value: &str) -> Did {
+        Did::new(value.to_owned()).unwrap()
     }
 
     fn core_id(value: &str) -> DidCoreId {
-        crate::protocol::project_full_id_to_core_id(&did(value)).unwrap()
+        crate::protocol::project_did_to_core_id(&did(value)).unwrap()
     }
 
     fn device(value: &str) -> DeviceId {
@@ -777,7 +774,7 @@ mod tests {
         signer_ref: &str,
     ) -> ReturningDeviceCandidate {
         ReturningDeviceCandidate {
-            principal_id: did(principal),
+            principal_id: core_id(principal),
             device_id: device(device_value),
             signer_ref: signer_ref.to_owned(),
         }
@@ -785,19 +782,20 @@ mod tests {
 
     #[test]
     fn local_evidence_normalization_admits_only_one_matching_signer() {
-        let alice = did("did:webvh:z6mkfixture:alice.example");
+        let alice_did = did("did:webvh:z6mkfixture:alice.example");
+        let alice_id = core_id(alice_did.as_str());
         let bob_device = returning_candidate(
             "did:webvh:z6mkfixture:bob.example",
             "ak:device:01904100-0000-7000-8000-000000000031",
             "secure:bob-device",
         );
         let alice_device = returning_candidate(
-            alice.as_str(),
+            alice_did.as_str(),
             "ak:device:01904100-0000-7000-8000-000000000030",
             "secure:alice-device",
         );
         let normalized = normalize_local_evidence(
-            &alice,
+            &alice_id,
             LocalEvidenceHydration::Ready,
             [bob_device.clone(), alice_device.clone()],
         );
@@ -811,27 +809,32 @@ mod tests {
 
     #[test]
     fn local_evidence_loading_and_ambiguity_never_become_no_device() {
-        let alice = did("did:webvh:z6mkfixture:alice.example");
+        let alice_did = did("did:webvh:z6mkfixture:alice.example");
+        let alice_id = core_id(alice_did.as_str());
         let first = returning_candidate(
-            alice.as_str(),
+            alice_did.as_str(),
             "ak:device:01904100-0000-7000-8000-000000000030",
             "secure:alice-device-a",
         );
         let second = returning_candidate(
-            alice.as_str(),
+            alice_did.as_str(),
             "ak:device:01904100-0000-7000-8000-000000000032",
             "secure:alice-device-b",
         );
 
         assert_eq!(
-            normalize_local_evidence(&alice, LocalEvidenceHydration::Loading, std::iter::empty(),)
-                .evidence,
+            normalize_local_evidence(
+                &alice_id,
+                LocalEvidenceHydration::Loading,
+                std::iter::empty(),
+            )
+            .evidence,
             NormalizedLocalEvidence::Unavailable(
                 LocalEvidenceUnavailableReason::HydrationInProgress
             )
         );
         assert_eq!(
-            normalize_local_evidence(&alice, LocalEvidenceHydration::Ready, [first, second])
+            normalize_local_evidence(&alice_id, LocalEvidenceHydration::Ready, [first, second])
                 .evidence,
             NormalizedLocalEvidence::Unavailable(
                 LocalEvidenceUnavailableReason::AmbiguousReturningDevices
@@ -841,20 +844,24 @@ mod tests {
 
     #[test]
     fn bound_session_route_keeps_device_setup_and_diagnostics_distinct() {
-        let full_id = did("did:webvh:z6mkfixture:alice.example");
+        let did = did("did:webvh:z6mkfixture:alice.example");
+        let principal_id = core_id(did.as_str());
         let disposition = AccountHandoffDisposition::Bound {
-            principal_id: core_id(full_id.as_str()),
-            full_id: full_id.clone(),
+            principal_id: principal_id.clone(),
+            did: did.clone(),
         };
-        let no_device =
-            normalize_local_evidence(&full_id, LocalEvidenceHydration::Ready, std::iter::empty());
+        let no_device = normalize_local_evidence(
+            &principal_id,
+            LocalEvidenceHydration::Ready,
+            std::iter::empty(),
+        );
         assert_eq!(
             route_bound_session(&disposition, no_device).unwrap(),
             BoundSessionRoute::DeviceSetupRequired
         );
 
         let unavailable = normalize_local_evidence(
-            &full_id,
+            &principal_id,
             LocalEvidenceHydration::Failed {
                 reason: "secure store unavailable".to_owned(),
             },
@@ -1179,7 +1186,7 @@ mod tests {
             allowed_operations: crate::protocol::ACCOUNT_HANDOFF_ALLOWED_OPERATIONS,
             binding: AccountHandoffBinding::Bound {
                 principal_id: core_id("did:webvh:z6mkfixture:alice.example"),
-                full_id: did("did:webvh:z6mkfixture:alice.example"),
+                did: did("did:webvh:z6mkfixture:alice.example"),
             },
         };
         assert!(matches!(

@@ -599,11 +599,11 @@ mod tests {
             .to_string()
     }
 
-    fn did() -> DidCoreId {
+    fn principal_id() -> DidCoreId {
         DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()
     }
 
-    fn other_did() -> DidCoreId {
+    fn other_principal_id() -> DidCoreId {
         DidCoreId::new("ak:did_core:webvh:z6mkfixture:bob.example").unwrap()
     }
 
@@ -632,7 +632,7 @@ mod tests {
 
     fn agent_login() -> LoginKind {
         LoginKind::AgentKeyProof(AgentKeyProofLogin {
-            principal_id: did(),
+            principal_id: principal_id(),
             device_id: device_id(),
             requested_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             agent_key_authorization_ref: agent_key_authorization_ref(),
@@ -681,7 +681,7 @@ mod tests {
 
     fn active_state() -> SessionGrantState {
         SessionGrantState {
-            principal_id: did(),
+            principal_id: principal_id(),
             device_id: Some(device_id()),
             grant_id: grant_id(1),
             grant_jwt: "grant-1".to_owned(),
@@ -758,7 +758,7 @@ mod tests {
         let transport = MockSessionTransport::with_issue_responses(vec![Ok(issue_outcome(
             "grant-agent",
             grant_id(10),
-            did(),
+            principal_id(),
             Some(device_id()),
         ))]);
         let engine = SessionEngine::new(transport.clone());
@@ -776,7 +776,7 @@ mod tests {
         let transport = MockSessionTransport::with_issue_responses(vec![Ok(issue_outcome(
             "grant-authored",
             grant_id(14),
-            did(),
+            principal_id(),
             Some(device_id()),
         ))]);
         let engine = SessionEngine::new(transport.clone());
@@ -792,21 +792,26 @@ mod tests {
     #[tokio::test]
     async fn engine_rejects_unsafe_issue_outcomes_without_state() {
         let cases = vec![
-            issue_outcome("", grant_id(20), did(), Some(device_id())),
+            issue_outcome("", grant_id(20), principal_id(), Some(device_id())),
             SessionGrantOutcome {
                 expires_at: now() - Duration::seconds(1),
-                ..issue_outcome("grant-expired", grant_id(21), did(), Some(device_id()))
+                ..issue_outcome(
+                    "grant-expired",
+                    grant_id(21),
+                    principal_id(),
+                    Some(device_id()),
+                )
             },
             issue_outcome(
                 "grant-wrong-principal",
                 grant_id(22),
-                other_did(),
+                other_principal_id(),
                 Some(device_id()),
             ),
             issue_outcome(
                 "grant-wrong-device",
                 grant_id(23),
-                did(),
+                principal_id(),
                 Some(other_device_id()),
             ),
         ];

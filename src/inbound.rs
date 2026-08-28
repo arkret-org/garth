@@ -49,7 +49,7 @@ impl InboundDecoder {
 
 #[cfg(test)]
 mod tests {
-    use arkret_wire::{DidCoreId, DidFullId, EventId, Hlc, RealmId, ScopeRef, StrandId};
+    use arkret_wire::{Did, DidCoreId, EventId, Hlc, RealmId, ScopeRef, StrandId};
     use serde_json::{Value, json};
 
     use super::*;
@@ -61,8 +61,8 @@ mod tests {
                 realm_id: RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO")
                     .unwrap(),
             },
-            arkret_wire::project_full_id_to_core_id(
-                &DidFullId::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+            arkret_wire::project_did_to_core_id(
+                &Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
             )
             .unwrap(),
             DidCoreId::new("ak:did_core:web:principal.example").unwrap(),

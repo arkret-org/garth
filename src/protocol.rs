@@ -62,10 +62,10 @@ pub(crate) use arkret_models_identity::{
     UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
 };
 pub(crate) use arkret_state::resolver::RealmState;
-pub(crate) use arkret_wire::project_full_id_to_core_id;
+pub(crate) use arkret_wire::project_did_to_core_id;
 pub use arkret_wire::{AuthorizationLease, IngressReceipt};
 pub(crate) use arkret_wire::{
-    Base64UrlString, DeviceId, DidCoreId, DidFullId, DidUrl, Event, EventId, EventKind, Hash, Hlc,
+    Base64UrlString, DeviceId, Did, DidCoreId, DidUrl, Event, EventId, EventKind, Hash, Hlc,
     MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit, PrincipalAuthorityKey, RealmId,
     RequestId, ScopeRef, SealId, SessionGrantId, SidecarId, SignalEnvelope, SignalStreamFrame,
     StrandId,
