@@ -488,7 +488,7 @@ mod tests {
     use super::*;
     use crate::protocol::identifiers::Cursor;
     use crate::protocol::{AccountStreamInterrupt, Error, SyncRequestBody};
-    use crate::protocol::{EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind};
+    use crate::protocol::{EventsQueryOutcome, EventsSubscribeFrame};
     use crate::{ClientEvent, MemoryStore};
 
     fn actor_id() -> DidCoreId {
@@ -529,13 +529,11 @@ mod tests {
         }
     }
 
-    fn realm_frame(kind: EventsSubscribeFrameKind) -> EventsSubscribeFrame {
-        EventsSubscribeFrame {
-            kind,
-            realm_id: Some(realm_id()),
-            cursor: None,
-            payload: None,
-            reconnect_after_ms: None,
+    fn dropped_frame(reconnect_after_ms: Option<u64>) -> EventsSubscribeFrame {
+        EventsSubscribeFrame::Dropped {
+            realm_id: realm_id(),
+            cursor: Cursor::new("ak:cursor:dropped").unwrap(),
+            reconnect_after_ms,
         }
     }
 
@@ -747,9 +745,7 @@ mod tests {
             .await
             .unwrap();
         let executor = RecordingExecutor::default();
-        let mut dropped = realm_frame(EventsSubscribeFrameKind::Dropped);
-        dropped.cursor = Some(Cursor::new("ak:cursor:dropped").unwrap());
-        dropped.reconnect_after_ms = Some(25);
+        let dropped = dropped_frame(Some(25));
         let transport = RealmRecoveryTransport::new(
             vec![dropped],
             vec![backfill_outcome(Some("ak:cursor:next"))],
@@ -805,8 +801,7 @@ mod tests {
             .save(realm_scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
-        let mut dropped = realm_frame(EventsSubscribeFrameKind::Dropped);
-        dropped.cursor = Some(Cursor::new("ak:cursor:dropped").unwrap());
+        let dropped = dropped_frame(None);
         let transport = RealmRecoveryTransport::new(
             vec![dropped],
             vec![backfill_outcome(Some("ak:cursor:next"))],
@@ -851,8 +846,7 @@ mod tests {
             .save(realm_scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
-        let mut dropped = realm_frame(EventsSubscribeFrameKind::Dropped);
-        dropped.cursor = Some(Cursor::new("ak:cursor:dropped").unwrap());
+        let dropped = dropped_frame(None);
         let transport = RealmRecoveryTransport::new(
             vec![dropped],
             vec![backfill_outcome(Some("ak:cursor:next"))],
@@ -919,45 +913,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn engine_rejects_dropped_without_cursor_as_trace_violation() {
-        // transport-bindings.md §1.1 rule 2: a server with no resume cursor
-        // MUST send `resync_required`; a cursorless `dropped` is a protocol
-        // error, not a silent resync.
-        let store = MemoryStore::new();
-        store
-            .save(realm_scope(), "ak:cursor:stored".to_owned())
-            .await
-            .unwrap();
-        let executor = RecordingExecutor::default();
-        let mut dropped = realm_frame(EventsSubscribeFrameKind::Dropped);
-        dropped.reconnect_after_ms = Some(40);
-        let transport = RealmRecoveryTransport::new(vec![dropped], Vec::new());
-        let engine = SubscriptionEngine::new(executor.clone(), store.clone(), store.clone());
-        let projector = RecordingProjector {
-            batches: Arc::new(Mutex::new(Vec::new())),
-            fail: false,
-            control: None,
-        };
-
-        let error = engine
-            .run_realm_stream_classified(
-                &transport,
-                realm_id(),
-                arkret_canonical::DigestSuite::Sha256,
-                &projector,
-            )
-            .await
-            .map_err(ProjectedRunError::into_error)
-            .unwrap_err();
-
-        assert!(error.to_string().contains("dropped_missing_cursor"));
-        assert!(transport.scans().is_empty());
-        // The rejected trace leaves the stored reconnect position untouched.
-        assert_eq!(
-            store.load(realm_scope()).await.unwrap().as_deref(),
-            Some("ak:cursor:stored")
-        );
-        assert!(executor.sleeps().is_empty());
+    #[test]
+    fn events_subscribe_union_rejects_dropped_without_cursor() {
+        let malformed = serde_json::json!({
+            "kind": "dropped",
+            "realm_id": realm_id(),
+            "reconnect_after_ms": 40
+        });
+        assert!(serde_json::from_value::<EventsSubscribeFrame>(malformed).is_err());
     }
 }

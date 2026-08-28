@@ -5,6 +5,7 @@ use crate::protocol::{
     DeviceMessageEnvelope, DeviceMessageSender, ErrorEnvelope, EventContainer, ProtocolKind,
     RealmSyncEntry,
 };
+use arkret_models_collaboration::sync_frames::account_sync::DeviceMessageContent;
 use arkret_wire::{DidCoreId, EventKind, Hlc, OpaqueLocalId, ScopeRef};
 use serde_json::{Value, json};
 
@@ -425,7 +426,10 @@ fn processor_dispatches_all_update_categories() {
             )
             .unwrap(),
             kind: ProtocolKind::new("ak.test.message").unwrap(),
-            content: serde_json::from_value(json!({"ok":true})).unwrap(),
+            content: DeviceMessageContent::Extension(BTreeMap::from([(
+                "ok".to_owned(),
+                json!(true),
+            )])),
             sender_principal_id: sender.clone(),
             sender: DeviceMessageSender::Device {
                 sender_device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000005")

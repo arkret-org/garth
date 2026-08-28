@@ -2,8 +2,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use crate::protocol::{
-    DidCoreId, Event, EventsSubscribeFrame, EventsSubscribeFrameKind, RealmId, Result,
-    StreamTraceValidator,
+    DidCoreId, Event, EventsSubscribeFrame, RealmId, Result, StreamTraceValidator,
 };
 
 use super::{ProjectedRunError, ProjectedRunResult};
@@ -159,9 +158,7 @@ where
 
         while let Some(frame) = source.next_frame().await? {
             let update = trace.push(&frame).map_err(crate::protocol::Error::from)?;
-            let cursor = frame
-                .cursor()
-                .map(|cursor| cursor.as_str().to_owned());
+            let cursor = frame.cursor().map(|cursor| cursor.as_str().to_owned());
             let mut batch = Vec::new();
             let mut remember_after_commit = None;
 
@@ -192,9 +189,7 @@ where
                     reconnect_after_ms, ..
                 } => {
                     self.cursor_store.clear(scope.clone()).await?;
-                    return Ok(RealmStreamStopReason::ResyncRequired {
-                        reconnect_after_ms,
-                    });
+                    return Ok(RealmStreamStopReason::ResyncRequired { reconnect_after_ms });
                 }
                 EventsSubscribeFrame::Unauthorized { .. } => {
                     return Ok(RealmStreamStopReason::Unauthorized { reason: None });
@@ -263,9 +258,7 @@ where
             let update = trace
                 .push(&frame)
                 .map_err(|error| ProjectedRunError::Transport(error.into()))?;
-            let cursor = frame
-                .cursor()
-                .map(|cursor| cursor.as_str().to_owned());
+            let cursor = frame.cursor().map(|cursor| cursor.as_str().to_owned());
 
             match frame {
                 EventsSubscribeFrame::Event { payload, .. } => {
@@ -278,8 +271,7 @@ where
                                 .await
                                 .map_err(ProjectedRunError::Store)?
                             {
-                                let batch =
-                                    self.realm_event_batch(event, &realm_id, digest_suite);
+                                let batch = self.realm_event_batch(event, &realm_id, digest_suite);
                                 if !batch.is_empty() {
                                     // Gate: project must persist before the cursor moves.
                                     projector
@@ -329,9 +321,7 @@ where
                         .clear(scope.clone())
                         .await
                         .map_err(ProjectedRunError::Store)?;
-                    return Ok(RealmStreamStopReason::ResyncRequired {
-                        reconnect_after_ms,
-                    });
+                    return Ok(RealmStreamStopReason::ResyncRequired { reconnect_after_ms });
                 }
                 EventsSubscribeFrame::Unauthorized { .. } => {
                     return Ok(RealmStreamStopReason::Unauthorized { reason: None });
@@ -386,6 +376,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use arkret_models_collaboration::http_bodies::EventsSubscribeFrameKind;
     use arkret_wire::EventKind;
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
@@ -569,6 +560,7 @@ mod tests {
                 realm_id: Some(realm_id()),
             },
             EventsSubscribeFrameKind::Heartbeat => EventsSubscribeFrame::Heartbeat,
+            _ => panic!("unsupported test frame kind {kind:?}"),
         }
     }
 
@@ -796,40 +788,14 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn realm_driver_rejects_cursorless_dropped_as_protocol_error() {
-        // transport-bindings.md §1.1 rule 2: a `dropped` frame MUST carry a
-        // cursor; the server signals a lost position with `resync_required`.
-        let store = MemoryStore::new();
-        store
-            .save(scope(), "ak:cursor:stored".to_owned())
-            .await
-            .unwrap();
-        let mut dropped = frame(EventsSubscribeFrameKind::Dropped, Value::Null);
-        dropped.reconnect_after_ms = Some(50);
-        let transport = VecTransport::new(vec![dropped]);
-        let driver = RealmEventsDriver::new(store.clone(), store.clone());
-        let projector = RecordingProjector {
-            batches: Arc::new(Mutex::new(Vec::new())),
-            fail: false,
-        };
-
-        let error = driver
-            .run_stream(
-                &transport,
-                realm_id(),
-                arkret_canonical::DigestSuite::Sha256,
-                &projector,
-            )
-            .await
-            .unwrap_err();
-
-        assert!(error.to_string().contains("dropped_missing_cursor"));
-        // The stored reconnect position is untouched by the rejected trace.
-        assert_eq!(
-            store.load(scope()).await.unwrap().as_deref(),
-            Some("ak:cursor:stored")
-        );
+    #[test]
+    fn realm_frame_shape_rejects_cursorless_dropped() {
+        let malformed = json!({
+            "kind": "dropped",
+            "realm_id": realm_id(),
+            "reconnect_after_ms": 50
+        });
+        assert!(serde_json::from_value::<EventsSubscribeFrame>(malformed).is_err());
     }
 
     #[tokio::test]
@@ -937,10 +903,7 @@ mod tests {
             .save(scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
-        let unauthorized = frame(
-            EventsSubscribeFrameKind::Unauthorized,
-            json!({"reason": "revoked"}),
-        );
+        let unauthorized = frame(EventsSubscribeFrameKind::Unauthorized, Value::Null);
         let transport = VecTransport::new(vec![unauthorized]);
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
         let projector = RecordingProjector {
@@ -958,12 +921,7 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(
-            reason,
-            RealmStreamStopReason::Unauthorized {
-                reason: Some("revoked".to_owned())
-            }
-        );
+        assert_eq!(reason, RealmStreamStopReason::Unauthorized { reason: None });
         assert_eq!(
             store.load(scope()).await.unwrap().as_deref(),
             Some("ak:cursor:stored")
@@ -1002,11 +960,11 @@ mod tests {
             .save(scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
-        let mut event_frame = frame(
+        let event_frame = cursor_frame(
             EventsSubscribeFrameKind::Event,
             serde_json::to_value(message_event()).unwrap(),
+            "ak:cursor:frame1",
         );
-        event_frame.cursor = Some(Cursor::new("ak:cursor:frame1").unwrap());
         let completion = cursor_frame(
             EventsSubscribeFrameKind::CatchupComplete,
             Value::Null,
@@ -1049,8 +1007,11 @@ mod tests {
             .await
             .unwrap();
         let payload = serde_json::to_value(message_event()).unwrap();
-        let mut event_frame = frame(EventsSubscribeFrameKind::Event, payload.clone());
-        event_frame.cursor = Some(Cursor::new("ak:cursor:frame1").unwrap());
+        let event_frame = cursor_frame(
+            EventsSubscribeFrameKind::Event,
+            payload.clone(),
+            "ak:cursor:frame1",
+        );
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
 
         let completion = cursor_frame(
@@ -1105,47 +1066,15 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn realm_projected_skips_malformed_event_frame() {
-        // An unparseable Event frame must not wedge the stream: skip it and
-        // let the cursor advance past it.
-        let store = MemoryStore::new();
-        store
-            .save(scope(), "ak:cursor:stored".to_owned())
-            .await
-            .unwrap();
-        let mut bad_frame = frame(EventsSubscribeFrameKind::Event, json!({"not": "an event"}));
-        bad_frame.cursor = Some(Cursor::new("ak:cursor:frame1").unwrap());
-        let transport = VecTransport::new(vec![
-            bad_frame,
-            cursor_frame(
-                EventsSubscribeFrameKind::CatchupComplete,
-                Value::Null,
-                "ak:cursor:frame1",
-            ),
-        ]);
-        let projector = RecordingProjector {
-            batches: Arc::new(Mutex::new(Vec::new())),
-            fail: false,
-        };
-        let driver = RealmEventsDriver::new(store.clone(), store.clone());
-
-        let reason = driver
-            .run_stream(
-                &transport,
-                realm_id(),
-                arkret_canonical::DigestSuite::Sha256,
-                &projector,
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(reason, RealmStreamStopReason::StreamEnded);
-        assert!(projector.batches.lock().unwrap().is_empty());
-        assert_eq!(
-            store.load(scope()).await.unwrap().as_deref(),
-            Some("ak:cursor:frame1")
-        );
+    #[test]
+    fn realm_frame_shape_rejects_malformed_event_payload() {
+        let malformed = json!({
+            "kind": "event",
+            "realm_id": realm_id(),
+            "cursor": "ak:cursor:frame1",
+            "payload": {"not": "an event"}
+        });
+        assert!(serde_json::from_value::<EventsSubscribeFrame>(malformed).is_err());
     }
 
     #[tokio::test]
@@ -1210,11 +1139,11 @@ mod tests {
             .save(scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
-        let mut event_frame = frame(
+        let event_frame = cursor_frame(
             EventsSubscribeFrameKind::Event,
             serde_json::to_value(message_event()).unwrap(),
+            "ak:cursor:frame1",
         );
-        event_frame.cursor = Some(Cursor::new("ak:cursor:frame1").unwrap());
         let transport = VecTransport::new(vec![event_frame]);
         let projector = RecordingProjector {
             batches: Arc::new(Mutex::new(Vec::new())),

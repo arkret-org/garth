@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use crate::protocol::{AccountStreamInterrupt, AccountSubscribeBatch, Error, SyncRequestBody};
 use crate::protocol::{
-    ErrorEnvelope, EventKind, EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind,
-    Hlc, NotificationDelta, NotificationDeltaAction, NotificationId, RealmId,
+    ErrorEnvelope, EventKind, EventsQueryOutcome, EventsSubscribeFrame, Hlc, NotificationDelta,
+    NotificationDeltaAction, NotificationId, RealmId,
 };
-use serde_json::{Value, json};
+use serde_json::json;
 
 use super::*;
 use crate::store::CursorStore;
@@ -311,26 +311,18 @@ fn options() -> RunOptions {
     }
 }
 
-fn frame(kind: EventsSubscribeFrameKind, payload: Value) -> EventsSubscribeFrame {
-    let payload = if payload.is_null() {
-        None
-    } else {
-        Some(serde_json::from_value(payload).expect("frame payload must be an object"))
-    };
-    EventsSubscribeFrame {
-        kind,
-        realm_id: Some(realm_id()),
-        cursor: None,
-        payload,
-        reconnect_after_ms: None,
+fn dropped_frame(reconnect_after_ms: Option<u64>) -> EventsSubscribeFrame {
+    EventsSubscribeFrame::Dropped {
+        realm_id: realm_id(),
+        cursor: crate::protocol::identifiers::Cursor::new("ak:cursor:dropped").unwrap(),
+        reconnect_after_ms,
     }
 }
 
-fn unauthorized_frame(reason: &str) -> EventsSubscribeFrame {
-    frame(
-        EventsSubscribeFrameKind::Unauthorized,
-        json!({ "reason": reason }),
-    )
+fn unauthorized_frame(_reason: &str) -> EventsSubscribeFrame {
+    EventsSubscribeFrame::Unauthorized {
+        realm_id: Some(realm_id()),
+    }
 }
 
 fn accepted_event() -> arkret_wire::Event {
@@ -408,14 +400,11 @@ fn accepted_event() -> arkret_wire::Event {
 
 fn event_frame() -> EventsSubscribeFrame {
     let event = accepted_event();
-    let mut framed = frame(
-        EventsSubscribeFrameKind::Event,
-        serde_json::to_value(event).unwrap(),
-    );
-    // Data frames are cursor-bearing under the §1.1 trace rules.
-    framed.cursor =
-        Some(crate::protocol::identifiers::Cursor::new("ak:cursor:event-frame").unwrap());
-    framed
+    EventsSubscribeFrame::Event {
+        realm_id: realm_id(),
+        cursor: crate::protocol::identifiers::Cursor::new("ak:cursor:event-frame").unwrap(),
+        payload: Box::new(event),
+    }
 }
 
 fn cursor_expired_error() -> Error {
@@ -504,8 +493,7 @@ async fn run_realm_to_inbox_atomically_queues_dropped_backfill_and_cursor() {
         realm_id: realm_id(),
     };
     let client = test_client(RecordingExecutor::default(), store.clone());
-    let mut dropped = frame(EventsSubscribeFrameKind::Dropped, Value::Null);
-    dropped.cursor = Some(crate::protocol::identifiers::Cursor::new("ak:cursor:dropped").unwrap());
+    let dropped = dropped_frame(None);
     let provider = QueueProvider::new(vec![
         Ok(TestRealmTransport::frames(vec![Ok(dropped)])),
         Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
@@ -860,9 +848,7 @@ async fn run_realm_server_hint_suppresses_local_backoff() {
     // A `dropped` frame MUST carry a cursor (transport-bindings.md §1.1);
     // the engine backfills from it, honours the server's 25ms hint, and
     // the orchestrator then skips its local backoff sleep.
-    let mut dropped = frame(EventsSubscribeFrameKind::Dropped, Value::Null);
-    dropped.cursor = Some(crate::protocol::identifiers::Cursor::new("ak:cursor:dropped").unwrap());
-    dropped.reconnect_after_ms = Some(25);
+    let dropped = dropped_frame(Some(25));
     let provider = QueueProvider::new(vec![
         Ok(TestRealmTransport::frames(vec![Ok(dropped)])),
         Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(

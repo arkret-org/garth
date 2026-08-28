@@ -13,7 +13,7 @@ pub(crate) use arkret_models_collaboration::event_query::EventsQueryOrder;
 pub(crate) use arkret_models_collaboration::events_payloads::MessageCreatePayload;
 pub(crate) use arkret_models_collaboration::governance::agent_participation::ParticipationBits;
 pub(crate) use arkret_models_collaboration::http_bodies::{
-    EventsQueryOutcome, EventsSubscribeFrame, EventsSubscribeFrameKind,
+    EventsQueryOutcome, EventsSubscribeFrame,
 };
 pub(crate) use arkret_models_collaboration::session_grant_bodies::{
     SessionGrantAgentScopeRequest, SessionGrantDpopBindingProof, SessionGrantOutcome,
