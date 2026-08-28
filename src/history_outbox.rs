@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use arkret_models_collaboration::history_key::{
     EpochRange, HistoryKeyResponseContent, HistoryKeyResponseSendReceipt,
     HistoryKeyResponseSendRequest, HistoryKeySourceRelay, HistoryRequestId, HistoryResponseId,
+    HistorySourceSendDisposition,
 };
 use arkret_wire::Hash;
 use chrono::{DateTime, Utc};
@@ -91,11 +92,22 @@ impl HistorySourceAttemptIdentity {
     }
 }
 
+/// Closed source-local durable status of one attempt
+/// (`history-visibility.md` 6).
+///
+/// `PermanentlyRejected` is the terminal-for-retry state an attempt enters
+/// once its exact bytes are permanently unacceptable: it is neither
+/// `Completed` (which would claim a delivery that never happened) nor
+/// `Expired`, it stops resending the frozen bytes, and it releases the
+/// unfinished-attempt budget so a few permanent rejections cannot deadlock the
+/// legitimate replacement manifest. It describes only the attempt; whether a
+/// replacement may be authored is decided by the 6.2 disposition.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum HistorySourceAttemptStatus {
     Unfinished,
     Completed,
+    PermanentlyRejected,
     Expired,
 }
 
@@ -440,12 +452,37 @@ where
                     "staged history source record is not its canonical signed object".to_owned(),
                 ));
             }
-            let receipt = match &record {
+            let sent = match &record {
                 HistorySourceOutboundRecord::Direct { request } => {
-                    transport.send_response(request).await?
+                    transport.send_response(request).await
                 }
                 HistorySourceOutboundRecord::Relay { relay } => {
-                    transport.relay_response(relay).await?
+                    transport.relay_response(relay).await
+                }
+            };
+            let receipt = match sent {
+                Ok(receipt) => receipt,
+                Err(error) => {
+                    // history-visibility.md 6.2: the registered code alone
+                    // decides whether the frozen bytes stay retryable. Anything
+                    // that is not a closed reply, including transport failures,
+                    // keeps the attempt unfinished so the caller can retry the
+                    // exact staged bytes until the request expires.
+                    if send_disposition(&error).retries_same_bytes() {
+                        return Err(error);
+                    }
+                    return self
+                        .mutate(|snapshot| {
+                            let current =
+                                snapshot.attempts.get_mut(&attempt_key).ok_or_else(|| {
+                                    Error::Protocol("history source attempt disappeared".to_owned())
+                                })?;
+                            if current.status == HistorySourceAttemptStatus::Unfinished {
+                                current.status = HistorySourceAttemptStatus::PermanentlyRejected;
+                            }
+                            Ok(current.clone())
+                        })
+                        .await;
                 }
             };
             receipt.validate()?;
@@ -630,6 +667,20 @@ fn same_attempt_binding(
         && manifest.request_digest == record.request_digest
         && manifest.request_receipt_digest == record.request_receipt_digest
         && manifest.expires_at == record.expires_at
+}
+
+/// Map one send/relay failure onto its `history-visibility.md` 6.2 disposition.
+///
+/// Only a closed Problem reply carries a registered code; every other failure
+/// mode (transport, TLS, timeout, unparseable body) is a transient condition
+/// that leaves the frozen bytes acceptable, so it retries the same attempt.
+fn send_disposition(error: &Error) -> HistorySourceSendDisposition {
+    match error {
+        Error::Api { error, .. } => {
+            HistorySourceSendDisposition::classify(error.error.code.as_str())
+        }
+        _ => HistorySourceSendDisposition::RetrySameAttempt,
+    }
 }
 
 fn enforce_unfinished_attempt_limits(
@@ -943,6 +994,86 @@ mod tests {
         }
     }
 
+    /// A transport that fails every send with one closed Problem reply so the
+    /// 6.2 disposition can be exercised deterministically.
+    #[derive(Clone)]
+    struct RejectingTransport {
+        code: &'static str,
+        status: u16,
+        attempts: Arc<AtomicUsize>,
+    }
+
+    impl RejectingTransport {
+        fn new(code: &'static str, status: u16) -> Self {
+            Self {
+                code,
+                status,
+                attempts: Arc::new(AtomicUsize::new(0)),
+            }
+        }
+
+        fn attempts(&self) -> usize {
+            self.attempts.load(Ordering::SeqCst)
+        }
+
+        fn error(&self) -> Error {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            Error::Api {
+                status: self.status,
+                error: Box::new(arkret_wire::problem_details::ErrorEnvelope::new(
+                    self.code,
+                    "rejected by fixture transport",
+                )),
+            }
+        }
+    }
+
+    impl HistoryRuntimeTransport for RejectingTransport {
+        fn create_request<'a>(
+            &'a self,
+            _request: &'a HistoryKeyRequest,
+        ) -> impl Future<Output = Result<HistoryKeyRequestCreateOutcome>> + MaybeSend + 'a {
+            async { unreachable!("not used by source outbox") }
+        }
+
+        fn list_requests<'a>(
+            &'a self,
+            _query: &'a HistoryKeyRequestListQuery,
+        ) -> impl Future<Output = Result<HistoryKeyRequestListOutcome>> + MaybeSend + 'a {
+            async { unreachable!("not used by source outbox") }
+        }
+
+        fn send_response<'a>(
+            &'a self,
+            _request: &'a HistoryKeyResponseSendRequest,
+        ) -> impl Future<Output = Result<HistoryKeyResponseSendReceipt>> + MaybeSend + 'a {
+            async move { Err(self.error()) }
+        }
+
+        fn relay_response<'a>(
+            &'a self,
+            _relay: &'a HistoryKeySourceRelay,
+        ) -> impl Future<Output = Result<HistoryKeyResponseSendReceipt>> + MaybeSend + 'a {
+            async move { Err(self.error()) }
+        }
+
+        fn list_responses<'a>(
+            &'a self,
+            _capability_b64u: &'a str,
+            _query: &'a HistoryKeyResponseListQuery,
+        ) -> impl Future<Output = Result<HistoryKeyResponseListOutcome>> + MaybeSend + 'a {
+            async { unreachable!("not used by source outbox") }
+        }
+
+        fn acknowledge_responses<'a>(
+            &'a self,
+            _capability_b64u: &'a str,
+            _request: &'a HistoryKeyResponseAckRequest,
+        ) -> impl Future<Output = Result<HistoryKeyResponseAckOutcome>> + MaybeSend + 'a {
+            async { unreachable!("not used by source outbox") }
+        }
+    }
+
     #[tokio::test]
     async fn crash_before_ready_marker_never_exposes_partial_attempt() {
         let outbox = HistorySourceOutbox::new(MemoryHistorySourceOutboxStore::new());
@@ -1054,6 +1185,100 @@ mod tests {
                 .ready_attempt_identities(HistorySourceRoute::Relay)
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn transient_rejection_keeps_the_attempt_retrying_exact_bytes() {
+        let outbox = HistorySourceOutbox::new(MemoryHistorySourceOutboxStore::new());
+        let blobs = MemoryHistorySourceBlobStore::new();
+        let identity = outbox
+            .stage_attempt(&blobs, attempt_bundle())
+            .await
+            .unwrap();
+        let transport = RejectingTransport::new("dependency_missing", 409);
+        let now = DateTime::parse_from_rfc3339("2026-08-27T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        for _ in 0..2 {
+            assert!(
+                outbox
+                    .replay_attempt(&transport, &blobs, &identity, now)
+                    .await
+                    .is_err(),
+                "a transient rejection must surface so the caller retries"
+            );
+            let attempt = outbox.attempt(&identity).unwrap().unwrap();
+            assert_eq!(attempt.status, HistorySourceAttemptStatus::Unfinished);
+        }
+        assert_eq!(transport.attempts(), 2);
+    }
+
+    #[tokio::test]
+    async fn permanent_rejection_stops_retrying_without_claiming_delivery() {
+        let outbox = HistorySourceOutbox::new(MemoryHistorySourceOutboxStore::new());
+        let blobs = MemoryHistorySourceBlobStore::new();
+        let identity = outbox
+            .stage_attempt(&blobs, attempt_bundle())
+            .await
+            .unwrap();
+        let transport = RejectingTransport::new("state_mismatch", 409);
+        let now = DateTime::parse_from_rfc3339("2026-08-27T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let rejected = outbox
+            .replay_attempt(&transport, &blobs, &identity, now)
+            .await
+            .unwrap();
+        assert_eq!(
+            rejected.status,
+            HistorySourceAttemptStatus::PermanentlyRejected
+        );
+        assert!(
+            rejected.receipts.is_empty(),
+            "a permanently rejected attempt must never look delivered"
+        );
+
+        // A later tick must not resend the frozen bytes.
+        outbox
+            .replay_attempt(&transport, &blobs, &identity, now)
+            .await
+            .unwrap();
+        assert_eq!(transport.attempts(), 1);
+    }
+
+    #[tokio::test]
+    async fn permanently_rejected_attempts_release_the_unfinished_budget() {
+        let outbox = HistorySourceOutbox::new(MemoryHistorySourceOutboxStore::new());
+        let blobs = MemoryHistorySourceBlobStore::new();
+        let identity = outbox
+            .stage_attempt(&blobs, attempt_bundle())
+            .await
+            .unwrap();
+        let transport = RejectingTransport::new("history_not_visible", 403);
+        let now = DateTime::parse_from_rfc3339("2026-08-27T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        outbox
+            .replay_attempt(&transport, &blobs, &identity, now)
+            .await
+            .unwrap();
+
+        let snapshot = outbox
+            .store()
+            .load_history_source_outbox()
+            .unwrap()
+            .snapshot;
+        assert!(enforce_unfinished_attempt_limits(&snapshot, &identity).is_ok());
+        assert_eq!(
+            snapshot
+                .attempts
+                .values()
+                .filter(|attempt| attempt.status == HistorySourceAttemptStatus::Unfinished)
+                .count(),
+            0
         );
     }
 
