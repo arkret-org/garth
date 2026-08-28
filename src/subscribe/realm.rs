@@ -160,57 +160,45 @@ where
         while let Some(frame) = source.next_frame().await? {
             let update = trace.push(&frame).map_err(crate::protocol::Error::from)?;
             let cursor = frame
-                .cursor
-                .as_ref()
+                .cursor()
                 .map(|cursor| cursor.as_str().to_owned());
             let mut batch = Vec::new();
             let mut remember_after_commit = None;
 
-            match frame.kind {
-                EventsSubscribeFrameKind::Event => {
-                    if let Some(payload) = frame.payload
-                        && let Ok(event) = serde_json::from_value::<Event>(
-                            serde_json::Value::Object(payload.into_iter().collect()),
-                        )
-                    {
-                        let event_id = crate::protocol::verified_event_id(&event, digest_suite)?;
-                        if !self.event_cache_store.seen(event_id.clone()).await? {
-                            batch = self.realm_event_batch(event, &realm_id, digest_suite);
-                            remember_after_commit = Some(event_id);
-                        }
+            match frame {
+                EventsSubscribeFrame::Event { payload, .. } => {
+                    let event = *payload;
+                    let event_id = crate::protocol::verified_event_id(&event, digest_suite)?;
+                    if !self.event_cache_store.seen(event_id.clone()).await? {
+                        batch = self.realm_event_batch(event, &realm_id, digest_suite);
+                        remember_after_commit = Some(event_id);
                     }
                 }
-                EventsSubscribeFrameKind::Heartbeat
-                | EventsSubscribeFrameKind::Frontier
-                | EventsSubscribeFrameKind::CatchupComplete
-                | EventsSubscribeFrameKind::EpochRotation => {}
-                EventsSubscribeFrameKind::Dropped => {
-                    let Some(cursor) = cursor else {
-                        return Err(crate::protocol::Error::Protocol(
-                            "dropped frame passed trace validation without a cursor".to_owned(),
-                        ));
-                    };
+                EventsSubscribeFrame::Heartbeat
+                | EventsSubscribeFrame::Frontier { .. }
+                | EventsSubscribeFrame::CatchupComplete { .. }
+                | EventsSubscribeFrame::EpochRotation { .. } => {}
+                EventsSubscribeFrame::Dropped {
+                    cursor,
+                    reconnect_after_ms,
+                    ..
+                } => {
                     return Ok(RealmStreamStopReason::Dropped {
-                        cursor,
-                        reconnect_after_ms: frame.reconnect_after_ms,
+                        cursor: cursor.into_string(),
+                        reconnect_after_ms,
                     });
                 }
-                EventsSubscribeFrameKind::ResyncRequired => {
+                EventsSubscribeFrame::ResyncRequired {
+                    reconnect_after_ms, ..
+                } => {
                     self.cursor_store.clear(scope.clone()).await?;
                     return Ok(RealmStreamStopReason::ResyncRequired {
-                        reconnect_after_ms: frame.reconnect_after_ms,
+                        reconnect_after_ms,
                     });
                 }
-                EventsSubscribeFrameKind::Unauthorized => {
-                    let reason = frame
-                        .payload
-                        .as_ref()
-                        .and_then(|payload| payload.get("reason"))
-                        .and_then(|reason| reason.as_str())
-                        .map(str::to_owned);
-                    return Ok(RealmStreamStopReason::Unauthorized { reason });
+                EventsSubscribeFrame::Unauthorized { .. } => {
+                    return Ok(RealmStreamStopReason::Unauthorized { reason: None });
                 }
-                _ => {}
             }
 
             if update.cursor_advanced
@@ -276,99 +264,78 @@ where
                 .push(&frame)
                 .map_err(|error| ProjectedRunError::Transport(error.into()))?;
             let cursor = frame
-                .cursor
-                .as_ref()
+                .cursor()
                 .map(|cursor| cursor.as_str().to_owned());
 
-            match frame.kind {
-                EventsSubscribeFrameKind::Event => {
-                    // A malformed Event frame must not poison the stream
-                    // Skip it and let the cursor advance, otherwise every
-                    // reconnect would replay the same frame and wedge realm
-                    // sync permanently.
-                    if let Some(payload) = frame.payload
-                        && let Ok(event) = serde_json::from_value::<Event>(
-                            serde_json::Value::Object(payload.into_iter().collect()),
-                        )
-                    {
-                        match crate::protocol::verified_event_id(&event, digest_suite) {
-                            Ok(event_id) => {
-                                if !self
-                                    .event_cache_store
-                                    .seen(event_id.clone())
-                                    .await
-                                    .map_err(ProjectedRunError::Store)?
-                                {
-                                    let batch =
-                                        self.realm_event_batch(event, &realm_id, digest_suite);
-                                    if !batch.is_empty() {
-                                        // Gate: project must persist before the cursor moves.
-                                        projector
-                                            .project(batch)
-                                            .await
-                                            .map_err(ProjectedRunError::Projector)?;
-                                    }
-                                    // Remember only after a successful projection: a
-                                    // projector error must leave BOTH the cursor and
-                                    // the dedupe cache untouched, so the redelivered
-                                    // frame is projected again instead of being
-                                    // silently swallowed by dedupe.
-                                    self.event_cache_store
-                                        .remember(event_id)
+            match frame {
+                EventsSubscribeFrame::Event { payload, .. } => {
+                    let event = *payload;
+                    match crate::protocol::verified_event_id(&event, digest_suite) {
+                        Ok(event_id) => {
+                            if !self
+                                .event_cache_store
+                                .seen(event_id.clone())
+                                .await
+                                .map_err(ProjectedRunError::Store)?
+                            {
+                                let batch =
+                                    self.realm_event_batch(event, &realm_id, digest_suite);
+                                if !batch.is_empty() {
+                                    // Gate: project must persist before the cursor moves.
+                                    projector
+                                        .project(batch)
                                         .await
-                                        .map_err(ProjectedRunError::Store)?;
+                                        .map_err(ProjectedRunError::Projector)?;
                                 }
+                                // Remember only after a successful projection: a
+                                // projector error must leave BOTH the cursor and
+                                // the dedupe cache untouched, so the redelivered
+                                // frame is projected again instead of being
+                                // silently swallowed by dedupe.
+                                self.event_cache_store
+                                    .remember(event_id)
+                                    .await
+                                    .map_err(ProjectedRunError::Store)?;
                             }
-                            Err(error) => {
-                                tracing::warn!(
-                                    %error,
-                                    event_id = %event.event_id,
-                                    realm_id = %realm_id,
-                                    "skipping invalid event frame while advancing its durable cursor"
-                                );
-                            }
+                        }
+                        Err(error) => {
+                            tracing::warn!(
+                                %error,
+                                event_id = %event.event_id,
+                                realm_id = %realm_id,
+                                "skipping invalid event frame while advancing its durable cursor"
+                            );
                         }
                     }
                 }
-                EventsSubscribeFrameKind::Heartbeat
-                | EventsSubscribeFrameKind::Frontier
-                | EventsSubscribeFrameKind::CatchupComplete
-                | EventsSubscribeFrameKind::EpochRotation => {}
-                EventsSubscribeFrameKind::Dropped => {
-                    // The validator already rejected a cursorless dropped
-                    // frame (the server MUST use `resync_required` instead),
-                    // so the cursor is guaranteed here.
-                    let Some(cursor) = cursor else {
-                        return Err(ProjectedRunError::Transport(
-                            crate::protocol::Error::Protocol(
-                                "dropped frame passed trace validation without a cursor".to_owned(),
-                            ),
-                        ));
-                    };
+                EventsSubscribeFrame::Heartbeat
+                | EventsSubscribeFrame::Frontier { .. }
+                | EventsSubscribeFrame::CatchupComplete { .. }
+                | EventsSubscribeFrame::EpochRotation { .. } => {}
+                EventsSubscribeFrame::Dropped {
+                    cursor,
+                    reconnect_after_ms,
+                    ..
+                } => {
                     return Ok(RealmStreamStopReason::Dropped {
-                        cursor,
-                        reconnect_after_ms: frame.reconnect_after_ms,
+                        cursor: cursor.into_string(),
+                        reconnect_after_ms,
                     });
                 }
-                EventsSubscribeFrameKind::ResyncRequired => {
+                EventsSubscribeFrame::ResyncRequired {
+                    reconnect_after_ms, ..
+                } => {
                     self.cursor_store
                         .clear(scope.clone())
                         .await
                         .map_err(ProjectedRunError::Store)?;
                     return Ok(RealmStreamStopReason::ResyncRequired {
-                        reconnect_after_ms: frame.reconnect_after_ms,
+                        reconnect_after_ms,
                     });
                 }
-                EventsSubscribeFrameKind::Unauthorized => {
-                    let reason = frame
-                        .payload
-                        .as_ref()
-                        .and_then(|payload| payload.get("reason"))
-                        .and_then(|reason| reason.as_str())
-                        .map(str::to_owned);
-                    return Ok(RealmStreamStopReason::Unauthorized { reason });
+                EventsSubscribeFrame::Unauthorized { .. } => {
+                    return Ok(RealmStreamStopReason::Unauthorized { reason: None });
                 }
-                _ => {}
             }
 
             // Durable checkpoint: only frames the validator acknowledged as
@@ -570,17 +537,38 @@ mod tests {
     }
 
     fn frame(kind: EventsSubscribeFrameKind, payload: Value) -> EventsSubscribeFrame {
-        let payload = if payload.is_null() {
-            None
-        } else {
-            Some(serde_json::from_value(payload).expect("frame payload must be an object"))
-        };
-        EventsSubscribeFrame {
-            kind,
-            realm_id: Some(realm_id()),
-            cursor: None,
-            payload,
-            reconnect_after_ms: None,
+        match kind {
+            EventsSubscribeFrameKind::Event => EventsSubscribeFrame::Event {
+                realm_id: realm_id(),
+                cursor: Cursor::new("ak:cursor:frame").unwrap(),
+                payload: Box::new(
+                    serde_json::from_value(payload).expect("frame payload must be an Event"),
+                ),
+            },
+            EventsSubscribeFrameKind::EpochRotation => EventsSubscribeFrame::EpochRotation {
+                realm_id: realm_id(),
+                payload: serde_json::from_value(payload)
+                    .expect("frame payload must be an epoch rotation"),
+            },
+            EventsSubscribeFrameKind::Frontier => EventsSubscribeFrame::Frontier {
+                cursor: Cursor::new("ak:cursor:frame").unwrap(),
+            },
+            EventsSubscribeFrameKind::CatchupComplete => EventsSubscribeFrame::CatchupComplete {
+                cursor: Cursor::new("ak:cursor:frame").unwrap(),
+            },
+            EventsSubscribeFrameKind::Dropped => EventsSubscribeFrame::Dropped {
+                realm_id: realm_id(),
+                cursor: Cursor::new("ak:cursor:dropped").unwrap(),
+                reconnect_after_ms: None,
+            },
+            EventsSubscribeFrameKind::ResyncRequired => EventsSubscribeFrame::ResyncRequired {
+                realm_id: Some(realm_id()),
+                reconnect_after_ms: None,
+            },
+            EventsSubscribeFrameKind::Unauthorized => EventsSubscribeFrame::Unauthorized {
+                realm_id: Some(realm_id()),
+            },
+            EventsSubscribeFrameKind::Heartbeat => EventsSubscribeFrame::Heartbeat,
         }
     }
 
@@ -589,9 +577,41 @@ mod tests {
         payload: Value,
         cursor: &str,
     ) -> EventsSubscribeFrame {
-        let mut framed = frame(kind, payload);
-        framed.cursor = Some(Cursor::new(cursor).unwrap());
-        framed
+        let cursor = Cursor::new(cursor).unwrap();
+        match kind {
+            EventsSubscribeFrameKind::Event => EventsSubscribeFrame::Event {
+                realm_id: realm_id(),
+                cursor,
+                payload: Box::new(
+                    serde_json::from_value(payload).expect("frame payload must be an Event"),
+                ),
+            },
+            EventsSubscribeFrameKind::Frontier => EventsSubscribeFrame::Frontier { cursor },
+            EventsSubscribeFrameKind::CatchupComplete => {
+                EventsSubscribeFrame::CatchupComplete { cursor }
+            }
+            EventsSubscribeFrameKind::Dropped => EventsSubscribeFrame::Dropped {
+                realm_id: realm_id(),
+                cursor,
+                reconnect_after_ms: None,
+            },
+            _ => panic!("{kind:?} is not cursor-bearing"),
+        }
+    }
+
+    fn resync_frame(reconnect_after_ms: Option<u64>) -> EventsSubscribeFrame {
+        EventsSubscribeFrame::ResyncRequired {
+            realm_id: Some(realm_id()),
+            reconnect_after_ms,
+        }
+    }
+
+    fn dropped_frame(cursor: &str, reconnect_after_ms: Option<u64>) -> EventsSubscribeFrame {
+        EventsSubscribeFrame::Dropped {
+            realm_id: realm_id(),
+            cursor: Cursor::new(cursor).unwrap(),
+            reconnect_after_ms,
+        }
     }
 
     #[tokio::test]
@@ -671,11 +691,9 @@ mod tests {
     #[tokio::test]
     async fn realm_driver_saves_data_cursor_but_never_heartbeat_cursor() {
         let store = MemoryStore::new();
-        // transport-bindings.md §1.1 rule 3: heartbeat MUST NOT advance the
-        // reconnect position even when it (illegally) carries a cursor;
-        // frontier is cursor-bearing and does advance.
-        let mut heartbeat = frame(EventsSubscribeFrameKind::Heartbeat, Value::Null);
-        heartbeat.cursor = Some(Cursor::new("ak:cursor:heartbeat").unwrap());
+        // transport-bindings.md §1.1 rule 3: heartbeat has no cursor in the
+        // closed frame union; frontier is cursor-bearing and does advance.
+        let heartbeat = frame(EventsSubscribeFrameKind::Heartbeat, Value::Null);
         let frontier = cursor_frame(
             EventsSubscribeFrameKind::Frontier,
             Value::Null,
@@ -713,8 +731,7 @@ mod tests {
             .save(scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
-        let mut resync = frame(EventsSubscribeFrameKind::ResyncRequired, Value::Null);
-        resync.reconnect_after_ms = Some(25);
+        let resync = resync_frame(Some(25));
         let transport = VecTransport::new(vec![resync]);
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
         let projector = RecordingProjector {
@@ -748,9 +765,7 @@ mod tests {
             .save(scope(), "ak:cursor:stored".to_owned())
             .await
             .unwrap();
-        let mut dropped = frame(EventsSubscribeFrameKind::Dropped, Value::Null);
-        dropped.cursor = Some(Cursor::new("ak:cursor:dropped").unwrap());
-        dropped.reconnect_after_ms = Some(50);
+        let dropped = dropped_frame("ak:cursor:dropped", Some(50));
         let transport = VecTransport::new(vec![dropped]);
         let driver = RealmEventsDriver::new(store.clone(), store.clone());
         let projector = RecordingProjector {
