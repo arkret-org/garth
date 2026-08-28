@@ -96,8 +96,8 @@ where
         after: Option<&str>,
     ) -> Result<WebSocketEventsChannel<E>> {
         let parameters = WebSocketOpenParameters::Events(WebSocketEventsOpenParameters {
-            realms: Some(realms),
-            actors: None,
+            realm_ids: Some(realms),
+            actor_ids: None,
             after: after
                 .map(|value| Cursor::new(value.to_owned()))
                 .transpose()?,

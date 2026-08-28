@@ -15,7 +15,7 @@ pub(crate) fn account_updates_to_events_with_origin(
 ) -> Vec<ClientEvent> {
     let SyncUpdates {
         realm_updates,
-        malformed_realms,
+        malformed_realm_ids: malformed_realms,
         to_device,
         to_device_ack_token,
         to_device_limited,
@@ -73,15 +73,15 @@ mod tests {
                     .unwrap(),
                 entry: RealmSyncEntry::default(),
             }],
-            malformed_realms: Vec::new(),
+            malformed_realm_ids: Vec::new(),
             to_device: Vec::new(),
             to_device_ack_token: None,
             to_device_limited: false,
             to_device_next_cursor: None,
             to_device_lost: false,
             device_lists: AccountSubscribeDeviceListChanges {
-                changed: Vec::new(),
-                left: Vec::new(),
+                changed_ids: Vec::new(),
+                left_ids: Vec::new(),
             },
             account_data: Vec::new(),
             notifications: vec![NotificationDelta {

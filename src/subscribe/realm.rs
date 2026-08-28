@@ -548,7 +548,7 @@ mod tests {
                 arkret_wire::PrincipalServerAdmissionProof::producer_proof_digest(&producer)
                     .unwrap(),
             producer_verification_method: producer.verification_method.clone(),
-            producer_signing_key: arkret_wire::DidKey::new("did:key:z6MkhFixtureDeviceKey")
+            producer_signing_key_did: arkret_wire::DidKey::new("did:key:z6MkhFixtureDeviceKey")
                 .unwrap(),
             producer_signer_resolution_evidence_ref: None,
             producer_signer_resolution_evidence_digest: None,

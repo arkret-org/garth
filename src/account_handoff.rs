@@ -534,8 +534,8 @@ pub fn oidc_account_handoff_request(
             // The authorization transaction nonce is the protocol challenge
             // for this code-exchange transcript.
             challenge: input.nonce.clone(),
-            audience: input.audience,
-            issuer: input.issuer,
+            audience_id: input.audience,
+            issuer_uri: input.issuer,
             client_id: input.client_id,
             redirect_uri: input.redirect_uri,
             state: input.state,
@@ -645,8 +645,8 @@ pub fn identity_creation_register_request(
             identity_creation_lease_id: challenge.identity_creation_lease_id.clone(),
             lease_fence: challenge.lease_fence,
             dpop_jkt: challenge.dpop_jkt.clone(),
-            audience: challenge.audience.clone(),
-            origin: challenge.origin.clone(),
+            audience_id: challenge.audience_id.clone(),
+            origin_uri: challenge.origin_uri.clone(),
             trust_domain: challenge.trust_domain.clone(),
             issued_at: challenge.issued_at,
             expires_at: challenge.expires_at,

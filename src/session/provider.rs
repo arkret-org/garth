@@ -383,7 +383,7 @@ mod tests {
             )
             .unwrap(),
             expires_at: Utc::now() + Duration::hours(1),
-            audience: DidCoreId::new(
+            audience_id: DidCoreId::new(
                 "ak:did_core:webvh:z6mkfixture:service.example",
             )
             .unwrap(),
@@ -401,7 +401,7 @@ mod tests {
                 "sha256:0000000000000000000000000000000000000000000000000000000000000000",
             )
             .unwrap(),
-            audience: audience.clone(),
+            audience_id: audience.clone(),
             issued_at: Utc::now(),
             expires_at: Utc::now() + Duration::minutes(5),
             verification_method: DidUrl::new("did:webvh:z6mkfixture:agent.example#runtime-key-1")
@@ -415,7 +415,7 @@ mod tests {
             request: Some(SessionGrantRefreshRequestBody::Agent(
                 AgentSessionGrantRefreshRequest {
                     grant_jwt: "grant-1".to_owned(),
-                    audience: Some(audience),
+                    audience_id: Some(audience),
                     device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001")
                         .unwrap(),
                     agent_session_refresh_proof: proof,

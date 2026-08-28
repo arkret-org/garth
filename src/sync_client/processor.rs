@@ -133,10 +133,10 @@ impl SyncResponseProcessor {
                 to_device.extend(container.messages);
             }
             if let Some(changes) = frame.device_lists {
-                changed_device_lists.extend(changes.changed.iter().cloned());
-                left_device_lists.extend(changes.left.iter().cloned());
-                self.changed_device_lists.extend(changes.changed);
-                self.left_device_lists.extend(changes.left);
+                changed_device_lists.extend(changes.changed_ids.iter().cloned());
+                left_device_lists.extend(changes.left_ids.iter().cloned());
+                self.changed_device_lists.extend(changes.changed_ids);
+                self.left_device_lists.extend(changes.left_ids);
             }
             if let Some(container) = frame.account_data {
                 for event in container.events {
@@ -161,7 +161,7 @@ impl SyncResponseProcessor {
                 }
             }
             if let Some(bundle) = frame.agent_signer_evidence_bundle {
-                agent_signer_evidence.extend(bundle.evidence);
+                agent_signer_evidence.extend(bundle.evidence_items);
             }
             partial |= frame.partial.unwrap_or(false);
         }
@@ -173,15 +173,15 @@ impl SyncResponseProcessor {
 
         Ok(SyncUpdates {
             realm_updates,
-            malformed_realms,
+            malformed_realm_ids: malformed_realms,
             to_device,
             to_device_ack_token,
             to_device_limited,
             to_device_next_cursor,
             to_device_lost,
             device_lists: AccountSubscribeDeviceListChanges {
-                changed: changed_device_lists.into_iter().collect(),
-                left: left_device_lists.into_iter().collect(),
+                changed_ids: changed_device_lists.into_iter().collect(),
+                left_ids: left_device_lists.into_iter().collect(),
             },
             account_data,
             notifications,
@@ -208,8 +208,8 @@ impl SyncResponseProcessor {
 
     pub fn device_lists(&self) -> AccountSubscribeDeviceListChanges {
         AccountSubscribeDeviceListChanges {
-            changed: self.changed_device_lists.iter().cloned().collect(),
-            left: self.left_device_lists.iter().cloned().collect(),
+            changed_ids: self.changed_device_lists.iter().cloned().collect(),
+            left_ids: self.left_device_lists.iter().cloned().collect(),
         }
     }
 

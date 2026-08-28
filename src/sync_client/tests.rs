@@ -390,7 +390,7 @@ fn processor_dispatches_all_update_categories() {
         summary: Some(AccountSubscribeRealmSummary {
             joined_member_count: Some(2),
             invited_member_count: None,
-            heroes: None,
+            hero_ids: None,
         }),
         unread_notifications: Some(AccountSubscribeUnreadCounts {
             notification_count: Some(3),
@@ -443,8 +443,8 @@ fn processor_dispatches_all_update_categories() {
         extra: BTreeMap::new(),
     });
     frame.device_lists = Some(AccountSubscribeDeviceListChanges {
-        changed: vec![sender.clone()],
-        left: Vec::new(),
+        changed_ids: vec![sender.clone()],
+        left_ids: Vec::new(),
     });
     frame.account_data = Some(EventContainer {
         events: vec![account_data_event],
@@ -486,7 +486,7 @@ fn processor_dispatches_all_update_categories() {
     assert!(processor.recovery_actions().is_empty());
     assert!(processor.account_data("ak.settings").is_some());
     assert!(processor.notification(notification_id).is_some());
-    assert_eq!(processor.device_lists().changed.len(), 1);
+    assert_eq!(processor.device_lists().changed_ids.len(), 1);
 }
 
 /// A per-stream Realm delta that reports only, say, unread counts carries no
@@ -506,7 +506,7 @@ fn summary_less_realm_delta_preserves_durable_processor_summary() {
                 summary: Some(AccountSubscribeRealmSummary {
                     joined_member_count: Some(2),
                     invited_member_count: None,
-                    heroes: None,
+                    hero_ids: None,
                 }),
                 ..Default::default()
             },

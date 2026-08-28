@@ -435,7 +435,7 @@ where
         query.validate()?;
         let page = transport.list_responses(&capability, &query).await?;
         page.validate()?;
-        if page.ack_entries.is_empty() {
+        if page.history_response_page_entries.is_empty() {
             return Ok(page);
         }
         self.mutate(|snapshot| {
@@ -614,7 +614,7 @@ where
             ));
         }
         let high_sequence = ack
-            .ack_entries
+            .history_response_ack_entries
             .last()
             .expect("validated ACK contains entries")
             .sequence();
@@ -885,7 +885,7 @@ fn validate_page_after_high_water(
 ) -> Result<()> {
     if let (Some(high), Some(first)) = (
         response_stream.acknowledged_through_sequence,
-        page.ack_entries.first(),
+        page.history_response_page_entries.first(),
     ) && first.sequence() <= high
     {
         return Err(Error::Protocol(
@@ -901,7 +901,7 @@ fn validate_disposition_for_page(
     disposition: &HistoryResponseAckEntry,
 ) -> Result<()> {
     let entry = page
-        .ack_entries
+        .history_response_page_entries
         .iter()
         .find(|entry| entry.sequence() == disposition.sequence())
         .ok_or_else(|| {
@@ -947,13 +947,13 @@ fn build_ack_for_pending_page(
         .pending_page
         .as_ref()
         .ok_or_else(|| Error::Protocol("history response stream has no pending page".to_owned()))?;
-    if page.ack_entries.is_empty() {
+    if page.history_response_page_entries.is_empty() {
         return Err(Error::Protocol(
             "empty history response stream page has nothing to acknowledge".to_owned(),
         ));
     }
-    let mut ack_entries = Vec::with_capacity(page.ack_entries.len());
-    for page_entry in &page.ack_entries {
+    let mut ack_entries = Vec::with_capacity(page.history_response_page_entries.len());
+    for page_entry in &page.history_response_page_entries {
         let disposition = response_stream
             .pending_dispositions
             .get(&page_entry.sequence())
@@ -966,7 +966,11 @@ fn build_ack_for_pending_page(
         validate_disposition_for_page(page, &disposition)?;
         ack_entries.push(disposition);
     }
-    let high_water_cursor = match page.ack_entries.last().expect("page is non-empty") {
+    let high_water_cursor = match page
+        .history_response_page_entries
+        .last()
+        .expect("page is non-empty")
+    {
         HistoryResponsePageEntry::Record { record } => record.cursor.clone(),
         HistoryResponsePageEntry::Lost { lost_record } => lost_record.cursor.clone(),
     };
@@ -975,7 +979,7 @@ fn build_ack_for_pending_page(
             Error::Protocol("non-empty history response page omitted ack_token".to_owned())
         })?,
         high_water_cursor,
-        ack_entries,
+        history_response_ack_entries: ack_entries,
     };
     request.validate()?;
     Ok(request)

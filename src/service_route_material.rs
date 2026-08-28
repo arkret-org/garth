@@ -58,9 +58,9 @@ fn digest_hex(digest: &Hash) -> Result<&str> {
 /// mechanically derived `current_record_url`, and a `describe_digest` that is
 /// the canonical projection digest over the record's own coordinates.
 pub fn validate_route_binding(record: &ServiceResolutionRecord) -> Result<()> {
-    let base = CanonicalServiceUrl::canonicalize(&record.record.base_url)
+    let base = CanonicalServiceUrl::canonicalize(&record.record.base_uri)
         .map_err(|error| Error::Protocol(error.to_string()))?;
-    if base.to_string() != record.record.base_url {
+    if base.to_string() != record.record.base_uri {
         return Err(Error::Protocol(
             "service_route_base_url_not_canonical".to_owned(),
         ));
@@ -83,7 +83,7 @@ pub fn validate_route_binding(record: &ServiceResolutionRecord) -> Result<()> {
             method_history_head: record.record.method_history_head.clone(),
             version_id: record.record.version_id.clone(),
         },
-        &record.record.base_url,
+        &record.record.base_uri,
     )?;
     if digest != record.record.describe_digest {
         return Err(Error::Protocol(
@@ -292,8 +292,8 @@ pub fn describe_route_binding(
             .transport_bindings
             .iter()
             .filter_map(|binding| match binding {
-                arkret_models_discovery::TransportBinding::HttpJson { base_url, .. } => {
-                    Some(base_url.as_str())
+                arkret_models_discovery::TransportBinding::HttpJson { base_uri, .. } => {
+                    Some(base_uri.as_str())
                 }
                 _ => None,
             });
@@ -308,7 +308,7 @@ pub fn describe_route_binding(
     let advertised_base = CanonicalServiceUrl::canonicalize(advertised_base_raw)
         .map_err(|error| Error::Protocol(error.to_string()))?;
     if advertised_base.as_str() != advertised_base_raw
-        || advertised_base.as_str() != record.record.base_url
+        || advertised_base.as_str() != record.record.base_uri
     {
         return Err(Error::Protocol(
             "service_route_describe_base_mismatch".to_owned(),
@@ -500,7 +500,7 @@ pub mod test_fixture {
                     base_url,
                     canonical_service_current_record_path(&service_id).trim_start_matches('/')
                 ),
-                base_url: base_url.clone(),
+                base_uri: base_url.clone(),
                 describe_digest,
                 issued_at,
                 refresh_after: issued_at + Duration::minutes(5),
@@ -521,7 +521,7 @@ pub mod test_fixture {
             registered_kind,
             vec![format!("ak.operation_bundle.{service_kind}.describe.v1")],
             vec![TransportBinding::HttpJson {
-                base_url,
+                base_uri: base_url,
                 extension_profile_required: (),
             }],
         );
@@ -584,7 +584,7 @@ mod tests {
             .resolve(&fixture.service_id, "media_service", now, &mut source)
             .unwrap();
         assert_eq!(resolved.source(), RouteCandidateSource::CurrentRecord);
-        assert_eq!(resolved.route().base_url, "https://media.example/");
+        assert_eq!(resolved.route().base_uri, "https://media.example/");
         assert_eq!(resolved.route().record_sequence, 0);
         // The durable floor advanced atomically before the route was returned.
         let snapshot = evaluator
@@ -613,12 +613,12 @@ mod tests {
         let now = now_fixture();
         let fixture = signed_web_route_fixture("media.example", "media_service", now, 0, None, 31);
         let mut describe = fixture.describe.clone();
-        let arkret_models_discovery::TransportBinding::HttpJson { base_url, .. } =
+        let arkret_models_discovery::TransportBinding::HttpJson { base_uri, .. } =
             &mut describe.transport_bindings[0]
         else {
             panic!("fixture must use HTTP/JSON transport");
         };
-        *base_url = "https://other.example/".to_owned();
+        *base_uri = "https://other.example/".to_owned();
         assert!(describe_route_binding(&fixture.record, &describe, now).is_err());
         assert!(describe_route_binding(&fixture.record, &fixture.describe, now).is_ok());
     }
@@ -810,7 +810,7 @@ mod tests {
                 method_history_head: record.record.method_history_head.clone(),
                 version_id: record.record.version_id.clone(),
             },
-            &record.record.base_url,
+            &record.record.base_uri,
         )
         .unwrap();
         assert!(

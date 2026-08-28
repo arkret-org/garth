@@ -398,7 +398,7 @@ where
             .successor
             .ok_or_else(|| Error::Protocol("service_route_notice_successor_missing".to_owned()))?;
         let record = &successor.resolution.service_resolution_record.record;
-        if candidate.notice.notice.candidate_base_url.as_deref() != Some(record.base_url.as_str())
+        if candidate.notice.notice.candidate_base_uri.as_deref() != Some(record.base_uri.as_str())
             || candidate.notice.notice.candidate_record_url.as_deref()
                 != Some(record.current_record_url.as_str())
         {
@@ -457,10 +457,10 @@ where
                 ));
             }
         }
-        let describe = source.describe(&record.record.base_url)?;
+        let describe = source.describe(&record.record.base_uri)?;
         if describe.service_id != durable.service_id
             || describe.service_kind != durable.service_kind
-            || describe.base_url != record.record.base_url
+            || describe.base_url != record.record.base_uri
             || describe.describe_digest != record.record.describe_digest
         {
             return Err(Error::Protocol(
@@ -478,7 +478,7 @@ where
             version_id: record.record.version_id.clone(),
             record_sequence: record.record.record_sequence,
             record_digest: digest.clone(),
-            base_url: record.record.base_url.clone(),
+            base_uri: record.record.base_uri.clone(),
             current_record_url: record.record.current_record_url.clone(),
             describe_digest: record.record.describe_digest.clone(),
             verified_at: now,
@@ -677,7 +677,7 @@ mod tests {
                 record_sequence: 0,
                 previous_record_digest: None,
                 current_record_url: "https://media.example/_arkret/open/services/ak%3Adid_core%3Aweb%3Amedia.example/resolution".to_owned(),
-                base_url: "https://media.example/".to_owned(),
+                base_uri: "https://media.example/".to_owned(),
                 describe_digest: hash('2'),
                 issued_at,
                 refresh_after: issued_at + Duration::minutes(5),
@@ -831,7 +831,7 @@ mod tests {
             version_id: "version".to_owned(),
             record_sequence: 3,
             record_digest: hash('1'),
-            base_url: "https://service.example/".to_owned(),
+            base_uri: "https://service.example/".to_owned(),
             current_record_url: "https://service.example/current".to_owned(),
             describe_digest: hash('2'),
             verified_at: now,

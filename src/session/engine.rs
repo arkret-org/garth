@@ -117,7 +117,7 @@ impl SessionGrantState {
         }
         if outcome.device_id.as_ref() != Some(&request.device_id)
             || outcome.session_public_key != request.session_public_key
-            || outcome.audience != request.audience
+            || outcome.audience_id != request.audience_id
             || outcome.granted_scope
                 != arkret_models_identity::standard_initial_session_grant_scope()
         {
@@ -131,7 +131,7 @@ impl SessionGrantState {
             grant_id: outcome.session_grant_id,
             grant_jwt: outcome.session_grant,
             expires_at: outcome.expires_at,
-            audience: outcome.audience,
+            audience: outcome.audience_id,
             granted_scope: outcome.granted_scope,
             session_public_key: Some(outcome.session_public_key.into_string()),
             dpop_jkt: Some(request.session_public_key.thumbprint_sha256()?),
@@ -366,12 +366,12 @@ fn refresh_request(
     let (grant_jwt, audience, device_id) = match &request {
         SessionGrantRefreshRequestBody::Human(request) => (
             request.grant_jwt.as_str(),
-            request.audience.as_ref(),
+            request.audience_id.as_ref(),
             &request.device_id,
         ),
         SessionGrantRefreshRequestBody::Agent(request) => (
             request.grant_jwt.as_str(),
-            request.audience.as_ref(),
+            request.audience_id.as_ref(),
             &request.device_id,
         ),
     };
@@ -411,17 +411,17 @@ fn state_from_issue_outcome(
         SessionGrantRequestBody::Human(request) => (
             &request.principal_id,
             Some(&request.device_id),
-            &request.audience,
+            &request.audience_id,
         ),
         SessionGrantRequestBody::Recovery(request) => (
             &request.principal_id,
             Some(&request.device_id),
-            &request.audience,
+            &request.audience_id,
         ),
         SessionGrantRequestBody::Agent(request) => (
             &request.principal_id,
             Some(&request.device_id),
-            &request.proof.audience,
+            &request.proof.audience_id,
         ),
     };
     if &outcome.principal_id != principal_id {
@@ -430,7 +430,7 @@ fn state_from_issue_outcome(
     if device_id != outcome.device_id.as_ref() {
         return Err(protocol("issued session grant device changed"));
     }
-    let audience = outcome.audience;
+    let audience = outcome.audience_id;
     if &audience != request_audience {
         return Err(protocol("issued session grant audience changed"));
     }
@@ -464,7 +464,7 @@ fn state_from_refresh_outcome(
     if outcome.expires_at <= now {
         return Err(protocol("refreshed session grant is expired"));
     }
-    if outcome.audience != current.audience {
+    if outcome.audience_id != current.audience {
         return Err(protocol("refreshed session grant audience changed"));
     }
     if outcome.previous_session_grant_id != current.grant_id {
@@ -478,13 +478,13 @@ fn state_from_refresh_outcome(
     }
     let (request_audience, request_device_id) = match request {
         SessionGrantRefreshRequestBody::Human(request) => {
-            (request.audience.as_ref(), &request.device_id)
+            (request.audience_id.as_ref(), &request.device_id)
         }
         SessionGrantRefreshRequestBody::Agent(request) => {
-            (request.audience.as_ref(), &request.device_id)
+            (request.audience_id.as_ref(), &request.device_id)
         }
     };
-    if request_audience != Some(&outcome.audience) {
+    if request_audience != Some(&outcome.audience_id) {
         return Err(protocol(
             "refreshed session grant audience mismatched request",
         ));
@@ -501,7 +501,7 @@ fn state_from_refresh_outcome(
         grant_id: outcome.session_grant_id,
         grant_jwt: outcome.grant_jwt,
         expires_at: outcome.expires_at,
-        audience: outcome.audience,
+        audience: outcome.audience_id,
         granted_scope: outcome.scopes,
         session_public_key: Some(outcome.session_public_key.into_string()),
         dpop_jkt: Some(outcome.dpop_jkt),
@@ -673,7 +673,7 @@ mod tests {
                 r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
             )
             .unwrap(),
-            audience: audience(),
+            audience_id: audience(),
             granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             scope_details: None::<SessionGrantScopeDetails>,
         }
@@ -710,7 +710,7 @@ mod tests {
         let proof = UnsignedAgentSessionRefreshProof {
             context: AgentSessionRefreshProofContext::V1,
             request_canonical_digest: digest(),
-            audience: audience(),
+            audience_id: audience(),
             issued_at: now(),
             expires_at: now() + Duration::minutes(5),
             verification_method: DidUrl::new("did:webvh:z6mkfixture:agent.example#runtime-key-1")
@@ -724,7 +724,7 @@ mod tests {
             request: Some(SessionGrantRefreshRequestBody::Agent(
                 AgentSessionGrantRefreshRequest {
                     grant_jwt: grant_jwt.to_owned(),
-                    audience: Some(audience()),
+                    audience_id: Some(audience()),
                     device_id: device_id(),
                     agent_session_refresh_proof: proof,
                 },
@@ -746,7 +746,7 @@ mod tests {
             )
             .unwrap(),
             expires_at: now() + Duration::hours(1),
-            audience: audience(),
+            audience_id: audience(),
             scopes: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             dpop_jkt: "jkt-1".to_owned(),
             previous_session_grant_id: grant_id(1),
@@ -884,7 +884,7 @@ mod tests {
             panic!("test authors the Agent refresh branch");
         };
         assert_eq!(request.grant_jwt, "grant-1");
-        assert_eq!(request.audience.as_ref(), Some(&audience()));
+        assert_eq!(request.audience_id.as_ref(), Some(&audience()));
         let state = engine.current_state().unwrap();
         assert_eq!(state.grant_id, grant_id(2));
         assert_eq!(state.dpop_jkt.as_deref(), Some("jkt-1"));
@@ -893,7 +893,7 @@ mod tests {
     #[tokio::test]
     async fn refresh_rejects_changed_outcomes_without_replacing_state() {
         let mut wrong_audience = refresh_outcome("grant-wrong-audience", grant_id(30));
-        wrong_audience.audience =
+        wrong_audience.audience_id =
             DidCoreId::new("ak:did_core:webvh:z6mkfixture:other-service.example").unwrap();
 
         let mut wrong_previous = refresh_outcome("grant-wrong-previous", grant_id(31));

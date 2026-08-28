@@ -118,7 +118,7 @@ mod tests {
         assert_eq!(request.dpop_binding_proof.proof_jwt, "dpop-proof");
         assert_eq!(request.proof.signature, "agent-signature");
         assert_eq!(
-            request.proof.audience.as_str(),
+            request.proof.audience_id.as_str(),
             "ak:did_core:webvh:z6mkfixture:service.example"
         );
     }
