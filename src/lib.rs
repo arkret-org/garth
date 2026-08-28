@@ -78,7 +78,7 @@ pub use crypto_state_store::{
     CryptoStore, DurableAcceptedMlsArtifact, MemoryCryptoStore, MlsCommitSource,
     MlsEpochSecretRecord, MlsGroupStateRecord, MlsGroupStateSink, MlsWelcomeState,
     PreparedAcceptedMlsArtifact, QueuedMlsHistorySecret, StoredDeviceVerification,
-    VersionedAcceptedMlsArtifactSnapshot,
+    VersionedAcceptedMlsArtifactSnapshot, is_checkpoint_winning_accepted_mls_artifact,
 };
 pub use direct_conversation::{
     DirectConversationFoundingAction, direct_conversation_founding_action,

@@ -333,6 +333,25 @@ fn verified_accepted_artifact(
     checkpoint: &MlsGovernanceVerificationCheckpoint,
     event_id: &EventId,
 ) -> Result<VerifiedAcceptedMlsArtifact> {
+    winning_accepted_artifact(checkpoint, event_id)?.ok_or_else(|| {
+        Error::Protocol("MLS artifact is not a checkpoint-winning artifact".to_owned())
+    })
+}
+
+/// Returns whether an accepted MLS Event is executable at the checkpoint's
+/// winning epoch. Historical transitions remain part of the verified closure,
+/// but MUST NOT be reapplied as if they were the current winner.
+pub fn is_checkpoint_winning_accepted_mls_artifact(
+    checkpoint: &MlsGovernanceVerificationCheckpoint,
+    event_id: &EventId,
+) -> Result<bool> {
+    Ok(winning_accepted_artifact(checkpoint, event_id)?.is_some())
+}
+
+fn winning_accepted_artifact(
+    checkpoint: &MlsGovernanceVerificationCheckpoint,
+    event_id: &EventId,
+) -> Result<Option<VerifiedAcceptedMlsArtifact>> {
     checkpoint.validate_checkpoint()?;
     let mut matching = checkpoint
         .accepted_events
@@ -381,12 +400,7 @@ fn verified_accepted_artifact(
                 Some(payload.commit_ref),
             )
         }
-        _ => {
-            return Err(Error::Protocol(
-                "accepted artifact consumer only accepts MLS Genesis, Commit, or Welcome"
-                    .to_owned(),
-            ));
-        }
+        _ => return Ok(None),
     };
     let canonical_group_id = scope.canonical_mls_group_id()?;
     if canonical_group_id != group_id {
@@ -419,31 +433,25 @@ fn verified_accepted_artifact(
         .and_then(serde_json::Value::as_u64)
         .ok_or_else(|| Error::Protocol("winning MLS epoch cell lacks epoch".to_owned()))?;
     if winning_epoch != epoch {
-        return Err(Error::Protocol(
-            "accepted MLS artifact is not for the checkpoint winning epoch".to_owned(),
-        ));
+        return Ok(None);
     }
     let winning_transition_ref = EventId::new(transition_ref.to_owned())?;
     match &application {
         AcceptedMlsApplication::Genesis | AcceptedMlsApplication::Commit { .. }
             if &winning_transition_ref != event_id =>
         {
-            return Err(Error::Protocol(
-                "accepted MLS transition is not the checkpoint winner".to_owned(),
-            ));
+            return Ok(None);
         }
         AcceptedMlsApplication::Welcome => match (&welcome_commit_ref, epoch) {
             (Some(commit_ref), _) if commit_ref == &winning_transition_ref => {}
             (None, 0) => {}
             _ => {
-                return Err(Error::Protocol(
-                    "accepted MLS Welcome is not bound to the winning transition".to_owned(),
-                ));
+                return Ok(None);
             }
         },
         _ => {}
     }
-    Ok(VerifiedAcceptedMlsArtifact {
+    Ok(Some(VerifiedAcceptedMlsArtifact {
         event: event.clone(),
         event_digest: event.event_id.identity_key().event_digest(),
         scope,
@@ -451,7 +459,7 @@ fn verified_accepted_artifact(
         epoch,
         winning_transition_ref,
         application,
-    })
+    }))
 }
 
 fn validate_prepared_artifact(
