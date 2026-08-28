@@ -785,7 +785,7 @@ mod tests {
         let alice_did = did("did:webvh:z6mkfixture:alice.example");
         let alice_id = core_id(alice_did.as_str());
         let bob_device = returning_candidate(
-            "did:webvh:z6mkfixture:bob.example",
+            "did:webvh:z6mkbobfixture:bob.example",
             "ak:device:01904100-0000-7000-8000-000000000031",
             "secure:bob-device",
         );
