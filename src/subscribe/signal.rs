@@ -156,15 +156,17 @@ pub trait SignalSink {
     /// surface a security diagnostic instead of losing the event silently.
     fn rejected(&self, _envelope: &SignalEnvelope, _rejection: SignalRejection, _error: &Error) {}
 
-    /// A moment in which the rail is alive but carried no signal: a keepalive
-    /// frame, or the end of one connection.
+    /// A clock edge that carried no admitted signal: opening a connection, a
+    /// keepalive frame, a clean end, or a transport failure.
     ///
     /// Signal-backed projections are TTL-shaped — a message-stream preview
     /// goes stalled after 30 seconds and is discarded after ten minutes
     /// (`signal.md` §7.4) — so they need a clock edge even when the producer
     /// has gone quiet, which is precisely when nothing else would wake them.
-    /// Keepalives are the rail's own liveness cadence, so they are the right
-    /// edge to use rather than a second timer the host has to keep alive.
+    /// Keepalives and reconnect lifecycle edges are the rail's own liveness
+    /// cadence, so they are the right edges to use rather than a second timer
+    /// the host has to keep alive. Implementations must tolerate repeated
+    /// calls at the same or nearby instants and project expiry idempotently.
     fn idle(&self, _now: DateTime<Utc>) {}
 }
 
@@ -237,16 +239,35 @@ impl SignalStreamDriver {
         S: SignalSink + ?Sized,
         K: HostClock,
     {
-        let mut source = transport
-            .open_signal_stream()
-            .await
-            .map_err(SignalRunError::Transport)?;
+        let mut source = match transport.open_signal_stream().await {
+            Ok(source) => {
+                // Establishing a fresh rail follows any reconnect/backoff and
+                // is therefore a clock edge even before the server emits its
+                // first heartbeat. This closes the gap where the previous
+                // Drain arrived just before a presence TTL expired and the
+                // next heartbeat would otherwise leave it stale for another
+                // full interval.
+                handlers.sink.idle(clock.now());
+                source
+            }
+            Err(error) => {
+                handlers.sink.idle(clock.now());
+                return Err(SignalRunError::Transport(error));
+            }
+        };
         loop {
-            let Some(frame) = source
-                .next_frame()
-                .await
-                .map_err(SignalRunError::Transport)?
-            else {
+            let frame = match source.next_frame().await {
+                Ok(frame) => frame,
+                Err(error) => {
+                    // A failed long-poll or stream is still a host clock edge.
+                    // Presence and typing are TTL projections; skipping idle
+                    // here leaves the final body online forever when a proxy
+                    // aborts a quiet HTTP stream before any heartbeat frame.
+                    handlers.sink.idle(clock.now());
+                    return Err(SignalRunError::Transport(error));
+                }
+            };
+            let Some(frame) = frame else {
                 handlers.sink.idle(clock.now());
                 return Ok(SignalStreamStopReason::StreamEnded);
             };
@@ -436,6 +457,42 @@ mod tests {
         }
     }
 
+    struct FailingFrameSource;
+
+    impl SignalStreamFrameSource for FailingFrameSource {
+        fn next_frame<'a>(&'a mut self) -> BoxSignalStreamFuture<'a, Option<SignalStreamFrame>> {
+            Box::pin(async move {
+                Err(Error::Protocol(
+                    "fixture signal stream was aborted".to_owned(),
+                ))
+            })
+        }
+    }
+
+    struct FailingFrameTransport;
+
+    impl SignalStreamTransport for FailingFrameTransport {
+        type Source = FailingFrameSource;
+
+        fn open_signal_stream<'a>(&'a self) -> BoxSignalStreamFuture<'a, Self::Source> {
+            Box::pin(async move { Ok(FailingFrameSource) })
+        }
+    }
+
+    struct FailingOpenTransport;
+
+    impl SignalStreamTransport for FailingOpenTransport {
+        type Source = VecSource;
+
+        fn open_signal_stream<'a>(&'a self) -> BoxSignalStreamFuture<'a, Self::Source> {
+            Box::pin(async move {
+                Err(Error::Protocol(
+                    "fixture signal stream could not open".to_owned(),
+                ))
+            })
+        }
+    }
+
     struct FixedDecryptor(Vec<u8>);
 
     impl SignalDecryptor for FixedDecryptor {
@@ -532,7 +589,53 @@ mod tests {
         // that wakes a preview whose producer went quiet.
         assert_eq!(
             *sink.order.borrow(),
-            vec!["idle", "prepare", "deliver", "idle"]
+            vec!["idle", "idle", "prepare", "deliver", "idle"]
+        );
+    }
+
+    #[tokio::test]
+    async fn transport_failure_advances_the_ttl_clock_before_reconnect() {
+        let sink = RecordingSink::default();
+        let resolver = |_envelope: &SignalEnvelope| None;
+        let decryptor = FixedDecryptor(Vec::new());
+
+        let error = SignalStreamDriver::new()
+            .run(
+                &FailingFrameTransport,
+                SignalReceiveHandlers::new(&resolver, &decryptor, &sink),
+                &FixedClock(sent_at()),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, SignalRunError::Transport(_)));
+        assert_eq!(
+            *sink.order.borrow(),
+            vec!["idle", "idle"],
+            "a failed quiet stream must still expire presence/typing TTL projections"
+        );
+    }
+
+    #[tokio::test]
+    async fn open_failure_advances_the_ttl_clock_before_reconnect() {
+        let sink = RecordingSink::default();
+        let resolver = |_envelope: &SignalEnvelope| None;
+        let decryptor = FixedDecryptor(Vec::new());
+
+        let error = SignalStreamDriver::new()
+            .run(
+                &FailingOpenTransport,
+                SignalReceiveHandlers::new(&resolver, &decryptor, &sink),
+                &FixedClock(sent_at()),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(matches!(error, SignalRunError::Transport(_)));
+        assert_eq!(
+            *sink.order.borrow(),
+            vec!["idle"],
+            "an open failure must still expire presence/typing TTL projections"
         );
     }
 
@@ -555,7 +658,10 @@ mod tests {
             .await
             .unwrap();
 
-        assert_eq!(*sink.order.borrow(), vec!["prepare", "rejected", "idle"]);
+        assert_eq!(
+            *sink.order.borrow(),
+            vec!["idle", "prepare", "rejected", "idle"]
+        );
     }
 
     #[tokio::test]

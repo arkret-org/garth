@@ -54,6 +54,18 @@ pub trait TransportProvider {
     }
 }
 
+fn next_signal_drain_delay(
+    backoff: &mut RetrySchedule,
+    reconnect_after_ms: Option<u64>,
+) -> Duration {
+    // Drain is a successful terminal control frame from an established live
+    // rail, not another failed connection attempt. Normal bounded HTTP
+    // rollovers must therefore restart at the floor instead of accumulating
+    // exponential delay across healthy 30-second connections.
+    backoff.reset();
+    backoff.next_delay_with_hint(reconnect_after_ms.map(Duration::from_millis))
+}
+
 /// One validated account-stream checkpoint unit. The cursor comes from the
 /// SDK trace validator and the updates are the typed fold of the same stream
 /// step, so hosts never need to parse frames or reconstruct cursor ordering.
@@ -1052,8 +1064,7 @@ where
                 Ok(SignalStreamStopReason::Drain {
                     reconnect_after_ms, ..
                 }) => {
-                    let delay =
-                        backoff.next_delay_with_hint(reconnect_after_ms.map(Duration::from_millis));
+                    let delay = next_signal_drain_delay(&mut backoff, reconnect_after_ms);
                     provider.observe(RunEvent::Backoff { delay });
                     if let Some(reason) = self.wait_guarded(delay, control, provider).await {
                         return Ok(Self::stop(provider, reason));
@@ -1179,6 +1190,25 @@ where
                 Self::fail(provider, RunErrorClass::ProjectorFailure, error)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod signal_drain_backoff_tests {
+    use super::*;
+
+    #[test]
+    fn healthy_signal_drain_resets_accumulated_reconnect_backoff() {
+        let mut backoff =
+            RetrySchedule::new(Duration::from_millis(10), Duration::from_millis(1_000));
+        assert_eq!(backoff.next_delay(), Duration::from_millis(10));
+        assert_eq!(backoff.next_delay(), Duration::from_millis(20));
+        assert_eq!(backoff.retries(), 2);
+
+        let delay = next_signal_drain_delay(&mut backoff, Some(25));
+
+        assert_eq!(delay, Duration::from_millis(25));
+        assert_eq!(backoff.retries(), 1);
     }
 }
 
