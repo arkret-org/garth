@@ -5,7 +5,7 @@ use arkret_models_collaboration::session_grant_bodies::{
 };
 use arkret_models_collaboration::sync_frames::account_subscribe::AccountSubscribeBatch;
 use arkret_models_collaboration::sync_frames::client_sync::SyncRequestBody;
-use arkret_wire::{DeviceId, DidCoreId, RealmId, ServiceAccountId, SessionGrantId};
+use arkret_wire::{AccountId, DeviceId, DidCoreId, RealmId, SessionGrantId};
 use chrono::{Duration, Utc};
 use garth::Result;
 use garth::subscribe::scan::BoxScanFuture;
@@ -139,6 +139,7 @@ impl AuthenticatedTransportFactory for ReferenceFactory {
 async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let actor_id = DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example")?;
     let principal_id = DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example")?;
+    let station_id = DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example")?;
     let device_id = DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001")?;
     let realm_id = RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO")?;
 
@@ -147,13 +148,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
         SecureSessionGrantStore::new(MemorySecureKeyStore::default(), "reference/session-grant");
     grant_store
         .save(&SessionGrantState {
-            principal_id,
-            service_account_id: ServiceAccountId::new("account-1").unwrap(),
+            account_id: AccountId::new(principal_id, station_id.clone()),
             device_id: Some(device_id.clone()),
             grant_id: SessionGrantId::from_issuance_digest([1_u8; 32]),
             grant_jwt: "reference-grant".to_owned(),
             expires_at: Utc::now() + Duration::hours(1),
-            audience_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+            audience_id: station_id,
             granted_scope: vec![
                 arkret_wire::CapabilityActionId::SELF_EVENTS_STREAM_SUBSCRIBE_V1.to_owned(),
             ],
