@@ -588,7 +588,7 @@ mod tests {
     use crate::protocol::DidCoreId;
     use chrono::Duration;
 
-    use arkret_wire::{DeviceId, DidUrl, EventId, Hash, RealmId, SealId};
+    use arkret_wire::{DeviceId, DidCoreId, DidUrl, EventId, Hash, RealmId, SealId};
     use chrono::TimeZone;
     use ed25519_dalek::SigningKey;
     use serde_json::json;
