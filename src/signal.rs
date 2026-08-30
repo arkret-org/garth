@@ -27,7 +27,7 @@ use serde_json::Value;
 use crate::MaybeSendSync;
 use crate::protocol::signatures::{PublicKeyMaterial, verify_ed25519_signal_proof};
 use crate::protocol::{
-    AccountId, ActorId, DidCoreId, Error, Result, ScopeRef, SignalEnvelope, SignalSequence,
+    AccountId, ActorId, Error, Result, ScopeRef, SignalEnvelope, SignalSequence,
     SignalSequenceDecision, SignalSequenceHighWater, canonical, open_signal_plaintext,
 };
 use crate::store::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
@@ -585,6 +585,7 @@ impl PresenceProjection {
 
 #[cfg(test)]
 mod tests {
+    use crate::protocol::DidCoreId;
     use chrono::Duration;
 
     use arkret_wire::{DeviceId, DidUrl, EventId, Hash, RealmId, SealId};
