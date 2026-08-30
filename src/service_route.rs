@@ -573,7 +573,7 @@ fn validate_candidate_identity(
 ) -> Result<()> {
     if observed_service_id != expected_service_id {
         return Err(Error::Protocol(
-            "service_route_new_core_requires_delivery_binding_rebind".to_owned(),
+            "service_route_service_id_mismatch".to_owned(),
         ));
     }
     if observed_service_kind != expected_service_kind {
@@ -957,12 +957,12 @@ mod tests {
     }
 
     #[test]
-    fn same_core_updates_and_new_core_requires_rebind() {
+    fn route_candidates_must_keep_the_expected_service_id() {
         let expected = DidCoreId::new("ak:did_core:web:service.example").unwrap();
         let replacement = DidCoreId::new("ak:did_core:web:replacement.example").unwrap();
         assert!(validate_candidate_identity(&expected, "station", &expected, "station").is_ok());
         let error =
             validate_candidate_identity(&expected, "station", &replacement, "station").unwrap_err();
-        assert!(error.to_string().contains("delivery_binding_rebind"));
+        assert!(error.to_string().contains("service_id_mismatch"));
     }
 }

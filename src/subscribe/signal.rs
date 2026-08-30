@@ -320,7 +320,7 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::Mutex;
 
-    use arkret_wire::{DeviceId, DidUrl, EventId, Hash, RealmId, SealId};
+    use arkret_wire::{AccountId, ActorId, DeviceId, DidUrl, EventId, Hash, RealmId, SealId};
     use chrono::{Duration, TimeZone};
     use ed25519_dalek::SigningKey;
     use serde_json::{Value, json};
@@ -358,7 +358,10 @@ mod tests {
     fn presence_plaintext(sequence: u64) -> Value {
         json!({
             "kind": "ak.presence",
-            "actor_id": actor().as_str(),
+            "actor_id": ActorId::account(AccountId::new(
+                actor(),
+                DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
+            )),
             "state": "online",
             "payload_sequence": sequence,
             "ttl_ms": 30_000
