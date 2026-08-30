@@ -497,14 +497,15 @@ mod tests {
             proof_purpose: None,
             jws: "header..producer".to_owned(),
         };
-        let admission = arkret_wire::PrincipalServerAdmissionProof {
-            kind: arkret_wire::PrincipalServerAdmissionProofKind::PrincipalServerAdmission,
+        let admission = arkret_wire::StationAdmissionProof {
+            kind: arkret_wire::StationAdmissionProofKind::StationAdmission,
             verification_method: arkret_wire::DidUrl::new("did:web:principal.example#admission-1")
                 .unwrap(),
             event_digest,
-            producer_proof_digest:
-                arkret_wire::PrincipalServerAdmissionProof::producer_proof_digest(&producer)
-                    .unwrap(),
+            producer_proof_digest: arkret_wire::StationAdmissionProof::producer_proof_digest(
+                &producer,
+            )
+            .unwrap(),
             producer_verification_method: producer.verification_method.clone(),
             producer_signing_key_did: arkret_wire::DidKey::new("did:key:z6MkhFixtureDeviceKey")
                 .unwrap(),

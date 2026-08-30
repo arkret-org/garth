@@ -186,7 +186,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         &self,
         transaction_id: Option<String>,
         realm_id: RealmId,
-        actor_id: crate::protocol::DidCoreId,
+        actor_id: crate::protocol::ActorId,
         record: QueuedRecord,
         depends_on: Vec<String>,
     ) -> Result<SendQueueItem> {
@@ -449,8 +449,12 @@ mod tests {
     use crate::MemoryStore;
     use arkret_wire::{Did, DidCoreId, EventKind, Hlc, ScopeRef, project_did_to_core_id};
 
-    fn actor_id() -> DidCoreId {
-        project_did_to_core_id(&Did::new("did:webvh:z6mkfixture:alice.example").unwrap()).unwrap()
+    fn actor_id() -> crate::protocol::ActorId {
+        crate::protocol::ActorId::account(crate::protocol::AccountId::new(
+            project_did_to_core_id(&Did::new("did:webvh:z6mkfixture:alice.example").unwrap())
+                .unwrap(),
+            DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
+        ))
     }
     use serde_json::Value;
 
@@ -465,7 +469,7 @@ mod tests {
             ScopeRef::Realm {
                 realm_id: realm_id.clone(),
             },
-            actor_id(),
+            actor_id().signing_principal_id().clone(),
             arkret_wire::DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
             1,
             Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),

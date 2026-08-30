@@ -63,20 +63,20 @@ pub(crate) use arkret_models_identity::{
 };
 pub(crate) use arkret_state::resolver::RealmState;
 pub(crate) use arkret_wire::project_did_to_core_id;
-pub use arkret_wire::{AuthorizationLease, IngressReceipt};
 pub(crate) use arkret_wire::{
-    Base64UrlString, DeviceId, Did, DidCoreId, DidUrl, Event, EventId, EventKind, Hash, Hlc,
-    MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit, PrincipalAuthorityKey, RealmId,
-    RequestId, ScopeRef, SealId, ServiceAccountId, SessionGrantId, SidecarId, SignalEnvelope,
-    SignalStreamFrame, StrandId,
+    AccountId, ActorId, Base64UrlString, DeviceId, Did, DidCoreId, DidUrl, Event, EventId,
+    EventKind, Hash, Hlc, MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit, RealmId,
+    RequestId, ScopeRef, SealId, SessionGrantId, SidecarId, SignalEnvelope, SignalStreamFrame,
+    StrandId,
 };
+pub use arkret_wire::{AuthorizationLease, IngressReceipt};
 
 pub(crate) fn verified_event_id(
     event: &Event,
     digest_suite: arkret_canonical::DigestSuite,
 ) -> Result<EventId> {
     event.verify_event_id_matches_content_with_digest_suite(digest_suite)?;
-    event.validate_principal_server_admission_binding(digest_suite)?;
+    event.validate_station_admission_binding(digest_suite)?;
     Ok(event.event_id.clone())
 }
 

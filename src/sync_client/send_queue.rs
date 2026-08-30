@@ -63,7 +63,7 @@ pub struct SendQueueItem {
     /// Actor partition for ordinary Event authoring. Generic non-Event queue
     /// items leave this unset.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub actor_id: Option<DidCoreId>,
+    pub actor_id: Option<ActorId>,
     /// Self-describing, strongly typed queue record.
     pub record: QueuedRecord,
     /// Canonical hash of the idempotent payload.
@@ -227,7 +227,7 @@ impl SendQueue {
     }
 
     /// Attach the authoring partition to a newly enqueued item.
-    pub fn set_actor_scope(&mut self, transaction_id: &str, actor_id: DidCoreId) -> Result<()> {
+    pub fn set_actor_scope(&mut self, transaction_id: &str, actor_id: ActorId) -> Result<()> {
         let item = self.item_mut(transaction_id)?;
         if item.record.actor_id()? != &actor_id {
             return Err(Error::Protocol(
@@ -755,7 +755,10 @@ pub(crate) mod test_publication {
             basis_ref: LeaseBasisRef::Seal(
                 SealId::new(format!("ak:seal:sha256:{}", "a".repeat(64))).unwrap(),
             ),
-            actor_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
+            actor_id: arkret_wire::ActorId::account(arkret_wire::AccountId::new(
+                DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
+                DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
+            )),
             device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-bbbbbbbbbbbb").unwrap(),
             scope_ref,
             action: "ak.message.create".to_owned(),

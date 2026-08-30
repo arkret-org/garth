@@ -302,9 +302,8 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use crate::protocol::{
-        Base64UrlString, DeviceId, DidCoreId, DidUrl, Error, Hash, ServiceAccountId,
-        SessionGrantOutcome, SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody,
-        SessionGrantRequestBody,
+        AccountId, Base64UrlString, DeviceId, DidCoreId, DidUrl, Error, Hash, SessionGrantOutcome,
+        SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
     };
     use arkret_models_collaboration::session_grant_bodies::{
         AgentSessionGrantRefreshRequest, AgentSessionRefreshProofContext,
@@ -361,8 +360,10 @@ mod tests {
 
     fn state() -> SessionGrantState {
         SessionGrantState {
-            principal_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
-            service_account_id: ServiceAccountId::new("account-1").unwrap(),
+            account_id: AccountId::new(
+                DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
+                DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+            ),
             device_id: Some(
                 DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
             ),
@@ -379,7 +380,10 @@ mod tests {
     fn refresh_outcome() -> SessionGrantRefreshOutcome {
         SessionGrantRefreshOutcome {
             session_grant_id: grant_id(2),
-            service_account_id: ServiceAccountId::new("account-1").unwrap(),
+            account_id: AccountId::new(
+                DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
+                DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+            ),
             grant_jwt: "grant-2".to_owned(),
             session_public_key: arkret_models_identity::CanonicalSessionPublicJwk::new(
                 r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,

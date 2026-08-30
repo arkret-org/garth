@@ -110,13 +110,15 @@ mod tests {
     use chrono::{Duration, Utc};
 
     use super::*;
-    use crate::protocol::{DeviceId, DidCoreId, ServiceAccountId, SessionGrantId};
+    use crate::protocol::{AccountId, DeviceId, DidCoreId, SessionGrantId};
     use crate::{MemorySecureKeyStore, SecureKeyStore};
 
     fn state() -> SessionGrantState {
         SessionGrantState {
-            principal_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
-            service_account_id: ServiceAccountId::new("account-1").unwrap(),
+            account_id: AccountId::new(
+                DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
+                DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+            ),
             device_id: Some(
                 DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
             ),

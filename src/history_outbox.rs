@@ -776,7 +776,9 @@ mod tests {
                     realm_id: RealmId::new("ak:realm:AdkQ-RmB1a8zyc52yl9GWAsodQ_EUle1WAVZqbO7pc19")
                         .unwrap(),
                 },
-                source_actor_id: DidCoreId::new("ak:did_core:key:z6MkHistorySource").unwrap(),
+                source_actor_id: arkret_wire::ActorId::service(
+                    DidCoreId::new("ak:did_core:key:z6MkHistorySource").unwrap(),
+                ),
                 source_sender_domain: "history.example".to_owned(),
                 source_signer_evidence_ref: evidence_ref.clone(),
                 source_signer_evidence_digest: evidence_digest.clone(),

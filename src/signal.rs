@@ -27,7 +27,7 @@ use serde_json::Value;
 use crate::MaybeSendSync;
 use crate::protocol::signatures::{PublicKeyMaterial, verify_ed25519_signal_proof};
 use crate::protocol::{
-    DidCoreId, Error, PrincipalAuthorityKey, Result, ScopeRef, SignalEnvelope, SignalSequence,
+    AccountId, ActorId, DidCoreId, Error, Result, ScopeRef, SignalEnvelope, SignalSequence,
     SignalSequenceDecision, SignalSequenceHighWater, canonical, open_signal_plaintext,
 };
 use crate::store::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
@@ -44,14 +44,14 @@ pub const SIGNAL_PLAINTEXT_KIND_PRESENCE: &str = "ak.presence";
 pub const SIGNAL_PLAINTEXT_KIND_CALL: &str = "ak.call.signal";
 
 /// A Signal signing key admitted by the host from the current local PCR/device
-/// state for the exact public principal authority pair.
+/// state for the exact public AccountId.
 #[derive(Clone, Debug)]
 pub struct VerifiedSignalSenderKey {
     public_key: PublicKeyMaterial,
     actor_id: DidCoreId,
     device_id: crate::protocol::DeviceId,
     verification_method: crate::protocol::DidUrl,
-    authority: PrincipalAuthorityKey,
+    authority: AccountId,
 }
 
 impl VerifiedSignalSenderKey {
@@ -84,7 +84,7 @@ impl VerifiedSignalSenderKey {
         actor_id: DidCoreId,
         device_id: crate::protocol::DeviceId,
         verification_method: crate::protocol::DidUrl,
-        authority: PrincipalAuthorityKey,
+        authority: AccountId,
     ) -> Result<Self> {
         authority
             .validate()
@@ -143,7 +143,7 @@ impl VerifiedSignalSenderKey {
 
     #[cfg(test)]
     pub(crate) fn for_test(envelope: &SignalEnvelope, public_key: PublicKeyMaterial) -> Self {
-        let authority = PrincipalAuthorityKey::new(
+        let authority = AccountId::new(
             envelope.sender_actor_id.clone(),
             DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
         );
@@ -222,7 +222,7 @@ pub trait SignalDecryptor: MaybeSendSync {
 #[derive(Clone, Debug, PartialEq)]
 pub struct SignalPlaintext {
     pub kind: String,
-    pub actor_id: DidCoreId,
+    pub actor_id: ActorId,
     pub payload_sequence: u64,
     pub ttl_ms: Option<u64>,
     /// The registered closed profile this plaintext parsed as.
@@ -245,7 +245,11 @@ pub struct SignalPlaintext {
 }
 
 impl SignalPlaintext {
-    fn parse(envelope: &SignalEnvelope, plaintext: &[u8]) -> Result<Self> {
+    fn parse(
+        envelope: &SignalEnvelope,
+        sender_actor_id: &ActorId,
+        plaintext: &[u8],
+    ) -> Result<Self> {
         // One entry for the whole family: dispatch on `kind`, validate against
         // the selected closed profile, reject an unregistered `kind`. Nothing
         // below reconstructs the common minimum by field name.
@@ -256,15 +260,11 @@ impl SignalPlaintext {
         // that, so a plaintext naming a third party is an unauthenticated
         // claim), and a plaintext `ttl_ms` may only tighten the envelope.
         payload
-            .bind_to_envelope(
-                &envelope.sender_actor_id,
-                envelope.sent_at,
-                envelope.expires_at,
-            )
+            .bind_to_envelope(sender_actor_id, envelope.sent_at, envelope.expires_at)
             .map_err(|error| Error::Protocol(error.to_string()))?;
         Ok(Self {
             kind: payload.kind().as_str().to_owned(),
-            actor_id: envelope.sender_actor_id.clone(),
+            actor_id: sender_actor_id.clone(),
             payload_sequence: payload.payload_sequence(),
             ttl_ms: payload.ttl_ms(),
             expires_at: payload.effective_expires_at(envelope.sent_at, envelope.expires_at),
@@ -384,7 +384,8 @@ impl SignalReceiver {
             ));
         }
         let plaintext = decryptor.open(envelope)?;
-        let parsed = SignalPlaintext::parse(envelope, &plaintext)?;
+        let sender_actor_id = ActorId::account(verified_key.authority.clone());
+        let parsed = SignalPlaintext::parse(envelope, &sender_actor_id, &plaintext)?;
         let domain = (
             envelope.sender_device_id.as_str().to_owned(),
             scope_key(&envelope.scope_ref)?,
@@ -455,7 +456,7 @@ pub struct PresenceObservation {
 /// has not regressed are considered.
 #[derive(Clone, Debug, Default)]
 pub struct PresenceProjection {
-    devices: BTreeMap<DidCoreId, BTreeMap<String, PresenceObservation>>,
+    devices: BTreeMap<ActorId, BTreeMap<String, PresenceObservation>>,
 }
 
 impl PresenceProjection {
@@ -526,7 +527,7 @@ impl PresenceProjection {
     /// Unexpired per-device observations for an actor, in device-id order.
     pub fn observations(
         &self,
-        actor_id: &DidCoreId,
+        actor_id: &ActorId,
         now: DateTime<Utc>,
     ) -> Vec<&PresenceObservation> {
         self.devices
@@ -542,7 +543,7 @@ impl PresenceProjection {
 
     /// Aggregate state under the canonical priority `dnd > online > idle`,
     /// falling back to `offline` when no unexpired signal remains.
-    pub fn aggregated(&self, actor_id: &DidCoreId, now: DateTime<Utc>) -> PresenceStatus {
+    pub fn aggregated(&self, actor_id: &ActorId, now: DateTime<Utc>) -> PresenceStatus {
         aggregate_presence_states(
             self.observations(actor_id, now)
                 .into_iter()
@@ -551,7 +552,7 @@ impl PresenceProjection {
     }
 
     /// Most recently sent non-empty `status_message` among unexpired signals.
-    pub fn status_message(&self, actor_id: &DidCoreId, now: DateTime<Utc>) -> Option<&str> {
+    pub fn status_message(&self, actor_id: &ActorId, now: DateTime<Utc>) -> Option<&str> {
         self.observations(actor_id, now)
             .into_iter()
             .filter(|observation| {
@@ -565,7 +566,7 @@ impl PresenceProjection {
     }
 
     /// Most recently sent validated `last_active_at` among unexpired signals.
-    pub fn last_active_at(&self, actor_id: &DidCoreId, now: DateTime<Utc>) -> Option<&str> {
+    pub fn last_active_at(&self, actor_id: &ActorId, now: DateTime<Utc>) -> Option<&str> {
         self.observations(actor_id, now)
             .into_iter()
             .filter(|observation| observation.last_active_at.is_some())
@@ -696,11 +697,18 @@ mod tests {
     fn presence_plaintext(state: &str, sequence: u64) -> Value {
         json!({
             "kind": SIGNAL_PLAINTEXT_KIND_PRESENCE,
-            "actor_id": actor().as_str(),
+            "actor_id": account_actor(),
             "state": state,
             "payload_sequence": sequence,
             "ttl_ms": 30_000
         })
+    }
+
+    fn account_actor() -> ActorId {
+        ActorId::account(AccountId::new(
+            actor(),
+            DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
+        ))
     }
 
     fn key_of(public_key: PublicKeyMaterial) -> impl SignalSenderKeyResolver {
@@ -712,13 +720,7 @@ mod tests {
         }
     }
 
-    fn directory_evidence_parts() -> (
-        PublicKeyMaterial,
-        DidCoreId,
-        DeviceId,
-        DidUrl,
-        PrincipalAuthorityKey,
-    ) {
+    fn directory_evidence_parts() -> (PublicKeyMaterial, DidCoreId, DeviceId, DidUrl, AccountId) {
         let device_id = device("000000000005");
         let public_key = PublicKeyMaterial::Ed25519Raw {
             bytes: SigningKey::from_bytes(&[41; 32])
@@ -728,7 +730,7 @@ mod tests {
         };
         let verification_method =
             DidUrl::new(format!("did:webvh:z6mkfixture:alice.example#{device_id}")).unwrap();
-        let authority = PrincipalAuthorityKey::new(
+        let authority = AccountId::new(
             actor(),
             DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
         );
@@ -760,7 +762,7 @@ mod tests {
     #[test]
     fn from_directory_evidence_rejects_an_authority_pair_naming_another_principal() {
         let (public_key, actor_id, device_id, verification_method, _) = directory_evidence_parts();
-        let foreign_authority = PrincipalAuthorityKey::new(
+        let foreign_authority = AccountId::new(
             DidCoreId::new("ak:did_core:webvh:z6mkother").unwrap(),
             DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
         );
@@ -842,7 +844,7 @@ mod tests {
             [42; 32],
         );
         let resolver = move |envelope: &SignalEnvelope| {
-            let authority = PrincipalAuthorityKey::new(
+            let authority = AccountId::new(
                 envelope.sender_actor_id.clone(),
                 DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
             );
@@ -885,7 +887,7 @@ mod tests {
         let mut projection = PresenceProjection::new();
         projection.apply(&accepted).unwrap();
         assert_eq!(
-            projection.aggregated(&actor(), sent_at()),
+            projection.aggregated(&account_actor(), sent_at()),
             PresenceStatus::Online
         );
     }
@@ -928,7 +930,7 @@ mod tests {
             )
             .unwrap();
 
-        assert_eq!(accepted.actor_id, actor());
+        assert_eq!(accepted.actor_id, account_actor());
         assert_eq!(accepted.ttl_ms, None);
         assert_eq!(accepted.expires_at, envelope.expires_at);
     }
@@ -1108,7 +1110,10 @@ mod tests {
     #[test]
     fn receiver_refuses_a_plaintext_that_claims_another_actor() {
         let mut foreign = presence_plaintext("online", 1);
-        foreign["actor_id"] = json!("ak:did_core:webvh:z6mkfixture:mallory.example");
+        foreign["actor_id"] = json!(ActorId::account(AccountId::new(
+            DidCoreId::new("ak:did_core:webvh:z6mkfixture:mallory.example").unwrap(),
+            DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
+        )));
         let (envelope, public_key, _) = signed_signal(
             device("000000000005"),
             presence_plaintext("online", 1),
@@ -1178,14 +1183,17 @@ mod tests {
             projection.apply(&accepted).unwrap();
         }
 
-        assert_eq!(projection.observations(&actor(), sent_at()).len(), 2);
         assert_eq!(
-            projection.aggregated(&actor(), sent_at()),
+            projection.observations(&account_actor(), sent_at()).len(),
+            2
+        );
+        assert_eq!(
+            projection.aggregated(&account_actor(), sent_at()),
             PresenceStatus::Dnd
         );
         assert_eq!(projection.expire(sent_at() + Duration::seconds(30)), 2);
         assert_eq!(
-            projection.aggregated(&actor(), sent_at() + Duration::seconds(30)),
+            projection.aggregated(&account_actor(), sent_at() + Duration::seconds(30)),
             PresenceStatus::Offline
         );
     }
@@ -1228,7 +1236,7 @@ mod tests {
             .unwrap();
         assert!(projection.apply(&older).is_err());
         assert_eq!(
-            projection.aggregated(&actor(), sent_at()),
+            projection.aggregated(&account_actor(), sent_at()),
             PresenceStatus::Online
         );
 

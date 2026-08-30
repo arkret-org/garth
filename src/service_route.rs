@@ -818,14 +818,14 @@ mod tests {
         let now = Utc::now();
         let floor = ServiceResolutionLastSeenFloor {
             service_id: service_id.clone(),
-            service_kind: "principal_server".to_owned(),
+            service_kind: "station".to_owned(),
             record_sequence: 4,
             record_digest: hash('1'),
             verified_at: now,
         };
         let cache = ServiceRouteCacheEntry {
             service_id,
-            service_kind: "principal_server".to_owned(),
+            service_kind: "station".to_owned(),
             did: arkret_wire::Did::new("did:web:service.example").unwrap(),
             method_history_head: "head".to_owned(),
             version_id: "version".to_owned(),
@@ -849,10 +849,10 @@ mod tests {
         let now = Utc::now();
         let snapshot = ServiceRouteDurableSnapshot {
             service_id: service_id.clone(),
-            service_kind: "principal_server".to_owned(),
+            service_kind: "station".to_owned(),
             floor: Some(ServiceResolutionLastSeenFloor {
                 service_id: service_id.clone(),
-                service_kind: "principal_server".to_owned(),
+                service_kind: "station".to_owned(),
                 record_sequence: 7,
                 record_digest: hash('7'),
                 verified_at: now,
@@ -860,7 +860,7 @@ mod tests {
             notice: None,
             quarantine: Some(RouteForkQuarantine {
                 service_id: service_id.clone(),
-                service_kind: "principal_server".to_owned(),
+                service_kind: "station".to_owned(),
                 expected_sequence: 7,
                 expected_digest: hash('7'),
                 observed_sequence: 7,
@@ -872,9 +872,7 @@ mod tests {
         let mut store = MemoryServiceRouteStateStore::default();
         store.save_route_state(&snapshot).unwrap();
         assert_eq!(
-            store
-                .load_route_state(&service_id, "principal_server")
-                .unwrap(),
+            store.load_route_state(&service_id, "station").unwrap(),
             Some(snapshot)
         );
     }
@@ -949,7 +947,7 @@ mod tests {
         };
         assert!(
             evaluator
-                .resolve(&service_id, "principal_server", Utc::now(), &mut source)
+                .resolve(&service_id, "station", Utc::now(), &mut source)
                 .is_err()
         );
         assert_eq!(
@@ -962,22 +960,9 @@ mod tests {
     fn same_core_updates_and_new_core_requires_rebind() {
         let expected = DidCoreId::new("ak:did_core:web:service.example").unwrap();
         let replacement = DidCoreId::new("ak:did_core:web:replacement.example").unwrap();
-        assert!(
-            validate_candidate_identity(
-                &expected,
-                "principal_server",
-                &expected,
-                "principal_server"
-            )
-            .is_ok()
-        );
-        let error = validate_candidate_identity(
-            &expected,
-            "principal_server",
-            &replacement,
-            "principal_server",
-        )
-        .unwrap_err();
+        assert!(validate_candidate_identity(&expected, "station", &expected, "station").is_ok());
+        let error =
+            validate_candidate_identity(&expected, "station", &replacement, "station").unwrap_err();
         assert!(error.to_string().contains("delivery_binding_rebind"));
     }
 }

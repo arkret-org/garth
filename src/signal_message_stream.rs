@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::MaybeSendSync;
 
 use crate::protocol::{
-    DeviceId, DidCoreId, Error, Event, EventKind, MAX_MESSAGE_STREAM_LIFETIME_SECONDS,
+    ActorId, DeviceId, Error, Event, EventKind, MAX_MESSAGE_STREAM_LIFETIME_SECONDS,
     MAX_MESSAGE_STREAM_PREVIEW_BYTES, MAX_MESSAGE_STREAMS_PER_DEVICE,
     MESSAGE_STREAM_STALLED_AFTER_SECONDS, MessageCreatePayload, MessageId, MessageStreamFormat,
     MessageStreamFrame, MessageStreamId, Result, ScopeRef, StrandId,
@@ -61,14 +61,14 @@ pub enum MessageStreamApplyOutcome {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct MessageStreamPreviewKey {
-    sender_actor_id: DidCoreId,
+    sender_actor_id: ActorId,
     sender_device_id: DeviceId,
     message_id: MessageId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MessageStreamPreview {
-    pub sender_actor_id: DidCoreId,
+    pub sender_actor_id: ActorId,
     pub sender_device_id: DeviceId,
     pub scope_ref: ScopeRef,
     pub strand_id: StrandId,
@@ -301,7 +301,7 @@ impl MessageStreamProjection {
 
     pub fn preview(
         &self,
-        sender_actor_id: &DidCoreId,
+        sender_actor_id: &ActorId,
         sender_device_id: &DeviceId,
         message_id: &MessageId,
     ) -> Option<&MessageStreamPreview> {
@@ -386,7 +386,7 @@ mod tests {
         MessageStreamAbort, MessageStreamAbortReason, MessageStreamDelta, MessageStreamKeyframe,
     };
 
-    use arkret_wire::{EventId, RealmId, SealId};
+    use arkret_wire::{DidCoreId, EventId, RealmId, SealId};
 
     use super::*;
 
@@ -394,8 +394,11 @@ mod tests {
         DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()
     }
 
-    fn actor_core() -> DidCoreId {
-        actor()
+    fn actor_id() -> ActorId {
+        ActorId::account(arkret_wire::AccountId::new(
+            actor(),
+            DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
+        ))
     }
 
     fn device() -> DeviceId {
@@ -435,7 +438,7 @@ mod tests {
         let kind = MESSAGE_STREAM_KIND.to_owned();
         SignalPlaintext {
             kind,
-            actor_id: actor(),
+            actor_id: actor_id(),
             payload_sequence,
             ttl_ms: None,
             payload: arkret_models_collaboration::signal_plaintext::SignalPlaintext::MessageStream(
@@ -506,7 +509,7 @@ mod tests {
             MessageStreamApplyOutcome::Aborted
         );
         let preview = projection
-            .preview(&actor_core(), &device(), &message())
+            .preview(&actor_id(), &device(), &message())
             .unwrap();
         assert_eq!(preview.text, "hello");
         assert_eq!(preview.status, MessageStreamPreviewStatus::Aborted);
@@ -572,7 +575,7 @@ mod tests {
         );
         assert_eq!(
             projection
-                .preview(&actor_core(), &device(), &message())
+                .preview(&actor_id(), &device(), &message())
                 .unwrap()
                 .text,
             "recovered"
@@ -620,7 +623,7 @@ mod tests {
         );
         assert_eq!(
             projection
-                .preview(&actor_core(), &device(), &message())
+                .preview(&actor_id(), &device(), &message())
                 .unwrap()
                 .status,
             MessageStreamPreviewStatus::Forked
