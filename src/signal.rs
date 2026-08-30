@@ -48,7 +48,7 @@ pub const SIGNAL_PLAINTEXT_KIND_CALL: &str = "ak.call.signal";
 #[derive(Clone, Debug)]
 pub struct VerifiedSignalSenderKey {
     public_key: PublicKeyMaterial,
-    actor_id: DidCoreId,
+    actor_id: ActorId,
     device_id: crate::protocol::DeviceId,
     verification_method: crate::protocol::DidUrl,
     authority: AccountId,
@@ -68,11 +68,10 @@ impl VerifiedSignalSenderKey {
     /// What this constructor does enforce, fail-closed, is every completeness
     /// condition of the evidence tuple that is decidable locally:
     ///
-    /// * `authority` is structurally valid and its `principal_id` names
-    ///   `actor_id` — the exact-authority pair must be the sender's, never a
-    ///   bystander's;
+    /// * `authority` is structurally valid and equals the complete account
+    ///   carried by `actor_id`, including its Station;
     /// * `verification_method` is a DID URL whose DID projects to
-    ///   `actor_id` and whose fragment equals `device_id` verbatim (the §1
+    ///   the signing principal of `actor_id` and whose fragment equals `device_id` (the §1
     ///   directory-lookup completeness condition, mirrored from
     ///   [`SignalEnvelope::validate_structural`] so a mis-bound key cannot be
     ///   constructed even before an envelope exists);
@@ -81,7 +80,7 @@ impl VerifiedSignalSenderKey {
     ///   spurious signature failure later.
     pub fn from_directory_evidence(
         public_key: PublicKeyMaterial,
-        actor_id: DidCoreId,
+        actor_id: ActorId,
         device_id: crate::protocol::DeviceId,
         verification_method: crate::protocol::DidUrl,
         authority: AccountId,
@@ -89,9 +88,10 @@ impl VerifiedSignalSenderKey {
         authority
             .validate()
             .map_err(|error| Error::Protocol(error.to_string()))?;
-        if authority.principal_id != actor_id {
+        if actor_id.as_account_id() != Some(&authority) {
             return Err(Error::Protocol(
-                "signal sender authority principal_id does not name the sender actor".to_owned(),
+                "signal sender authority account_id does not name the exact sender actor"
+                    .to_owned(),
             ));
         }
         let (controller, fragment) =
@@ -109,7 +109,7 @@ impl VerifiedSignalSenderKey {
                 crate::protocol::project_did_to_core_id(&did)
                     .map_err(|error| Error::Protocol(error.to_string()))
             })?;
-        if controller_core != actor_id || fragment != device_id.as_str() {
+        if &controller_core != actor_id.signing_principal_id() || fragment != device_id.as_str() {
             return Err(Error::Protocol(
                 "signal sender verification_method controller or fragment does not match the directory key"
                     .to_owned(),
@@ -132,7 +132,7 @@ impl VerifiedSignalSenderKey {
         if self.actor_id != envelope.sender_actor_id
             || self.device_id != envelope.sender_device_id
             || self.verification_method != envelope.proof.verification_method
-            || self.authority.principal_id != envelope.sender_actor_id
+            || envelope.sender_actor_id.as_account_id() != Some(&self.authority)
         {
             return Err(Error::Protocol(
                 "signal verified sender key does not bind this envelope".to_owned(),
@@ -143,10 +143,7 @@ impl VerifiedSignalSenderKey {
 
     #[cfg(test)]
     pub(crate) fn for_test(envelope: &SignalEnvelope, public_key: PublicKeyMaterial) -> Self {
-        let authority = AccountId::new(
-            envelope.sender_actor_id.clone(),
-            DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
-        );
+        let authority = envelope.sender_actor_id.as_account_id().unwrap().clone();
         Self {
             public_key,
             actor_id: envelope.sender_actor_id.clone(),
@@ -176,8 +173,8 @@ impl VerifiedSignalSenderKey {
 /// authority evidence is unavailable, the device is revoked or non-active,
 /// its generation is fenced or conflicted, or the frozen trust chain is
 /// incomplete. `signal.md` §1
-/// does require `proof.verification_method` to equal
-/// `{sender_actor_id}#{sender_device_id}` verbatim, but that is only the
+/// requires the method's DID to project to the sender's signing principal
+/// and its fragment to equal `sender_device_id`, but that is only the
 /// completeness condition of the lookup key and is already enforced by
 /// [`SignalEnvelope::validate_structural`]; it is never a substitute for the
 /// directory lookup.
@@ -315,7 +312,7 @@ impl SignalPlaintext {
 #[derive(Debug)]
 pub struct SignalReceiver {
     seen_envelope_digests: BoundedSeenWindow<String>,
-    sequence_high_waters: BTreeMap<(String, String), ActiveSignalHighWater>,
+    sequence_high_waters: BTreeMap<(ActorId, String, String), ActiveSignalHighWater>,
     capacity: usize,
 }
 
@@ -384,9 +381,9 @@ impl SignalReceiver {
             ));
         }
         let plaintext = decryptor.open(envelope)?;
-        let sender_actor_id = ActorId::account(verified_key.authority.clone());
-        let parsed = SignalPlaintext::parse(envelope, &sender_actor_id, &plaintext)?;
+        let parsed = SignalPlaintext::parse(envelope, &envelope.sender_actor_id, &plaintext)?;
         let domain = (
+            envelope.sender_actor_id.clone(),
             envelope.sender_device_id.as_str().to_owned(),
             scope_key(&envelope.scope_ref)?,
         );
@@ -633,7 +630,7 @@ mod tests {
         let mut envelope = SignalEnvelope {
             realm_id: realm(),
             scope_ref: ScopeRef::Realm { realm_id: realm() },
-            sender_actor_id: actor(),
+            sender_actor_id: account_actor(),
             sender_device_id: device_id,
             seal_ref: SealId::new(format!("ak:seal:sha256:{}", "a".repeat(64))).unwrap(),
             signal_class,
@@ -720,7 +717,7 @@ mod tests {
         }
     }
 
-    fn directory_evidence_parts() -> (PublicKeyMaterial, DidCoreId, DeviceId, DidUrl, AccountId) {
+    fn directory_evidence_parts() -> (PublicKeyMaterial, ActorId, DeviceId, DidUrl, AccountId) {
         let device_id = device("000000000005");
         let public_key = PublicKeyMaterial::Ed25519Raw {
             bytes: SigningKey::from_bytes(&[41; 32])
@@ -736,7 +733,7 @@ mod tests {
         );
         (
             public_key,
-            actor(),
+            account_actor(),
             device_id,
             verification_method,
             authority,
@@ -755,7 +752,7 @@ mod tests {
             authority,
         )
         .unwrap();
-        assert_eq!(key.actor_id, actor());
+        assert_eq!(key.actor_id, account_actor());
         assert_eq!(key.device_id, device("000000000005"));
     }
 
@@ -775,8 +772,25 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            format!("{error}").contains("authority principal_id"),
+            format!("{error}").contains("authority account_id"),
             "{error}"
+        );
+    }
+
+    #[test]
+    fn from_directory_evidence_rejects_the_same_principal_at_another_station() {
+        let (public_key, actor_id, device_id, verification_method, mut authority) =
+            directory_evidence_parts();
+        authority.station_id = DidCoreId::new("ak:did_core:web:other-station.example").unwrap();
+        assert!(
+            VerifiedSignalSenderKey::from_directory_evidence(
+                public_key,
+                actor_id,
+                device_id,
+                verification_method,
+                authority
+            )
+            .is_err()
         );
     }
 
@@ -844,10 +858,7 @@ mod tests {
             [42; 32],
         );
         let resolver = move |envelope: &SignalEnvelope| {
-            let authority = AccountId::new(
-                envelope.sender_actor_id.clone(),
-                DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
-            );
+            let authority = envelope.sender_actor_id.as_account_id().unwrap().clone();
             VerifiedSignalSenderKey::from_directory_evidence(
                 public_key.clone(),
                 envelope.sender_actor_id.clone(),
@@ -1060,6 +1071,51 @@ mod tests {
             .unwrap_err();
 
         assert!(format!("{error}").contains("signal_exact_envelope_replay"));
+    }
+
+    #[test]
+    fn receiver_sequences_are_isolated_between_same_principal_station_accounts() {
+        let seed = [19; 32];
+        let (first, public_key, first_plaintext) = signed_signal(
+            device("000000000005"),
+            presence_plaintext("online", 1),
+            SignalClass::Session,
+            30,
+            seed,
+        );
+        let mut second = first.clone();
+        let mut account_id = second.sender_actor_id.as_account_id().unwrap().clone();
+        account_id.station_id = DidCoreId::new("ak:did_core:web:other-station.example").unwrap();
+        second.sender_actor_id = ActorId::account(account_id);
+        second.encrypted_payload.aad_digest = second.expected_aad_digest().unwrap();
+        second.proof.envelope_digest = second.envelope_digest().unwrap();
+        second.proof.jws = sign_ed25519_detached_jws(
+            &SigningKey::from_bytes(&seed),
+            &second.proof_binding_bytes().unwrap(),
+        )
+        .unwrap();
+        let mut second_plaintext = presence_plaintext("online", 1);
+        second_plaintext["actor_id"] = serde_json::to_value(&second.sender_actor_id).unwrap();
+        let second_plaintext = canonical::canonical_json_bytes(&second_plaintext).unwrap();
+        let resolver = key_of(public_key);
+        let mut receiver = SignalReceiver::new();
+        receiver
+            .accept(
+                &first,
+                &resolver,
+                &FixedDecryptor(first_plaintext),
+                sent_at(),
+            )
+            .unwrap();
+        receiver
+            .accept(
+                &second,
+                &resolver,
+                &FixedDecryptor(second_plaintext),
+                sent_at(),
+            )
+            .unwrap();
+        assert_eq!(receiver.sequence_high_waters.len(), 2);
     }
 
     #[test]

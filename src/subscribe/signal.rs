@@ -377,7 +377,10 @@ mod tests {
         let mut envelope = SignalEnvelope {
             realm_id: realm(),
             scope_ref: ScopeRef::Realm { realm_id: realm() },
-            sender_actor_id: actor(),
+            sender_actor_id: ActorId::account(AccountId::new(
+                actor(),
+                DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
+            )),
             sender_device_id: device(),
             seal_ref: SealId::new(format!("ak:seal:sha256:{}", "a".repeat(64))).unwrap(),
             signal_class: SignalClass::Session,
