@@ -319,7 +319,7 @@ fn dropped_frame(reconnect_after_ms: Option<u64>) -> EventsSubscribeFrame {
     }
 }
 
-fn unauthorized_frame(_reason: &str) -> EventsSubscribeFrame {
+fn unauthorized_frame() -> EventsSubscribeFrame {
     EventsSubscribeFrame::Unauthorized {
         realm_id: Some(realm_id()),
     }
@@ -378,7 +378,8 @@ fn accepted_event() -> arkret_wire::Event {
         )
         .unwrap(),
         producer_verification_method: producer.verification_method.clone(),
-        producer_signing_key: arkret_wire::DidKey::new("did:key:z6MkhFixtureDeviceKey").unwrap(),
+        producer_signing_key_did: arkret_wire::DidKey::new("did:key:z6MkhFixtureDeviceKey")
+            .unwrap(),
         producer_signer_resolution_evidence_ref: None,
         producer_signer_resolution_evidence_digest: None,
         signer_resolution_evidence_ref: arkret_wire::SignerEvidenceRef::new(format!(
@@ -496,9 +497,7 @@ async fn run_realm_to_inbox_atomically_queues_dropped_backfill_and_cursor() {
     let dropped = dropped_frame(None);
     let provider = QueueProvider::new(vec![
         Ok(TestRealmTransport::frames(vec![Ok(dropped)])),
-        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
-            "revoked",
-        ))])),
+        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame())])),
     ]);
     let control = SyncLoopControl::new();
 
@@ -513,12 +512,7 @@ async fn run_realm_to_inbox_atomically_queues_dropped_backfill_and_cursor() {
         .await
         .unwrap();
 
-    assert_eq!(
-        stop,
-        RunStopReason::Unauthorized {
-            reason: Some("revoked".to_owned())
-        }
-    );
+    assert_eq!(stop, RunStopReason::Unauthorized { reason: None });
     assert_eq!(
         store.load(scope).await.unwrap().as_deref(),
         Some("ak:cursor:dropped")
@@ -550,9 +544,7 @@ async fn run_realm_to_inbox_replaces_expired_cursor_with_durable_baseline() {
             open_error: Mutex::new(Some(cursor_expired_error())),
             source: Mutex::new(None),
         }),
-        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
-            "revoked",
-        ))])),
+        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame())])),
     ]);
 
     let stop = client
@@ -566,12 +558,7 @@ async fn run_realm_to_inbox_replaces_expired_cursor_with_durable_baseline() {
         .await
         .unwrap();
 
-    assert_eq!(
-        stop,
-        RunStopReason::Unauthorized {
-            reason: Some("revoked".to_owned())
-        }
-    );
+    assert_eq!(stop, RunStopReason::Unauthorized { reason: None });
     assert!(store.load(realm_scope).await.unwrap().is_none());
     let pending = store.pending(10).await.unwrap();
     assert_eq!(pending.len(), 1);
@@ -634,9 +621,7 @@ async fn run_realm_retries_provider_error_with_backoff() {
     let client = test_client(executor.clone(), MemoryStore::new());
     let provider = QueueProvider::new(vec![
         Err(Error::Http("provider offline".to_owned())),
-        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
-            "revoked",
-        ))])),
+        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame())])),
     ]);
     let control = SyncLoopControl::new();
     let (projector, calls) = projector(None, false);
@@ -653,12 +638,7 @@ async fn run_realm_retries_provider_error_with_backoff() {
         .await
         .unwrap();
 
-    assert_eq!(
-        stop,
-        RunStopReason::Unauthorized {
-            reason: Some("revoked".to_owned())
-        }
-    );
+    assert_eq!(stop, RunStopReason::Unauthorized { reason: None });
     assert_eq!(provider.calls(), 2);
     assert_eq!(executor.sleeps(), vec![Duration::from_millis(10)]);
     assert_eq!(*calls.lock().unwrap(), 0);
@@ -672,9 +652,7 @@ async fn run_realm_retries_stream_transport_error_with_backoff() {
         Ok(TestRealmTransport::frames(vec![Err(Error::Http(
             "stream reset".to_owned(),
         ))])),
-        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
-            "revoked",
-        ))])),
+        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame())])),
     ]);
     let control = SyncLoopControl::new();
     let (projector, calls) = projector(None, false);
@@ -691,12 +669,7 @@ async fn run_realm_retries_stream_transport_error_with_backoff() {
         .await
         .unwrap();
 
-    assert_eq!(
-        stop,
-        RunStopReason::Unauthorized {
-            reason: Some("revoked".to_owned())
-        }
-    );
+    assert_eq!(stop, RunStopReason::Unauthorized { reason: None });
     assert_eq!(provider.calls(), 2);
     assert_eq!(executor.sleeps(), vec![Duration::from_millis(10)]);
     assert_eq!(*calls.lock().unwrap(), 0);
@@ -719,9 +692,7 @@ async fn run_realm_clears_all_cursors_bootstraps_and_reconnects_after_cursor_exp
             open_error: Mutex::new(Some(cursor_expired_error())),
             source: Mutex::new(None),
         }),
-        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
-            "revoked",
-        ))])),
+        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame())])),
     ]);
     let control = SyncLoopControl::new();
     let (projector, calls) = projector(None, false);
@@ -738,12 +709,7 @@ async fn run_realm_clears_all_cursors_bootstraps_and_reconnects_after_cursor_exp
         .await
         .unwrap();
 
-    assert_eq!(
-        stop,
-        RunStopReason::Unauthorized {
-            reason: Some("revoked".to_owned())
-        }
-    );
+    assert_eq!(stop, RunStopReason::Unauthorized { reason: None });
     assert_eq!(provider.calls(), 2);
     assert!(store.load(realm_scope).await.unwrap().is_none());
     assert_eq!(*calls.lock().unwrap(), 0);
@@ -805,12 +771,8 @@ async fn run_realm_retries_transient_session_recovery_error() {
     let executor = RecordingExecutor::default();
     let client = test_client(executor.clone(), MemoryStore::new());
     let provider = QueueProvider::new(vec![
-        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
-            "expired",
-        ))])),
-        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
-            "revoked",
-        ))])),
+        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame())])),
+        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame())])),
     ])
     .with_recoveries(vec![
         Err(Error::Http("refresh offline".to_owned())),
@@ -831,12 +793,7 @@ async fn run_realm_retries_transient_session_recovery_error() {
         .await
         .unwrap();
 
-    assert_eq!(
-        stop,
-        RunStopReason::Unauthorized {
-            reason: Some("revoked".to_owned())
-        }
-    );
+    assert_eq!(stop, RunStopReason::Unauthorized { reason: None });
     assert_eq!(provider.calls(), 2);
     assert_eq!(executor.sleeps(), vec![Duration::from_millis(10)]);
 }
@@ -851,9 +808,7 @@ async fn run_realm_server_hint_suppresses_local_backoff() {
     let dropped = dropped_frame(Some(25));
     let provider = QueueProvider::new(vec![
         Ok(TestRealmTransport::frames(vec![Ok(dropped)])),
-        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame(
-            "revoked",
-        ))])),
+        Ok(TestRealmTransport::frames(vec![Ok(unauthorized_frame())])),
     ]);
     let control = SyncLoopControl::new();
     let (projector, calls) = projector(None, false);
@@ -870,12 +825,7 @@ async fn run_realm_server_hint_suppresses_local_backoff() {
         .await
         .unwrap();
 
-    assert_eq!(
-        stop,
-        RunStopReason::Unauthorized {
-            reason: Some("revoked".to_owned())
-        }
-    );
+    assert_eq!(stop, RunStopReason::Unauthorized { reason: None });
     assert_eq!(provider.calls(), 2);
     assert_eq!(executor.sleeps(), vec![Duration::from_millis(25)]);
     // The dropped-cursor recovery projected exactly one Backfill batch.

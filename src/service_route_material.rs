@@ -521,7 +521,7 @@ pub mod test_fixture {
             registered_kind,
             vec![format!("ak.operation_bundle.{service_kind}.describe.v1")],
             vec![TransportBinding::HttpJson {
-                base_url: base_url,
+                base_url,
                 extension_profile_required: (),
             }],
         );

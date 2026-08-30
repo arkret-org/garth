@@ -739,7 +739,7 @@ mod tests {
                 did: did.clone(),
                 operation_digest: Hash::new(format!("sha256:{}", "a".repeat(64))).unwrap(),
                 did_operation: crate::protocol::DidOperationSubmitRequestBody {
-                    did: did,
+                    did,
                     did_method: arkret_models_identity::DidMethodName::Webvh,
                     seq: None,
                     prev_event_digest: None,

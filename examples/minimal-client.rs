@@ -5,7 +5,7 @@ use arkret_models_collaboration::session_grant_bodies::{
 };
 use arkret_models_collaboration::sync_frames::account_subscribe::AccountSubscribeBatch;
 use arkret_models_collaboration::sync_frames::client_sync::SyncRequestBody;
-use arkret_wire::{DeviceId, DidCoreId, RealmId, SessionGrantId};
+use arkret_wire::{DeviceId, DidCoreId, RealmId, ServiceAccountId, SessionGrantId};
 use chrono::{Duration, Utc};
 use garth::Result;
 use garth::subscribe::scan::BoxScanFuture;
@@ -148,6 +148,7 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     grant_store
         .save(&SessionGrantState {
             principal_id,
+            service_account_id: ServiceAccountId::new("account-1").unwrap(),
             device_id: Some(device_id.clone()),
             grant_id: SessionGrantId::from_issuance_digest([1_u8; 32]),
             grant_jwt: "reference-grant".to_owned(),
