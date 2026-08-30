@@ -22,9 +22,9 @@ use crate::protocol::sync::{
 };
 use crate::protocol::{
     AccountStreamInterrupt, AccountSubscribeBatch, AccountSubscribeDeviceListChanges,
-    AccountSubscribeFrameKind, AccountSubscribeRealmSummary, ActorId, AuthorizationLease,
-    DidCoreId, Error, Event, EventId, IngressReceipt, NotificationDelta, NotificationDeltaAction,
-    RealmId, Result, Timeline, canonical,
+    AccountSubscribeFrameKind, AccountSubscribeRealmSummary, ActorId, AuthorizationLease, Error,
+    Event, EventId, IngressReceipt, NotificationDelta, NotificationDeltaAction, RealmId, Result,
+    Timeline, canonical,
 };
 
 mod loop_control;

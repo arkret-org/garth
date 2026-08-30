@@ -457,7 +457,7 @@ fn processor_dispatches_all_update_categories() {
         extra: BTreeMap::new(),
     });
     frame.device_lists = Some(AccountSubscribeDeviceListChanges {
-        changed_ids: vec![sender.clone()],
+        changed_ids: vec![account_actor_id(&sender)],
         left_ids: Vec::new(),
     });
     frame.account_data = Some(EventContainer {
@@ -501,6 +501,36 @@ fn processor_dispatches_all_update_categories() {
     assert!(processor.account_data("ak.settings").is_some());
     assert!(processor.notification(notification_id).is_some());
     assert_eq!(processor.device_lists().changed_ids.len(), 1);
+}
+
+#[test]
+fn device_list_changes_preserve_same_principal_accounts_at_distinct_stations() {
+    let principal = DidCoreId::new("ak:did_core:web:alice.example").unwrap();
+    let actors = ["alpha.example", "beta.example"].map(|station| {
+        ActorId::account(AccountId::new(
+            principal.clone(),
+            DidCoreId::new(format!("ak:did_core:web:{station}")).unwrap(),
+        ))
+    });
+    let mut processor = SyncResponseProcessor::new();
+    for (index, actor) in actors.iter().enumerate() {
+        let mut response = sync_response(&format!("device-list-{index}"));
+        delta_mut(&mut response).device_lists = Some(AccountSubscribeDeviceListChanges {
+            changed_ids: vec![actor.clone()],
+            left_ids: vec![actor.clone()],
+        });
+        processor.process(response).unwrap();
+    }
+    let changes = processor.device_lists();
+    let expected = actors.into_iter().collect::<BTreeSet<_>>();
+    assert_eq!(
+        changes.changed_ids.into_iter().collect::<BTreeSet<_>>(),
+        expected
+    );
+    assert_eq!(
+        changes.left_ids.into_iter().collect::<BTreeSet<_>>(),
+        expected
+    );
 }
 
 /// A per-stream Realm delta that reports only, say, unread counts carries no

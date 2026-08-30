@@ -10,8 +10,8 @@ use super::*;
 pub struct SyncResponseProcessor {
     realms: BTreeMap<RealmId, ProcessedRealm>,
     limited_timelines: BTreeMap<RealmId, LimitedTimelineState>,
-    changed_device_lists: BTreeSet<DidCoreId>,
-    left_device_lists: BTreeSet<DidCoreId>,
+    changed_device_lists: BTreeSet<ActorId>,
+    left_device_lists: BTreeSet<ActorId>,
     pending_recovery_actions: BTreeSet<SyncRecoveryAction>,
     account_data: BTreeMap<String, Event>,
     notifications: BTreeMap<String, NotificationDelta>,
