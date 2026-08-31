@@ -19,7 +19,7 @@ use crate::{Error, Result};
 #[serde(rename_all = "snake_case")]
 pub enum AuthoringAuthorityModel {
     AcceptedDevice,
-    ManagedAgent,
+    Agent,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,7 +31,7 @@ pub struct AuthoringGeneration {
 }
 
 impl AuthoringGeneration {
-    pub fn managed_agent(
+    pub fn agent(
         controller: &str,
         controller_generation: &Self,
         authorization_ref: &str,
@@ -39,7 +39,7 @@ impl AuthoringGeneration {
         let authorization_ref = authorization_ref.trim();
         if authorization_ref.is_empty() {
             return Err(Error::Protocol(
-                "managed Agent authoring requires authorization_ref".to_owned(),
+                "Agent authoring requires authorization_ref".to_owned(),
             ));
         }
         let generation_ref = arkret_canonical::canonical_sha256(&serde_json::json!({
@@ -48,7 +48,7 @@ impl AuthoringGeneration {
             "authorization_ref": authorization_ref,
         }))?;
         Ok(Self {
-            authority_model: AuthoringAuthorityModel::ManagedAgent,
+            authority_model: AuthoringAuthorityModel::Agent,
             authority_principal_id: DidCoreId::new(controller.to_owned())?,
             generation_ref,
         })

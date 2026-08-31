@@ -1,4 +1,4 @@
-//! Runtime-only admission gates for the Personal Agent journey.
+//! Runtime-only admission gates for the Agent journey.
 //!
 //! Wire objects remain owned by the SDK. This module only combines already
 //! verified facts; none of the local fact wrappers serialize into a competing
