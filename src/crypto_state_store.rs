@@ -538,6 +538,10 @@ pub trait CryptoStore: Send + Sync + MlsGroupStateSink + MlsCommitSource {
         principal_id: &DidCoreId,
         device_id: &DeviceId,
     ) -> Vec<&MlsWelcomeEnvelope>;
+    fn welcomes_for_endpoint(
+        &self,
+        endpoint: &crate::protocol::MlsEndpointIdentity,
+    ) -> Vec<&MlsWelcomeEnvelope>;
     fn mark_welcome_accepted(&mut self, welcome_hash: &crate::protocol::Hash) -> Result<()>;
     fn mark_welcome_consumed(&mut self, welcome_hash: &crate::protocol::Hash) -> Result<()>;
     fn welcome_state(&self, welcome_hash: &crate::protocol::Hash) -> Option<MlsWelcomeState>;
@@ -705,6 +709,16 @@ impl CryptoStore for MemoryCryptoStore {
                     } if owner == principal_id && owner_device == device_id
                 )
             })
+            .collect()
+    }
+
+    fn welcomes_for_endpoint(
+        &self,
+        endpoint: &crate::protocol::MlsEndpointIdentity,
+    ) -> Vec<&MlsWelcomeEnvelope> {
+        self.welcomes
+            .iter()
+            .filter(|welcome| &welcome.recipient == endpoint)
             .collect()
     }
 
