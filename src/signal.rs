@@ -25,10 +25,13 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use crate::MaybeSendSync;
+#[cfg(test)]
+use crate::protocol::canonical;
 use crate::protocol::signatures::{PublicKeyMaterial, verify_ed25519_signal_proof};
 use crate::protocol::{
     AccountId, ActorId, Error, Result, ScopeRef, SignalEnvelope, SignalSequence,
-    SignalSequenceDecision, SignalSequenceHighWater, canonical, open_signal_plaintext,
+    SignalSequenceDecision, SignalSequenceDomain, SignalSequenceEndpoint, SignalSequenceHighWater,
+    open_signal_plaintext,
 };
 use crate::store::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
 
@@ -49,10 +52,21 @@ pub const SIGNAL_PLAINTEXT_KIND_CALL: &str = "ak.call.signal";
 pub struct VerifiedSignalSenderKey {
     public_key: PublicKeyMaterial,
     actor_id: ActorId,
-    device_id: crate::protocol::DeviceId,
     verification_method: crate::protocol::DidUrl,
-    authority: AccountId,
-    device_authorize_event_id: crate::protocol::EventId,
+    authority: VerifiedSignalSenderAuthority,
+}
+
+#[derive(Clone, Debug)]
+pub enum VerifiedSignalSenderAuthority {
+    AccountDevice {
+        device_id: crate::protocol::DeviceId,
+        authority: AccountId,
+        device_authorize_event_id: crate::protocol::EventId,
+    },
+    Agent {
+        public_key_digest: crate::protocol::Hash,
+        agent_key_authorize_event_id: crate::protocol::EventId,
+    },
 }
 
 impl VerifiedSignalSenderKey {
@@ -126,10 +140,64 @@ impl VerifiedSignalSenderKey {
         Ok(Self {
             public_key,
             actor_id,
-            device_id,
             verification_method,
-            authority,
-            device_authorize_event_id,
+            authority: VerifiedSignalSenderAuthority::AccountDevice {
+                device_id,
+                authority,
+                device_authorize_event_id,
+            },
+        })
+    }
+
+    /// Production constructor for a current accepted Agent runtime key.
+    ///
+    /// The resolver must already have verified Agent classification, active
+    /// lifecycle, controller membership, the complete authorization fold and
+    /// the unique active MLS leaf. This constructor prevents that evidence
+    /// from being represented as a synthetic device and normalizes the raw
+    /// key digest used by the payload-sequence domain.
+    pub fn from_agent_evidence(
+        public_key: PublicKeyMaterial,
+        actor_id: ActorId,
+        verification_method: crate::protocol::DidUrl,
+        agent_key_authorize_event_id: crate::protocol::EventId,
+    ) -> Result<Self> {
+        actor_id
+            .validate()
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+        let controller = verification_method
+            .as_str()
+            .split_once('#')
+            .filter(|(_, fragment)| !fragment.is_empty())
+            .map(|(controller, _)| controller)
+            .ok_or_else(|| {
+                Error::Protocol(
+                    "Agent Signal verification_method requires a DID URL fragment".to_owned(),
+                )
+            })?;
+        let controller_core = crate::protocol::Did::new(controller)
+            .map_err(|error| Error::Protocol(error.to_string()))
+            .and_then(|did| {
+                crate::protocol::project_did_to_core_id(&did)
+                    .map_err(|error| Error::Protocol(error.to_string()))
+            })?;
+        if &controller_core != actor_id.signing_principal_id() {
+            return Err(Error::Protocol(
+                "Agent Signal verification_method controller differs from the sender actor"
+                    .to_owned(),
+            ));
+        }
+        let public_key_digest = public_key
+            .raw_ed25519_digest()
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+        Ok(Self {
+            public_key,
+            actor_id,
+            verification_method,
+            authority: VerifiedSignalSenderAuthority::Agent {
+                public_key_digest,
+                agent_key_authorize_event_id,
+            },
         })
     }
 
@@ -139,15 +207,53 @@ impl VerifiedSignalSenderKey {
     }
 
     /// The current accepted authorization to bind to the winning MLS leaf.
-    pub fn device_authorize_event_id(&self) -> &crate::protocol::EventId {
-        &self.device_authorize_event_id
+    pub fn authority(&self) -> &VerifiedSignalSenderAuthority {
+        &self.authority
+    }
+
+    fn agent_public_key_digest(&self) -> Option<crate::protocol::Hash> {
+        match &self.authority {
+            VerifiedSignalSenderAuthority::Agent {
+                public_key_digest, ..
+            } => Some(public_key_digest.clone()),
+            VerifiedSignalSenderAuthority::AccountDevice { .. } => None,
+        }
+    }
+
+    fn sequence_endpoint(&self) -> SignalSequenceEndpoint {
+        match &self.authority {
+            VerifiedSignalSenderAuthority::AccountDevice { device_id, .. } => {
+                SignalSequenceEndpoint::AccountDevice {
+                    device_id: device_id.clone(),
+                }
+            }
+            VerifiedSignalSenderAuthority::Agent {
+                public_key_digest, ..
+            } => SignalSequenceEndpoint::AgentKey {
+                public_key_digest: public_key_digest.clone(),
+            },
+        }
     }
 
     fn validate_for(&self, envelope: &SignalEnvelope) -> Result<()> {
+        let branch_matches = match (&self.authority, envelope.sender_device_id.as_ref()) {
+            (
+                VerifiedSignalSenderAuthority::AccountDevice {
+                    device_id,
+                    authority,
+                    ..
+                },
+                Some(sender_device_id),
+            ) => {
+                device_id == sender_device_id
+                    && envelope.sender_actor_id.as_account_id() == Some(authority)
+            }
+            (VerifiedSignalSenderAuthority::Agent { .. }, None) => true,
+            _ => false,
+        };
         if self.actor_id != envelope.sender_actor_id
-            || self.device_id != envelope.sender_device_id
             || self.verification_method != envelope.proof.verification_method
-            || envelope.sender_actor_id.as_account_id() != Some(&self.authority)
+            || !branch_matches
         {
             return Err(Error::Protocol(
                 "signal verified sender key does not bind this envelope".to_owned(),
@@ -158,17 +264,27 @@ impl VerifiedSignalSenderKey {
 
     #[cfg(test)]
     pub(crate) fn for_test(envelope: &SignalEnvelope, public_key: PublicKeyMaterial) -> Self {
-        let authority = envelope.sender_actor_id.as_account_id().unwrap().clone();
-        Self {
-            public_key,
-            actor_id: envelope.sender_actor_id.clone(),
-            device_id: envelope.sender_device_id.clone(),
-            verification_method: envelope.proof.verification_method.clone(),
-            authority,
-            device_authorize_event_id: crate::protocol::EventId::from_digest(
-                arkret_canonical::DigestSuite::Sha256,
-                [0x42; 32],
-            ),
+        let event_id = crate::protocol::EventId::from_digest(
+            arkret_canonical::DigestSuite::Sha256,
+            [0x42; 32],
+        );
+        match envelope.sender_device_id.clone() {
+            Some(device_id) => Self::from_directory_evidence(
+                public_key,
+                envelope.sender_actor_id.clone(),
+                device_id,
+                envelope.proof.verification_method.clone(),
+                envelope.sender_actor_id.as_account_id().unwrap().clone(),
+                event_id,
+            )
+            .unwrap(),
+            None => Self::from_agent_evidence(
+                public_key,
+                envelope.sender_actor_id.clone(),
+                envelope.proof.verification_method.clone(),
+                event_id,
+            )
+            .unwrap(),
         }
     }
 }
@@ -263,13 +379,14 @@ pub struct SignalPlaintext {
     pub expires_at: DateTime<Utc>,
     pub scope_ref: ScopeRef,
     pub seal_ref: crate::protocol::SealId,
-    pub sender_device_id: crate::protocol::DeviceId,
+    pub sender_endpoint: SignalSequenceEndpoint,
 }
 
 impl SignalPlaintext {
     fn parse(
         envelope: &SignalEnvelope,
         sender_actor_id: &ActorId,
+        verified_sender: &VerifiedSignalSenderKey,
         plaintext: &[u8],
     ) -> Result<Self> {
         // One entry for the whole family: dispatch on `kind`, validate against
@@ -294,7 +411,7 @@ impl SignalPlaintext {
             sent_at: envelope.sent_at,
             scope_ref: envelope.scope_ref.clone(),
             seal_ref: envelope.seal_ref.clone(),
-            sender_device_id: envelope.sender_device_id.clone(),
+            sender_endpoint: verified_sender.sequence_endpoint(),
         })
     }
 
@@ -337,7 +454,7 @@ impl SignalPlaintext {
 #[derive(Debug)]
 pub struct SignalReceiver {
     seen_envelope_digests: BoundedSeenWindow<String>,
-    sequence_high_waters: BTreeMap<(ActorId, String, String), ActiveSignalHighWater>,
+    sequence_high_waters: BTreeMap<String, ActiveSignalHighWater>,
     capacity: usize,
 }
 
@@ -406,12 +523,19 @@ impl SignalReceiver {
             ));
         }
         let plaintext = decryptor.open(envelope, &verified_key)?;
-        let parsed = SignalPlaintext::parse(envelope, &envelope.sender_actor_id, &plaintext)?;
-        let domain = (
-            envelope.sender_actor_id.clone(),
-            envelope.sender_device_id.as_str().to_owned(),
-            scope_key(&envelope.scope_ref)?,
-        );
+        let parsed = SignalPlaintext::parse(
+            envelope,
+            &envelope.sender_actor_id,
+            &verified_key,
+            &plaintext,
+        )?;
+        let domain = SignalSequenceDomain::from_verified_envelope(
+            envelope,
+            verified_key.agent_public_key_digest(),
+        )
+        .map_err(|error| Error::Protocol(error.to_string()))?
+        .canonical_key()
+        .map_err(|error| Error::Protocol(error.to_string()))?;
         self.sequence_high_waters
             .retain(|_, active| active.retain_until > now);
         if !self.sequence_high_waters.contains_key(&domain) {
@@ -452,11 +576,6 @@ impl SignalReceiver {
             .remember(envelope_digest.to_owned());
         Ok(parsed)
     }
-}
-
-fn scope_key(scope_ref: &ScopeRef) -> Result<String> {
-    let bytes = canonical::canonical_json_bytes(&serde_json::to_value(scope_ref)?)?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// One accepted per-device presence observation.
@@ -525,8 +644,20 @@ impl PresenceProjection {
         if let Some(text) = last_active_at.as_deref() {
             validate_last_active_at(text).map_err(|error| Error::Protocol(error.to_string()))?;
         }
-        let device_key = plaintext.sender_device_id.as_str().to_owned();
+        let device_key = serde_json::to_string(&plaintext.sender_endpoint)
+            .map_err(|error| Error::Protocol(error.to_string()))?;
         let entry = self.devices.entry(plaintext.actor_id.clone()).or_default();
+        if matches!(
+            &plaintext.sender_endpoint,
+            SignalSequenceEndpoint::AgentKey { .. }
+        ) {
+            entry.retain(|key, _| {
+                serde_json::from_str::<SignalSequenceEndpoint>(key).is_ok_and(|endpoint| {
+                    !matches!(endpoint, SignalSequenceEndpoint::AgentKey { .. })
+                        || &endpoint == &plaintext.sender_endpoint
+                })
+            });
+        }
         if let Some(previous) = entry.get(&device_key)
             && previous.payload_sequence >= plaintext.payload_sequence
         {
@@ -656,7 +787,7 @@ mod tests {
             realm_id: realm(),
             scope_ref: ScopeRef::Realm { realm_id: realm() },
             sender_actor_id: account_actor(),
-            sender_device_id: device_id,
+            sender_device_id: Some(device_id),
             seal_ref: SealId::new(format!("ak:seal:sha256:{}", "a".repeat(64))).unwrap(),
             signal_class,
             sent_at: sent_at(),
@@ -750,6 +881,32 @@ mod tests {
         }
     }
 
+    fn signed_agent_signal(
+        state: &str,
+        sequence: u64,
+        signing_seed: [u8; 32],
+        emission_marker: u8,
+    ) -> (SignalEnvelope, PublicKeyMaterial, Vec<u8>) {
+        let (mut envelope, public_key, plaintext) = signed_signal(
+            device("000000000005"),
+            presence_plaintext(state, sequence),
+            SignalClass::Session,
+            30,
+            signing_seed,
+        );
+        envelope.sender_device_id = None;
+        envelope.encrypted_payload.ciphertext =
+            arkret_canonical::base64url_encode(&[emission_marker; 16]);
+        envelope.encrypted_payload.aad_digest = envelope.expected_aad_digest().unwrap();
+        envelope.proof.envelope_digest = envelope.envelope_digest().unwrap();
+        envelope.proof.jws = sign_ed25519_detached_jws(
+            &SigningKey::from_bytes(&signing_seed),
+            &envelope.proof_binding_bytes().unwrap(),
+        )
+        .unwrap();
+        (envelope, public_key, plaintext)
+    }
+
     fn directory_evidence_parts() -> (PublicKeyMaterial, ActorId, DeviceId, DidUrl, AccountId) {
         let device_id = device("000000000005");
         let public_key = PublicKeyMaterial::Ed25519Raw {
@@ -791,7 +948,11 @@ mod tests {
         )
         .unwrap();
         assert_eq!(key.actor_id, account_actor());
-        assert_eq!(key.device_id, device("000000000005"));
+        assert!(matches!(
+            key.authority,
+            VerifiedSignalSenderAuthority::AccountDevice { ref device_id, .. }
+                if device_id == &device("000000000005")
+        ));
     }
 
     #[test]
@@ -892,6 +1053,28 @@ mod tests {
     }
 
     #[test]
+    fn from_agent_evidence_uses_the_raw_key_digest_as_endpoint() {
+        let signing_key = SigningKey::from_bytes(&[40; 32]);
+        let public_key = PublicKeyMaterial::Ed25519Raw {
+            bytes: signing_key.verifying_key().to_bytes().to_vec(),
+        };
+        let key = VerifiedSignalSenderKey::from_agent_evidence(
+            public_key.clone(),
+            account_actor(),
+            DidUrl::new("did:webvh:z6mkfixture:alice.example#agent-runtime").unwrap(),
+            authorize_event(),
+        )
+        .unwrap();
+        assert!(matches!(
+            key.authority(),
+            VerifiedSignalSenderAuthority::Agent {
+                public_key_digest,
+                ..
+            } if public_key_digest == &public_key.raw_ed25519_digest().unwrap()
+        ));
+    }
+
+    #[test]
     fn receiver_accepts_a_directory_evidence_key_end_to_end() {
         let (envelope, public_key, plaintext) = signed_signal(
             device("000000000005"),
@@ -905,7 +1088,7 @@ mod tests {
             VerifiedSignalSenderKey::from_directory_evidence(
                 public_key.clone(),
                 envelope.sender_actor_id.clone(),
-                envelope.sender_device_id.clone(),
+                envelope.sender_device_id.clone()?,
                 envelope.proof.verification_method.clone(),
                 authority,
                 authorize_event(),
@@ -1154,6 +1337,47 @@ mod tests {
     }
 
     #[test]
+    fn agent_sequence_continues_for_the_same_key_and_restarts_for_a_new_key() {
+        let mut receiver = SignalReceiver::new();
+        let (old, old_key, old_plaintext) = signed_agent_signal("online", 100, [51; 32], 1);
+        receiver
+            .accept(
+                &old,
+                &key_of(old_key.clone()),
+                &FixedDecryptor(old_plaintext),
+                sent_at(),
+            )
+            .unwrap();
+
+        let (same_key_regression, _, same_key_plaintext) =
+            signed_agent_signal("idle", 0, [51; 32], 2);
+        let error = receiver
+            .accept(
+                &same_key_regression,
+                &key_of(old_key),
+                &FixedDecryptor(same_key_plaintext),
+                sent_at(),
+            )
+            .unwrap_err();
+        assert!(
+            format!("{error}").contains("signal_payload_sequence_stale"),
+            "{error}"
+        );
+
+        let (replacement, replacement_key, replacement_plaintext) =
+            signed_agent_signal("online", 0, [52; 32], 3);
+        receiver
+            .accept(
+                &replacement,
+                &key_of(replacement_key),
+                &FixedDecryptor(replacement_plaintext),
+                sent_at(),
+            )
+            .unwrap();
+        assert_eq!(receiver.sequence_high_waters.len(), 2);
+    }
+
+    #[test]
     fn receiver_sequences_are_isolated_between_same_principal_station_accounts() {
         let seed = [19; 32];
         let (first, public_key, first_plaintext) = signed_signal(
@@ -1331,6 +1555,44 @@ mod tests {
         assert_eq!(
             projection.aggregated(&account_actor(), sent_at() + Duration::seconds(30)),
             PresenceStatus::Offline
+        );
+    }
+
+    #[test]
+    fn presence_projection_keeps_only_the_current_agent_runtime_observation() {
+        let (first_envelope, first_key, first_plaintext) =
+            signed_agent_signal("dnd", 40, [61; 32], 1);
+        let mut first = SignalReceiver::new()
+            .accept(
+                &first_envelope,
+                &key_of(first_key),
+                &FixedDecryptor(first_plaintext),
+                sent_at(),
+            )
+            .unwrap();
+        let (second_envelope, second_key, second_plaintext) =
+            signed_agent_signal("online", 0, [62; 32], 2);
+        let mut second = SignalReceiver::new()
+            .accept(
+                &second_envelope,
+                &key_of(second_key),
+                &FixedDecryptor(second_plaintext),
+                sent_at(),
+            )
+            .unwrap();
+        first.expires_at = sent_at() + Duration::seconds(30);
+        second.expires_at = sent_at() + Duration::seconds(30);
+
+        let mut projection = PresenceProjection::new();
+        projection.apply(&first).unwrap();
+        projection.apply(&second).unwrap();
+        assert_eq!(
+            projection.observations(&account_actor(), sent_at()).len(),
+            1
+        );
+        assert_eq!(
+            projection.aggregated(&account_actor(), sent_at()),
+            PresenceStatus::Online
         );
     }
 

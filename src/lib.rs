@@ -158,7 +158,8 @@ pub use session::{
 pub use signal::{
     PresenceObservation, PresenceProjection, PresenceStatus, SIGNAL_PLAINTEXT_KIND_CALL,
     SIGNAL_PLAINTEXT_KIND_PRESENCE, SignalDecryptor, SignalPlaintext, SignalReceiver,
-    SignalSenderKeyResolver, VerifiedSignalSenderKey, aggregate_presence_states,
+    SignalSenderKeyResolver, VerifiedSignalSenderAuthority, VerifiedSignalSenderKey,
+    aggregate_presence_states,
 };
 pub use signal_message_stream::{
     MessageStreamApplyOutcome, MessageStreamAuthorizer, MessageStreamIgnoreReason,

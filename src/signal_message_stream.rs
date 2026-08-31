@@ -12,7 +12,7 @@ use crate::protocol::{
     ActorId, DeviceId, Error, Event, EventKind, MAX_MESSAGE_STREAM_LIFETIME_SECONDS,
     MAX_MESSAGE_STREAM_PREVIEW_BYTES, MAX_MESSAGE_STREAMS_PER_DEVICE,
     MESSAGE_STREAM_STALLED_AFTER_SECONDS, MessageCreatePayload, MessageId, MessageStreamFormat,
-    MessageStreamFrame, MessageStreamId, Result, ScopeRef, StrandId,
+    MessageStreamFrame, MessageStreamId, Result, ScopeRef, SignalSequenceEndpoint, StrandId,
 };
 
 use crate::signal::SignalPlaintext;
@@ -62,14 +62,14 @@ pub enum MessageStreamApplyOutcome {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct MessageStreamPreviewKey {
     sender_actor_id: ActorId,
-    sender_device_id: DeviceId,
+    sender_endpoint: String,
     message_id: MessageId,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MessageStreamPreview {
     pub sender_actor_id: ActorId,
-    pub sender_device_id: DeviceId,
+    pub sender_endpoint: SignalSequenceEndpoint,
     pub scope_ref: ScopeRef,
     pub strand_id: StrandId,
     pub message_id: MessageId,
@@ -134,10 +134,25 @@ impl MessageStreamProjection {
         }
 
         let sender_actor_id = plaintext.actor_id.clone();
+        if matches!(
+            &plaintext.sender_endpoint,
+            SignalSequenceEndpoint::AgentKey { .. }
+        ) {
+            self.previews.retain(|_, preview| {
+                preview.sender_actor_id != sender_actor_id
+                    || !matches!(
+                        &preview.sender_endpoint,
+                        SignalSequenceEndpoint::AgentKey { .. }
+                    )
+                    || preview.sender_endpoint == plaintext.sender_endpoint
+            });
+        }
+        let sender_endpoint = serde_json::to_string(&plaintext.sender_endpoint)
+            .map_err(|error| Error::Protocol(error.to_string()))?;
 
         let key = MessageStreamPreviewKey {
             sender_actor_id: sender_actor_id.clone(),
-            sender_device_id: plaintext.sender_device_id.clone(),
+            sender_endpoint,
             message_id: frame.message_id().clone(),
         };
         let Some(existing) = self.previews.get_mut(&key) else {
@@ -156,7 +171,7 @@ impl MessageStreamProjection {
                 .values()
                 .filter(|preview| {
                     preview.sender_actor_id == sender_actor_id
-                        && preview.sender_device_id == plaintext.sender_device_id
+                        && preview.sender_endpoint == plaintext.sender_endpoint
                         && preview.status != MessageStreamPreviewStatus::Aborted
                 })
                 .count();
@@ -169,7 +184,7 @@ impl MessageStreamProjection {
                 key,
                 MessageStreamPreview {
                     sender_actor_id: sender_actor_id.clone(),
-                    sender_device_id: plaintext.sender_device_id.clone(),
+                    sender_endpoint: plaintext.sender_endpoint.clone(),
                     scope_ref: plaintext.scope_ref.clone(),
                     strand_id: keyframe.strand_id.clone(),
                     message_id: keyframe.message_id.clone(),
@@ -214,7 +229,7 @@ impl MessageStreamProjection {
             }
             *existing = MessageStreamPreview {
                 sender_actor_id,
-                sender_device_id: plaintext.sender_device_id.clone(),
+                sender_endpoint: plaintext.sender_endpoint.clone(),
                 scope_ref: plaintext.scope_ref.clone(),
                 strand_id: keyframe.strand_id.clone(),
                 message_id: keyframe.message_id.clone(),
@@ -302,14 +317,30 @@ impl MessageStreamProjection {
     pub fn preview(
         &self,
         sender_actor_id: &ActorId,
+        sender_endpoint: &SignalSequenceEndpoint,
+        message_id: &MessageId,
+    ) -> Option<&MessageStreamPreview> {
+        let sender_endpoint = serde_json::to_string(sender_endpoint).ok()?;
+        self.previews.get(&MessageStreamPreviewKey {
+            sender_actor_id: sender_actor_id.clone(),
+            sender_endpoint,
+            message_id: message_id.clone(),
+        })
+    }
+
+    pub fn preview_device(
+        &self,
+        sender_actor_id: &ActorId,
         sender_device_id: &DeviceId,
         message_id: &MessageId,
     ) -> Option<&MessageStreamPreview> {
-        self.previews.get(&MessageStreamPreviewKey {
-            sender_actor_id: sender_actor_id.clone(),
-            sender_device_id: sender_device_id.clone(),
-            message_id: message_id.clone(),
-        })
+        self.preview(
+            sender_actor_id,
+            &SignalSequenceEndpoint::AccountDevice {
+                device_id: sender_device_id.clone(),
+            },
+            message_id,
+        )
     }
 
     pub fn previews(&self) -> impl Iterator<Item = &MessageStreamPreview> {
@@ -319,12 +350,13 @@ impl MessageStreamProjection {
     /// Bind an already schema/proof/authorization/reducer-accepted durable
     /// `ak.message.create` to its direct preview.
     ///
-    /// `verified_sender_device_id` must be the device resolved and authorized
-    /// from the final Event proof's `verification_method`.
+    /// `verified_sender_endpoint` must come from the final Event's independently
+    /// verified device or Agent signer evidence. Agent binding uses the same
+    /// normalized raw-key digest as the preview sequence domain.
     pub fn bind_verified_final(
         &mut self,
         event: &Event,
-        verified_sender_device_id: &DeviceId,
+        verified_sender_endpoint: &SignalSequenceEndpoint,
     ) -> Result<Option<MessageStreamPreview>> {
         if event.kind != EventKind::MessageCreate {
             return Err(Error::Protocol(
@@ -345,7 +377,8 @@ impl MessageStreamProjection {
         let message_id = MessageId::from_event_id(&event.event_id);
         let key = MessageStreamPreviewKey {
             sender_actor_id: event.actor_id.clone(),
-            sender_device_id: verified_sender_device_id.clone(),
+            sender_endpoint: serde_json::to_string(verified_sender_endpoint)
+                .map_err(|error| Error::Protocol(error.to_string()))?,
             message_id,
         };
         let Some(preview) = self.previews.get(&key) else {
@@ -451,8 +484,19 @@ mod tests {
                     .unwrap(),
             },
             seal_ref: SealId::new(format!("ak:seal:sha256:{}", "a".repeat(64))).unwrap(),
-            sender_device_id: device(),
+            sender_endpoint: SignalSequenceEndpoint::AccountDevice {
+                device_id: device(),
+            },
         }
+    }
+
+    fn plaintext_from_endpoint(
+        frame: MessageStreamFrame,
+        sender_endpoint: SignalSequenceEndpoint,
+    ) -> SignalPlaintext {
+        let mut plaintext = plaintext(frame);
+        plaintext.sender_endpoint = sender_endpoint;
+        plaintext
     }
 
     fn allow(_: &SignalPlaintext, _: &MessageStreamFrame) -> bool {
@@ -509,7 +553,7 @@ mod tests {
             MessageStreamApplyOutcome::Aborted
         );
         let preview = projection
-            .preview(&actor_id(), &device(), &message())
+            .preview_device(&actor_id(), &device(), &message())
             .unwrap();
         assert_eq!(preview.text, "hello");
         assert_eq!(preview.status, MessageStreamPreviewStatus::Aborted);
@@ -575,7 +619,7 @@ mod tests {
         );
         assert_eq!(
             projection
-                .preview(&actor_id(), &device(), &message())
+                .preview_device(&actor_id(), &device(), &message())
                 .unwrap()
                 .text,
             "recovered"
@@ -623,7 +667,7 @@ mod tests {
         );
         assert_eq!(
             projection
-                .preview(&actor_id(), &device(), &message())
+                .preview_device(&actor_id(), &device(), &message())
                 .unwrap()
                 .status,
             MessageStreamPreviewStatus::Forked
@@ -655,5 +699,75 @@ mod tests {
         assert_eq!(projection.mark_stalled(at(30)), 1);
         assert_eq!(projection.expire(at(599)), 0);
         assert_eq!(projection.expire(at(600)), 1);
+    }
+
+    #[test]
+    fn agent_final_binds_only_the_preview_from_the_same_raw_key_digest() {
+        let event = arkret_wire::test_support::raw_event(
+            EventKind::MessageCreate.as_str(),
+            ScopeRef::Realm {
+                realm_id: RealmId::new("ak:realm:AW8gVTGSDcgFsgxhf3pxx6_g2zsDTvJO7mE-h6cesXnI")
+                    .unwrap(),
+            },
+            actor(),
+            DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
+            1,
+            arkret_wire::Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
+            serde_json::json!({
+                "content": {"kind": "ak.content.text", "body": "hello"},
+                "strand_id": strand(),
+                "track_name": "discussion"
+            }),
+        )
+        .unwrap();
+        let message_id = MessageId::from_event_id(&event.event_id);
+        let endpoint_a = SignalSequenceEndpoint::AgentKey {
+            public_key_digest: arkret_wire::Hash::new(format!("sha256:{}", "11".repeat(32)))
+                .unwrap(),
+        };
+        let endpoint_b = SignalSequenceEndpoint::AgentKey {
+            public_key_digest: arkret_wire::Hash::new(format!("sha256:{}", "22".repeat(32)))
+                .unwrap(),
+        };
+        let frame = MessageStreamFrame::Keyframe(
+            MessageStreamKeyframe::new(
+                1,
+                strand(),
+                message_id.clone(),
+                0,
+                stream("000000000009"),
+                0,
+                MessageStreamFormat::Plain,
+                "hello",
+                false,
+            )
+            .unwrap(),
+        );
+        let mut projection = MessageStreamProjection::new();
+        projection
+            .apply(
+                &plaintext_from_endpoint(frame, endpoint_a.clone()),
+                &allow,
+                at(0),
+            )
+            .unwrap();
+
+        assert!(
+            projection
+                .bind_verified_final(&event, &endpoint_b)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            projection
+                .preview(&actor_id(), &endpoint_a, &message_id)
+                .is_some()
+        );
+        assert!(
+            projection
+                .bind_verified_final(&event, &endpoint_a)
+                .unwrap()
+                .is_some()
+        );
     }
 }

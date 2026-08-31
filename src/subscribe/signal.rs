@@ -381,7 +381,7 @@ mod tests {
                 actor(),
                 DidCoreId::new("ak:did_core:web:principal.example").unwrap(),
             )),
-            sender_device_id: device(),
+            sender_device_id: Some(device()),
             seal_ref: SealId::new(format!("ak:seal:sha256:{}", "a".repeat(64))).unwrap(),
             signal_class: SignalClass::Session,
             sent_at: sent_at(),
