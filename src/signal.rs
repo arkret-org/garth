@@ -52,6 +52,7 @@ pub struct VerifiedSignalSenderKey {
     device_id: crate::protocol::DeviceId,
     verification_method: crate::protocol::DidUrl,
     authority: AccountId,
+    device_authorize_event_id: crate::protocol::EventId,
 }
 
 impl VerifiedSignalSenderKey {
@@ -61,8 +62,10 @@ impl VerifiedSignalSenderKey {
     /// The caller (a [`SignalSenderKeyResolver`] implementation) remains
     /// responsible for the host-state half of `signal.md` §1: resolving the
     /// authoritative verify key from its *current* accepted device directory
-    /// and replaying the root-anchored PCR authorization chain, generation
-    /// and revocation state. That evidence lives outside this crate by
+    /// through current root-anchored PCR state or a verified origin-Station
+    /// projection attestation with exact account, generation, status and expiry.
+    /// Known revocation or fencing always overrides a remaining MLS leaf.
+    /// That evidence lives outside this crate by
     /// layering — garth holds no device directory or PCR state.
     ///
     /// What this constructor does enforce, fail-closed, is every completeness
@@ -84,6 +87,7 @@ impl VerifiedSignalSenderKey {
         device_id: crate::protocol::DeviceId,
         verification_method: crate::protocol::DidUrl,
         authority: AccountId,
+        device_authorize_event_id: crate::protocol::EventId,
     ) -> Result<Self> {
         authority
             .validate()
@@ -125,7 +129,18 @@ impl VerifiedSignalSenderKey {
             device_id,
             verification_method,
             authority,
+            device_authorize_event_id,
         })
+    }
+
+    /// The exact key whose producer proof admission already verified.
+    pub fn public_key(&self) -> &PublicKeyMaterial {
+        &self.public_key
+    }
+
+    /// The current accepted authorization to bind to the winning MLS leaf.
+    pub fn device_authorize_event_id(&self) -> &crate::protocol::EventId {
+        &self.device_authorize_event_id
     }
 
     fn validate_for(&self, envelope: &SignalEnvelope) -> Result<()> {
@@ -150,6 +165,10 @@ impl VerifiedSignalSenderKey {
             device_id: envelope.sender_device_id.clone(),
             verification_method: envelope.proof.verification_method.clone(),
             authority,
+            device_authorize_event_id: crate::protocol::EventId::from_digest(
+                arkret_canonical::DigestSuite::Sha256,
+                [0x42; 32],
+            ),
         }
     }
 }
@@ -193,21 +212,27 @@ where
 
 /// Opener for the AEAD ciphertext of a Signal.
 ///
-/// The content key is derived from the scope's MLS group exporter under label
-/// `ak.signal-v1`, and the nonce from the canonical
-/// `{key_ref, epoch, device_id, purpose, aead_profile}` context of
-/// `encoding.md` §10.1. Both need accepted MLS state, which this crate does
-/// not hold by layering.
+/// The Signal key is derived under `ak.signal-v1` from the root selected by
+/// the scope's accepted content policy: history root for exporter-content,
+/// or the separate non-deliverable Signal root for standard MLS. The nonce is
+/// the full-width sender counter (`encoding.md` §10.1). This needs accepted
+/// MLS state, which this crate does not hold. The opener must cross-bind the supplied current
+/// sender evidence to the complete accepted MLS leaf identity, signing key
+/// and authorization Event, and resolve the exact scope/group/epoch/winning
+/// state reference. Successful AEAD alone is not sender authentication.
 ///
 /// Implementations MUST fail closed when `encrypted_payload.aead_profile` is
 /// not the ciphersuite the group at `key_ref.group_state_ref` actually
-/// negotiated, when `epoch` names no known epoch of that group, or when the
-/// recomputed sender nonce prefix does not match the declared `nonce`
-/// (`signal.md` §1, `encoding.md` §10.1). The AAD is
-/// `encrypted_payload.aad_digest`, which [`SignalReceiver`] has already
-/// recomputed from the immutable outer header before this is called.
+/// negotiated, when `epoch` is not the accepted current epoch, or when the
+/// nonce counter violates its encoding or replay domain. The AAD is the
+/// canonical immutable header bytes; [`SignalReceiver`] has already checked
+/// their digest against `encrypted_payload.aad_digest` before this is called.
 pub trait SignalDecryptor: MaybeSendSync {
-    fn open(&self, envelope: &SignalEnvelope) -> Result<Vec<u8>>;
+    fn open(
+        &self,
+        envelope: &SignalEnvelope,
+        verified_sender: &VerifiedSignalSenderKey,
+    ) -> Result<Vec<u8>>;
 }
 
 /// Decrypted, sender-bound Signal payload.
@@ -380,7 +405,7 @@ impl SignalReceiver {
                 "signal_exact_envelope_replay: envelope_digest was already delivered".to_owned(),
             ));
         }
-        let plaintext = decryptor.open(envelope)?;
+        let plaintext = decryptor.open(envelope, &verified_key)?;
         let parsed = SignalPlaintext::parse(envelope, &envelope.sender_actor_id, &plaintext)?;
         let domain = (
             envelope.sender_actor_id.clone(),
@@ -676,7 +701,11 @@ mod tests {
     struct FixedDecryptor(Vec<u8>);
 
     impl SignalDecryptor for FixedDecryptor {
-        fn open(&self, _envelope: &SignalEnvelope) -> Result<Vec<u8>> {
+        fn open(
+            &self,
+            _envelope: &SignalEnvelope,
+            _sender: &VerifiedSignalSenderKey,
+        ) -> Result<Vec<u8>> {
             Ok(self.0.clone())
         }
     }
@@ -684,7 +713,11 @@ mod tests {
     struct RefusingDecryptor;
 
     impl SignalDecryptor for RefusingDecryptor {
-        fn open(&self, _envelope: &SignalEnvelope) -> Result<Vec<u8>> {
+        fn open(
+            &self,
+            _envelope: &SignalEnvelope,
+            _sender: &VerifiedSignalSenderKey,
+        ) -> Result<Vec<u8>> {
             Err(Error::Protocol(
                 "aead_profile is not the group suite".to_owned(),
             ))
@@ -740,6 +773,10 @@ mod tests {
         )
     }
 
+    fn authorize_event() -> EventId {
+        EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [0x42; 32])
+    }
+
     #[test]
     fn from_directory_evidence_admits_a_consistent_tuple() {
         let (public_key, actor_id, device_id, verification_method, authority) =
@@ -750,6 +787,7 @@ mod tests {
             device_id,
             verification_method,
             authority,
+            authorize_event(),
         )
         .unwrap();
         assert_eq!(key.actor_id, account_actor());
@@ -769,6 +807,7 @@ mod tests {
             device_id,
             verification_method,
             foreign_authority,
+            authorize_event(),
         )
         .unwrap_err();
         assert!(
@@ -788,7 +827,8 @@ mod tests {
                 actor_id,
                 device_id,
                 verification_method,
-                authority
+                authority,
+                authorize_event(),
             )
             .is_err()
         );
@@ -803,6 +843,7 @@ mod tests {
             device("000000000006"),
             verification_method,
             authority,
+            authorize_event(),
         )
         .unwrap_err();
         assert!(
@@ -822,6 +863,7 @@ mod tests {
             device_id,
             foreign_method,
             authority,
+            authorize_event(),
         )
         .unwrap_err();
         assert!(
@@ -843,6 +885,7 @@ mod tests {
                 device_id,
                 verification_method,
                 authority,
+                authorize_event(),
             )
             .is_err()
         );
@@ -865,6 +908,7 @@ mod tests {
                 envelope.sender_device_id.clone(),
                 envelope.proof.verification_method.clone(),
                 authority,
+                authorize_event(),
             )
             .ok()
         };
@@ -872,6 +916,42 @@ mod tests {
             .accept(&envelope, &resolver, &FixedDecryptor(plaintext), sent_at())
             .unwrap();
         assert_eq!(accepted.kind, SIGNAL_PLAINTEXT_KIND_PRESENCE);
+    }
+
+    #[test]
+    fn unavailable_or_revoked_current_authority_does_not_advance_receive_state() {
+        let (envelope, public_key, plaintext) = signed_signal(
+            device("000000000005"),
+            presence_plaintext("online", 99),
+            SignalClass::Session,
+            30,
+            [42; 32],
+        );
+        let mut receiver = SignalReceiver::new();
+        // The old member may still possess its MLS leaf and epoch secret.
+        // Revocation is decided independently, before invoking the opener.
+        let revoked = |_envelope: &SignalEnvelope| None;
+        assert!(
+            receiver
+                .accept(&envelope, &revoked, &RefusingDecryptor, sent_at())
+                .is_err()
+        );
+        assert!(receiver.sequence_high_waters.is_empty());
+        assert!(
+            !receiver
+                .seen_envelope_digests
+                .contains(envelope.proof.envelope_digest.as_str())
+        );
+        assert!(
+            receiver
+                .accept(
+                    &envelope,
+                    &key_of(public_key),
+                    &FixedDecryptor(plaintext),
+                    sent_at()
+                )
+                .is_ok()
+        );
     }
 
     #[test]

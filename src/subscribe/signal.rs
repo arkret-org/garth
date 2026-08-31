@@ -502,7 +502,11 @@ mod tests {
     struct FixedDecryptor(Vec<u8>);
 
     impl SignalDecryptor for FixedDecryptor {
-        fn open(&self, _envelope: &SignalEnvelope) -> Result<Vec<u8>> {
+        fn open(
+            &self,
+            _envelope: &SignalEnvelope,
+            _sender: &crate::signal::VerifiedSignalSenderKey,
+        ) -> Result<Vec<u8>> {
             Ok(self.0.clone())
         }
     }
