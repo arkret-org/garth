@@ -585,7 +585,6 @@ impl PresenceProjection {
 
 #[cfg(test)]
 mod tests {
-    use crate::protocol::DidCoreId;
     use chrono::Duration;
 
     use arkret_wire::{DeviceId, DidCoreId, DidUrl, EventId, Hash, RealmId, SealId};
