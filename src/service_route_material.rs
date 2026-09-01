@@ -44,7 +44,8 @@ use crate::service_route::{
 use crate::{Error, Result};
 
 fn canonical_document_digest(document: &DidDocument) -> Result<Hash> {
-    Ok(Hash::new(arkret_canonical::canonical_sha256(document)?)?)
+    arkret_identity::document_canonical_digest(document)
+        .map_err(|error| Error::Protocol(error.to_string()))
 }
 
 fn digest_hex(digest: &Hash) -> Result<&str> {

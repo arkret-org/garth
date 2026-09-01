@@ -401,6 +401,11 @@ impl SignalPlaintext {
         payload
             .bind_to_envelope(sender_actor_id, envelope.sent_at, envelope.expires_at)
             .map_err(|error| Error::Protocol(error.to_string()))?;
+        if payload.signal_class() != envelope.signal_class {
+            return Err(Error::Protocol(
+                "signal plaintext requires a different outer signal_class".to_owned(),
+            ));
+        }
         Ok(Self {
             kind: payload.kind().as_str().to_owned(),
             actor_id: sender_actor_id.clone(),
@@ -853,6 +858,64 @@ mod tests {
                 "aead_profile is not the group suite".to_owned(),
             ))
         }
+    }
+
+    #[test]
+    fn hidden_moderation_class_is_rejected_without_advancing_high_water() {
+        let device_id = device("000000000099");
+        let moderation = json!({
+            "kind": "ak.call.signal",
+            "payload_sequence": 10,
+            "call_id": "ak:call:AV2POYJXMfLYPg5u4jsNfpIyQjrEWx4_pWcsA9U7yXJQ",
+            "signal_kind": "moderation",
+            "seq": 1,
+            "data": {"action": "end_for_all"}
+        });
+        let (hidden, key, hidden_plaintext) = signed_signal(
+            device_id.clone(),
+            moderation,
+            SignalClass::Session,
+            30,
+            [0x61; 32],
+        );
+        let resolver = |envelope: &SignalEnvelope| {
+            Some(VerifiedSignalSenderKey::for_test(envelope, key.clone()))
+        };
+        let mut receiver = SignalReceiver::new();
+        assert!(
+            receiver
+                .accept(
+                    &hidden,
+                    &resolver,
+                    &FixedDecryptor(hidden_plaintext),
+                    sent_at(),
+                )
+                .is_err()
+        );
+
+        let (honest, honest_key, honest_plaintext) = signed_signal(
+            device_id,
+            presence_plaintext("online", 10),
+            SignalClass::Session,
+            30,
+            [0x62; 32],
+        );
+        let honest_resolver = |envelope: &SignalEnvelope| {
+            Some(VerifiedSignalSenderKey::for_test(
+                envelope,
+                honest_key.clone(),
+            ))
+        };
+        assert!(
+            receiver
+                .accept(
+                    &honest,
+                    &honest_resolver,
+                    &FixedDecryptor(honest_plaintext),
+                    sent_at(),
+                )
+                .is_ok()
+        );
     }
 
     fn presence_plaintext(state: &str, sequence: u64) -> Value {

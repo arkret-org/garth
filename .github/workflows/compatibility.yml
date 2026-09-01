@@ -1,0 +1,177 @@
+name: atomic compatibility
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      manifest_ref:
+        description: Exact arkret-rust-sdk ref containing the candidate manifest
+        required: false
+        default: main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: atomic-compatibility-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  exact-manifest-gate:
+    name: atomic compatibility / exact manifest gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      CANDIDATE_REPOSITORY: ${{ github.event.repository.name }}
+      CANDIDATE_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      CARGO_TERM_COLOR: always
+      RUSTFLAGS: -D warnings
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          path: candidate-source
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Checkout compatibility manifest source
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/arkret-rust-sdk
+          path: .compatibility-source
+          ref: ${{ inputs.manifest_ref || 'main' }}
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+
+      - name: Resolve the immutable candidate set
+        id: manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          gate_source=.compatibility-source
+          if [ "$CANDIDATE_REPOSITORY" = "arkret-rust-sdk" ]; then
+            gate_source=candidate-source
+          fi
+          python "$gate_source/tools/compatibility_gate.py" resolve             --manifest "$gate_source/compatibility/manifest.json"             --candidate "$CANDIDATE_REPOSITORY=$CANDIDATE_SHA"             --output "${{ runner.temp }}/resolved-compatibility-manifest.json"             --github-output "$GITHUB_OUTPUT"
+
+      - name: Preserve resolved manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: resolved-compatibility-manifest-${{ github.run_id }}
+          path: ${{ runner.temp }}/resolved-compatibility-manifest.json
+          if-no-files-found: error
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/arkret-spec
+          path: arkret-spec
+          ref: ${{ steps.manifest.outputs.arkret_spec }}
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/arkret-rust-sdk
+          path: arkret-rust-sdk
+          ref: ${{ steps.manifest.outputs.arkret_rust_sdk }}
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/floria
+          path: floria
+          ref: ${{ steps.manifest.outputs.floria }}
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/soland
+          path: soland
+          ref: ${{ steps.manifest.outputs.soland }}
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/coauth
+          path: coauth
+          ref: ${{ steps.manifest.outputs.coauth }}
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/garth
+          path: garth
+          ref: ${{ steps.manifest.outputs.garth }}
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/chime
+          path: chime
+          ref: ${{ steps.manifest.outputs.chime }}
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/inkson
+          path: inkson
+          ref: ${{ steps.manifest.outputs.inkson }}
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/cotest
+          path: cotest
+          ref: ${{ steps.manifest.outputs.cotest }}
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.98"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            arkret-rust-sdk
+            soland
+            coauth
+            garth
+            inkson
+            cotest
+
+      - name: Verify exact checkouts and static contract probes
+        run: |
+          python arkret-rust-sdk/tools/test_compatibility_gate.py
+          python arkret-rust-sdk/tools/compatibility_gate.py check             --manifest "${{ runner.temp }}/resolved-compatibility-manifest.json"             --workspace-root .             --verify-workspace-heads
+          python arkret-rust-sdk/tools/compatibility_gate.py negative-mutation             --manifest "${{ runner.temp }}/resolved-compatibility-manifest.json"             --workspace-root .
+          python arkret-rust-sdk/tools/compatibility_gate.py run             --manifest "${{ runner.temp }}/resolved-compatibility-manifest.json"             --workspace-root .             --category static
+
+      - name: Run ordered compile matrix
+        run: >-
+          python arkret-rust-sdk/tools/compatibility_gate.py run
+          --manifest "${{ runner.temp }}/resolved-compatibility-manifest.json"
+          --workspace-root .
+          --category compile
+
+      - name: Install Cotest contract dependencies
+        working-directory: cotest/e2e
+        run: |
+          npm ci || npm install
+          npx playwright install --with-deps chromium
+
+      - name: Build exact Soland candidate image
+        working-directory: cotest
+        shell: pwsh
+        run: ./scripts/build-soland-image.ps1 -ImageTag cotest-soland:compatibility
+
+      - name: Run ordered wire and joint contract gates
+        run: >-
+          python arkret-rust-sdk/tools/compatibility_gate.py run
+          --manifest "${{ runner.temp }}/resolved-compatibility-manifest.json"
+          --workspace-root .
+          --category contract
+
+      - name: Preserve joint failure evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-joint-evidence-${{ github.run_id }}
+          path: cotest/artifacts/
+          if-no-files-found: ignore
+          retention-days: 14

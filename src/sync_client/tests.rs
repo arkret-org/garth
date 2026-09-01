@@ -453,7 +453,6 @@ fn processor_dispatches_all_update_categories() {
                 .unwrap(),
             sent_at: Utc::now(),
             expires_at: Utc::now() + chrono::Duration::hours(1),
-            device_proof: None,
             unsigned: None,
         }],
         ack_token: Some("ack-sync-1".to_owned()),

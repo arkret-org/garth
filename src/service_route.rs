@@ -687,8 +687,7 @@ mod tests {
             &signing_key,
         )
         .unwrap();
-        let document_digest =
-            Hash::new(arkret_canonical::canonical_sha256(&document).unwrap()).unwrap();
+        let document_digest = arkret_identity::document_canonical_digest(&document).unwrap();
         AuthenticatedServiceResolution {
             service_resolution_record: record,
             method_history_evidence: ResolutionMethodHistoryEvidence::DidWebDocument {

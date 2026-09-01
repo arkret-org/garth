@@ -49,6 +49,33 @@ pub enum Error {
 }
 
 impl Error {
+    /// Preserve the server's registry-backed `reason_code` as a typed value.
+    ///
+    /// Session issuance and refresh use this to distinguish provision
+    /// migration, key re-authorization, and session refresh without parsing a
+    /// human-readable message or collapsing the RFC 9457 error into an HTTP
+    /// status.
+    pub fn reason_code(&self) -> Option<arkret_wire::ReasonCode> {
+        let Self::Api { error, .. } = self else {
+            return None;
+        };
+        error
+            .error
+            .details
+            .get("reason_code")
+            .and_then(serde_json::Value::as_str)
+            .map(arkret_wire::ReasonCode::from_wire)
+    }
+
+    pub fn agent_runtime_scope_reason(&self) -> Option<arkret_wire::ReasonCode> {
+        match self.reason_code()? {
+            reason @ (arkret_wire::ReasonCode::AgentProvisionScopeMigrationRequired
+            | arkret_wire::ReasonCode::AgentKeyScopeReauthorizationRequired
+            | arkret_wire::ReasonCode::AgentSessionScopeRefreshRequired) => Some(reason),
+            _ => None,
+        }
+    }
+
     pub fn is_invalid_cursor(&self) -> bool {
         let Self::Api { error, .. } = self else {
             return false;
@@ -83,6 +110,50 @@ impl Error {
                 ]
                 .iter()
                 .any(|marker| error.error.message.to_ascii_lowercase().contains(marker)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_session_scope_reason_survives_the_http_error_boundary() {
+        for expected in [
+            arkret_wire::ReasonCode::AgentProvisionScopeMigrationRequired,
+            arkret_wire::ReasonCode::AgentKeyScopeReauthorizationRequired,
+            arkret_wire::ReasonCode::AgentSessionScopeRefreshRequired,
+        ] {
+            let mut envelope = ErrorEnvelope::new("failed_precondition", "scope is incomplete");
+            envelope.error.details.insert(
+                "reason_code".to_owned(),
+                serde_json::Value::String(expected.as_str().to_owned()),
+            );
+            let error = Error::from(arkret_http_client::Error::Api {
+                status: 412,
+                error: Box::new(envelope),
+            });
+            assert_eq!(error.reason_code(), Some(expected.clone()));
+            assert_eq!(error.agent_runtime_scope_reason(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn unrelated_api_reason_is_not_an_agent_scope_diagnosis() {
+        let mut envelope = ErrorEnvelope::new("failed_precondition", "unrelated");
+        envelope.error.details.insert(
+            "reason_code".to_owned(),
+            serde_json::json!(arkret_wire::ReasonCode::AGENT_PAUSED),
+        );
+        let error = Error::Api {
+            status: 403,
+            error: Box::new(envelope),
+        };
+        assert_eq!(
+            error.reason_code(),
+            Some(arkret_wire::ReasonCode::AgentPaused)
+        );
+        assert_eq!(error.agent_runtime_scope_reason(), None);
     }
 }
 
