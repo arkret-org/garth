@@ -138,6 +138,7 @@ jobs:
       - name: Verify exact checkouts and static contract probes
         run: |
           python arkret-rust-sdk/tools/test_compatibility_gate.py
+          python arkret-rust-sdk/tools/test_compatibility_train.py
           python arkret-rust-sdk/tools/compatibility_gate.py check             --manifest "${{ runner.temp }}/resolved-compatibility-manifest.json"             --workspace-root .             --verify-workspace-heads
           python arkret-rust-sdk/tools/compatibility_gate.py negative-mutation             --manifest "${{ runner.temp }}/resolved-compatibility-manifest.json"             --workspace-root .
           python arkret-rust-sdk/tools/compatibility_gate.py run             --manifest "${{ runner.temp }}/resolved-compatibility-manifest.json"             --workspace-root .             --category static
