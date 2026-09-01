@@ -303,7 +303,7 @@ mod tests {
 
     use crate::protocol::{
         AccountId, Base64UrlString, DeviceId, DidCoreId, DidUrl, Error, Hash, SessionGrantOutcome,
-        SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
+        SessionGrantRefreshRequestBody, SessionGrantRequestBody,
     };
     use arkret_models_collaboration::session_grant_bodies::{
         AgentSessionGrantRefreshRequest, AgentSessionRefreshProofContext,
@@ -316,7 +316,7 @@ mod tests {
 
     #[derive(Clone)]
     struct RefreshTransport {
-        outcomes: Arc<Mutex<VecDeque<Result<SessionGrantRefreshOutcome>>>>,
+        outcomes: Arc<Mutex<VecDeque<Result<SessionGrantOutcome>>>>,
         calls: Arc<Mutex<usize>>,
     }
 
@@ -331,7 +331,7 @@ mod tests {
         fn refresh_session_grant<'a>(
             &'a self,
             _request: SessionGrantRefreshRequestBody,
-        ) -> BoxSessionFuture<'a, SessionGrantRefreshOutcome> {
+        ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
             *self.calls.lock().unwrap() += 1;
             let outcome = self.outcomes.lock().unwrap().pop_front().unwrap();
             Box::pin(async move { outcome })
@@ -377,14 +377,15 @@ mod tests {
         }
     }
 
-    fn refresh_outcome() -> SessionGrantRefreshOutcome {
-        SessionGrantRefreshOutcome {
+    fn refresh_outcome() -> SessionGrantOutcome {
+        SessionGrantOutcome {
             session_grant_id: grant_id(2),
             account_id: AccountId::new(
                 DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
                 DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             ),
-            grant_jwt: "grant-2".to_owned(),
+            device_id: None,
+            session_grant: "grant-2".to_owned(),
             session_public_key: arkret_models_identity::CanonicalSessionPublicJwk::new(
                 r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
             )
@@ -394,9 +395,8 @@ mod tests {
                 "ak:did_core:webvh:z6mkfixture:service.example",
             )
             .unwrap(),
-            scopes: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
-            dpop_jkt: "jkt-1".to_owned(),
-            previous_session_grant_id: grant_id(1),
+            granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
+            previous_session_grant_id: Some(grant_id(1)),
         }
     }
 

@@ -437,12 +437,18 @@ fn processor_dispatches_all_update_categories() {
                 "ok".to_owned(),
                 json!(true),
             )])),
-            sender_principal_id: sender.clone(),
             sender: DeviceMessageSender::Device {
+                sender_account_id: AccountId::new(
+                    sender.clone(),
+                    DidCoreId::new("ak:did_core:web:station-a.example").unwrap(),
+                ),
                 sender_device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000005")
                     .unwrap(),
             },
-            recipient_principal_id: recipient,
+            recipient_account_id: AccountId::new(
+                recipient,
+                DidCoreId::new("ak:did_core:web:station-b.example").unwrap(),
+            ),
             recipient_device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000006")
                 .unwrap(),
             sent_at: Utc::now(),

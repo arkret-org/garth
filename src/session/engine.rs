@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use crate::protocol::{
     AccountId, DeviceId, DidCoreId, Error, Result, SessionGrantId, SessionGrantOutcome,
-    SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
+    SessionGrantRefreshRequestBody, SessionGrantRequestBody,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -30,7 +30,7 @@ pub trait SessionGrantTransport {
     fn refresh_session_grant<'a>(
         &'a self,
         request: SessionGrantRefreshRequestBody,
-    ) -> BoxSessionFuture<'a, SessionGrantRefreshOutcome>;
+    ) -> BoxSessionFuture<'a, SessionGrantOutcome>;
 }
 
 impl SessionGrantTransport for arkret_http_client::Client {
@@ -48,7 +48,7 @@ impl SessionGrantTransport for arkret_http_client::Client {
     fn refresh_session_grant<'a>(
         &'a self,
         request: SessionGrantRefreshRequestBody,
-    ) -> BoxSessionFuture<'a, SessionGrantRefreshOutcome> {
+    ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
         Box::pin(async move {
             self.auth_refresh_session_grant(&request)
                 .await
@@ -459,10 +459,10 @@ fn state_from_refresh_outcome(
     current: &SessionGrantState,
     request: &SessionGrantRefreshRequestBody,
     expected_dpop_jkt: &str,
-    outcome: SessionGrantRefreshOutcome,
+    outcome: SessionGrantOutcome,
     now: DateTime<Utc>,
 ) -> Result<SessionGrantState> {
-    if outcome.grant_jwt.trim().is_empty() {
+    if outcome.session_grant.trim().is_empty() {
         return Err(protocol("refreshed session grant JWT is empty"));
     }
     if outcome.expires_at <= now {
@@ -471,7 +471,7 @@ fn state_from_refresh_outcome(
     if outcome.audience_id != current.audience_id {
         return Err(protocol("refreshed session grant audience changed"));
     }
-    if outcome.previous_session_grant_id != current.grant_id {
+    if outcome.previous_session_grant_id.as_ref() != Some(&current.grant_id) {
         return Err(protocol("refreshed session grant chain changed"));
     }
     if outcome.account_id != current.account_id {
@@ -480,7 +480,8 @@ fn state_from_refresh_outcome(
     if outcome.session_grant_id == current.grant_id {
         return Err(protocol("refreshed session grant id was replayed"));
     }
-    if outcome.dpop_jkt != expected_dpop_jkt {
+    let outcome_dpop_jkt = outcome.session_public_key.thumbprint_sha256()?;
+    if outcome_dpop_jkt != expected_dpop_jkt {
         return Err(protocol("refreshed session grant DPoP key changed"));
     }
     let (request_audience, request_device_id) = match request {
@@ -506,12 +507,12 @@ fn state_from_refresh_outcome(
         account_id: outcome.account_id,
         device_id: current.device_id.clone(),
         grant_id: outcome.session_grant_id,
-        grant_jwt: outcome.grant_jwt,
+        grant_jwt: outcome.session_grant,
         expires_at: outcome.expires_at,
         audience_id: outcome.audience_id,
-        granted_scope: outcome.scopes,
+        granted_scope: outcome.granted_scope,
         session_public_key: Some(outcome.session_public_key.into_string()),
-        dpop_jkt: Some(outcome.dpop_jkt),
+        dpop_jkt: Some(outcome_dpop_jkt),
     })
 }
 
@@ -534,7 +535,7 @@ mod tests {
 
     use crate::protocol::{
         Base64UrlString, DidUrl, Hash, RealmId, SessionGrantAgentScopeRequest,
-        SessionGrantDpopBindingProof, SessionGrantScopeDetails,
+        SessionGrantDpopBindingProof,
     };
     use arkret_models_collaboration::session_grant_bodies::{
         AgentSessionGrantRefreshRequest, AgentSessionRefreshProofContext,
@@ -550,7 +551,7 @@ mod tests {
         issue_requests: Arc<Mutex<Vec<SessionGrantRequestBody>>>,
         refresh_requests: Arc<Mutex<Vec<SessionGrantRefreshRequestBody>>>,
         issue_responses: Arc<Mutex<VecDeque<Result<SessionGrantOutcome>>>>,
-        refresh_responses: Arc<Mutex<VecDeque<Result<SessionGrantRefreshOutcome>>>>,
+        refresh_responses: Arc<Mutex<VecDeque<Result<SessionGrantOutcome>>>>,
     }
 
     impl MockSessionTransport {
@@ -561,7 +562,7 @@ mod tests {
             }
         }
 
-        fn with_refresh_responses(responses: Vec<Result<SessionGrantRefreshOutcome>>) -> Self {
+        fn with_refresh_responses(responses: Vec<Result<SessionGrantOutcome>>) -> Self {
             Self {
                 refresh_responses: Arc::new(Mutex::new(VecDeque::from(responses))),
                 ..Self::default()
@@ -590,7 +591,7 @@ mod tests {
         fn refresh_session_grant<'a>(
             &'a self,
             request: SessionGrantRefreshRequestBody,
-        ) -> BoxSessionFuture<'a, SessionGrantRefreshOutcome> {
+        ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
             self.refresh_requests.lock().unwrap().push(request);
             let response = self.refresh_responses.lock().unwrap().pop_front().unwrap();
             Box::pin(async move { response })
@@ -682,7 +683,7 @@ mod tests {
             .unwrap(),
             audience_id: audience(),
             granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
-            scope_details: None::<SessionGrantScopeDetails>,
+            previous_session_grant_id: None,
         }
     }
 
@@ -744,20 +745,20 @@ mod tests {
         refresh_options_for("grant-1")
     }
 
-    fn refresh_outcome(token: &str, grant: SessionGrantId) -> SessionGrantRefreshOutcome {
-        SessionGrantRefreshOutcome {
+    fn refresh_outcome(token: &str, grant: SessionGrantId) -> SessionGrantOutcome {
+        SessionGrantOutcome {
             session_grant_id: grant,
             account_id: AccountId::new(principal_id(), audience()),
-            grant_jwt: token.to_owned(),
+            device_id: None,
+            session_grant: token.to_owned(),
             session_public_key: arkret_models_identity::CanonicalSessionPublicJwk::new(
                 r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
             )
             .unwrap(),
             expires_at: now() + Duration::hours(1),
             audience_id: audience(),
-            scopes: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
-            dpop_jkt: "jkt-1".to_owned(),
-            previous_session_grant_id: grant_id(1),
+            granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
+            previous_session_grant_id: Some(grant_id(1)),
         }
     }
 
@@ -905,7 +906,7 @@ mod tests {
             DidCoreId::new("ak:did_core:webvh:z6mkfixture:other-service.example").unwrap();
 
         let mut wrong_previous = refresh_outcome("grant-wrong-previous", grant_id(31));
-        wrong_previous.previous_session_grant_id = grant_id(99);
+        wrong_previous.previous_session_grant_id = Some(grant_id(99));
 
         let replayed = refresh_outcome("grant-replayed", grant_id(1));
 
@@ -913,7 +914,10 @@ mod tests {
         expired.expires_at = now() - Duration::seconds(1);
 
         let mut wrong_dpop = refresh_outcome("grant-wrong-dpop", grant_id(33));
-        wrong_dpop.dpop_jkt = "jkt-other".to_owned();
+        wrong_dpop.session_public_key = arkret_models_identity::CanonicalSessionPublicJwk::new(
+            r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAE"}"#,
+        )
+        .unwrap();
 
         for outcome in [
             wrong_audience,
@@ -954,7 +958,7 @@ mod tests {
         started: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
         refresh_calls: Arc<Mutex<usize>>,
-        outcome: SessionGrantRefreshOutcome,
+        outcome: SessionGrantOutcome,
     }
 
     impl SessionGrantTransport for GatedRefreshTransport {
@@ -968,7 +972,7 @@ mod tests {
         fn refresh_session_grant<'a>(
             &'a self,
             _request: SessionGrantRefreshRequestBody,
-        ) -> BoxSessionFuture<'a, SessionGrantRefreshOutcome> {
+        ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
             *self.refresh_calls.lock().unwrap() += 1;
             let started = Arc::clone(&self.started);
             let release = Arc::clone(&self.release);
@@ -1053,7 +1057,7 @@ mod tests {
         let mut short_lived = refresh_outcome("grant-2", grant_id(2));
         short_lived.expires_at = now() + Duration::seconds(30);
         let mut after_cooldown = refresh_outcome("grant-3", grant_id(3));
-        after_cooldown.previous_session_grant_id = grant_id(2);
+        after_cooldown.previous_session_grant_id = Some(grant_id(2));
         after_cooldown.expires_at = now() + Duration::seconds(30);
         let transport =
             MockSessionTransport::with_refresh_responses(vec![Ok(short_lived), Ok(after_cooldown)]);

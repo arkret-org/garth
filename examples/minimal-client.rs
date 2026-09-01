@@ -1,7 +1,6 @@
 use arkret_models_collaboration::http_bodies::{EventsQueryOutcome, EventsSubscribeFrame};
 use arkret_models_collaboration::session_grant_bodies::{
-    SessionGrantOutcome, SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody,
-    SessionGrantRequestBody,
+    SessionGrantOutcome, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
 };
 use arkret_models_collaboration::sync_frames::account_subscribe::AccountSubscribeBatch;
 use arkret_models_collaboration::sync_frames::client_sync::SyncRequestBody;
@@ -110,7 +109,7 @@ impl SessionGrantTransport for ReferenceSessionTransport {
     fn refresh_session_grant<'a>(
         &'a self,
         _request: SessionGrantRefreshRequestBody,
-    ) -> garth::session::BoxSessionFuture<'a, SessionGrantRefreshOutcome> {
+    ) -> garth::session::BoxSessionFuture<'a, SessionGrantOutcome> {
         Box::pin(async {
             Err(garth::Error::Protocol(
                 "reference transport performs no refresh IO".to_owned(),

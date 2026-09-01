@@ -17,7 +17,7 @@ pub(crate) use arkret_models_collaboration::http_bodies::{
 };
 pub(crate) use arkret_models_collaboration::session_grant_bodies::{
     SessionGrantAgentScopeRequest, SessionGrantDpopBindingProof, SessionGrantOutcome,
-    SessionGrantRefreshOutcome, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
+    SessionGrantRefreshRequestBody, SessionGrantRequestBody,
 };
 pub(crate) use arkret_models_collaboration::signal_message_stream::{
     MAX_MESSAGE_STREAM_LIFETIME_SECONDS, MAX_MESSAGE_STREAM_PREVIEW_BYTES,
@@ -88,8 +88,6 @@ pub(crate) mod signal {
     };
 }
 
-#[cfg(test)]
-pub(crate) use arkret_models_collaboration::session_grant_bodies::SessionGrantScopeDetails;
 #[cfg(test)]
 pub(crate) use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountSubscribeFrame, AccountSubscribeRealms,
