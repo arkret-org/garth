@@ -62,7 +62,6 @@ impl EventsScanTransport for arkret_http_client::Client {
                 request.after.as_deref(),
                 request.order.map(EventsQueryOrder::as_str),
                 request.limit,
-                None,
             )
             .await
             .map_err(crate::protocol::Error::from)
@@ -110,7 +109,6 @@ where
         prev_cursor: None,
         next_cursor: None,
         has_more: false,
-        range_completeness: None,
     };
     let max_pages = options.max_pages.max(1);
 
@@ -133,9 +131,6 @@ where
         }
         let next_cursor = outcome.next_cursor.clone();
         let has_more = outcome.has_more;
-        if aggregate.range_completeness.is_none() {
-            aggregate.range_completeness = outcome.range_completeness.take();
-        }
         aggregate.events.append(&mut outcome.events);
         aggregate.next_cursor = next_cursor.clone();
         aggregate.has_more = has_more;
@@ -168,7 +163,6 @@ mod tests {
             prev_cursor: None,
             next_cursor: next_cursor.map(str::to_owned),
             has_more,
-            range_completeness: None,
         }
     }
 

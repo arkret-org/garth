@@ -71,7 +71,6 @@ impl EventsScanTransport for ReferenceTransport {
                 prev_cursor: None,
                 next_cursor: None,
                 has_more: false,
-                range_completeness: None,
             })
         })
     }

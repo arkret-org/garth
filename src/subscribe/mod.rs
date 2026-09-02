@@ -525,7 +525,6 @@ mod tests {
             prev_cursor: None,
             next_cursor: next_cursor.map(str::to_owned),
             has_more: false,
-            range_completeness: None,
         }
     }
 
