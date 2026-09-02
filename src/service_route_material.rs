@@ -226,12 +226,10 @@ pub fn authenticate_fetched_record(
     };
     let method_history_evidence = match record.record.did.method() {
         "web" => ResolutionMethodHistoryEvidence::DidWebDocument {
-            adapter_version: "did:web:1".to_owned(),
             boundary: evidence_boundary(&record.record),
             evidence: evidence_receipt("web"),
         },
         "key" => ResolutionMethodHistoryEvidence::DidKeyExpansion {
-            adapter_version: "did:key:1".to_owned(),
             boundary: evidence_boundary(&record.record),
             evidence: evidence_receipt("key"),
         },

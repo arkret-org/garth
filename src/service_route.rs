@@ -691,7 +691,6 @@ mod tests {
         AuthenticatedServiceResolution {
             service_resolution_record: record,
             method_history_evidence: ResolutionMethodHistoryEvidence::DidWebDocument {
-                adapter_version: "did:web:1".to_owned(),
                 boundary: ResolutionMethodEvidenceBoundary {
                     from_method_history_head: "did-web-document-sha256:fixture".to_owned(),
                     from_version_id: "did-web-document-sha256:fixture".to_owned(),
