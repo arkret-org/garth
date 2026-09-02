@@ -781,7 +781,6 @@ mod tests {
                 ),
                 source_sender_domain: "history.example".to_owned(),
                 source_signer_evidence_ref: evidence_ref.clone(),
-                source_signer_evidence_digest: evidence_digest.clone(),
                 request_digest: digest('b'),
                 request_receipt_digest: digest('c'),
                 expires_at,
