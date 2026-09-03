@@ -15,7 +15,7 @@ use crate::sync_client::{
 pub use driver::{SubscriptionLoopDriver, SubscriptionStopReason};
 pub use realm::{
     BoxRealmStreamFuture, RealmEventsDriver, RealmEventsFrameSource, RealmEventsTransport,
-    RealmStreamStopReason,
+    RealmStreamStopReason, expand_realm_delivery_events,
 };
 pub use scan::{EventsScanRequest, EventsScanTransport, ScanCatchupOptions};
 pub use signal::{

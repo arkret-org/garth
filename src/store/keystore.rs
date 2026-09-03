@@ -9,6 +9,29 @@ use thiserror::Error;
 
 use crate::MaybeSendSync;
 
+/// Character-safe storage namespace for an account authority pair.
+///
+/// Secret-store keys are flat strings, so the authority pair has to collapse
+/// into one path-safe component. Canonicalizing the `AccountId` first means the
+/// namespace is stable across serialization order, and hashing it keeps the
+/// user's DID out of the raw key material a host backend may log or index.
+pub fn account_id_storage_digest(
+    authority: &arkret_wire::AccountId,
+) -> Result<String, SecureKeyStoreError> {
+    authority
+        .validate()
+        .map_err(|error| SecureKeyStoreError::Backend(format!("invalid AccountId: {error}")))?;
+    let canonical = arkret_canonical::canonical_json_bytes(authority).map_err(|error| {
+        SecureKeyStoreError::Backend(format!("canonicalize AccountId storage namespace: {error}"))
+    })?;
+    Ok(arkret_canonical::sha256_base64url(canonical))
+}
+
+/// Character-safe storage suffix for a device coordinate below an authority.
+pub fn device_storage_digest(device_id: &arkret_wire::DeviceId) -> String {
+    arkret_canonical::sha256_base64url(device_id.as_str().as_bytes())
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 type BoxSecureStoreFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 #[cfg(target_arch = "wasm32")]

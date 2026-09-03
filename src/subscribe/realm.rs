@@ -1,15 +1,102 @@
 use std::future::Future;
 use std::pin::Pin;
 
+use arkret_canonical::DigestSuite;
+
 use crate::protocol::{
     DidCoreId, Event, EventsSubscribeFrame, RealmId, Result, StreamTraceValidator,
 };
 
 use super::{ProjectedRunError, ProjectedRunResult};
 use crate::{
-    ClientEvent, ClientProjector, CursorScope, CursorStore, DurableInboxStore, EventCacheStore,
-    OpaqueCursor,
+    ClientEvent, ClientProjector, CursorScope, CursorStore, DecodedInbound, DurableInboxStore,
+    Error, EventCacheStore, InboundDecoder, OpaqueCursor,
 };
+
+/// Flatten a durable Realm delivery batch into plain client events.
+///
+/// The realm inbox delivers backfill rows and accepted Events wrapped in a
+/// per-Realm envelope that carries the Realm id and the digest suite the batch
+/// was authenticated under. A consumer has to unwrap those, refuse a batch that
+/// crossed Realm scope or mixed digest suites, and decode each row exactly once
+/// — identical work in every client, so it lives here.
+pub fn expand_realm_delivery_events(
+    events: Vec<ClientEvent>,
+    expected_realm_id: &str,
+    fallback_digest_suite: DigestSuite,
+) -> Result<(Vec<ClientEvent>, DigestSuite)> {
+    let decoder = InboundDecoder::new();
+    let mut expanded = Vec::new();
+    let mut carried_digest_suite = None;
+    for event in events {
+        match event {
+            ClientEvent::Backfill {
+                realm_id,
+                digest_suite,
+                outcome,
+            } => {
+                validate_carried_realm_suite(
+                    expected_realm_id,
+                    &realm_id,
+                    digest_suite,
+                    &mut carried_digest_suite,
+                )?;
+                for (index, row) in outcome.events.into_iter().enumerate() {
+                    let event = row.into_event().ok_or_else(|| {
+                        Error::Protocol(format!(
+                            "Realm inbox backfill requires complete Events; row {index} is redacted or reference-locked"
+                        ))
+                    })?;
+                    expanded.push(match decoder.decode_event(event) {
+                        DecodedInbound::Message(message) => ClientEvent::Message(*message),
+                        DecodedInbound::Event(event) => ClientEvent::Event(*event),
+                    });
+                }
+            }
+            ClientEvent::RealmAccepted {
+                realm_id,
+                digest_suite,
+                event,
+            } => {
+                validate_carried_realm_suite(
+                    expected_realm_id,
+                    &realm_id,
+                    digest_suite,
+                    &mut carried_digest_suite,
+                )?;
+                expanded.push(match decoder.decode_event(event) {
+                    DecodedInbound::Message(message) => ClientEvent::Message(*message),
+                    DecodedInbound::Event(event) => ClientEvent::Event(*event),
+                });
+            }
+            event => expanded.push(event),
+        }
+    }
+    Ok((
+        expanded,
+        carried_digest_suite.unwrap_or(fallback_digest_suite),
+    ))
+}
+
+fn validate_carried_realm_suite(
+    expected_realm_id: &str,
+    realm_id: &RealmId,
+    digest_suite: DigestSuite,
+    carried_digest_suite: &mut Option<DigestSuite>,
+) -> Result<()> {
+    if realm_id.as_str() != expected_realm_id {
+        return Err(Error::Protocol(
+            "durable Realm delivery crossed Realm scope".to_owned(),
+        ));
+    }
+    if carried_digest_suite.is_some_and(|existing| existing != digest_suite) {
+        return Err(Error::Protocol(
+            "durable Realm delivery mixed digest suites".to_owned(),
+        ));
+    }
+    *carried_digest_suite = Some(digest_suite);
+    Ok(())
+}
 
 // Native builds keep boxed stream futures (and the frame source held across
 // awaits) `Send` so host runtimes can move realm loops across worker threads,

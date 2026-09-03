@@ -20,6 +20,7 @@ pub use inbox::{
 pub use keystore::{
     MemorySecureKeyStore, PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter,
     SecretClass, SecretDurability, SecureKeyStore, SecureKeyStoreBackendInfo, SecureKeyStoreError,
+    account_id_storage_digest, device_storage_digest,
 };
 pub use memory::MemoryStore;
 pub use seen_window::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};

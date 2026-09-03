@@ -56,15 +56,21 @@ arkret-schema = { version = "0.3.0", path = "../arkret-rust-sdk/crates/schema", 
 arkret-signatures = { version = "0.3.0", path = "../arkret-rust-sdk/crates/signatures", default-features = false, features = ["collaboration", "service-identity"] }
 arkret-state = { version = "0.3.0", path = "../arkret-rust-sdk/crates/state", default-features = false }
 arkret-wire = { version = "0.3.0", path = "../arkret-rust-sdk/crates/wire", default-features = false }
+base64 = { version = "0.23.1", default-features = false, features = ["std"] }
+chacha20poly1305 = { version = "0.11.0", default-features = false, features = ["alloc"] }
 chrono = { version = "0.4.45", default-features = false, features = ["clock", "std", "serde", "wasmbind"] }
 ed25519-dalek = { version = "3.0.0", default-features = false, features = ["alloc", "rand_core"] }
 getrandom = { version = "0.4.3", default-features = false, features = ["std", "wasm_js"] }
+hex = { version = "0.4.3", default-features = false, features = ["std"] }
+hkdf = { version = "0.13.0", default-features = false }
 serde = { version = "1.0.229", default-features = false, features = ["std", "derive"] }
 serde_json = { version = "1.0.151", default-features = false, features = ["std"] }
+sha2 = { version = "0.11.0", default-features = false }
 thiserror = { version = "2.0.20", default-features = false }
 tokio = { version = "1.53.1", default-features = false, features = ["rt", "sync", "time"], optional = true }
 tracing = { version = "0.1.44", default-features = false, features = ["std"] }
 url = { version = "2.5", default-features = false }
+x25519-dalek = { version = "3.0.0", default-features = false, features = ["static_secrets", "getrandom"] }
 zeroize = { version = "1.9.0", default-features = false, features = ["derive"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]

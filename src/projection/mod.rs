@@ -1,9 +1,19 @@
 use crate::protocol::RealmState;
 use crate::protocol::{Event, RealmId, Result};
 
+mod realm_merge;
+mod security_state;
 mod sidecar;
 mod sidecar_exchange;
 
+pub use realm_merge::{RealmProjectionFrame, reconcile_realm_projection};
+pub use security_state::{
+    encryption_profile_is_encrypted, non_empty_string, projection_for_scope_id,
+    realm_authority_root_controller_for_realm, realm_authority_root_controller_from_events,
+    realm_authority_root_value_for_realm, realm_authority_root_value_from_events,
+    realm_projection_is_encrypted, realm_projection_security_state,
+    security_projection_for_scope_id, strand_projection_security_state, string_field,
+};
 pub use sidecar::{
     SidecarProjectionFold, SidecarTimelineEvent, SidecarTimelineItem, merge_sidecar_timeline,
 };

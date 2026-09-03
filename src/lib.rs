@@ -25,6 +25,7 @@ pub mod history_outbox;
 pub mod history_runtime;
 pub mod inbound;
 pub mod maybe_send;
+pub mod mls;
 pub mod orchestrator;
 pub mod outbound;
 pub mod projection;
@@ -109,6 +110,15 @@ pub use history_runtime::{
 };
 pub use inbound::{DecodedInbound, DecodedMessage, InboundDecoder};
 pub use maybe_send::{MaybeSend, MaybeSendSync};
+pub use mls::{
+    ACCOUNT_MLS_SECRET_CURRENT_VERSION, AEAD_VERSION_CHACHA20_POLY1305, AccountMlsSecretRotation,
+    EnvelopeError, MLS_ENVELOPE_MAGIC, MlsRuntimeError, MlsRuntimeStatus, MlsSnapshotEnvelope,
+    SELF_PRESERVATION_JITTER_SLOTS, SELF_PRESERVATION_MAX_EPOCH_AGE_DAYS,
+    SELF_PRESERVATION_MAX_EPOCH_APP_MESSAGES, StoredAccountMlsSecret,
+    canonical_mls_remove_membership_frontier, idle_self_update_jitter_passed,
+    mls_commit_preconditions, should_force_epoch_advance,
+    verified_checkpoint_actor_has_realm_action,
+};
 pub use orchestrator::{
     AccountCommitOutcome, AccountPostCommitHook, AccountPostCommitOutcome, AccountStepCommitter,
     AccountStepHandlers, AccountStreamStep, RunError, RunErrorClass, RunEvent, RunOptions,
@@ -119,7 +129,13 @@ pub use outbound::{
     OutboundGenerationFenceDecision, OutboundPostAcceptHook, OutboundQueueStore,
     OutboundSubmitOutcome, OutboundSubmitter,
 };
-pub use projection::{ProjectionMount, RealmStateReducer};
+pub use projection::{
+    ProjectionMount, RealmProjectionFrame, RealmStateReducer, encryption_profile_is_encrypted,
+    realm_authority_root_controller_for_realm, realm_authority_root_controller_from_events,
+    realm_authority_root_value_for_realm, realm_projection_is_encrypted,
+    realm_projection_security_state, reconcile_realm_projection, security_projection_for_scope_id,
+    strand_projection_security_state,
+};
 /// The Signal plaintext family (`sync/signal.md` §1.1).
 ///
 /// Published because [`SignalPlaintext::payload`] carries the typed profile:
@@ -177,6 +193,7 @@ pub use store::{
     MAX_PENDING_DELIVERIES, MAX_PENDING_READ, MemorySecureKeyStore, MemoryStore, OpaqueCursor,
     PendingDelivery, PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter, SecretClass,
     SecretDurability, SecureKeyStore, SecureKeyStoreBackendInfo, SecureKeyStoreError,
+    account_id_storage_digest, device_storage_digest,
 };
 pub use subscribe::{
     BoxRealmStreamFuture, BoxSignalStreamFuture, EventsScanRequest, EventsScanTransport,
@@ -184,7 +201,7 @@ pub use subscribe::{
     ScanCatchupOptions, SignalReceiveHandlers, SignalRejection, SignalRunError, SignalRunResult,
     SignalSink, SignalStreamDriver, SignalStreamFrameSource, SignalStreamStopReason,
     SignalStreamTransport, SubscriptionEngine, SubscriptionLoopDriver, SubscriptionStopReason,
-    account_updates_to_events,
+    account_updates_to_events, expand_realm_delivery_events,
 };
 pub use sync_client::{
     AsyncSyncTransport, BackoffConfig, BackpressureConfig, BoxSyncFuture, CancellationToken,
