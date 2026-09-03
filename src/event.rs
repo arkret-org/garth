@@ -1,6 +1,6 @@
 use crate::protocol::{
     AccountSubscribeDeviceListChanges, DeviceMessageEnvelope, Event, EventsQueryOutcome,
-    NotificationDelta, RealmId, RealmUpdate,
+    NotificationDelta, RealmId, RealmUpdate, StationCasAccountDataContainer,
 };
 use serde::{Deserialize, Serialize};
 
@@ -55,6 +55,7 @@ pub struct AccountUpdateContext {
     pub to_device_lost: bool,
     pub device_lists: AccountSubscribeDeviceListChanges,
     pub account_data: Vec<Event>,
+    pub station_cas_account_data: Vec<StationCasAccountDataContainer>,
     pub agent_signer_evidence: Vec<crate::protocol::AgentSignerEvidence>,
     pub partial: bool,
 }

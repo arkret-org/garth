@@ -21,10 +21,10 @@ use crate::protocol::sync::{
     LimitedTimelineState, RealmUpdate, SyncFilter, SyncRequestBody, SyncUpdates,
 };
 use crate::protocol::{
-    AccountStreamInterrupt, AccountSubscribeBatch, AccountSubscribeDeviceListChanges,
-    AccountSubscribeFrameKind, AccountSubscribeRealmSummary, ActorId, AuthorizationLease, Error,
-    Event, EventId, IngressReceipt, NotificationDelta, NotificationDeltaAction, RealmId, Result,
-    Timeline, canonical,
+    AccountDataRow, AccountStreamInterrupt, AccountSubscribeBatch,
+    AccountSubscribeDeviceListChanges, AccountSubscribeFrameKind, AccountSubscribeRealmSummary,
+    ActorId, AuthorizationLease, Error, Event, EventId, IngressReceipt, NotificationDelta,
+    NotificationDeltaAction, RealmId, Result, StationCasAccountDataContainer, Timeline, canonical,
 };
 
 mod loop_control;

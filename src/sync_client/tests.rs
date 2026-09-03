@@ -1,9 +1,9 @@
 use std::collections::BTreeMap;
 
 use crate::protocol::{
-    AccountSubscribeRealms, AccountSubscribeUnreadCounts, DeviceId, DeviceMessageContainer,
-    DeviceMessageEnvelope, DeviceMessageSender, ErrorEnvelope, EventContainer, ProtocolKind,
-    RealmSyncEntry,
+    AccountDataContainer, AccountDataRow, AccountSubscribeRealms, AccountSubscribeUnreadCounts,
+    DeviceId, DeviceMessageContainer, DeviceMessageEnvelope, DeviceMessageSender, ErrorEnvelope,
+    ProtocolKind, RealmSyncEntry, StationCasAccountDataContainer, StationCasAccountDataRemoval,
 };
 use arkret_models_collaboration::sync_frames::account_sync::DeviceMessageContent;
 use arkret_wire::{AccountId, ActorId, DidCoreId, EventKind, Hlc, OpaqueLocalId, ScopeRef};
@@ -37,6 +37,17 @@ fn sync_response(cursor: &str) -> AccountSubscribeBatch {
 
 fn delta_mut(batch: &mut AccountSubscribeBatch) -> &mut AccountSubscribeFrame {
     batch.frames.first_mut().unwrap()
+}
+
+fn station_cas_row(key: &str, revision: u64) -> AccountDataRow {
+    AccountDataRow {
+        account_data_key: key.to_owned(),
+        revision,
+        content: json!({"schema":"ak.schema.invite_delivery.v1"}),
+        updated_at: DateTime::parse_from_rfc3339("2026-09-03T12:00:00.000Z")
+            .unwrap()
+            .with_timezone(&Utc),
+    }
 }
 
 fn approval_notifications(notification_id: &str, expires_at: &str) -> NotificationContainer {
@@ -465,9 +476,9 @@ fn processor_dispatches_all_update_categories() {
         changed_ids: vec![account_actor_id(&sender)],
         left_ids: Vec::new(),
     });
-    frame.account_data = Some(EventContainer {
+    frame.account_data = Some(AccountDataContainer {
         events: vec![account_data_event],
-        extra: BTreeMap::new(),
+        station_cas: None,
     });
     let notification_id = "ak:notification:01964137-0000-7000-8000-000000000000";
     frame.notifications = Some(approval_notifications(
@@ -506,6 +517,73 @@ fn processor_dispatches_all_update_categories() {
     assert!(processor.account_data("ak.settings").is_some());
     assert!(processor.notification(notification_id).is_some());
     assert_eq!(processor.device_lists().changed_ids.len(), 1);
+}
+
+#[test]
+fn station_cas_baseline_and_deltas_are_revision_safe() {
+    let key = "ak.account.invite_delivery";
+    let mut processor = SyncResponseProcessor::new();
+
+    let mut baseline = sync_response("station-cas-baseline");
+    delta_mut(&mut baseline).account_data = Some(AccountDataContainer {
+        events: Vec::new(),
+        station_cas: Some(StationCasAccountDataContainer {
+            complete: true,
+            upserts: vec![station_cas_row(key, 2)],
+            removals: Vec::new(),
+        }),
+    });
+    let updates = processor.process(baseline).unwrap();
+    assert_eq!(updates.station_cas_account_data.len(), 1);
+    assert_eq!(processor.station_cas_account_data(key).unwrap().revision, 2);
+
+    let mut conflict = sync_response("station-cas-conflict");
+    delta_mut(&mut conflict).account_data = Some(AccountDataContainer {
+        events: Vec::new(),
+        station_cas: Some(StationCasAccountDataContainer {
+            complete: false,
+            upserts: Vec::new(),
+            removals: vec![StationCasAccountDataRemoval {
+                account_data_key: key.to_owned(),
+                revision: 2,
+                updated_at: DateTime::parse_from_rfc3339("2026-09-03T12:01:00.000Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            }],
+        }),
+    });
+    assert!(processor.process(conflict).is_err());
+    assert_eq!(processor.station_cas_account_data(key).unwrap().revision, 2);
+
+    let mut removal = sync_response("station-cas-removal");
+    delta_mut(&mut removal).account_data = Some(AccountDataContainer {
+        events: Vec::new(),
+        station_cas: Some(StationCasAccountDataContainer {
+            complete: false,
+            upserts: Vec::new(),
+            removals: vec![StationCasAccountDataRemoval {
+                account_data_key: key.to_owned(),
+                revision: 3,
+                updated_at: DateTime::parse_from_rfc3339("2026-09-03T12:02:00.000Z")
+                    .unwrap()
+                    .with_timezone(&Utc),
+            }],
+        }),
+    });
+    processor.process(removal).unwrap();
+    assert!(processor.station_cas_account_data(key).is_none());
+
+    let mut reset = sync_response("station-cas-reset");
+    delta_mut(&mut reset).account_data = Some(AccountDataContainer {
+        events: Vec::new(),
+        station_cas: Some(StationCasAccountDataContainer {
+            complete: true,
+            upserts: Vec::new(),
+            removals: Vec::new(),
+        }),
+    });
+    processor.process(reset).unwrap();
+    assert!(processor.station_cas_account_data(key).is_none());
 }
 
 #[test]

@@ -31,8 +31,13 @@ pub use arkret_models_collaboration::signal_plaintext::{
     PresencePlaintext, ReadReceipt, SignalSequence, SignalSequenceDecision, SignalSequenceDomain,
     SignalSequenceEndpoint, SignalSequenceHighWater, TypingPlaintext, open_signal_plaintext,
 };
+#[cfg(test)]
+pub(crate) use arkret_models_collaboration::sync_frames::account_subscribe::{
+    AccountDataContainer, StationCasAccountDataRemoval,
+};
 pub(crate) use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountStreamInterrupt, AccountSubscribeBatch, AccountSubscribeFrameKind,
+    StationCasAccountDataContainer,
 };
 pub(crate) use arkret_models_collaboration::sync_frames::account_sync::{
     AccountSubscribeDeviceListChanges, AccountSubscribeRealmSummary, DeviceMessageEnvelope,
@@ -52,14 +57,15 @@ pub use arkret_models_discovery::{
 };
 pub(crate) use arkret_models_identity::agent_signer_evidence::AgentSignerEvidence;
 pub(crate) use arkret_models_identity::{
-    AccountBindingReceipt, AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
-    DeviceVerificationState, DidOperationSubmitRequestBody, IdentityBindingChallengeOutcome,
-    IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationCommandKind,
-    IdentityCreationGoal, IdentityCreationLease, IdentityCreationLeaseState,
-    IdentityCreationLocalArtifactKind, IdentityCreationRecoveryKeyState,
-    IdentityCreationRegistration, InitialSessionGrantIntent, ReservedIdentityCreation,
-    UnsignedAccountHandoffAuthenticationProof, UnsignedAccountHandoffRequestBody,
-    UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
+    AccountBindingReceipt, AccountDataRow, AccountHandoffBinding, AccountHandoffOutcome,
+    AccountHandoffRequestBody, DeviceVerificationState, DidOperationSubmitRequestBody,
+    IdentityBindingChallengeOutcome, IdentityBindingChallengeRequestBody, IdentityBindingPurpose,
+    IdentityCreationCommandKind, IdentityCreationGoal, IdentityCreationLease,
+    IdentityCreationLeaseState, IdentityCreationLocalArtifactKind,
+    IdentityCreationRecoveryKeyState, IdentityCreationRegistration, InitialSessionGrantIntent,
+    ReservedIdentityCreation, UnsignedAccountHandoffAuthenticationProof,
+    UnsignedAccountHandoffRequestBody, UnsignedIdentityCreationControlProof,
+    UnsignedIdentityCreationControlProofBody,
 };
 pub(crate) use arkret_state::resolver::RealmState;
 pub(crate) use arkret_wire::project_did_to_core_id;
@@ -96,8 +102,7 @@ pub(crate) use arkret_models_collaboration::sync_frames::account_subscribe::{
 pub(crate) use arkret_models_collaboration::sync_frames::account_sync::{
     AccountSubscribeUnreadCounts, AgentRuntimeApprovalNotificationData,
     AgentRuntimeApprovalNotificationRemovalData, AgentRuntimeApprovalRemovalReason,
-    DeviceMessageContainer, EventContainer, NotificationContainer, NotificationData,
-    RealmSyncEntry,
+    DeviceMessageContainer, NotificationContainer, NotificationData, RealmSyncEntry,
 };
 #[cfg(test)]
 pub(crate) use arkret_models_collaboration::sync_frames::client_sync::SyncRequestBody;

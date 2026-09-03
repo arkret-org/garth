@@ -1,5 +1,11 @@
 use super::*;
 
+#[derive(Clone, Debug)]
+struct StationCasRevision {
+    revision: u64,
+    canonical_change: Vec<u8>,
+}
+
 /// Processed account-subscribe state and ordered delivery queues.
 ///
 /// The account-subscribe stream carries durable account state only. Momentary
@@ -14,6 +20,8 @@ pub struct SyncResponseProcessor {
     left_device_lists: BTreeSet<ActorId>,
     pending_recovery_actions: BTreeSet<SyncRecoveryAction>,
     account_data: BTreeMap<String, Event>,
+    station_cas_account_data: BTreeMap<String, AccountDataRow>,
+    station_cas_revisions: BTreeMap<String, StationCasRevision>,
     notifications: BTreeMap<String, NotificationDelta>,
 }
 
@@ -68,6 +76,7 @@ impl SyncResponseProcessor {
         let mut changed_device_lists = BTreeSet::new();
         let mut left_device_lists = BTreeSet::new();
         let mut account_data = Vec::new();
+        let mut station_cas_account_data = Vec::new();
         let mut notifications = Vec::new();
         let mut agent_signer_evidence = Vec::new();
         let mut partial = false;
@@ -145,6 +154,10 @@ impl SyncResponseProcessor {
                     }
                     account_data.push(event);
                 }
+                if let Some(station_cas) = container.station_cas {
+                    self.apply_station_cas(&station_cas)?;
+                    station_cas_account_data.push(station_cas);
+                }
             }
             if let Some(container) = frame.notifications {
                 for notification in container.items {
@@ -184,6 +197,7 @@ impl SyncResponseProcessor {
                 left_ids: left_device_lists.into_iter().collect(),
             },
             account_data,
+            station_cas_account_data,
             notifications,
             agent_signer_evidence,
             partial,
@@ -200,6 +214,69 @@ impl SyncResponseProcessor {
 
     pub fn account_data(&self, key: &str) -> Option<&Event> {
         self.account_data.get(key)
+    }
+
+    pub fn station_cas_account_data(&self, key: &str) -> Option<&AccountDataRow> {
+        self.station_cas_account_data.get(key)
+    }
+
+    fn apply_station_cas(&mut self, delta: &StationCasAccountDataContainer) -> Result<()> {
+        if delta.complete {
+            self.station_cas_account_data.clear();
+            self.station_cas_revisions.clear();
+        }
+        for upsert in &delta.upserts {
+            let canonical_change = canonical::canonical_json_bytes(upsert)?;
+            self.apply_station_cas_revision(
+                &upsert.account_data_key,
+                upsert.revision,
+                canonical_change,
+            )?;
+            self.station_cas_account_data
+                .insert(upsert.account_data_key.clone(), upsert.clone());
+        }
+        for removal in &delta.removals {
+            let canonical_change = canonical::canonical_json_bytes(removal)?;
+            self.apply_station_cas_revision(
+                &removal.account_data_key,
+                removal.revision,
+                canonical_change,
+            )?;
+            self.station_cas_account_data
+                .remove(&removal.account_data_key);
+        }
+        Ok(())
+    }
+
+    fn apply_station_cas_revision(
+        &mut self,
+        key: &str,
+        revision: u64,
+        canonical_change: Vec<u8>,
+    ) -> Result<()> {
+        if let Some(current) = self.station_cas_revisions.get(key) {
+            if revision < current.revision {
+                return Err(Error::Protocol(format!(
+                    "station_cas revision regressed for {key}"
+                )));
+            }
+            if revision == current.revision {
+                if canonical_change == current.canonical_change {
+                    return Ok(());
+                }
+                return Err(Error::Protocol(format!(
+                    "station_cas revision conflict for {key}"
+                )));
+            }
+        }
+        self.station_cas_revisions.insert(
+            key.to_owned(),
+            StationCasRevision {
+                revision,
+                canonical_change,
+            },
+        );
+        Ok(())
     }
 
     pub fn notification(&self, id: &str) -> Option<&NotificationDelta> {
