@@ -63,7 +63,8 @@ mod tests {
 
     use crate::protocol::{
         AccountSubscribeDeviceListChanges, NotificationDelta, NotificationDeltaAction,
-        NotificationId, RealmId, RealmSyncEntry, RealmUpdate, SyncUpdates,
+        NotificationId, RealmId, RealmSyncEntry, RealmUpdate, StationCasAccountDataContainer,
+        SyncUpdates,
     };
 
     use super::*;
@@ -86,7 +87,7 @@ mod tests {
                 left_ids: Vec::new(),
             },
             account_data: Vec::new(),
-            station_cas_account_data: Vec::new(),
+            station_cas_account_data: vec![StationCasAccountDataContainer::default()],
             notifications: vec![NotificationDelta {
                 id: NotificationId::new("ak:notification:01964137-0000-7000-8000-000000000010")
                     .unwrap(),
@@ -120,6 +121,7 @@ mod tests {
             panic!("first event must carry account batch context");
         };
         assert!(context.account_data.is_empty());
+        assert_eq!(context.station_cas_account_data.len(), 1);
         assert!(!context.initial_catchup);
         assert_eq!(
             events

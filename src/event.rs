@@ -55,6 +55,8 @@ pub struct AccountUpdateContext {
     pub to_device_lost: bool,
     pub device_lists: AccountSubscribeDeviceListChanges,
     pub account_data: Vec<Event>,
+    /// Cursor-covered Station-CAS Account Data baseline/deltas.
+    #[serde(default)]
     pub station_cas_account_data: Vec<StationCasAccountDataContainer>,
     pub agent_signer_evidence: Vec<crate::protocol::AgentSignerEvidence>,
     pub partial: bool,
