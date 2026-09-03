@@ -275,7 +275,7 @@ pub fn describe_route_binding(
             kind.as_str() == record.record.service_kind && kind.valid_in("service_describe")
         })
         .ok_or_else(|| Error::Protocol("service_route_kind_has_no_describe_surface".to_owned()))?;
-    if description.protocol_version != arkret_wire::PROTOCOL_VERSION
+    if description.protocol_version.as_str() != arkret_wire::PROTOCOL_VERSION
         || description.service_id != record.record.service_id
         || description.service_kind != registered_kind
         || description.service_resolution.did != record.record.did
