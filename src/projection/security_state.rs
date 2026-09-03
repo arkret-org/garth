@@ -171,14 +171,14 @@ pub fn security_projection_for_scope_id<'a>(
 ///
 /// `ak.realm.create` is the registered genesis writer of
 /// `ak.component.realm.authority_root.v1` (contract-registry.json), and its
-/// registered `value_projection` sets `controller_id` from the Event
+/// registered `value_projection` sets `controller_actor_id` from the Event
 /// envelope's `actor_id`; every accepted `ak.realm.owner.transfer` afterwards
-/// moves the controller to `payload.patch.controller_id`. This replays those
+/// moves the controller to `payload.patch.controller_actor_id`. This replays those
 /// cell inputs in log order; it is not the forbidden `realm_state.owner` /
 /// membership fallback — those are projection mirrors of a different fact,
 /// and post-P1 realm projections no longer carry them at all.
 pub fn realm_authority_root_controller_from_events(events: &[Value]) -> Option<ActorId> {
-    realm_authority_root_value_from_events(events).map(|root| root.controller_id)
+    realm_authority_root_value_from_events(events).map(|root| root.controller_actor_id)
 }
 
 /// Fully replayed current value of the Realm authority-root cell.
@@ -209,9 +209,9 @@ pub fn realm_authority_root_value_from_events(
         };
         if kind == EventKind::RealmCreate.as_str() {
             root = (|| {
-                let controller_id =
+                let controller_actor_id =
                     serde_json::from_value::<ActorId>(event.get("actor_id")?.clone()).ok()?;
-                Some(RealmAuthorityRootValue::genesis(controller_id))
+                Some(RealmAuthorityRootValue::genesis(controller_actor_id))
             })();
             continue;
         }
@@ -223,12 +223,12 @@ pub fn realm_authority_root_value_from_events(
         match kind {
             event_kind_str::REALM_OWNER_TRANSFER => {
                 if let Some(controller) = event
-                    .pointer("/payload/patch/controller_id")
+                    .pointer("/payload/patch/controller_actor_id")
                     .cloned()
                     .and_then(|next| serde_json::from_value::<ActorId>(next).ok())
                 {
                     let epoch = current.controller_epoch.checked_add(1)?;
-                    current.controller_id = controller;
+                    current.controller_actor_id = controller;
                     current.controller_epoch = epoch;
                 }
             }
@@ -411,7 +411,7 @@ mod tests {
                 },
                 "payload": {
                     "patch": {
-                        "controller_id": {
+                        "controller_actor_id": {
                             "kind": "account",
                             "account_id": {
                                 "principal_id": "ak:did_core:web:successor.example",
@@ -438,7 +438,7 @@ mod tests {
         let events = events.as_array().unwrap();
         let root = realm_authority_root_value_from_events(events).unwrap();
         assert_eq!(
-            root.controller_id.signing_principal_id().as_str(),
+            root.controller_actor_id.signing_principal_id().as_str(),
             "ak:did_core:web:successor.example"
         );
         assert_eq!(root.controller_epoch, 1);
@@ -446,7 +446,7 @@ mod tests {
         // The presentation-grade controller helper follows the same transfer.
         assert_eq!(
             realm_authority_root_controller_from_events(events),
-            Some(root.controller_id)
+            Some(root.controller_actor_id)
         );
     }
 
@@ -468,7 +468,7 @@ mod tests {
                 "kind": "ak.realm.owner.transfer",
                 "payload": {
                     "patch": {
-                        "controller_id": {
+                        "controller_actor_id": {
                             "kind": "account",
                             "account_id": {
                                 "principal_id": "ak:did_core:web:successor.example",
@@ -482,13 +482,13 @@ mod tests {
         let events = events.as_array().unwrap();
         let root = realm_authority_root_value_from_events(events).unwrap();
         assert_eq!(
-            root.controller_id.signing_principal_id().as_str(),
+            root.controller_actor_id.signing_principal_id().as_str(),
             "ak:did_core:web:successor.example"
         );
         assert_eq!(root.controller_epoch, 1);
         assert_eq!(
             realm_authority_root_controller_from_events(events),
-            Some(root.controller_id)
+            Some(root.controller_actor_id)
         );
     }
 

@@ -56,7 +56,7 @@ pub fn verified_checkpoint_actor_has_realm_action(
         )
         .ok()
     });
-    if root.as_ref().map(|root| &root.controller_id) == Some(actor)
+    if root.as_ref().map(|root| &root.controller_actor_id) == Some(actor)
         && arkret_schema::capability_action(arkret_wire::CapabilityActionId::REALM_OWNER)
             .is_some_and(|descriptor| descriptor.grant_authority_actions.contains(&action))
     {

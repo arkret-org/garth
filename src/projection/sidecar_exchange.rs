@@ -23,12 +23,14 @@ use crate::protocol::models::{
     AgentSidecarExchangeProjectionSchema, AgentSidecarExchangeRequestContext,
     AgentSidecarExchangeStatus, agent_sidecar_exchange_event_set_digest,
 };
-use crate::protocol::{DidCoreId, Error, EventId, Hlc, NonEmptyString, Result, SidecarId};
+use crate::protocol::{
+    AccountId, DidCoreId, Error, EventId, Hlc, NonEmptyString, Result, SidecarId,
+};
 
 /// Immutable identity of the fold target. All facts are validated against it.
 #[derive(Clone, Debug)]
 pub struct SidecarExchangeFoldScope {
-    pub controller_id: DidCoreId,
+    pub controller_account_id: AccountId,
     pub sidecar_id: SidecarId,
 }
 
@@ -37,7 +39,7 @@ pub struct SidecarExchangeFoldScope {
 pub struct SidecarExchangeRequestFact {
     pub event_id: EventId,
     pub hlc: Hlc,
-    pub actor_id: DidCoreId,
+    pub actor_account_id: AccountId,
     /// Accepted controller actor-chain sequence of the carrying Event.
     pub actor_seq: u64,
     /// Canonical Event digest used only for same-sequence sibling
@@ -52,7 +54,7 @@ pub struct SidecarExchangeRequestFact {
 pub struct SidecarExchangeAgentFact {
     pub event_id: EventId,
     pub hlc: Hlc,
-    pub actor_id: DidCoreId,
+    pub actor_principal_id: DidCoreId,
     pub binding: AgentSidecarEventExchangeBinding,
     /// Top-level `refs[role=after]` targets of the carrying Event.
     pub refs_after: Vec<EventId>,
@@ -63,7 +65,7 @@ pub struct SidecarExchangeAgentFact {
 pub struct SidecarExchangeControlFact {
     pub event_id: EventId,
     pub hlc: Hlc,
-    pub actor_id: DidCoreId,
+    pub actor_account_id: AccountId,
     pub actor_seq: u64,
     pub event_digest: String,
     /// Top-level `refs[role=after]` targets of the carrying Event. The closed
@@ -129,7 +131,8 @@ fn select_canonical_request<'a>(
 ) -> Result<Option<CanonicalRequest<'a>>> {
     let mut canonical: Option<&SidecarExchangeRequestFact> = None;
     for fact in requests {
-        if fact.actor_id != scope.controller_id || fact.exchange_id != *exchange_id {
+        if fact.actor_account_id != scope.controller_account_id || fact.exchange_id != *exchange_id
+        {
             continue;
         }
         if fact.context.validate().is_err() {
@@ -199,7 +202,7 @@ pub fn fold_sidecar_exchange(
         if fact.binding.validate().is_err()
             || fact.binding.exchange_id != *exchange_id
             || fact.binding.request_event_id.as_ref() != Some(&request.event_id)
-            || fact.actor_id == scope.controller_id
+            || fact.actor_principal_id == scope.controller_account_id.principal_id
         {
             continue;
         }
@@ -222,9 +225,9 @@ pub fn fold_sidecar_exchange(
         // accrues outside checks 5/6/7). Echo eligibility additionally
         // requires an addressed actor (check 5), role=user_facing_response
         // (check 6), and a top-level after-ref to the request (check 7).
-        participating.insert(fact.actor_id.clone());
+        participating.insert(fact.actor_principal_id.clone());
         if role == AgentSidecarExchangeBindingRole::UserFacingResponse
-            && addressed.contains(&fact.actor_id)
+            && addressed.contains(&fact.actor_principal_id)
             && fact.refs_after.contains(&request.event_id)
         {
             responses.insert(fact.event_id.to_string(), fact);
@@ -234,7 +237,7 @@ pub fn fold_sidecar_exchange(
     // Control fold: controller-authored accepted chain order only.
     let mut control_groups: BTreeMap<u64, Vec<&SidecarExchangeControlFact>> = BTreeMap::new();
     for fact in controls {
-        if fact.actor_id != scope.controller_id
+        if fact.actor_account_id != scope.controller_account_id
             || fact.control.validate().is_err()
             || fact.control.exchange_id != *exchange_id
             || fact.control.request_event_id != request.event_id
@@ -429,7 +432,7 @@ pub fn fold_sidecar_exchange(
     )?;
     let projection = AgentSidecarExchangeProjection {
         schema: AgentSidecarExchangeProjectionSchema::V1,
-        controller_id: scope.controller_id.clone(),
+        controller_account_id: scope.controller_account_id.clone(),
         sidecar_id: scope.sidecar_id.clone(),
         exchange_id: exchange_id.clone(),
         origin: AgentSidecarExchangeOrigin::SourceTrackRouted,
@@ -584,6 +587,13 @@ mod tests {
         DidCoreId::new("ak:did_core:webvh:z6mkcontroller").unwrap()
     }
 
+    fn controller_account() -> AccountId {
+        AccountId::new(
+            controller(),
+            DidCoreId::new("ak:did_core:web:station.example").unwrap(),
+        )
+    }
+
     fn agent_s() -> DidCoreId {
         DidCoreId::new("ak:did_core:webvh:z6mkassistant:assistant.agents.example").unwrap()
     }
@@ -594,7 +604,7 @@ mod tests {
 
     fn scope() -> SidecarExchangeFoldScope {
         SidecarExchangeFoldScope {
-            controller_id: controller(),
+            controller_account_id: controller_account(),
             sidecar_id: SidecarId::from_event_id(&event_id(0x32)),
         }
     }
@@ -627,7 +637,7 @@ mod tests {
         SidecarExchangeRequestFact {
             event_id: event_id(suffix),
             hlc: hlc(1),
-            actor_id: controller(),
+            actor_account_id: controller_account(),
             actor_seq,
             event_digest: digest.to_owned(),
             exchange_id: exchange_id(),
@@ -757,7 +767,7 @@ mod tests {
         SidecarExchangeAgentFact {
             event_id: event_id(suffix),
             hlc: hlc(counter),
-            actor_id: actor,
+            actor_principal_id: actor,
             binding,
             refs_after: vec![request_event_id],
         }
@@ -772,7 +782,7 @@ mod tests {
         SidecarExchangeControlFact {
             event_id: event_id(suffix),
             hlc: hlc(0x20 + suffix),
-            actor_id: controller(),
+            actor_account_id: controller_account(),
             actor_seq,
             event_digest: digest.to_owned(),
             refs_after: control.basis_event_ids.clone(),
@@ -818,6 +828,18 @@ mod tests {
         assert_eq!(projection.coordinator_assignment_event_id, event_id(0x34));
         assert_eq!(projection.folded_frontier.event_ids, vec![event_id(0x34)]);
         assert!(projection.participating_agent_ids.is_empty());
+    }
+
+    #[test]
+    fn request_from_same_principal_at_other_station_is_not_controller_authored() {
+        let mut request = request_fact(0x34, 5, "aa");
+        request.actor_account_id.station_id =
+            DidCoreId::new("ak:did_core:web:other-station.example").unwrap();
+        assert!(
+            fold_sidecar_exchange(&scope(), &exchange_id(), &[request], &[], &[])
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -910,7 +932,7 @@ mod tests {
         );
         missing_ref.refs_after = vec![];
         let controller_response = SidecarExchangeAgentFact {
-            actor_id: controller(),
+            actor_principal_id: controller(),
             ..agent_fact(
                 0x38,
                 5,
@@ -1000,6 +1022,37 @@ mod tests {
             vec![event_id(0x36)],
             "the control covers request and response, leaving one causal head"
         );
+    }
+
+    #[test]
+    fn control_from_same_principal_at_other_station_is_not_controller_authored() {
+        let request = request_fact(0x34, 1, "aa");
+        let response = agent_fact(
+            0x35,
+            2,
+            agent_s(),
+            AgentSidecarExchangeBindingRole::UserFacingResponse,
+            0x34,
+        );
+        let mut control = control_fact(
+            0x36,
+            2,
+            "cc",
+            close_control(vec![event_id(0x35)], vec![event_id(0x35)]),
+        );
+        control.actor_account_id.station_id =
+            DidCoreId::new("ak:did_core:web:other-station.example").unwrap();
+        let projection = fold_sidecar_exchange(
+            &scope(),
+            &exchange_id(),
+            &[request],
+            &[response],
+            &[control],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(projection.status, AgentSidecarExchangeStatus::Responding);
+        assert_eq!(projection.terminal_event_id, None);
     }
 
     #[test]

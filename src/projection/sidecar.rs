@@ -23,7 +23,7 @@ pub struct SidecarProjectionFold {
 impl SidecarProjectionFold {
     pub fn apply_view_state(&mut self, value: AgentSidecarViewState) -> bool {
         let key = (
-            value.controller_id.to_string(),
+            value.controller_account_id.to_string(),
             value.context_ref.realm_id.to_string(),
             value.context_ref.strand_id.to_string(),
         );
@@ -44,12 +44,12 @@ impl SidecarProjectionFold {
 
     pub fn view_state(
         &self,
-        controller_id: &str,
+        controller_account_key: &str,
         realm_id: &RealmId,
         strand_id: &StrandId,
     ) -> Option<&AgentSidecarViewState> {
         self.view_states.get(&(
-            controller_id.to_owned(),
+            controller_account_key.to_owned(),
             realm_id.to_string(),
             strand_id.to_string(),
         ))
@@ -270,7 +270,7 @@ mod tests {
         AgentSidecarExchangeId, AgentSidecarExchangeProjectionSchema, AgentSidecarExchangeStatus,
         AgentSidecarSourceTrackRef, agent_sidecar_exchange_event_set_digest,
     };
-    use crate::protocol::{DidCoreId, Hlc, NonEmptyString, SidecarId};
+    use crate::protocol::{AccountId, DidCoreId, Hlc, NonEmptyString, SidecarId};
 
     use super::*;
 
@@ -298,7 +298,10 @@ mod tests {
             DidCoreId::new("ak:did_core:webvh:z6mkfixture:assistant.agents.example").unwrap();
         AgentSidecarExchangeProjection {
             schema: AgentSidecarExchangeProjectionSchema::V1,
-            controller_id: DidCoreId::new("ak:did_core:web:example.com:users:alice").unwrap(),
+            controller_account_id: AccountId::new(
+                DidCoreId::new("ak:did_core:web:example.com:users:alice").unwrap(),
+                DidCoreId::new("ak:did_core:web:station.example").unwrap(),
+            ),
             sidecar_id: SidecarId::from_event_id(&event_id("32")),
             exchange_id: AgentSidecarExchangeId::new("Abcdefghijklmnopqrstuv").unwrap(),
             origin: AgentSidecarExchangeOrigin::SourceTrackRouted,
