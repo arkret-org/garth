@@ -1,7 +1,8 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
+use arkret_models_collaboration::history_key::{AuthorizationIncarnation, EpochRange};
 use arkret_models_collaboration::history_key::{
     HistoryGovernanceTraversalIntent, HistoryGovernanceTraversalRetention, HistoryKeyRequest,
     HistoryKeyRequestCreateOutcome, HistoryKeyRequestListOutcome, HistoryKeyRequestListQuery,
@@ -15,6 +16,7 @@ use arkret_state::mls_governance_proof::MlsGovernanceVerificationCheckpoint;
 use arkret_wire::{Hash, SealBasis};
 use serde::{Deserialize, Serialize};
 
+use crate::history_outbox::{DurableHistorySourceAttempt, HistorySourceAttemptStatus};
 use crate::store::{SecretClass, SecretDurability, SecureKeyStore};
 use crate::{Error, MaybeSend, MaybeSendSync, PutSecretOptions, Result};
 
@@ -1023,6 +1025,138 @@ pub fn cryptographically_rejected_disposition(
     }
 }
 
+/// The join epoch a requester's authorization incarnation retains for one
+/// effective scope.
+///
+/// `history-visibility.md` binds a member's readable history to the epoch its
+/// *retained* join created, so the incarnation branch must match the scope
+/// branch: a Realm incarnation never authorizes a Circle traversal and vice
+/// versa, and a mismatch is refused rather than silently narrowed.
+pub fn verify_authorization_incarnation_is_retained_join(
+    checkpoint: &MlsGovernanceVerificationCheckpoint,
+    scope: &arkret_wire::HistoryEffectiveScope,
+    actor_id: &arkret_wire::ActorId,
+    incarnation: &AuthorizationIncarnation,
+) -> Result<u64> {
+    let group_id = arkret_wire::MlsGroupId::new(
+        scope
+            .canonical_mls_group_id()
+            .map_err(|error| Error::Protocol(error.to_string()))?,
+    )
+    .map_err(|error| Error::Protocol(error.to_string()))?;
+    let join_epoch = arkret_state::direct_traversal::derive_history_join_epoch(
+        &checkpoint.accepted_events,
+        &arkret_state::direct_traversal::HistoryJoinEpochSubject {
+            mls_group_id: group_id,
+            requester_actor_id: actor_id.clone(),
+            authorization_incarnation: incarnation.clone(),
+        },
+    )
+    .map_err(|error| Error::Protocol(error.to_string()))?;
+    match (scope, incarnation) {
+        (
+            arkret_wire::HistoryEffectiveScope::Realm { .. },
+            AuthorizationIncarnation::Realm { .. },
+        )
+        | (
+            arkret_wire::HistoryEffectiveScope::Circle { .. },
+            AuthorizationIncarnation::Circle { .. },
+        ) => Ok(join_epoch),
+        _ => Err(Error::Protocol(
+            "history request scope and authorization incarnation branch differ".to_owned(),
+        )),
+    }
+}
+
+/// Collapse a set of epochs into the minimal ascending list of closed ranges
+/// that covers exactly them.
+pub fn canonical_ranges_for_epochs(epochs: impl IntoIterator<Item = u64>) -> Vec<EpochRange> {
+    let epochs = epochs.into_iter().collect::<BTreeSet<_>>();
+    let mut ranges = Vec::<EpochRange>::new();
+    for epoch in epochs {
+        if let Some(last) = ranges.last_mut()
+            && last.to_epoch.checked_add(1) == Some(epoch)
+        {
+            last.to_epoch = epoch;
+            continue;
+        }
+        ranges.push(EpochRange {
+            from_epoch: epoch,
+            to_epoch: epoch,
+        });
+    }
+    ranges
+}
+
+/// True when any still-live source attempt already covers `epoch`.
+pub fn live_attempt_covers_epoch(attempts: &[DurableHistorySourceAttempt], epoch: u64) -> bool {
+    attempts
+        .iter()
+        .any(|attempt| live_ranges_cover_epoch(attempt.status, &attempt.covered_ranges, epoch))
+}
+
+/// True when an attempt in a live status covers `epoch`.
+///
+/// `history-visibility.md` §6.2: a `permanently_rejected` attempt will never be
+/// accepted, so its coverage must not suppress the replacement manifest.
+pub fn live_ranges_cover_epoch(
+    status: HistorySourceAttemptStatus,
+    ranges: &[EpochRange],
+    epoch: u64,
+) -> bool {
+    matches!(
+        status,
+        HistorySourceAttemptStatus::Unfinished | HistorySourceAttemptStatus::Completed
+    ) && ranges
+        .iter()
+        .any(|range| range.from_epoch <= epoch && epoch <= range.to_epoch)
+}
+
+/// True when every `inner` range is contained in some single `outer` range.
+pub fn ranges_cover(outer: &[EpochRange], inner: &[EpochRange]) -> bool {
+    inner.iter().all(|needed| {
+        outer.iter().any(|available| {
+            available.from_epoch <= needed.from_epoch && needed.to_epoch <= available.to_epoch
+        })
+    })
+}
+
+/// The signer-resolution evidence coordinates a projected Event carries for one
+/// `(realm, principal, verification method)` triple.
+///
+/// A value that does not decode as an Event, or that belongs to another
+/// principal or Realm, contributes nothing rather than failing the scan.
+pub fn principal_signer_evidence_coordinates_from_event(
+    value: &serde_json::Value,
+    realm_id: &arkret_wire::RealmId,
+    actor_id: &arkret_wire::DidCoreId,
+    verification_method: &arkret_wire::DidUrl,
+) -> Result<Option<arkret_wire::SignerEvidenceRef>> {
+    let Ok(event) = serde_json::from_value::<arkret_wire::Event>(value.clone()) else {
+        return Ok(None);
+    };
+    if event.actor_id.signing_principal_id() != actor_id
+        || event.scope_ref.realm_id_opt() != Some(realm_id)
+    {
+        return Ok(None);
+    }
+    for proof in &event.proofs {
+        let arkret_wire::EventProof::Producer(producer) = proof else {
+            continue;
+        };
+        let Some(evidence_ref) = &producer.signer_resolution_evidence_ref else {
+            continue;
+        };
+        if producer.verification_method == *verification_method {
+            evidence_ref
+                .content_digest()
+                .map_err(|error| Error::Protocol(error.to_string()))?;
+            return Ok(Some(evidence_ref.clone()));
+        }
+    }
+    Ok(None)
+}
+
 #[cfg(test)]
 mod tests {
     use arkret_wire::SealId;
@@ -1122,5 +1256,62 @@ mod tests {
                 .unwrap()
         );
         assert_eq!(store.load_history_runtime().unwrap().revision, 1);
+    }
+
+    #[test]
+    fn recovery_ranges_are_canonical_and_live_request_coverage_is_exact() {
+        let ranges = canonical_ranges_for_epochs([9, 7, 8, 12, 12]);
+        assert_eq!(
+            ranges,
+            vec![
+                EpochRange {
+                    from_epoch: 7,
+                    to_epoch: 9,
+                },
+                EpochRange {
+                    from_epoch: 12,
+                    to_epoch: 12,
+                },
+            ]
+        );
+        assert!(ranges_cover(
+            &ranges,
+            &[EpochRange {
+                from_epoch: 8,
+                to_epoch: 9,
+            }]
+        ));
+        assert!(!ranges_cover(
+            &ranges,
+            &[EpochRange {
+                from_epoch: 9,
+                to_epoch: 12,
+            }]
+        ));
+        assert!(live_ranges_cover_epoch(
+            HistorySourceAttemptStatus::Unfinished,
+            &ranges,
+            8,
+        ));
+        assert!(live_ranges_cover_epoch(
+            HistorySourceAttemptStatus::Completed,
+            &ranges,
+            12,
+        ));
+        assert!(!live_ranges_cover_epoch(
+            HistorySourceAttemptStatus::Expired,
+            &ranges,
+            8,
+        ));
+        assert!(!live_ranges_cover_epoch(
+            HistorySourceAttemptStatus::PermanentlyRejected,
+            &ranges,
+            8,
+        ));
+        assert!(!live_ranges_cover_epoch(
+            HistorySourceAttemptStatus::Completed,
+            &ranges,
+            10,
+        ));
     }
 }

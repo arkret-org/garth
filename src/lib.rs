@@ -172,10 +172,11 @@ pub use session::{
     SessionTransportProvider, grant_due_for_rotation, grant_is_dead, refresh_decision,
 };
 pub use signal::{
-    BoxSignalDecryptFuture, PresenceObservation, PresenceProjection, PresenceStatus,
-    SIGNAL_PLAINTEXT_KIND_CALL, SIGNAL_PLAINTEXT_KIND_PRESENCE, SignalDecryptor, SignalPlaintext,
-    SignalReceiver, SignalSenderKeyResolver, VerifiedSignalSenderAuthority,
-    VerifiedSignalSenderKey, aggregate_presence_states,
+    BoxSignalDecryptFuture, LiveSignalBody, LiveSignalProjection, MAX_LIVE_SIGNAL_BODIES,
+    PresenceObservation, PresenceProjection, PresenceStatus, SIGNAL_PLAINTEXT_KIND_CALL,
+    SIGNAL_PLAINTEXT_KIND_PRESENCE, SignalDecryptor, SignalPlaintext, SignalReceiver,
+    SignalSenderKeyResolver, VerifiedSignalSenderAuthority, VerifiedSignalSenderKey,
+    aggregate_presence_states, live_signal_projection_key,
 };
 pub use signal_message_stream::{
     MessageStreamApplyOutcome, MessageStreamAuthorizer, MessageStreamIgnoreReason,

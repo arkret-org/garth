@@ -27,12 +27,14 @@ use crate::protocol::{
     NotificationDeltaAction, RealmId, Result, StationCasAccountDataContainer, Timeline, canonical,
 };
 
+mod account_projection;
 mod loop_control;
 mod processor;
 mod send_queue;
 #[cfg(test)]
 mod tests;
 
+pub use account_projection::*;
 pub use loop_control::*;
 pub use processor::*;
 #[cfg(test)]

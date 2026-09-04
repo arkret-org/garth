@@ -11,6 +11,7 @@
 //! module keeps to `MaybeSendSync` data and the [`crate::store::SecureKeyStore`]
 //! port.
 
+pub mod backup_selection;
 pub mod backup_series;
 pub mod checkpoint_authority;
 pub mod commit_preconditions;
@@ -18,7 +19,18 @@ pub mod device_secret;
 pub mod self_preservation;
 pub mod snapshot_envelope;
 pub mod status;
+pub mod welcome_admission;
 
+pub use backup_selection::{
+    active_series_id_for_backup_class, all_mls_account_secret_backups, backup_created_at,
+    backup_series_id, is_mls_account_secret_backup, is_mls_history_backup,
+    is_mls_private_plaintext_backup, is_passphrase_account_secret_backup,
+    is_recovery_public_key_account_secret_backup, iter_backup_bodies,
+    latest_mls_history_backups_by_scope, mls_account_secret_backup_version,
+    select_mls_account_secret_backup, select_mls_account_secret_recovery_public_key_backup,
+    select_mls_history_backups, select_mls_private_plaintext_backup,
+    select_preferred_mls_account_secret_backup, selectable_series_id_for_backup_class,
+};
 pub use backup_series::{
     backup_series_seq, fresh_backup_id, series_supersedes_digest, verify_series_chain,
 };
@@ -51,3 +63,11 @@ pub use snapshot_envelope::{
     decrypt_envelope, decrypt_with_epoch_check, encrypt_state,
 };
 pub use status::{MlsRuntimeError, MlsRuntimeStatus};
+pub use welcome_admission::{
+    AcceptedWelcomeCandidate, accepted_welcome_candidate, device_authorization_from_record,
+    device_revoked, merge_accepted_welcome_candidates_for_local_endpoint,
+    merge_accepted_welcomes_for_local_endpoint, mls_group_id_for_realm,
+    mls_welcome_batch_is_exclusively_for_realm, mls_welcome_message_matches_realm,
+    recovery_public_key_secret_storage_backup_present, recovery_setup_prompt_required,
+    retain_mls_welcomes_for_realm,
+};

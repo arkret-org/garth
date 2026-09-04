@@ -23,7 +23,6 @@ use std::future::Future;
 use std::pin::Pin;
 
 use chrono::{DateTime, Utc};
-#[cfg(test)]
 use serde_json::Value;
 
 use crate::MaybeSendSync;
@@ -750,6 +749,167 @@ impl PresenceProjection {
         });
         before - self.devices.values().map(BTreeMap::len).sum::<usize>()
     }
+}
+
+/// Upper bound on live presence/typing bodies a receiver retains.
+pub const MAX_LIVE_SIGNAL_BODIES: usize = 512;
+
+/// One live presence/typing body plus the sequence it arrived with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveSignalBody {
+    pub payload_sequence: u64,
+    pub expires_at: DateTime<Utc>,
+    pub body: Value,
+}
+
+/// Bounded set of unexpired `ak.presence` / `ak.typing` bodies.
+///
+/// This is the host-facing twin of [`PresenceProjection`]: the strongly typed
+/// projection answers "what is this actor's aggregated presence", while this
+/// one keeps the already-serialized bodies a product surface renders, keyed by
+/// the same `(kind, actor, sender endpoint, target)` coordinates the sequence
+/// guard uses. Both live here so the admission rules — per-key sequence,
+/// effective TTL, and the single-active-key collapse for an Agent sender —
+/// exist once.
+///
+/// The rail allows loss, duplication and reordering (`signal.md` §4.5), so the
+/// per-key sequence guard is what keeps a reordered older presence from
+/// overwriting a newer one. Everything here is memory-only: presence is a TTL
+/// projection, not durable state.
+#[derive(Clone, Debug, Default)]
+pub struct LiveSignalProjection {
+    bodies: BTreeMap<String, LiveSignalBody>,
+}
+
+impl LiveSignalProjection {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Drop every body at or past its effective expiry. Returns `true` when
+    /// the stored set changed.
+    pub fn expire(&mut self, now: DateTime<Utc>) -> bool {
+        let before = self.bodies.len();
+        self.bodies.retain(|_, live| live.expires_at > now);
+        self.bodies.len() != before
+    }
+
+    /// Fold one already-serialized body in under its own projection key.
+    /// Returns `true` when the stored set changed and the host projection must
+    /// be rewritten.
+    pub fn apply(
+        &mut self,
+        key: String,
+        payload_sequence: u64,
+        expires_at: DateTime<Utc>,
+        body: Value,
+        now: DateTime<Utc>,
+    ) -> bool {
+        let mut changed = self.expire(now);
+        if expires_at <= now {
+            return changed;
+        }
+        if let Some(existing) = self.bodies.get(&key)
+            && existing.payload_sequence >= payload_sequence
+        {
+            return changed;
+        }
+        self.bodies.insert(
+            key,
+            LiveSignalBody {
+                payload_sequence,
+                expires_at,
+                body,
+            },
+        );
+        changed = true;
+        while self.bodies.len() > MAX_LIVE_SIGNAL_BODIES {
+            let Some(soonest) = self
+                .bodies
+                .iter()
+                .min_by_key(|(_, live)| live.expires_at)
+                .map(|(key, _)| key.clone())
+            else {
+                break;
+            };
+            self.bodies.remove(&soonest);
+        }
+        changed
+    }
+
+    /// Fold one admitted plaintext in, deriving its projection key from the
+    /// plaintext itself.
+    ///
+    /// An Agent sender is keyed by the public key it signed with, so a key
+    /// rotation would otherwise leave the retired key's body live until its
+    /// TTL passed. `profiles-presence.md` §3.3 makes the newest key the only
+    /// active endpoint for that Agent, so earlier ones are collapsed first —
+    /// the same rule [`PresenceProjection::apply`] applies to its typed
+    /// observations.
+    pub fn apply_plaintext(
+        &mut self,
+        plaintext: &SignalPlaintext,
+        body: Value,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let key = live_signal_projection_key(plaintext)?;
+        if matches!(
+            &plaintext.sender_endpoint,
+            SignalSequenceEndpoint::AgentKey { .. }
+        ) {
+            let prefix = format!("{}|{}|", plaintext.kind, plaintext.actor_id);
+            self.bodies
+                .retain(|existing, _| !existing.starts_with(&prefix) || existing == &key);
+        }
+        Ok(self.apply(
+            key,
+            plaintext.payload_sequence,
+            plaintext.expires_at,
+            body,
+            now,
+        ))
+    }
+
+    /// The retained bodies, in projection-key order.
+    pub fn bodies(&self) -> Vec<Value> {
+        self.bodies.values().map(|live| live.body.clone()).collect()
+    }
+
+    /// The retained entries, for consumers that need the sequence or expiry.
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &LiveSignalBody)> {
+        self.bodies.iter().map(|(key, live)| (key.as_str(), live))
+    }
+
+    pub fn len(&self) -> usize {
+        self.bodies.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bodies.is_empty()
+    }
+}
+
+/// The `(kind, actor, sender endpoint, target)` coordinates one live body is
+/// stored under. Only the two TTL profiles have a live projection; any other
+/// admitted kind is a caller error rather than a silently dropped body.
+pub fn live_signal_projection_key(plaintext: &SignalPlaintext) -> Result<String> {
+    let target = match &plaintext.payload {
+        arkret_models_collaboration::signal_plaintext::SignalPlaintext::Presence(_) => "",
+        arkret_models_collaboration::signal_plaintext::SignalPlaintext::Typing(typing) => {
+            typing.strand_id.as_str()
+        }
+        _ => {
+            return Err(Error::Protocol(
+                "live Signal projection requires a presence or typing payload".to_owned(),
+            ));
+        }
+    };
+    let endpoint = serde_json::to_string(&plaintext.sender_endpoint)
+        .map_err(|error| Error::Protocol(format!("serialize Signal sender endpoint: {error}")))?;
+    Ok(format!(
+        "{}|{}|{}|{target}",
+        plaintext.kind, plaintext.actor_id, endpoint
+    ))
 }
 
 #[cfg(test)]
@@ -1760,5 +1920,99 @@ mod tests {
             .await
             .unwrap_err();
         assert!(format!("{error}").contains("schema_violation"), "{error}");
+    }
+
+    fn live_at(offset_seconds: i64) -> DateTime<Utc> {
+        sent_at() + Duration::seconds(offset_seconds)
+    }
+
+    #[test]
+    fn a_reordered_older_presence_does_not_overwrite_the_newer_one() {
+        let mut live = LiveSignalProjection::new();
+        let key = "ak.presence|did:web:alice.example|ak:device:one|".to_owned();
+
+        assert!(live.apply(
+            key.clone(),
+            4,
+            live_at(30),
+            json!({"state": "online"}),
+            live_at(0)
+        ));
+        assert!(!live.apply(
+            key.clone(),
+            3,
+            live_at(30),
+            json!({"state": "dnd"}),
+            live_at(0)
+        ));
+        assert_eq!(live.bodies(), vec![json!({"state": "online"})]);
+
+        assert!(live.apply(key, 5, live_at(30), json!({"state": "idle"}), live_at(0)));
+        assert_eq!(live.bodies(), vec![json!({"state": "idle"})]);
+    }
+
+    #[test]
+    fn expired_bodies_are_pruned_and_an_already_expired_one_is_never_stored() {
+        let mut live = LiveSignalProjection::new();
+        live.apply(
+            "ak.typing|a|d|s".to_owned(),
+            1,
+            live_at(5),
+            json!({"typing": true}),
+            live_at(0),
+        );
+
+        // The prune alone is a change, so the projection is rewritten without
+        // the stale body; the new body is itself already expired.
+        assert!(live.apply(
+            "ak.typing|b|d|s".to_owned(),
+            1,
+            live_at(6),
+            json!({"typing": true}),
+            live_at(10)
+        ));
+        assert!(live.bodies().is_empty());
+    }
+
+    /// A peer who stops typing sends nothing more, so only a clock edge can
+    /// clear their indicator (`signal.md` §7.4 makes the same point for
+    /// message-stream previews). The rail's keepalives supply that edge.
+    #[test]
+    fn an_idle_clock_edge_clears_a_body_whose_ttl_passed() {
+        let mut live = LiveSignalProjection::new();
+        live.apply(
+            "ak.typing|a|d|s".to_owned(),
+            1,
+            live_at(5),
+            json!({"typing": true}),
+            live_at(0),
+        );
+
+        assert!(!live.expire(live_at(4)), "nothing has expired yet");
+        assert_eq!(live.bodies().len(), 1);
+        assert!(live.expire(live_at(5)), "the effective expiry is exclusive");
+        assert!(live.bodies().is_empty());
+        assert!(!live.expire(live_at(9)), "a second sweep changes nothing");
+    }
+
+    #[test]
+    fn the_live_set_stays_bounded_by_evicting_the_soonest_expiry() {
+        let mut live = LiveSignalProjection::new();
+        for index in 0..(MAX_LIVE_SIGNAL_BODIES + 10) {
+            live.apply(
+                format!("ak.presence|actor-{index}|device|"),
+                1,
+                live_at(60 + index as i64),
+                json!({ "state": "online", "index": index }),
+                live_at(0),
+            );
+        }
+
+        assert_eq!(live.bodies().len(), MAX_LIVE_SIGNAL_BODIES);
+        // The ten shortest-lived entries were the ones dropped.
+        assert!(
+            live.entries()
+                .all(|(_, body)| body.expires_at >= live_at(60 + 10))
+        );
     }
 }
