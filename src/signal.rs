@@ -912,6 +912,115 @@ pub fn live_signal_projection_key(plaintext: &SignalPlaintext) -> Result<String>
     ))
 }
 
+/// Admit one Signal against the Realm's locally verified governance closure
+/// (`signal.md` §1 and §4).
+///
+/// Every input is supplied by the caller: the pinned checkpoint and the
+/// observed Seal view are durable host facts, and `now` is the caller's clock,
+/// so the verdict is a pure function of protocol state and is identical on
+/// native and wasm. Three independent conditions have to hold, and each is
+/// fail-closed:
+///
+/// * the observed Seal view must carry no exposed bottom cell and must not
+///   have moved past the checkpoint the client verified;
+/// * the sender's membership cell must materialize to `join` at both the
+///   checkpoint basis and the basis the envelope itself declares, so a Signal
+///   cannot borrow authority from a Seal the sender picked;
+/// * a moderation-class Signal additionally needs `call.moderate` at both
+///   bases, resolved from the checkpoint's own capability grants.
+pub async fn admit_signal_governance(
+    checkpoint: &arkret_state::mls_governance_proof::MlsGovernanceVerificationCheckpoint,
+    observed: &crate::projection::LocalSealView,
+    envelope: &SignalEnvelope,
+    now: DateTime<Utc>,
+) -> Result<()> {
+    let verified_frontier = checkpoint
+        .basis
+        .leaves
+        .iter()
+        .map(|id| id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    if !observed.bottom_cells.is_empty()
+        || (!observed.frontier.is_empty()
+            && observed
+                .frontier
+                .iter()
+                .map(String::as_str)
+                .collect::<std::collections::BTreeSet<_>>()
+                != verified_frontier)
+    {
+        return Err(Error::Protocol(
+            "Signal governance is conflicted or newer than the verified checkpoint".to_owned(),
+        ));
+    }
+    let actor = envelope.sender_actor_id.canonical_key()?;
+    let member_subject = arkret_wire::cell::composite_subject(&[Value::String(actor.clone())])?;
+    let mut cells = vec![arkret_wire::CellRef::new(arkret_wire::cell::subject_cell(
+        arkret_wire::CellFamilyId::MEMBER_STATE_V1,
+        &member_subject,
+    ))?];
+    if let ScopeRef::Circle { circle_id, .. } = &envelope.scope_ref {
+        let subject = arkret_wire::cell::composite_subject(&[
+            Value::String(circle_id.to_string()),
+            Value::String(actor),
+        ])?;
+        cells.push(arkret_wire::CellRef::new(arkret_wire::cell::subject_cell(
+            arkret_wire::CellFamilyId::CIRCLE_MEMBER_V1,
+            &subject,
+        ))?);
+    }
+    let registry = arkret_lattice_registry::try_build_sdk_cell_registry()
+        .map_err(|error| Error::Protocol(error.to_string()))?;
+    let audits =
+        arkret_schema::CapabilityAuthorityAuditIndex::from_events(&checkpoint.accepted_events);
+    let declared = arkret_wire::SealBasis {
+        leaves: vec![envelope.seal_ref.clone()],
+    };
+    for basis in [&checkpoint.basis, &declared] {
+        for cell in &cells {
+            let value = arkret_state::mls_governance_proof::materialize_registered_cell_value_at_basis_from_verified_checkpoint(
+                checkpoint,
+                basis,
+                cell,
+                &registry,
+                |event, digest_suite| {
+                    arkret_schema::project_registered_cell_writes_with_authority_resolver(
+                        event,
+                        digest_suite,
+                        &|grant_id| audits.resolve(grant_id),
+                    )
+                    .map_err(|error| error.to_string())
+                },
+            )
+            .await?;
+            if value.as_str() != Some("join") {
+                return Err(Error::Protocol(
+                    "Signal sender is not joined at both current and declared Seal bases"
+                        .to_owned(),
+                ));
+            }
+        }
+        if envelope.signal_class == arkret_wire::SignalClass::Moderation
+            && !crate::mls::checkpoint_authority::verified_checkpoint_actor_has_realm_action(
+                checkpoint,
+                basis,
+                &envelope.sender_actor_id,
+                arkret_wire::CapabilityActionId::CALL_MODERATE,
+                now,
+                &registry,
+                &audits,
+            )
+            .await?
+        {
+            return Err(Error::Protocol(
+                "Signal moderation sender lacks independently verified call.moderate authority"
+                    .to_owned(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use chrono::Duration;

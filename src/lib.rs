@@ -131,11 +131,11 @@ pub use outbound::{
     OutboundSubmitOutcome, OutboundSubmitter,
 };
 pub use projection::{
-    ProjectionMount, RealmProjectionFrame, RealmStateReducer, encryption_profile_is_encrypted,
-    realm_authority_root_controller_for_realm, realm_authority_root_controller_from_events,
-    realm_authority_root_value_for_realm, realm_projection_is_encrypted,
-    realm_projection_security_state, reconcile_realm_projection, security_projection_for_scope_id,
-    strand_projection_security_state,
+    BottomCellHead, BottomCellInfo, LocalSealView, ProjectionMount, RealmProjectionFrame,
+    RealmStateReducer, encryption_profile_is_encrypted, realm_authority_root_controller_for_realm,
+    realm_authority_root_controller_from_events, realm_authority_root_value_for_realm,
+    realm_projection_is_encrypted, realm_projection_security_state, reconcile_realm_projection,
+    security_projection_for_scope_id, strand_projection_security_state,
 };
 /// The Signal plaintext family (`sync/signal.md` §1.1).
 ///
@@ -177,7 +177,7 @@ pub use signal::{
     PresenceObservation, PresenceProjection, PresenceStatus, SIGNAL_PLAINTEXT_KIND_CALL,
     SIGNAL_PLAINTEXT_KIND_PRESENCE, SignalDecryptor, SignalPlaintext, SignalReceiver,
     SignalSenderKeyResolver, VerifiedSignalSenderAuthority, VerifiedSignalSenderKey,
-    aggregate_presence_states, live_signal_projection_key,
+    admit_signal_governance, aggregate_presence_states, live_signal_projection_key,
 };
 pub use signal_message_stream::{
     MessageStreamApplyOutcome, MessageStreamAuthorizer, MessageStreamIgnoreReason,
