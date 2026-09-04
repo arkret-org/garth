@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::protocol::models::{
-    AgentSidecarDisplayMode, AgentSidecarExchangeOrigin, AgentSidecarExchangeProjection,
-    AgentSidecarProjectionProvenance, AgentSidecarViewState,
+    AgentSidecarDisplayMode, AgentSidecarExchangeProjection, AgentSidecarProjectionProvenance,
+    AgentSidecarViewState,
 };
 use crate::protocol::{EventId, RealmId, Result, StrandId};
 
@@ -119,9 +119,9 @@ pub fn merge_sidecar_timeline<'a, T: Clone>(
         .or_else(|| shared.first().map(|event| event.track_name.as_str()));
     let mut echo_order = BTreeMap::<String, EchoOrder>::new();
     for exchange in exchanges {
-        if exchange.origin != AgentSidecarExchangeOrigin::SourceTrackRouted
-            || track_name.is_some_and(|track| exchange.source_track_ref.track_name != track)
-        {
+        // The v1 exchange profile fixes source-track routed origin, so the
+        // projection carries no `origin` member to filter on.
+        if track_name.is_some_and(|track| exchange.source_track_ref.track_name != track) {
             continue;
         }
         let order = EchoOrder {
@@ -266,8 +266,8 @@ fn push_private<T: Clone>(
 #[cfg(test)]
 mod tests {
     use crate::protocol::models::{
-        AgentSidecarExchangeCompletionPolicy, AgentSidecarExchangeFoldedFrontier,
-        AgentSidecarExchangeId, AgentSidecarExchangeProjectionSchema, AgentSidecarExchangeStatus,
+        AgentSidecarExchangeFoldedFrontier, AgentSidecarExchangeId,
+        AgentSidecarExchangeProjectionSchema, AgentSidecarExchangeStatus,
         AgentSidecarSourceTrackRef, agent_sidecar_exchange_event_set_digest,
     };
     use crate::protocol::{AccountId, DidCoreId, Hlc, NonEmptyString, SidecarId};
@@ -304,7 +304,6 @@ mod tests {
             ),
             sidecar_id: SidecarId::from_event_id(&event_id("32")),
             exchange_id: AgentSidecarExchangeId::new("Abcdefghijklmnopqrstuv").unwrap(),
-            origin: AgentSidecarExchangeOrigin::SourceTrackRouted,
             source_track_ref: AgentSidecarSourceTrackRef {
                 realm_id: RealmId::new(
                     "ak:realm:AWk_ywNSTc6WhrGkRSaK84HThnFXKBAy3vQ_RLJZ4kCY".to_owned(),
@@ -317,7 +316,6 @@ mod tests {
             source_hlc: Hlc::new("01970e589d21-0001-a13f9c2e").unwrap(),
             client_order_key: NonEmptyString::new("device-1-1").unwrap(),
             addressed_agent_ids: vec![addressed_agent.clone()],
-            completion_policy: AgentSidecarExchangeCompletionPolicy::Coordinator,
             coordinator_agent_id: addressed_agent,
             coordinator_assignment_event_id: private_event.clone(),
             participating_agent_ids: Vec::new(),

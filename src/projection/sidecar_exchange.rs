@@ -16,12 +16,11 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::protocol::models::{
-    AgentSidecarEventExchangeBinding, AgentSidecarExchangeBindingRole,
-    AgentSidecarExchangeCompletionPolicy, AgentSidecarExchangeControl,
+    AgentSidecarEventExchangeBinding, AgentSidecarExchangeBindingRole, AgentSidecarExchangeControl,
     AgentSidecarExchangeControlAction, AgentSidecarExchangeFoldedFrontier, AgentSidecarExchangeId,
-    AgentSidecarExchangeOrigin, AgentSidecarExchangeProjection,
-    AgentSidecarExchangeProjectionSchema, AgentSidecarExchangeRequestContext,
-    AgentSidecarExchangeStatus, agent_sidecar_exchange_event_set_digest,
+    AgentSidecarExchangeProjection, AgentSidecarExchangeProjectionSchema,
+    AgentSidecarExchangeRequestContext, AgentSidecarExchangeStatus,
+    agent_sidecar_exchange_event_set_digest,
 };
 use crate::protocol::{
     AccountId, DidCoreId, Error, EventId, Hlc, NonEmptyString, Result, SidecarId,
@@ -435,13 +434,11 @@ pub fn fold_sidecar_exchange(
         controller_account_id: scope.controller_account_id.clone(),
         sidecar_id: scope.sidecar_id.clone(),
         exchange_id: exchange_id.clone(),
-        origin: AgentSidecarExchangeOrigin::SourceTrackRouted,
         source_track_ref: context.source_track_ref.clone(),
         source_event_id: context.source_event_id.clone(),
         source_hlc: context.source_hlc.clone(),
         client_order_key: context.client_order_key.clone(),
         addressed_agent_ids: context.addressed_agent_ids.clone(),
-        completion_policy: AgentSidecarExchangeCompletionPolicy::Coordinator,
         coordinator_agent_id: coordinator,
         coordinator_assignment_event_id,
         participating_agent_ids: participating.into_iter().collect(),
@@ -567,6 +564,7 @@ fn build_frontier(
 
 #[cfg(test)]
 mod tests {
+    use crate::protocol::models::AgentSidecarExchangeCompletionPolicy;
     use crate::protocol::models::AgentSidecarExchangeControlSchema;
     use crate::protocol::models::AgentSidecarSourceTrackRef;
     use crate::protocol::{RealmId, StrandId};

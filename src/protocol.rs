@@ -134,16 +134,18 @@ pub(crate) mod identifiers {
 pub(crate) mod models {
     pub(crate) use arkret_models_collaboration::agent_operations::{
         AgentSidecarDisplayMode, AgentSidecarEventExchangeBinding, AgentSidecarExchangeBindingRole,
-        AgentSidecarExchangeCompletionPolicy, AgentSidecarExchangeControl,
-        AgentSidecarExchangeControlAction, AgentSidecarExchangeFoldedFrontier,
-        AgentSidecarExchangeId, AgentSidecarExchangeOrigin, AgentSidecarExchangeProjection,
+        AgentSidecarExchangeControl, AgentSidecarExchangeControlAction,
+        AgentSidecarExchangeFoldedFrontier, AgentSidecarExchangeId, AgentSidecarExchangeProjection,
         AgentSidecarExchangeProjectionSchema, AgentSidecarExchangeRequestContext,
         AgentSidecarExchangeStatus, AgentSidecarProjectionProvenance, AgentSidecarViewState,
         agent_sidecar_exchange_event_set_digest,
     };
+    // The v1 exchange profile fixes the completion policy, so only a fixture
+    // that authors a request context still names the enum.
     #[cfg(test)]
     pub(crate) use arkret_models_collaboration::agent_operations::{
-        AgentSidecarExchangeControlSchema, AgentSidecarSourceTrackRef,
+        AgentSidecarExchangeCompletionPolicy, AgentSidecarExchangeControlSchema,
+        AgentSidecarSourceTrackRef,
     };
 }
 
