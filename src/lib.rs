@@ -93,6 +93,7 @@ pub use executor::{Executor, HostClock, SystemClock};
 pub use facade::ArkretClient;
 pub use history_candidates::{
     HistoryCandidateEngine, HistoryCandidateStateStore, MemoryHistoryCandidateStateStore,
+    StagedHistoryCandidate, persist_staged_history_candidate_secret,
 };
 pub use history_outbox::{
     DurableHistorySourceAttempt, DurableStagedHistoryRecord, HistorySourceAttemptBundle,

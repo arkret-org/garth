@@ -50,6 +50,56 @@ impl HistoryCandidateStateStore for MemoryHistoryCandidateStateStore {
     }
 }
 
+/// The durable half of one history-candidate admission.
+///
+/// Bytes must be durable before the ledger names them, so a crash can leave
+/// orphan bytes (harmless, reclaimed by the next
+/// [`HistoryCandidateEngine::stage_external_candidate`]) but never a resident
+/// row without bytes. Splitting the admission this way is what keeps the async
+/// secret write out of the caller's state-store borrow.
+#[derive(Clone, Debug)]
+#[must_use = "a staged candidate only takes effect once it is committed"]
+pub struct StagedHistoryCandidate {
+    attribution: HistoryCandidateOriginAttribution,
+    now: DateTime<Utc>,
+    secret_key: String,
+    secret_write_required: bool,
+}
+
+impl StagedHistoryCandidate {
+    /// Whether the exact secret bytes still have to be written before the
+    /// admission may be committed.
+    pub fn secret_write_required(&self) -> bool {
+        self.secret_write_required
+    }
+}
+
+/// Make a staged candidate's secret bytes durable.
+///
+/// Deliberately a free function rather than a method: the engine borrows the
+/// caller's state store, and this is the one step that must run with that
+/// borrow released.
+pub async fn persist_staged_history_candidate_secret(
+    secure_store: &dyn SecureKeyStore,
+    staged: &StagedHistoryCandidate,
+    secret: &[u8],
+) -> Result<()> {
+    if !staged.secret_write_required {
+        return Ok(());
+    }
+    secure_store
+        .put_secret(
+            &staged.secret_key,
+            secret,
+            PutSecretOptions {
+                durability: SecretDurability::DurableBeforeReturn,
+                class: SecretClass::MlsSecret,
+            },
+        )
+        .await?;
+    Ok(())
+}
+
 pub struct HistoryCandidateEngine<S> {
     store: S,
 }
@@ -78,20 +128,24 @@ where
             .cloned())
     }
 
-    /// Durably admit one externally received history secret as an
-    /// `external_candidate`.
+    /// Plan one externally received history secret without touching the host.
     ///
-    /// Returns whether the candidate is resident afterwards. Bytes are written
-    /// before the ledger and evicted after it, so a crash can leave orphan
-    /// bytes (harmless, overwritten by the identical refetch) but never a
-    /// resident row without bytes.
-    pub async fn receive_external_candidate(
-        &mut self,
+    /// This is the borrow-bound half of an admission: it reads the ledger,
+    /// checks the bytes against `candidate_digest`, and reports whether the
+    /// secret still has to be made durable. It performs no `await`, so a host
+    /// whose state store is guarded by a lock can run it under that guard.
+    ///
+    /// The returned value is the only way to reach
+    /// [`Self::commit_staged_candidate`]; the durable write in between is
+    /// [`persist_staged_history_candidate_secret`], a free function precisely
+    /// so no store borrow can be held across it.
+    pub fn stage_external_candidate(
+        &self,
         secure_store: &dyn SecureKeyStore,
         secret: &[u8],
         attribution: HistoryCandidateOriginAttribution,
         now: DateTime<Utc>,
-    ) -> Result<bool> {
+    ) -> Result<StagedHistoryCandidate> {
         self.reconcile_candidate_secrets(secure_store)?;
         let material_key = attribution.material_key().clone();
         material_key.validate()?;
@@ -102,27 +156,52 @@ where
             ));
         }
         let secret_key = history_candidate_secret_key(&material_key)?;
-        if let Some(stored) = secure_store.get_secret_bytes(&secret_key)?
+        let stored = secure_store.get_secret_bytes(&secret_key)?;
+        if let Some(stored) = &stored
             && stored.as_slice() != secret
         {
             return Err(Error::Protocol(
                 "history candidate digest collision or secure-store mismatch".to_owned(),
             ));
         }
+        // Probe the admission on a copy so the ledger decision that governs the
+        // durable write is the same one the commit will make, without publishing
+        // anything yet. `admit_received_candidate` is a pure function of the
+        // ledger, the attribution and `now`, so the copy answers exactly what the
+        // commit would.
+        let plan = self
+            .store
+            .load_history_candidate_state()?
+            .admit_received_candidate(&attribution, now)?;
+        Ok(StagedHistoryCandidate {
+            attribution,
+            now,
+            secret_key,
+            secret_write_required: plan.store.is_some() && stored.is_none(),
+        })
+    }
 
+    /// Publish a staged admission: attribute it, enforce every ledger cap, and
+    /// apply the byte-store side effects the plan names.
+    ///
+    /// Returns whether the candidate is resident afterwards. The ledger is read
+    /// and written under one borrow, so a concurrent admission cannot be lost;
+    /// a resident row is refused if its bytes are not already durable, which is
+    /// the invariant [`persist_staged_history_candidate_secret`] establishes.
+    pub fn commit_staged_candidate(
+        &mut self,
+        secure_store: &dyn SecureKeyStore,
+        staged: StagedHistoryCandidate,
+    ) -> Result<bool> {
         let mut ledger = self.store.load_history_candidate_state()?;
-        let plan = ledger.admit_received_candidate(&attribution, now)?;
+        let plan = ledger.admit_received_candidate(&staged.attribution, staged.now)?;
         if let Some(stored) = &plan.store {
-            secure_store
-                .put_secret(
-                    &history_candidate_secret_key(stored)?,
-                    secret,
-                    PutSecretOptions {
-                        durability: SecretDurability::DurableBeforeReturn,
-                        class: SecretClass::MlsSecret,
-                    },
-                )
-                .await?;
+            let secret_key = history_candidate_secret_key(stored)?;
+            if secure_store.get_secret_bytes(&secret_key)?.is_none() {
+                return Err(Error::Protocol(
+                    "staged history candidate bytes are no longer durable".to_owned(),
+                ));
+            }
         }
         self.store.save_history_candidate_state(&ledger)?;
         for evicted in &plan.evict {
@@ -255,6 +334,20 @@ mod tests {
         }
     }
 
+    /// The three phases in the order every host must apply them, so the tests
+    /// exercise the same sequence the production callers do.
+    async fn receive<S: HistoryCandidateStateStore>(
+        engine: &mut HistoryCandidateEngine<S>,
+        secure_store: &dyn SecureKeyStore,
+        secret: &[u8],
+        attribution: HistoryCandidateOriginAttribution,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let staged = engine.stage_external_candidate(secure_store, secret, attribution, now)?;
+        persist_staged_history_candidate_secret(secure_store, &staged, secret).await?;
+        engine.commit_staged_candidate(secure_store, staged)
+    }
+
     #[tokio::test]
     async fn candidate_store_is_event_local_and_does_not_promote_epoch_winner() {
         let secret_store = crate::MemorySecureKeyStore::new();
@@ -265,8 +358,7 @@ mod tests {
         let key = attribution.material_key().clone();
         let digest = key.candidate_digest.clone();
         assert!(
-            engine
-                .receive_external_candidate(&secret_store, &secret, attribution, now)
+            receive(&mut engine, &secret_store, &secret, attribution, now)
                 .await
                 .unwrap()
         );
@@ -344,10 +436,15 @@ mod tests {
         let attribution = attribution(&secret, now);
 
         assert!(
-            engine
-                .receive_external_candidate(&secret_store, &secret, attribution.clone(), now)
-                .await
-                .is_err()
+            receive(
+                &mut engine,
+                &secret_store,
+                &secret,
+                attribution.clone(),
+                now
+            )
+            .await
+            .is_err()
         );
         assert_eq!(
             secret_store
@@ -357,8 +454,7 @@ mod tests {
             1
         );
         assert!(
-            engine
-                .receive_external_candidate(&secret_store, &secret, attribution, now)
+            receive(&mut engine, &secret_store, &secret, attribution, now)
                 .await
                 .unwrap()
         );
