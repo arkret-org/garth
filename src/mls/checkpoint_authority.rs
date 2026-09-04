@@ -16,7 +16,7 @@ use serde_json::Value;
 
 use crate::Result;
 
-pub fn verified_checkpoint_actor_has_realm_action(
+pub async fn verified_checkpoint_actor_has_realm_action(
     checkpoint: &MlsGovernanceVerificationCheckpoint,
     basis: &SealBasis,
     actor: &ActorId,
@@ -49,7 +49,8 @@ pub fn verified_checkpoint_actor_has_realm_action(
             digest_suite,
             &|parent_id| audits.resolve(parent_id),
         ).map_err(|error| error.to_string()),
-    )?;
+    )
+    .await?;
     let root = values.get(&root_cell).and_then(|value| {
         serde_json::from_value::<arkret_policy::realm_bootstrap::RealmAuthorityRootValue>(
             value.clone(),

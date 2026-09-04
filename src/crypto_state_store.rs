@@ -205,7 +205,7 @@ where
                 "verified MLS frontier target basis changed under its checkpoint".to_owned(),
             ));
         }
-        let accepted = verified_accepted_artifact(&frontier.target_checkpoint, event_id)?;
+        let accepted = verified_accepted_artifact(&frontier.target_checkpoint, event_id).await?;
         self.consume_verified(accepted, applicator).await
     }
 
@@ -329,26 +329,30 @@ struct VerifiedAcceptedMlsArtifact {
     application: AcceptedMlsApplication,
 }
 
-fn verified_accepted_artifact(
+async fn verified_accepted_artifact(
     checkpoint: &MlsGovernanceVerificationCheckpoint,
     event_id: &EventId,
 ) -> Result<VerifiedAcceptedMlsArtifact> {
-    winning_accepted_artifact(checkpoint, event_id)?.ok_or_else(|| {
-        Error::Protocol("MLS artifact is not a checkpoint-winning artifact".to_owned())
-    })
+    winning_accepted_artifact(checkpoint, event_id)
+        .await?
+        .ok_or_else(|| {
+            Error::Protocol("MLS artifact is not a checkpoint-winning artifact".to_owned())
+        })
 }
 
 /// Returns whether an accepted MLS Event is executable at the checkpoint's
 /// winning epoch. Historical transitions remain part of the verified closure,
 /// but MUST NOT be reapplied as if they were the current winner.
-pub fn is_checkpoint_winning_accepted_mls_artifact(
+pub async fn is_checkpoint_winning_accepted_mls_artifact(
     checkpoint: &MlsGovernanceVerificationCheckpoint,
     event_id: &EventId,
 ) -> Result<bool> {
-    Ok(winning_accepted_artifact(checkpoint, event_id)?.is_some())
+    Ok(winning_accepted_artifact(checkpoint, event_id)
+        .await?
+        .is_some())
 }
 
-fn winning_accepted_artifact(
+async fn winning_accepted_artifact(
     checkpoint: &MlsGovernanceVerificationCheckpoint,
     event_id: &EventId,
 ) -> Result<Option<VerifiedAcceptedMlsArtifact>> {
@@ -422,7 +426,8 @@ fn winning_accepted_artifact(
             arkret_schema::project_registered_cell_writes(event, digest_suite)
                 .map_err(|error| error.to_string())
         },
-    )?;
+    )
+    .await?;
     let transition_ref = winning
         .get("transition_ref")
         .and_then(serde_json::Value::as_str)
