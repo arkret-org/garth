@@ -19,6 +19,8 @@
 //! envelope alone is decided here.
 
 use std::collections::BTreeMap;
+use std::future::Future;
+use std::pin::Pin;
 
 use chrono::{DateTime, Utc};
 #[cfg(test)]
@@ -343,12 +345,18 @@ where
 /// nonce counter violates its encoding or replay domain. The AAD is the
 /// canonical immutable header bytes; [`SignalReceiver`] has already checked
 /// their digest against `encrypted_payload.aad_digest` before this is called.
+#[cfg(not(target_arch = "wasm32"))]
+pub type BoxSignalDecryptFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<u8>>> + Send + 'a>>;
+
+#[cfg(target_arch = "wasm32")]
+pub type BoxSignalDecryptFuture<'a> = Pin<Box<dyn Future<Output = Result<Vec<u8>>> + 'a>>;
+
 pub trait SignalDecryptor: MaybeSendSync {
-    fn open(
-        &self,
-        envelope: &SignalEnvelope,
-        verified_sender: &VerifiedSignalSenderKey,
-    ) -> Result<Vec<u8>>;
+    fn open<'a>(
+        &'a self,
+        envelope: &'a SignalEnvelope,
+        verified_sender: &'a VerifiedSignalSenderKey,
+    ) -> BoxSignalDecryptFuture<'a>;
 }
 
 /// Decrypted, sender-bound Signal payload.
@@ -502,7 +510,7 @@ impl SignalReceiver {
     /// plaintext shape; and finally the strictly-increasing,
     /// non-contiguous `(sender_device_id, scope_ref)` sequence high-water rule
     /// of `signal.md` §2.
-    pub fn accept(
+    pub async fn accept(
         &mut self,
         envelope: &SignalEnvelope,
         resolver: &dyn SignalSenderKeyResolver,
@@ -527,7 +535,7 @@ impl SignalReceiver {
                 "signal_exact_envelope_replay: envelope_digest was already delivered".to_owned(),
             ));
         }
-        let plaintext = decryptor.open(envelope, &verified_key)?;
+        let plaintext = decryptor.open(envelope, &verified_key).await?;
         let parsed = SignalPlaintext::parse(
             envelope,
             &envelope.sender_actor_id,
@@ -837,31 +845,33 @@ mod tests {
     struct FixedDecryptor(Vec<u8>);
 
     impl SignalDecryptor for FixedDecryptor {
-        fn open(
-            &self,
-            _envelope: &SignalEnvelope,
-            _sender: &VerifiedSignalSenderKey,
-        ) -> Result<Vec<u8>> {
-            Ok(self.0.clone())
+        fn open<'a>(
+            &'a self,
+            _envelope: &'a SignalEnvelope,
+            _sender: &'a VerifiedSignalSenderKey,
+        ) -> BoxSignalDecryptFuture<'a> {
+            Box::pin(async move { Ok(self.0.clone()) })
         }
     }
 
     struct RefusingDecryptor;
 
     impl SignalDecryptor for RefusingDecryptor {
-        fn open(
-            &self,
-            _envelope: &SignalEnvelope,
-            _sender: &VerifiedSignalSenderKey,
-        ) -> Result<Vec<u8>> {
-            Err(Error::Protocol(
-                "aead_profile is not the group suite".to_owned(),
-            ))
+        fn open<'a>(
+            &'a self,
+            _envelope: &'a SignalEnvelope,
+            _sender: &'a VerifiedSignalSenderKey,
+        ) -> BoxSignalDecryptFuture<'a> {
+            Box::pin(async move {
+                Err(Error::Protocol(
+                    "aead_profile is not the group suite".to_owned(),
+                ))
+            })
         }
     }
 
-    #[test]
-    fn hidden_moderation_class_is_rejected_without_advancing_high_water() {
+    #[tokio::test]
+    async fn hidden_moderation_class_is_rejected_without_advancing_high_water() {
         let device_id = device("000000000099");
         let moderation = json!({
             "kind": "ak.call.signal",
@@ -890,6 +900,7 @@ mod tests {
                     &FixedDecryptor(hidden_plaintext),
                     sent_at(),
                 )
+                .await
                 .is_err()
         );
 
@@ -914,6 +925,7 @@ mod tests {
                     &FixedDecryptor(honest_plaintext),
                     sent_at(),
                 )
+                .await
                 .is_ok()
         );
     }
@@ -1137,8 +1149,8 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn receiver_accepts_a_directory_evidence_key_end_to_end() {
+    #[tokio::test]
+    async fn receiver_accepts_a_directory_evidence_key_end_to_end() {
         let (envelope, public_key, plaintext) = signed_signal(
             device("000000000005"),
             presence_plaintext("online", 1),
@@ -1160,12 +1172,13 @@ mod tests {
         };
         let accepted = SignalReceiver::new()
             .accept(&envelope, &resolver, &FixedDecryptor(plaintext), sent_at())
+            .await
             .unwrap();
         assert_eq!(accepted.kind, SIGNAL_PLAINTEXT_KIND_PRESENCE);
     }
 
-    #[test]
-    fn unavailable_or_revoked_current_authority_does_not_advance_receive_state() {
+    #[tokio::test]
+    async fn unavailable_or_revoked_current_authority_does_not_advance_receive_state() {
         let (envelope, public_key, plaintext) = signed_signal(
             device("000000000005"),
             presence_plaintext("online", 99),
@@ -1180,6 +1193,7 @@ mod tests {
         assert!(
             receiver
                 .accept(&envelope, &revoked, &RefusingDecryptor, sent_at())
+                .await
                 .is_err()
         );
         assert!(receiver.sequence_high_waters.is_empty());
@@ -1196,12 +1210,13 @@ mod tests {
                     &FixedDecryptor(plaintext),
                     sent_at()
                 )
+                .await
                 .is_ok()
         );
     }
 
-    #[test]
-    fn receiver_accepts_a_signed_presence_signal_and_projects_the_plaintext() {
+    #[tokio::test]
+    async fn receiver_accepts_a_signed_presence_signal_and_projects_the_plaintext() {
         let (envelope, public_key, plaintext) = signed_signal(
             device("000000000005"),
             presence_plaintext("online", 1),
@@ -1217,6 +1232,7 @@ mod tests {
                 &FixedDecryptor(plaintext),
                 sent_at(),
             )
+            .await
             .unwrap();
 
         assert_eq!(accepted.kind, SIGNAL_PLAINTEXT_KIND_PRESENCE);
@@ -1229,8 +1245,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn receiver_accepts_a_profile_without_plaintext_actor_or_ttl() {
+    #[tokio::test]
+    async fn receiver_accepts_a_profile_without_plaintext_actor_or_ttl() {
         let plaintext_value = json!({
             "kind": "ak.message.stream",
             "payload_sequence": 2,
@@ -1265,6 +1281,7 @@ mod tests {
                 &FixedDecryptor(plaintext),
                 sent_at(),
             )
+            .await
             .unwrap();
 
         assert_eq!(accepted.actor_id, account_actor());
@@ -1272,8 +1289,8 @@ mod tests {
         assert_eq!(accepted.expires_at, envelope.expires_at);
     }
 
-    #[test]
-    fn receiver_rejects_a_signal_without_verified_sender_authority_evidence() {
+    #[tokio::test]
+    async fn receiver_rejects_a_signal_without_verified_sender_authority_evidence() {
         let (envelope, _public_key, plaintext) = signed_signal(
             device("000000000005"),
             presence_plaintext("online", 1),
@@ -1291,13 +1308,14 @@ mod tests {
                 &FixedDecryptor(plaintext),
                 sent_at(),
             )
+            .await
             .unwrap_err();
 
         assert!(format!("{error}").contains("exact-authority verified state"));
     }
 
-    #[test]
-    fn receiver_rejects_a_signal_signed_by_another_device_key() {
+    #[tokio::test]
+    async fn receiver_rejects_a_signal_signed_by_another_device_key() {
         let (envelope, _public_key, plaintext) = signed_signal(
             device("000000000005"),
             presence_plaintext("online", 1),
@@ -1321,12 +1339,13 @@ mod tests {
                     &FixedDecryptor(plaintext),
                     sent_at()
                 )
+                .await
                 .is_err()
         );
     }
 
-    #[test]
-    fn receiver_rejects_a_session_signal_past_the_class_ttl_ceiling() {
+    #[tokio::test]
+    async fn receiver_rejects_a_session_signal_past_the_class_ttl_ceiling() {
         // `session` tops out at 30 seconds; 120 is the cross-class hard cap.
         let (envelope, public_key, plaintext) = signed_signal(
             device("000000000005"),
@@ -1344,13 +1363,14 @@ mod tests {
                 &FixedDecryptor(plaintext),
                 sent_at(),
             )
+            .await
             .unwrap_err();
 
         assert!(format!("{error}").contains("signal_ttl_out_of_range"));
     }
 
-    #[test]
-    fn receiver_rejects_an_expired_signal() {
+    #[tokio::test]
+    async fn receiver_rejects_an_expired_signal() {
         let (envelope, public_key, plaintext) = signed_signal(
             device("000000000005"),
             presence_plaintext("online", 1),
@@ -1367,13 +1387,14 @@ mod tests {
                 &FixedDecryptor(plaintext),
                 sent_at() + Duration::seconds(30),
             )
+            .await
             .unwrap_err();
 
         assert!(format!("{error}").contains("already expired"));
     }
 
-    #[test]
-    fn receiver_deduplicates_the_sender_scope_sequence_triple() {
+    #[tokio::test]
+    async fn receiver_deduplicates_the_sender_scope_sequence_triple() {
         let (envelope, public_key, plaintext) = signed_signal(
             device("000000000005"),
             presence_plaintext("online", 1),
@@ -1390,17 +1411,19 @@ mod tests {
                 &FixedDecryptor(plaintext.clone()),
                 sent_at(),
             )
+            .await
             .unwrap();
 
         let error = receiver
             .accept(&envelope, &resolver, &FixedDecryptor(plaintext), sent_at())
+            .await
             .unwrap_err();
 
         assert!(format!("{error}").contains("signal_exact_envelope_replay"));
     }
 
-    #[test]
-    fn agent_sequence_continues_for_the_same_key_and_restarts_for_a_new_key() {
+    #[tokio::test]
+    async fn agent_sequence_continues_for_the_same_key_and_restarts_for_a_new_key() {
         let mut receiver = SignalReceiver::new();
         let (old, old_key, old_plaintext) = signed_agent_signal("online", 100, [51; 32], 1);
         receiver
@@ -1410,6 +1433,7 @@ mod tests {
                 &FixedDecryptor(old_plaintext),
                 sent_at(),
             )
+            .await
             .unwrap();
 
         let (same_key_regression, _, same_key_plaintext) =
@@ -1421,6 +1445,7 @@ mod tests {
                 &FixedDecryptor(same_key_plaintext),
                 sent_at(),
             )
+            .await
             .unwrap_err();
         assert!(
             format!("{error}").contains("signal_payload_sequence_stale"),
@@ -1436,12 +1461,13 @@ mod tests {
                 &FixedDecryptor(replacement_plaintext),
                 sent_at(),
             )
+            .await
             .unwrap();
         assert_eq!(receiver.sequence_high_waters.len(), 2);
     }
 
-    #[test]
-    fn receiver_sequences_are_isolated_between_same_principal_station_accounts() {
+    #[tokio::test]
+    async fn receiver_sequences_are_isolated_between_same_principal_station_accounts() {
         let seed = [19; 32];
         let (first, public_key, first_plaintext) = signed_signal(
             device("000000000005"),
@@ -1473,6 +1499,7 @@ mod tests {
                 &FixedDecryptor(first_plaintext),
                 sent_at(),
             )
+            .await
             .unwrap();
         receiver
             .accept(
@@ -1481,12 +1508,13 @@ mod tests {
                 &FixedDecryptor(second_plaintext),
                 sent_at(),
             )
+            .await
             .unwrap();
         assert_eq!(receiver.sequence_high_waters.len(), 2);
     }
 
-    #[test]
-    fn receiver_accepts_forward_gaps_and_rejects_stale_new_emissions() {
+    #[tokio::test]
+    async fn receiver_accepts_forward_gaps_and_rejects_stale_new_emissions() {
         let mut receiver = SignalReceiver::new();
         for (sequence, state, seed) in [(7, "online", [31u8; 32]), (1024, "idle", [32u8; 32])] {
             let (envelope, public_key, plaintext) = signed_signal(
@@ -1503,6 +1531,7 @@ mod tests {
                     &FixedDecryptor(plaintext),
                     sent_at(),
                 )
+                .await
                 .unwrap();
             assert_eq!(accepted.payload_sequence, sequence);
         }
@@ -1523,6 +1552,7 @@ mod tests {
                 &FixedDecryptor(plaintext),
                 sent_at(),
             )
+            .await
             .unwrap_err();
         assert!(
             format!("{error}").contains("signal_payload_sequence_stale"),
@@ -1530,8 +1560,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn receiver_refuses_a_plaintext_that_claims_another_actor() {
+    #[tokio::test]
+    async fn receiver_refuses_a_plaintext_that_claims_another_actor() {
         let mut foreign = presence_plaintext("online", 1);
         foreign["actor_id"] = json!(ActorId::account(AccountId::new(
             DidCoreId::new("ak:did_core:webvh:z6mkfixture:mallory.example").unwrap(),
@@ -1553,13 +1583,14 @@ mod tests {
                 &FixedDecryptor(canonical::canonical_json_bytes(&foreign).unwrap()),
                 sent_at(),
             )
+            .await
             .unwrap_err();
 
         assert!(format!("{error}").contains("must equal the envelope sender_actor_id"));
     }
 
-    #[test]
-    fn receiver_propagates_a_decryptor_that_fails_the_ciphersuite_check_closed() {
+    #[tokio::test]
+    async fn receiver_propagates_a_decryptor_that_fails_the_ciphersuite_check_closed() {
         let (envelope, public_key, _) = signed_signal(
             device("000000000005"),
             presence_plaintext("online", 1),
@@ -1576,13 +1607,14 @@ mod tests {
                 &RefusingDecryptor,
                 sent_at(),
             )
+            .await
             .unwrap_err();
 
         assert!(format!("{error}").contains("group suite"));
     }
 
-    #[test]
-    fn presence_projection_aggregates_devices_and_expires_them() {
+    #[tokio::test]
+    async fn presence_projection_aggregates_devices_and_expires_them() {
         let mut projection = PresenceProjection::new();
         for (suffix, state, seed) in [
             ("000000000005", "online", [21u8; 32]),
@@ -1602,6 +1634,7 @@ mod tests {
                     &FixedDecryptor(plaintext),
                     sent_at(),
                 )
+                .await
                 .unwrap();
             projection.apply(&accepted).unwrap();
         }
@@ -1621,8 +1654,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn presence_projection_keeps_only_the_current_agent_runtime_observation() {
+    #[tokio::test]
+    async fn presence_projection_keeps_only_the_current_agent_runtime_observation() {
         let (first_envelope, first_key, first_plaintext) =
             signed_agent_signal("dnd", 40, [61; 32], 1);
         let mut first = SignalReceiver::new()
@@ -1632,6 +1665,7 @@ mod tests {
                 &FixedDecryptor(first_plaintext),
                 sent_at(),
             )
+            .await
             .unwrap();
         let (second_envelope, second_key, second_plaintext) =
             signed_agent_signal("online", 0, [62; 32], 2);
@@ -1642,6 +1676,7 @@ mod tests {
                 &FixedDecryptor(second_plaintext),
                 sent_at(),
             )
+            .await
             .unwrap();
         first.expires_at = sent_at() + Duration::seconds(30);
         second.expires_at = sent_at() + Duration::seconds(30);
@@ -1659,8 +1694,8 @@ mod tests {
         );
     }
 
-    #[test]
-    fn presence_projection_rejects_a_regressed_sequence_and_an_unknown_state() {
+    #[tokio::test]
+    async fn presence_projection_rejects_a_regressed_sequence_and_an_unknown_state() {
         let device_id = device("000000000005");
         let mut projection = PresenceProjection::new();
         let (envelope, public_key, plaintext) = signed_signal(
@@ -1677,6 +1712,7 @@ mod tests {
                 &FixedDecryptor(plaintext),
                 sent_at(),
             )
+            .await
             .unwrap();
         projection.apply(&accepted).unwrap();
 
@@ -1694,6 +1730,7 @@ mod tests {
                 &FixedDecryptor(older_plaintext),
                 sent_at(),
             )
+            .await
             .unwrap();
         assert!(projection.apply(&older).is_err());
         assert_eq!(
@@ -1720,6 +1757,7 @@ mod tests {
                 &FixedDecryptor(unknown_plaintext),
                 sent_at(),
             )
+            .await
             .unwrap_err();
         assert!(format!("{error}").contains("schema_violation"), "{error}");
     }

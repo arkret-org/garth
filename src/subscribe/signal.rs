@@ -274,12 +274,16 @@ impl SignalStreamDriver {
             match frame {
                 SignalStreamFrame::Signal { envelope } => {
                     handlers.sink.prepare_admission(&envelope).await;
-                    match self.receiver.accept(
-                        &envelope,
-                        handlers.resolver,
-                        handlers.decryptor,
-                        clock.now(),
-                    ) {
+                    match self
+                        .receiver
+                        .accept(
+                            &envelope,
+                            handlers.resolver,
+                            handlers.decryptor,
+                            clock.now(),
+                        )
+                        .await
+                    {
                         Ok(plaintext) => handlers
                             .sink
                             .deliver(&envelope, plaintext)
@@ -502,12 +506,12 @@ mod tests {
     struct FixedDecryptor(Vec<u8>);
 
     impl SignalDecryptor for FixedDecryptor {
-        fn open(
-            &self,
-            _envelope: &SignalEnvelope,
-            _sender: &crate::signal::VerifiedSignalSenderKey,
-        ) -> Result<Vec<u8>> {
-            Ok(self.0.clone())
+        fn open<'a>(
+            &'a self,
+            _envelope: &'a SignalEnvelope,
+            _sender: &'a crate::signal::VerifiedSignalSenderKey,
+        ) -> crate::signal::BoxSignalDecryptFuture<'a> {
+            Box::pin(async move { Ok(self.0.clone()) })
         }
     }
 
