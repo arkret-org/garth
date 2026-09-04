@@ -666,7 +666,7 @@ impl PresenceProjection {
             entry.retain(|key, _| {
                 serde_json::from_str::<SignalSequenceEndpoint>(key).is_ok_and(|endpoint| {
                     !matches!(endpoint, SignalSequenceEndpoint::AgentKey { .. })
-                        || &endpoint == &plaintext.sender_endpoint
+                        || endpoint == plaintext.sender_endpoint
                 })
             });
         }
@@ -1131,7 +1131,7 @@ mod tests {
         );
         envelope.sender_device_id = None;
         envelope.encrypted_payload.ciphertext =
-            arkret_canonical::base64url_encode(&[emission_marker; 16]);
+            arkret_canonical::base64url_encode([emission_marker; 16]);
         envelope.encrypted_payload.aad_digest = envelope.expected_aad_digest().unwrap();
         envelope.proof.envelope_digest = envelope.envelope_digest().unwrap();
         envelope.proof.jws = sign_ed25519_detached_jws(
