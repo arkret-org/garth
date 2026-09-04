@@ -154,6 +154,11 @@ impl SendQueue {
     /// normalizes it to `Failed` with an immediate retry; the resend is safe
     /// because submission is idempotent on `event_id` / transaction identity
     /// (operations-sync.md §events.submit dedup).
+    ///
+    /// Restore is a pure, clock-free function of the snapshot: `updated_at`
+    /// keeps the instant of the last real lifecycle call, so decoding the same
+    /// bytes twice yields byte-identical state. Every method that does stamp a
+    /// new instant takes it as `now` from the host's [`crate::HostClock`].
     pub fn from_snapshot(snapshot: SendQueueSnapshot) -> Result<Self> {
         if snapshot.items.len() > MAX_SEND_QUEUE_ITEMS {
             return Err(Error::Protocol(format!(
@@ -194,7 +199,6 @@ impl SendQueue {
             if item.status == SendQueueStatus::Sending {
                 item.status = SendQueueStatus::Failed;
                 item.next_retry_at = None;
-                item.updated_at = Utc::now();
                 item.local_echo.status = item.status;
             }
             queue.order.push_back(item.transaction_id.clone());
@@ -244,6 +248,7 @@ impl SendQueue {
         &mut self,
         transaction_id: &str,
         record: QueuedRecord,
+        now: DateTime<Utc>,
     ) -> Result<SendQueueItem> {
         record.validate()?;
         let existing = self.items.get(transaction_id).ok_or_else(|| {
@@ -268,7 +273,7 @@ impl SendQueue {
         item.payload_digest = queue_payload_digest(&item.realm_id, &item.record, &item.depends_on)?;
         item.status = SendQueueStatus::Queued;
         item.next_retry_at = None;
-        item.updated_at = Utc::now();
+        item.updated_at = now;
         item.local_echo.status = item.status;
         Ok(item.clone())
     }
@@ -280,6 +285,7 @@ impl SendQueue {
         realm_id: RealmId,
         record: QueuedRecord,
         depends_on: Vec<String>,
+        now: DateTime<Utc>,
     ) -> Result<SendQueueItem> {
         record.validate()?;
         validate_record_scope(&realm_id, &record)?;
@@ -302,7 +308,6 @@ impl SendQueue {
             )));
         }
 
-        let now = Utc::now();
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.saturating_add(1);
         let local_echo = LocalEcho {
@@ -349,6 +354,7 @@ impl SendQueue {
         realm_id: RealmId,
         record: QueuedRecord,
         depends_on: Vec<String>,
+        now: DateTime<Utc>,
     ) -> Result<SendQueueItem> {
         let local_operation_id = self
             .get(transaction_id)
@@ -366,7 +372,7 @@ impl SendQueue {
             let previous = self.item_mut(transaction_id)?;
             previous.status = SendQueueStatus::Superseded;
             previous.next_retry_at = None;
-            previous.updated_at = Utc::now();
+            previous.updated_at = now;
             previous.local_echo.status = previous.status;
         }
         self.enqueue(
@@ -374,6 +380,7 @@ impl SendQueue {
             realm_id,
             record,
             depends_on,
+            now,
         )?;
         let item = self.item_mut(&replacement_transaction_id)?;
         item.local_operation_id = local_operation_id;
@@ -493,12 +500,12 @@ impl SendQueue {
     }
 
     /// Mark an item as actively sending.
-    pub fn mark_sending(&mut self, transaction_id: &str) -> Result<()> {
+    pub fn mark_sending(&mut self, transaction_id: &str, now: DateTime<Utc>) -> Result<()> {
         let item = self.item_mut(transaction_id)?;
         item.status = SendQueueStatus::Sending;
         item.attempts = item.attempts.saturating_add(1);
         item.next_retry_at = None;
-        item.updated_at = Utc::now();
+        item.updated_at = now;
         item.local_echo.status = item.status;
         Ok(())
     }
@@ -512,6 +519,7 @@ impl SendQueue {
         &mut self,
         transaction_id: &str,
         lease: AuthorizationLease,
+        now: DateTime<Utc>,
     ) -> Result<()> {
         lease.validate_structural()?;
         let item = self.item_mut(transaction_id)?;
@@ -522,7 +530,7 @@ impl SendQueue {
             ));
         }
         item.authorization_lease = Some(lease);
-        item.updated_at = Utc::now();
+        item.updated_at = now;
         Ok(())
     }
 
@@ -540,6 +548,7 @@ impl SendQueue {
         transaction_id: &str,
         remote_event_id: EventId,
         ingress_receipts: Vec<IngressReceipt>,
+        now: DateTime<Utc>,
     ) -> Result<()> {
         let expects_receipt = self
             .get(transaction_id)
@@ -560,7 +569,7 @@ impl SendQueue {
         item.status = SendQueueStatus::Sent;
         item.remote_event_id = Some(remote_event_id);
         item.next_retry_at = None;
-        item.updated_at = Utc::now();
+        item.updated_at = now;
         item.local_echo.status = item.status;
         Ok(())
     }
@@ -600,19 +609,29 @@ impl SendQueue {
     }
 
     /// Mark an item as failed and schedule retry.
-    pub fn mark_failed(&mut self, transaction_id: &str, retry_after: Duration) -> Result<()> {
+    pub fn mark_failed(
+        &mut self,
+        transaction_id: &str,
+        retry_after: Duration,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
         let item = self.item_mut(transaction_id)?;
         item.status = SendQueueStatus::Failed;
         item.next_retry_at =
-            Some(Utc::now() + chrono::Duration::from_std(retry_after).unwrap_or_default());
-        item.updated_at = Utc::now();
+            Some(now + chrono::Duration::from_std(retry_after).unwrap_or_default());
+        item.updated_at = now;
         item.local_echo.status = item.status;
         Ok(())
     }
 
     /// Cancel an item, optionally cascading to dependent queued items.
-    pub fn cancel(&mut self, transaction_id: &str, cascade: bool) -> Result<()> {
-        self.cancel_one(transaction_id)?;
+    pub fn cancel(
+        &mut self,
+        transaction_id: &str,
+        cascade: bool,
+        now: DateTime<Utc>,
+    ) -> Result<()> {
+        self.cancel_one(transaction_id, now)?;
         if cascade {
             let dependents: Vec<_> = self
                 .items
@@ -625,7 +644,7 @@ impl SendQueue {
                 .map(|item| item.transaction_id.clone())
                 .collect();
             for dependent in dependents {
-                self.cancel(&dependent, true)?;
+                self.cancel(&dependent, true, now)?;
             }
         }
         Ok(())
@@ -688,11 +707,11 @@ impl SendQueue {
         })
     }
 
-    fn cancel_one(&mut self, transaction_id: &str) -> Result<()> {
+    fn cancel_one(&mut self, transaction_id: &str, now: DateTime<Utc>) -> Result<()> {
         let item = self.item_mut(transaction_id)?;
         item.status = SendQueueStatus::Cancelled;
         item.next_retry_at = None;
-        item.updated_at = Utc::now();
+        item.updated_at = now;
         item.local_echo.status = item.status;
         Ok(())
     }

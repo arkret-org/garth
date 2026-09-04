@@ -15,6 +15,7 @@ use arkret_wire::{
     SecurityTransaction, SecurityTransactionCreateRequest, SecurityTransactionResultKind,
     SecurityTransactionStep, TransactionId,
 };
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, MaybeSendSync, Result};
@@ -486,6 +487,7 @@ where
         &self,
         transaction_id: &TransactionId,
         request: &IssueRecoveryCompletionGrantRequest,
+        now: DateTime<Utc>,
     ) -> Result<IssueRecoveryCompletionGrantOutcome> {
         let mut local = self.store.load(transaction_id)?.ok_or_else(|| {
             Error::Protocol(format!(
@@ -555,7 +557,7 @@ where
         crate::SessionGrantState::from_initial_registration_outcome(
             &initial_session,
             session_grant_outcome,
-            chrono::Utc::now(),
+            now,
         )?;
         local.pending_completion_grant_request = None;
         local.accepted_completion_grant_request = Some(canonical);
@@ -566,6 +568,7 @@ where
     pub async fn retry_durable_completion_grant(
         &self,
         transaction_id: &TransactionId,
+        now: DateTime<Utc>,
     ) -> Result<Option<IssueRecoveryCompletionGrantOutcome>> {
         let local = self.store.load(transaction_id)?.ok_or_else(|| {
             Error::Protocol(format!(
@@ -587,7 +590,7 @@ where
                 "stored recovery completion grant request is invalid: {error}"
             ))
         })?;
-        self.issue_recovery_completion_grant(transaction_id, &request)
+        self.issue_recovery_completion_grant(transaction_id, &request, now)
             .await
             .map(Some)
     }

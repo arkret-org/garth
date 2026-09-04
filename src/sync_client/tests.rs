@@ -176,6 +176,7 @@ impl SendQueueTestExt for SendQueue {
             realm_id.clone(),
             queued_record(&realm_id, content),
             Vec::new(),
+            Utc::now(),
         )
     }
 
@@ -191,6 +192,7 @@ impl SendQueueTestExt for SendQueue {
             realm_id.clone(),
             queued_record(&realm_id, content),
             depends_on,
+            Utc::now(),
         )
     }
 }
@@ -763,6 +765,7 @@ fn send_queue_is_idempotent_orders_dependencies_and_snapshots() {
             realm_id.clone(),
             record.clone(),
             Vec::new(),
+            Utc::now(),
         )
         .unwrap();
     let duplicate = queue
@@ -771,6 +774,7 @@ fn send_queue_is_idempotent_orders_dependencies_and_snapshots() {
             realm_id.clone(),
             record,
             Vec::new(),
+            Utc::now(),
         )
         .unwrap();
     let edit = queue
@@ -785,9 +789,9 @@ fn send_queue_is_idempotent_orders_dependencies_and_snapshots() {
     assert_eq!(message.payload_digest, duplicate.payload_digest);
     assert_eq!(queue.ready_batch(Utc::now(), 10), vec![message]);
 
-    queue.mark_sending("txn1").unwrap();
+    queue.mark_sending("txn1", Utc::now()).unwrap();
     queue
-        .mark_sent("txn1", event_id(1), vec![accepted_receipt()])
+        .mark_sent("txn1", event_id(1), vec![accepted_receipt()], Utc::now())
         .unwrap();
     assert_eq!(queue.ready_batch(Utc::now(), 10), vec![edit]);
 
@@ -871,7 +875,12 @@ fn send_queue_prunes_unreferenced_terminal_work_at_capacity() {
             .unwrap();
     }
     queue
-        .mark_sent("prunable-0", event_id(1), vec![accepted_receipt()])
+        .mark_sent(
+            "prunable-0",
+            event_id(1),
+            vec![accepted_receipt()],
+            Utc::now(),
+        )
         .unwrap();
 
     queue
@@ -903,6 +912,7 @@ fn send_queue_preserves_transitive_dependencies_during_capacity_pruning() {
             realm_id.clone(),
             queued_record(&realm_id, json!({"middle": true})),
             vec!["dependency-root".to_owned()],
+            Utc::now(),
         )
         .unwrap();
     queue
@@ -911,13 +921,24 @@ fn send_queue_preserves_transitive_dependencies_during_capacity_pruning() {
             realm_id.clone(),
             queued_record(&realm_id, json!({"leaf": true})),
             vec!["dependency-middle".to_owned()],
+            Utc::now(),
         )
         .unwrap();
     queue
-        .mark_sent("dependency-root", event_id(1), vec![accepted_receipt()])
+        .mark_sent(
+            "dependency-root",
+            event_id(1),
+            vec![accepted_receipt()],
+            Utc::now(),
+        )
         .unwrap();
     queue
-        .mark_sent("dependency-middle", event_id(2), vec![accepted_receipt()])
+        .mark_sent(
+            "dependency-middle",
+            event_id(2),
+            vec![accepted_receipt()],
+            Utc::now(),
+        )
         .unwrap();
     for index in queue.len()..MAX_SEND_QUEUE_ITEMS {
         queue
@@ -977,9 +998,14 @@ fn send_queue_serializes_unsigned_intents_per_realm_actor_scope() {
         vec!["scope-a-1", "scope-b-1"]
     );
 
-    queue.mark_sending("scope-a-1").unwrap();
+    queue.mark_sending("scope-a-1", Utc::now()).unwrap();
     queue
-        .mark_sent("scope-a-1", event_id(1), vec![accepted_receipt()])
+        .mark_sent(
+            "scope-a-1",
+            event_id(1),
+            vec![accepted_receipt()],
+            Utc::now(),
+        )
         .unwrap();
     assert!(
         queue
@@ -1011,9 +1037,9 @@ fn send_queue_replays_exact_persisted_bytes_and_links_semantic_replacement() {
         .canonical_payload_bytes
         .clone();
 
-    queue.mark_sending("attempt-1").unwrap();
+    queue.mark_sending("attempt-1", Utc::now()).unwrap();
     queue
-        .mark_failed("attempt-1", std::time::Duration::ZERO)
+        .mark_failed("attempt-1", std::time::Duration::ZERO, Utc::now())
         .unwrap();
     let restored = SendQueue::from_snapshot(queue.snapshot()).unwrap();
     assert_eq!(
@@ -1029,6 +1055,7 @@ fn send_queue_replays_exact_persisted_bytes_and_links_semantic_replacement() {
             realm_id.clone(),
             queued_record(&realm_id, json!({"signed": "immutable-body-2"})),
             Vec::new(),
+            Utc::now(),
         )
         .unwrap();
     assert_eq!(
@@ -1042,6 +1069,80 @@ fn send_queue_replays_exact_persisted_bytes_and_links_semantic_replacement() {
     );
     assert_eq!(replacement.actor_id, Some(actor));
     assert_ne!(replacement.canonical_payload_bytes, exact_bytes);
+}
+
+#[test]
+fn send_queue_transitions_are_a_pure_function_of_the_injected_clock() {
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
+    let fixed = "2026-01-01T00:00:00Z"
+        .parse::<chrono::DateTime<Utc>>()
+        .unwrap();
+    let retry_after = std::time::Duration::from_secs(30);
+
+    let replay = || {
+        let mut queue = SendQueue::new();
+        queue
+            .enqueue(
+                Some("txn-fixed".to_owned()),
+                realm_id.clone(),
+                queued_record(&realm_id, json!({"body": "deterministic"})),
+                Vec::new(),
+                fixed,
+            )
+            .unwrap();
+        queue.mark_sending("txn-fixed", fixed).unwrap();
+        queue.mark_failed("txn-fixed", retry_after, fixed).unwrap();
+        queue
+    };
+
+    let first = replay().snapshot();
+    let second = replay().snapshot();
+    let item = first.items.first().unwrap();
+    assert_eq!(item.status, SendQueueStatus::Failed);
+    assert_eq!(item.enqueued_at, fixed);
+    assert_eq!(item.updated_at, fixed);
+    assert_eq!(
+        item.next_retry_at,
+        Some(fixed + chrono::Duration::seconds(30))
+    );
+    assert_eq!(
+        serde_json::to_vec(&first).unwrap(),
+        serde_json::to_vec(&second).unwrap()
+    );
+
+    // Restore reads no clock, so decoding the same bytes is idempotent.
+    let restored = SendQueue::from_snapshot(first.clone()).unwrap();
+    assert_eq!(
+        serde_json::to_vec(&restored.snapshot()).unwrap(),
+        serde_json::to_vec(&first).unwrap()
+    );
+}
+
+#[test]
+fn restoring_a_sending_item_normalizes_status_without_stamping_a_new_instant() {
+    let realm_id = RealmId::new("ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV").unwrap();
+    let sent_at = "2026-01-01T00:00:00Z"
+        .parse::<chrono::DateTime<Utc>>()
+        .unwrap();
+    let mut queue = SendQueue::new();
+    queue
+        .enqueue(
+            Some("txn-crashed".to_owned()),
+            realm_id.clone(),
+            queued_record(&realm_id, json!({"body": "in-flight"})),
+            Vec::new(),
+            sent_at,
+        )
+        .unwrap();
+    queue.mark_sending("txn-crashed", sent_at).unwrap();
+
+    let restored = SendQueue::from_snapshot(queue.snapshot()).unwrap();
+    let item = restored.get("txn-crashed").unwrap();
+    assert_eq!(item.status, SendQueueStatus::Failed);
+    assert_eq!(item.local_echo.status, SendQueueStatus::Failed);
+    assert_eq!(item.next_retry_at, None);
+    assert_eq!(item.updated_at, sent_at);
+    assert!(!restored.ready_batch(sent_at, 10).is_empty());
 }
 
 #[test]
@@ -1072,7 +1173,7 @@ fn send_queue_cancels_transitive_dependents() {
         )
         .unwrap();
 
-    queue.cancel("txn1", true).unwrap();
+    queue.cancel("txn1", true, Utc::now()).unwrap();
 
     assert_eq!(
         queue.get("txn1").unwrap().status,
@@ -1104,11 +1205,11 @@ fn send_queue_refuses_delayed_acceptance_without_an_ingress_receipt() {
         )
         .unwrap();
     queue
-        .bind_authorization_lease("txn1", publication_lease(realm_id))
+        .bind_authorization_lease("txn1", publication_lease(realm_id), Utc::now())
         .unwrap();
 
     let error = queue
-        .mark_sent("txn1", event_id(1), Vec::new())
+        .mark_sent("txn1", event_id(1), Vec::new(), Utc::now())
         .unwrap_err();
 
     assert!(format!("{error}").contains("at least one ingress receipt"));
@@ -1125,7 +1226,9 @@ fn send_queue_accepts_online_submission_without_an_ingress_receipt() {
         .enqueue_test_record(Some("txn1".to_owned()), realm_id, json!({"body": "hi"}))
         .unwrap();
 
-    queue.mark_sent("txn1", event_id(1), Vec::new()).unwrap();
+    queue
+        .mark_sent("txn1", event_id(1), Vec::new(), Utc::now())
+        .unwrap();
 
     assert_eq!(queue.get("txn1").unwrap().status, SendQueueStatus::Sent);
     assert!(queue.get("txn1").unwrap().ingress_receipts.is_empty());
@@ -1144,7 +1247,7 @@ fn send_queue_keeps_the_original_receipt_across_an_idempotent_retry() {
         .unwrap();
     let lease = publication_lease(realm_id);
     queue
-        .bind_authorization_lease("txn1", lease.clone())
+        .bind_authorization_lease("txn1", lease.clone(), Utc::now())
         .unwrap();
     let original = super::send_queue::test_publication::receipt(
         lease.issued_at + chrono::Duration::minutes(1),
@@ -1155,9 +1258,11 @@ fn send_queue_keeps_the_original_receipt_across_an_idempotent_retry() {
     let event_id = event_id(1);
 
     queue
-        .mark_sent("txn1", event_id.clone(), vec![original.clone()])
+        .mark_sent("txn1", event_id.clone(), vec![original.clone()], Utc::now())
         .unwrap();
-    queue.mark_sent("txn1", event_id, vec![re_signed]).unwrap();
+    queue
+        .mark_sent("txn1", event_id, vec![re_signed], Utc::now())
+        .unwrap();
 
     let item = queue.get("txn1").unwrap();
     assert_eq!(item.status, SendQueueStatus::Sent);
@@ -1176,7 +1281,9 @@ fn send_queue_retires_unreceipted_work_once_its_lease_expires() {
         .unwrap();
     let lease = publication_lease(realm_id);
     let expires_at = lease.expires_at;
-    queue.bind_authorization_lease("txn1", lease).unwrap();
+    queue
+        .bind_authorization_lease("txn1", lease, Utc::now())
+        .unwrap();
 
     assert_eq!(
         queue
@@ -1203,7 +1310,7 @@ fn send_queue_refuses_a_lease_scoped_to_another_realm() {
         .unwrap();
 
     let error = queue
-        .bind_authorization_lease("txn1", publication_lease(other_realm))
+        .bind_authorization_lease("txn1", publication_lease(other_realm), Utc::now())
         .unwrap_err();
 
     assert!(format!("{error}").contains("different Realm"));

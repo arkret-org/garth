@@ -174,10 +174,11 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         realm_id: RealmId,
         record: QueuedRecord,
         depends_on: Vec<String>,
+        now: DateTime<Utc>,
     ) -> Result<SendQueueItem> {
         self.store
             .mutate_outbound(move |queue| {
-                queue.enqueue(transaction_id, realm_id, record, depends_on)
+                queue.enqueue(transaction_id, realm_id, record, depends_on, now)
             })
             .await
     }
@@ -189,10 +190,11 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         actor_id: crate::protocol::ActorId,
         record: QueuedRecord,
         depends_on: Vec<String>,
+        now: DateTime<Utc>,
     ) -> Result<SendQueueItem> {
         self.store
             .mutate_outbound(move |queue| {
-                let item = queue.enqueue(transaction_id, realm_id, record, depends_on)?;
+                let item = queue.enqueue(transaction_id, realm_id, record, depends_on, now)?;
                 queue.set_actor_scope(&item.transaction_id, actor_id)?;
                 owned_item(queue, &item.transaction_id)
             })
@@ -242,7 +244,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
                     if let OutboundGenerationFenceDecision::Quarantine { reason } =
                         fence.evaluate(&candidate)?
                     {
-                        queue.cancel(&candidate.transaction_id, true)?;
+                        queue.cancel(&candidate.transaction_id, true, now)?;
                         return Ok(QueuePreflight::Quarantined {
                             item: owned_item(queue, &candidate.transaction_id)?,
                             reason,
@@ -252,7 +254,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
                 let Some(item) = queue.ready_batch(now, 1).into_iter().next() else {
                     return Ok(QueuePreflight::Idle);
                 };
-                queue.mark_sending(&item.transaction_id)?;
+                queue.mark_sending(&item.transaction_id, now)?;
                 Ok(QueuePreflight::Ready(owned_item(
                     queue,
                     &item.transaction_id,
@@ -272,7 +274,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
             Ok(outcome) => outcome,
             Err(error) => {
                 return self
-                    .retry_local_or_terminal(transaction_id, error.to_string())
+                    .retry_local_or_terminal(transaction_id, error.to_string(), now)
                     .await;
             }
         };
@@ -280,7 +282,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
             OutboundSubmitOutcome::Prepared { record } => {
                 let item = self
                     .store
-                    .mutate_outbound(move |queue| queue.mark_prepared(&transaction_id, record))
+                    .mutate_outbound(move |queue| queue.mark_prepared(&transaction_id, record, now))
                     .await?;
                 Ok(OutboundEngineOutcome::Prepared(item))
             }
@@ -290,11 +292,11 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
             } => {
                 if let Err(error) = hook.post_accept(&hook_item, &event_id, false).await {
                     return self
-                        .retry_local_or_terminal(transaction_id, error.to_string())
+                        .retry_local_or_terminal(transaction_id, error.to_string(), now)
                         .await;
                 }
                 Ok(OutboundEngineOutcome::Accepted(
-                    self.mark_sent(transaction_id, event_id, ingress_receipts)
+                    self.mark_sent(transaction_id, event_id, ingress_receipts, now)
                         .await?,
                 ))
             }
@@ -304,27 +306,27 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
             } => {
                 if let Err(error) = hook.post_accept(&hook_item, &event_id, true).await {
                     return self
-                        .retry_local_or_terminal(transaction_id, error.to_string())
+                        .retry_local_or_terminal(transaction_id, error.to_string(), now)
                         .await;
                 }
                 Ok(OutboundEngineOutcome::Duplicate(
-                    self.mark_sent(transaction_id, event_id, ingress_receipts)
+                    self.mark_sent(transaction_id, event_id, ingress_receipts, now)
                         .await?,
                 ))
             }
             OutboundSubmitOutcome::RetryAfter { delay, .. } => {
-                let item = self.mark_retry(transaction_id, delay).await?;
+                let item = self.mark_retry(transaction_id, delay, now).await?;
                 Ok(OutboundEngineOutcome::RetryAt {
                     at: item.next_retry_at.unwrap_or(now),
                     item,
                 })
             }
             OutboundSubmitOutcome::Rejected { reason } => Ok(OutboundEngineOutcome::Rejected {
-                item: self.cancel(transaction_id).await?,
+                item: self.cancel(transaction_id, now).await?,
                 reason,
             }),
             OutboundSubmitOutcome::Terminal { reason } => Ok(OutboundEngineOutcome::Terminal {
-                item: self.cancel(transaction_id).await?,
+                item: self.cancel(transaction_id, now).await?,
                 reason,
             }),
             OutboundSubmitOutcome::Supersede {
@@ -343,6 +345,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
                             realm_id,
                             record,
                             depends_on,
+                            now,
                         )?;
                         Ok(OutboundEngineOutcome::Superseded {
                             previous,
@@ -359,28 +362,34 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         id: String,
         event_id: EventId,
         ingress_receipts: Vec<IngressReceipt>,
+        now: DateTime<Utc>,
     ) -> Result<SendQueueItem> {
         self.store
             .mutate_outbound(move |queue| {
-                queue.mark_sent(&id, event_id, ingress_receipts)?;
+                queue.mark_sent(&id, event_id, ingress_receipts, now)?;
                 owned_item(queue, &id)
             })
             .await
     }
 
-    async fn cancel(&self, id: String) -> Result<SendQueueItem> {
+    async fn cancel(&self, id: String, now: DateTime<Utc>) -> Result<SendQueueItem> {
         self.store
             .mutate_outbound(move |queue| {
-                queue.cancel(&id, true)?;
+                queue.cancel(&id, true, now)?;
                 owned_item(queue, &id)
             })
             .await
     }
 
-    async fn mark_retry(&self, id: String, delay: Duration) -> Result<SendQueueItem> {
+    async fn mark_retry(
+        &self,
+        id: String,
+        delay: Duration,
+        now: DateTime<Utc>,
+    ) -> Result<SendQueueItem> {
         self.store
             .mutate_outbound(move |queue| {
-                queue.mark_failed(&id, delay)?;
+                queue.mark_failed(&id, delay, now)?;
                 owned_item(queue, &id)
             })
             .await
@@ -390,6 +399,7 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
         &self,
         id: String,
         reason: String,
+        now: DateTime<Utc>,
     ) -> Result<OutboundEngineOutcome> {
         const MAX_LOCAL_ATTEMPTS: u32 = 8;
         self.store
@@ -399,16 +409,16 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
                     .ok_or_else(|| Error::Protocol("outbound queue item disappeared".to_owned()))?
                     .attempts;
                 if attempts >= MAX_LOCAL_ATTEMPTS {
-                    queue.cancel(&id, true)?;
+                    queue.cancel(&id, true, now)?;
                     return Ok(OutboundEngineOutcome::Terminal {
                         item: owned_item(queue, &id)?,
                         reason,
                     });
                 }
-                queue.mark_failed(&id, local_retry_delay(&id, attempts))?;
+                queue.mark_failed(&id, local_retry_delay(&id, attempts), now)?;
                 let item = owned_item(queue, &id)?;
                 Ok(OutboundEngineOutcome::RetryAt {
-                    at: item.next_retry_at.unwrap_or_else(Utc::now),
+                    at: item.next_retry_at.unwrap_or(now),
                     item,
                 })
             })
@@ -595,11 +605,18 @@ mod tests {
                 realm_id(),
                 record.clone(),
                 Vec::new(),
+                Utc::now(),
             )
             .await
             .unwrap();
         let second = engine
-            .enqueue(Some("txn-1".to_owned()), realm_id(), record, Vec::new())
+            .enqueue(
+                Some("txn-1".to_owned()),
+                realm_id(),
+                record,
+                Vec::new(),
+                Utc::now(),
+            )
             .await
             .unwrap();
         assert_eq!(first, second);
@@ -636,6 +653,7 @@ mod tests {
                 actor_id(),
                 queued_record(&realm_id(), serde_json::json!({"intent": "unsigned"})),
                 Vec::new(),
+                Utc::now(),
             )
             .await
             .unwrap();
@@ -682,6 +700,7 @@ mod tests {
                 realm_id(),
                 queued_record(&realm_id(), serde_json::json!({"body": "hello"})),
                 Vec::new(),
+                Utc::now(),
             )
             .await
             .unwrap();
@@ -706,6 +725,7 @@ mod tests {
                 realm_id(),
                 queued_record(&realm_id(), serde_json::json!({"body": "hello"})),
                 Vec::new(),
+                Utc::now(),
             )
             .await
             .unwrap();
@@ -737,6 +757,7 @@ mod tests {
                 realm_id(),
                 queued_record(&realm_id(), serde_json::json!({"body": "hello"})),
                 Vec::new(),
+                Utc::now(),
             )
             .await
             .unwrap();
@@ -789,6 +810,7 @@ mod tests {
                 realm_id(),
                 queued_record(&realm_id(), serde_json::json!({"generation": "1-old"})),
                 Vec::new(),
+                Utc::now(),
             )
             .await
             .unwrap();
@@ -798,6 +820,7 @@ mod tests {
                 realm_id(),
                 queued_record(&realm_id(), serde_json::json!({"generation": "2-current"})),
                 vec![stale.transaction_id],
+                Utc::now(),
             )
             .await
             .unwrap();
@@ -839,11 +862,12 @@ mod tests {
                 realm_id(),
                 queued_record(&realm_id(), serde_json::json!({"body": "hello"})),
                 Vec::new(),
+                Utc::now(),
             )
             .await
             .unwrap();
         store
-            .mutate_outbound(|queue| queue.mark_sending(&item.transaction_id))
+            .mutate_outbound(|queue| queue.mark_sending(&item.transaction_id, Utc::now()))
             .await
             .unwrap();
         drop(engine);
