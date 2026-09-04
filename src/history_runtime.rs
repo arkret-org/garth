@@ -55,7 +55,7 @@ pub struct DurableHistoryResponseStream {
 #[serde(deny_unknown_fields)]
 pub struct DurableVerifiedHistoryManifest {
     pub response_id: HistoryResponseId,
-    pub source_actor_id: arkret_wire::DidCoreId,
+    pub source_actor_id: arkret_wire::ActorId,
     pub source_sender_domain: String,
     pub manifest_digest: Hash,
     pub manifest_admission_digest: Hash,
