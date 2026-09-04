@@ -141,6 +141,12 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
     let device_id = DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001")?;
     let realm_id = RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO")?;
 
+    // The grant-binding key: `cnf.jkt` is its RFC 7638 thumbprint and
+    // `session_public_key` is the very same JWK (`sync/api-conventions.md` 3.3).
+    let session_public_jwk = arkret_models_identity::CanonicalSessionPublicJwk::new(
+        r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
+    )?;
+
     // Production hosts replace this memory vault with Keychain/Keystore/etc.
     let grant_store =
         SecureSessionGrantStore::new(MemorySecureKeyStore::default(), "reference/session-grant");
@@ -155,8 +161,8 @@ async fn main() -> std::result::Result<(), Box<dyn std::error::Error>> {
             granted_scope: vec![
                 arkret_wire::CapabilityActionId::SELF_EVENTS_STREAM_SUBSCRIBE_V1.to_owned(),
             ],
-            session_public_key: Some("reference-public-key".to_owned()),
-            dpop_jkt: Some("reference-jkt".to_owned()),
+            session_public_key: Some(session_public_jwk.as_str().to_owned()),
+            dpop_jkt: Some(session_public_jwk.thumbprint_sha256()?),
         })
         .await?;
     let restored = grant_store.load()?.expect("stored grant must restore");

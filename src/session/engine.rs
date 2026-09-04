@@ -638,6 +638,24 @@ mod tests {
         DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap()
     }
 
+    /// The single grant-binding public JWK every session fixture speaks for.
+    /// Per `sync/api-conventions.md` §3.3 the grant's `cnf.jkt` is this key's
+    /// RFC 7638 thumbprint and `session_public_key` is this very JWK, so
+    /// fixtures derive both from one key instead of asserting stand-in
+    /// constants that no production path could ever produce.
+    fn session_public_jwk() -> arkret_models_identity::CanonicalSessionPublicJwk {
+        arkret_models_identity::CanonicalSessionPublicJwk::new(
+            r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
+        )
+        .unwrap()
+    }
+
+    fn session_dpop_jkt() -> String {
+        session_public_jwk()
+            .thumbprint_sha256()
+            .expect("fixture session JWK has a thumbprint")
+    }
+
     fn agent_login() -> LoginKind {
         LoginKind::AgentKeyProof(AgentKeyProofLogin {
             principal_id: principal_id(),
@@ -677,10 +695,7 @@ mod tests {
             session_grant: token.to_owned(),
             expires_at: now() + Duration::hours(1),
             session_grant_id: grant,
-            session_public_key: arkret_models_identity::CanonicalSessionPublicJwk::new(
-                r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
-            )
-            .unwrap(),
+            session_public_key: session_public_jwk(),
             audience_id: audience(),
             granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             previous_session_grant_id: None,
@@ -696,8 +711,8 @@ mod tests {
             expires_at: now() + Duration::minutes(20),
             audience_id: audience(),
             granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
-            session_public_key: Some("session-public-key".to_owned()),
-            dpop_jkt: Some("jkt-1".to_owned()),
+            session_public_key: Some(session_public_jwk().into_string()),
+            dpop_jkt: Some(session_dpop_jkt()),
         }
     }
 
@@ -737,7 +752,7 @@ mod tests {
                     agent_session_refresh_proof: proof,
                 },
             )),
-            expected_dpop_jkt: Some("jkt-1".to_owned()),
+            expected_dpop_jkt: Some(session_dpop_jkt()),
         }
     }
 
@@ -751,10 +766,7 @@ mod tests {
             account_id: AccountId::new(principal_id(), audience()),
             device_id: None,
             session_grant: token.to_owned(),
-            session_public_key: arkret_models_identity::CanonicalSessionPublicJwk::new(
-                r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
-            )
-            .unwrap(),
+            session_public_key: session_public_jwk(),
             expires_at: now() + Duration::hours(1),
             audience_id: audience(),
             granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
@@ -896,7 +908,7 @@ mod tests {
         assert_eq!(request.audience_id.as_ref(), Some(&audience()));
         let state = engine.current_state().unwrap();
         assert_eq!(state.grant_id, grant_id(2));
-        assert_eq!(state.dpop_jkt.as_deref(), Some("jkt-1"));
+        assert_eq!(state.dpop_jkt, Some(session_dpop_jkt()));
     }
 
     #[tokio::test]

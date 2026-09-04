@@ -358,6 +358,23 @@ mod tests {
         SessionGrantId::from_issuance_digest(digest)
     }
 
+    /// The single grant-binding public JWK every provider fixture speaks for.
+    /// Per `sync/api-conventions.md` §3.3 the grant's `cnf.jkt` is this key's
+    /// RFC 7638 thumbprint and `session_public_key` is this very JWK, so
+    /// fixtures derive both from one key rather than from stand-in constants.
+    fn session_public_jwk() -> arkret_models_identity::CanonicalSessionPublicJwk {
+        arkret_models_identity::CanonicalSessionPublicJwk::new(
+            r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
+        )
+        .unwrap()
+    }
+
+    fn session_dpop_jkt() -> String {
+        session_public_jwk()
+            .thumbprint_sha256()
+            .expect("fixture session JWK has a thumbprint")
+    }
+
     fn state() -> SessionGrantState {
         SessionGrantState {
             account_id: AccountId::new(
@@ -372,8 +389,8 @@ mod tests {
             expires_at: Utc::now() + Duration::hours(2),
             audience_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
-            session_public_key: Some("session-public-key".to_owned()),
-            dpop_jkt: Some("jkt-1".to_owned()),
+            session_public_key: Some(session_public_jwk().into_string()),
+            dpop_jkt: Some(session_dpop_jkt()),
         }
     }
 
@@ -386,15 +403,9 @@ mod tests {
             ),
             device_id: None,
             session_grant: "grant-2".to_owned(),
-            session_public_key: arkret_models_identity::CanonicalSessionPublicJwk::new(
-                r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
-            )
-            .unwrap(),
+            session_public_key: session_public_jwk(),
             expires_at: Utc::now() + Duration::hours(1),
-            audience_id: DidCoreId::new(
-                "ak:did_core:webvh:z6mkfixture:service.example",
-            )
-            .unwrap(),
+            audience_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             previous_session_grant_id: Some(grant_id(1)),
         }
@@ -428,7 +439,7 @@ mod tests {
                     agent_session_refresh_proof: proof,
                 },
             )),
-            expected_dpop_jkt: Some("jkt-1".to_owned()),
+            expected_dpop_jkt: Some(session_dpop_jkt()),
         }
     }
 

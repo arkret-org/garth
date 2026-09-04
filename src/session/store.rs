@@ -113,6 +113,16 @@ mod tests {
     use crate::protocol::{AccountId, DeviceId, DidCoreId, SessionGrantId};
     use crate::{MemorySecureKeyStore, SecureKeyStore};
 
+    /// The grant-binding key the stored grant is bound to: `cnf.jkt` is its
+    /// RFC 7638 thumbprint and `session_public_key` is the very same JWK
+    /// (`sync/api-conventions.md` 3.3).
+    fn session_public_jwk() -> arkret_models_identity::CanonicalSessionPublicJwk {
+        arkret_models_identity::CanonicalSessionPublicJwk::new(
+            r#"{"crv":"Ed25519","kty":"OKP","x":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#,
+        )
+        .unwrap()
+    }
+
     fn state() -> SessionGrantState {
         SessionGrantState {
             account_id: AccountId::new(
@@ -127,8 +137,8 @@ mod tests {
             expires_at: Utc::now() + Duration::hours(1),
             audience_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
-            session_public_key: Some("session-public-key".to_owned()),
-            dpop_jkt: Some("jkt-1".to_owned()),
+            session_public_key: Some(session_public_jwk().into_string()),
+            dpop_jkt: Some(session_public_jwk().thumbprint_sha256().unwrap()),
         }
     }
 
