@@ -201,7 +201,7 @@ mod tests {
     use std::time::Duration;
 
     use crate::protocol::Error;
-    use crate::protocol::ErrorEnvelope;
+    use crate::protocol::Problem;
 
     use super::super::test_support::{RecordingExecutor, queued_transport, sync_response};
     use super::*;
@@ -267,7 +267,7 @@ mod tests {
         let responses = Arc::new(Mutex::new(VecDeque::from([
             Err(Error::Api {
                 status: 503,
-                error: Box::new(ErrorEnvelope::new("service_unavailable", "network down")),
+                error: Box::new(Problem::from_code("service_unavailable", "network down")),
             }),
             Ok(sync_response("s1")),
         ])));

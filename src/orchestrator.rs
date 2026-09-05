@@ -225,7 +225,7 @@ fn classify_error(error: &crate::protocol::Error) -> RunErrorClass {
         Error::Api { status: 401, .. } => RunErrorClass::Unauthorized,
         Error::Api { error, .. }
             if matches!(
-                error.error.code.as_str(),
+                error.code(),
                 "grant_already_consumed"
                     | "session_logged_out"
                     | "auth_expired"

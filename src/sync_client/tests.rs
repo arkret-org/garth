@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::protocol::{
     AccountDataContainer, AccountDataRow, AccountSubscribeRealms, AccountSubscribeUnreadCounts,
-    DeviceId, DeviceMessageContainer, DeviceMessageEnvelope, DeviceMessageSender, ErrorEnvelope,
+    DeviceId, DeviceMessageContainer, DeviceMessageEnvelope, DeviceMessageSender, Problem,
     ProtocolKind, RealmSyncEntry, StationCasAccountDataContainer, StationCasAccountDataRemoval,
 };
 use arkret_models_collaboration::sync_frames::account_sync::DeviceMessageContent;
@@ -223,7 +223,7 @@ fn sync_loop_recovers_after_failure() {
             assert_eq!(request.catchup, Some(true));
             Err(Error::Api {
                 status: 503,
-                error: Box::new(ErrorEnvelope::new("unavailable", "network down")),
+                error: Box::new(Problem::from_code("unavailable", "network down")),
             })
         } else {
             assert!(request.after.is_none());
@@ -268,7 +268,7 @@ fn sync_loop_discards_rejected_cursor_before_retry() {
         assert_eq!(request.after.as_deref(), Some("ak:cursor:expired"));
         Err(Error::Api {
             status: 410,
-            error: Box::new(ErrorEnvelope::new("cursor_expired", "cursor expired")),
+            error: Box::new(Problem::from_code("cursor_expired", "cursor expired")),
         })
     };
 

@@ -1,6 +1,6 @@
 use arkret_keystore::KeyStoreError;
 use arkret_models_collaboration::sync_frames::account_subscribe::AccountStreamInterrupt;
-use arkret_wire::ErrorEnvelope;
+use arkret_wire::Problem;
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -36,10 +36,7 @@ pub enum Error {
     #[error("HTTP request failed: {0}")]
     Http(String),
     #[error("Arkret API returned {status}: {error}")]
-    Api {
-        status: u16,
-        error: Box<ErrorEnvelope>,
-    },
+    Api { status: u16, error: Box<Problem> },
     #[error("account stream interrupted: {0:?}")]
     AccountStreamInterrupt(AccountStreamInterrupt),
     #[error("key-store error: {0}")]
@@ -60,8 +57,7 @@ impl Error {
             return None;
         };
         error
-            .error
-            .details
+            .extensions
             .get("reason_code")
             .and_then(serde_json::Value::as_str)
             .map(arkret_wire::ReasonCode::from_wire)
@@ -87,7 +83,7 @@ impl Error {
             "cursor_invalid",
             "invalid_cursor",
         ];
-        let code = error.error.code.as_str();
+        let code = error.code();
         if CODES.contains(&code) {
             return true;
         }
@@ -95,12 +91,11 @@ impl Error {
             return false;
         }
         error
-            .error
-            .details
+            .extensions
             .get("reason_code")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|reason| CODES.contains(&reason))
-            || (error.error.message.to_ascii_lowercase().contains("cursor")
+            || (error.detail.to_ascii_lowercase().contains("cursor")
                 && [
                     "invalid",
                     "malformed",
@@ -109,7 +104,7 @@ impl Error {
                     "unrecognized",
                 ]
                 .iter()
-                .any(|marker| error.error.message.to_ascii_lowercase().contains(marker)))
+                .any(|marker| error.detail.to_ascii_lowercase().contains(marker)))
     }
 }
 
@@ -124,8 +119,8 @@ mod tests {
             arkret_wire::ReasonCode::AgentKeyScopeReauthorizationRequired,
             arkret_wire::ReasonCode::AgentSessionScopeRefreshRequired,
         ] {
-            let mut envelope = ErrorEnvelope::new("failed_precondition", "scope is incomplete");
-            envelope.error.details.insert(
+            let mut envelope = Problem::from_code("failed_precondition", "scope is incomplete");
+            envelope.extensions.insert(
                 "reason_code".to_owned(),
                 serde_json::Value::String(expected.as_str().to_owned()),
             );
@@ -140,8 +135,8 @@ mod tests {
 
     #[test]
     fn unrelated_api_reason_is_not_an_agent_scope_diagnosis() {
-        let mut envelope = ErrorEnvelope::new("failed_precondition", "unrelated");
-        envelope.error.details.insert(
+        let mut envelope = Problem::from_code("failed_precondition", "unrelated");
+        envelope.extensions.insert(
             "reason_code".to_owned(),
             serde_json::json!(arkret_wire::ReasonCode::AGENT_PAUSED),
         );

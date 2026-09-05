@@ -111,7 +111,7 @@ pub(crate) use arkret_models_crypto::MlsKeyPackageState;
 #[cfg(test)]
 pub(crate) use arkret_models_identity::{ACCOUNT_HANDOFF_ALLOWED_OPERATIONS, Handle};
 #[cfg(test)]
-pub(crate) use arkret_wire::{DeviceMessageId, ErrorEnvelope, NotificationId, ProtocolKind};
+pub(crate) use arkret_wire::{DeviceMessageId, NotificationId, Problem, ProtocolKind};
 
 pub(crate) mod canonical {
     pub(crate) use arkret_canonical::{canonical_json_bytes, canonical_sha256};

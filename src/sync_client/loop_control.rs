@@ -508,7 +508,7 @@ impl SyncLoop {
         }
         if let Error::Api { error, .. } = &error
             && matches!(
-                error.error.code.as_str(),
+                error.code(),
                 "grant_already_consumed"
                     | "session_logged_out"
                     | "auth_expired"
@@ -517,7 +517,7 @@ impl SyncLoop {
             )
         {
             return SyncLoopStep::Unauthorized {
-                reason: Some(error.error.code.clone()),
+                reason: Some(error.code().to_owned()),
             };
         }
         if matches!(&error, Error::Api { status: 401, .. }) {

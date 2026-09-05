@@ -676,9 +676,7 @@ fn same_attempt_binding(
 /// that leaves the frozen bytes acceptable, so it retries the same attempt.
 fn send_disposition(error: &Error) -> HistorySourceSendDisposition {
     match error {
-        Error::Api { error, .. } => {
-            HistorySourceSendDisposition::classify(error.error.code.as_str())
-        }
+        Error::Api { error, .. } => HistorySourceSendDisposition::classify(error.code()),
         _ => HistorySourceSendDisposition::RetrySameAttempt,
     }
 }
@@ -1021,7 +1019,7 @@ mod tests {
             self.attempts.fetch_add(1, Ordering::SeqCst);
             Error::Api {
                 status: self.status,
-                error: Box::new(arkret_wire::problem_details::ErrorEnvelope::new(
+                error: Box::new(arkret_wire::problem_details::Problem::from_code(
                     self.code,
                     "rejected by fixture transport",
                 )),

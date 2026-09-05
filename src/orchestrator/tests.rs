@@ -4,8 +4,8 @@ use std::time::Duration;
 
 use crate::protocol::{AccountStreamInterrupt, AccountSubscribeBatch, Error, SyncRequestBody};
 use crate::protocol::{
-    ErrorEnvelope, EventKind, EventsQueryOutcome, EventsSubscribeFrame, Hlc, NotificationDelta,
-    NotificationDeltaAction, NotificationId, RealmId,
+    EventKind, EventsQueryOutcome, EventsSubscribeFrame, Hlc, NotificationDelta,
+    NotificationDeltaAction, NotificationId, Problem, RealmId,
 };
 use serde_json::json;
 
@@ -401,7 +401,7 @@ fn event_frame() -> EventsSubscribeFrame {
 fn cursor_expired_error() -> Error {
     Error::Api {
         status: 410,
-        error: Box::new(ErrorEnvelope::new("cursor_expired", "cursor expired")),
+        error: Box::new(Problem::from_code("cursor_expired", "cursor expired")),
     }
 }
 
@@ -937,7 +937,7 @@ async fn run_account_reprovides_after_sync_retry() {
     let provider = QueueProvider::new(vec![
         Ok(AccountTransport::new(Err(Error::Api {
             status: 503,
-            error: Box::new(ErrorEnvelope::new("service_unavailable", "network down")),
+            error: Box::new(Problem::from_code("service_unavailable", "network down")),
         }))),
         Ok(AccountTransport::new(Ok(sync_response("ak:cursor:next")))),
     ]);
