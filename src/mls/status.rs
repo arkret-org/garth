@@ -25,7 +25,7 @@ impl MlsRuntimeStatus {
                 "MLS state is not ready on this device yet; wait for an MLS Welcome or restore this device's encrypted MLS history backup.".to_owned()
             }
             Self::MissingDeviceSecret(reason) => {
-                format!("device MLS snapshot secret unavailable: {reason}")
+                format!("device MLS checkpoint secret unavailable: {reason}")
             }
             Self::SnapshotDecryptFailed(reason) => {
                 format!("stored MLS history could not be decrypted ({reason}); restore your encrypted MLS history with your 24-word Recovery Key.")

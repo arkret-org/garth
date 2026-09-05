@@ -31,13 +31,13 @@ fn account_secret_is_reused_within_exact_authority() {
 }
 
 #[test]
-fn snapshot_secret_load_does_not_create() {
+fn checkpoint_secret_load_does_not_create() {
     let store = MemorySecureKeyStore::new();
     let authority = authority(
         "did:webvh:z6mkalice:alice.example",
         "ak:did_core:web:server.example",
     );
-    let missing = load_device_snapshot_secret(&store, &authority, &device(1)).unwrap_err();
+    let missing = load_device_checkpoint_secret(&store, &authority, &device(1)).unwrap_err();
     assert!(matches!(missing, SecureKeyStoreError::NotFound));
     assert!(store.list_secret_keys(None).unwrap().is_empty());
 }
@@ -104,8 +104,8 @@ fn account_secret_is_shared_across_devices_but_keypackage_state_is_not() {
     let second_device = device(2);
     store_account_mls_secret(&store, &authority, "shared-secret").unwrap();
     assert_eq!(
-        load_device_snapshot_secret(&store, &authority, &first_device).unwrap(),
-        load_device_snapshot_secret(&store, &authority, &second_device).unwrap()
+        load_device_checkpoint_secret(&store, &authority, &first_device).unwrap(),
+        load_device_checkpoint_secret(&store, &authority, &second_device).unwrap()
     );
 
     let first_key =

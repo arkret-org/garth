@@ -1,6 +1,6 @@
-//! Account- and device-scoped MLS snapshot-secret management.
+//! Account- and device-scoped MLS checkpoint-secret management.
 //!
-//! The snapshot secret is account-scoped and shared by every device of the
+//! The checkpoint secret is account-scoped and shared by every device of the
 //! account; it is recoverable via the user's recovery passphrase. The `_local`
 //! rotation helpers prepare new wrapping material without mutating local state
 //! so callers can upload server-side backups before committing.
@@ -11,7 +11,7 @@ use arkret_wire::{AccountId, DeviceId};
 use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 
-use super::snapshot_envelope::{self, MlsSnapshotEnvelope};
+use super::local_checkpoint::{self, MlsLocalCheckpointEnvelope};
 use super::status::MlsRuntimeError;
 use crate::store::{
     SecureKeyStore, SecureKeyStoreError, account_id_storage_digest, device_storage_digest,
@@ -21,6 +21,12 @@ use crate::store::{
 // secret already written by a shipped client lives under them, so they keep
 // their original spelling after the move out of the host crate. Renaming one
 // would orphan the stored secret and read as "device has no MLS material".
+/// Storage-key prefix for the account-scoped checkpoint secret.
+///
+/// The literal keeps its original spelling for the same reason
+/// [`super::local_checkpoint::MLS_ENVELOPE_MAGIC`] does: it addresses secrets
+/// already written to every device's key store, so renaming it orphans them.
+/// At-rest keys are not wire names.
 const ACCOUNT_MLS_SECRET_PREFIX: &str = "inkson.mls_snapshot.account_secret";
 const ACCOUNT_MLS_SECRET_VERIFIED_MARKER: &str = "verified";
 pub const ACCOUNT_MLS_SECRET_CURRENT_VERSION: u32 = 1;
@@ -41,7 +47,7 @@ const MLS_PAIRWISE_KEY_PACKAGE_PUBLISH_MARKER_PREFIX: &str =
 /// request binds the corresponding public key through its sealed response capability.
 const DEVICE_HPKE_PRIVATE_KEY_PREFIX: &str = "inkson.device_hpke_x25519.private.v1";
 
-/// Stored account-scoped MLS snapshot secret plus the local key version that
+/// Stored account-scoped MLS checkpoint secret plus the local key version that
 /// carried it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StoredAccountMlsSecret {
@@ -57,15 +63,15 @@ pub struct AccountMlsSecretRotation {
     pub previous_version: u32,
     pub new_version: u32,
     pub new_secret: String,
-    pub rewrapped_snapshots: BTreeMap<String, MlsSnapshotEnvelope>,
-    /// COR-12: realms whose snapshot could not be decrypted with the previous
+    pub rewrapped_checkpoints: BTreeMap<String, MlsLocalCheckpointEnvelope>,
+    /// COR-12: realms whose checkpoint could not be decrypted with the previous
     /// secret (corrupt / format-drifted local data) and were therefore SKIPPED
     /// instead of aborting the whole rotation. `(realm_id, error)` pairs so the
     /// caller can surface a partial-success report. Empty on a clean rotation.
     pub failed_realms: Vec<(String, String)>,
 }
 
-/// Account-scoped storage key for a specific MLS snapshot-secret version.
+/// Account-scoped storage key for a specific MLS checkpoint-secret version.
 pub fn account_mls_secret_key_for_version(
     authority: &AccountId,
     version: u32,
@@ -76,7 +82,7 @@ pub fn account_mls_secret_key_for_version(
     ))
 }
 
-/// Default write key for the account-scoped MLS snapshot secret shared by every
+/// Default write key for the account-scoped MLS checkpoint secret shared by every
 /// device of the account. Recoverable via the user's recovery passphrase.
 pub fn account_mls_secret_key(authority: &AccountId) -> Result<String, SecureKeyStoreError> {
     account_mls_secret_key_for_version(authority, ACCOUNT_MLS_SECRET_CURRENT_VERSION)
@@ -91,7 +97,7 @@ fn validate_account_secret(secret: &str) -> Result<(), SecureKeyStoreError> {
     Ok(())
 }
 
-/// Store (or overwrite) a specific version of the account-scoped MLS snapshot
+/// Store (or overwrite) a specific version of the account-scoped MLS checkpoint
 /// secret.
 pub fn store_account_mls_secret_version(
     store: &dyn SecureKeyStore,
@@ -145,7 +151,7 @@ pub fn replace_account_mls_secret_version(
     Ok(())
 }
 
-/// Store (or overwrite) the default/current account-scoped MLS snapshot secret.
+/// Store (or overwrite) the default/current account-scoped MLS checkpoint secret.
 /// Used by [`load_or_create_account_mls_secret`] on first creation and by the
 /// recovery import path after unwrapping the recovery vault.
 pub fn store_account_mls_secret(
@@ -207,7 +213,7 @@ fn generate_account_mls_secret() -> Result<String, SecureKeyStoreError> {
     Ok(URL_SAFE_NO_PAD.encode(bytes))
 }
 
-/// Load (or create) the account-scoped MLS snapshot secret.
+/// Load (or create) the account-scoped MLS checkpoint secret.
 ///
 /// Resolution order:
 ///   a. the highest existing versioned account secret is returned as-is;
@@ -230,9 +236,9 @@ pub fn load_or_create_account_mls_secret(
 /// [`load_or_create_account_mls_secret`] writes through the sync store surface;
 /// on wasm the IndexedDB commit behind that write is a detached background task
 /// that a page unload silently drops. State persisted under this secret
-/// (the creator's epoch-0 snapshot, a first applied Welcome) goes through the
+/// (the creator's epoch-0 checkpoint, a first applied Welcome) goes through the
 /// durable-awaiting account-state writer, so the secret could reach disk AFTER
-/// the snapshot it wraps — or never. A reload in that window leaves a snapshot
+/// the checkpoint it wraps — or never. A reload in that window leaves a checkpoint
 /// no local secret can open, which reads as "no account MLS secret" and
 /// dead-locks every later encrypted write on this device. Callers that are
 /// about to persist secret-wrapped state must use this variant so the secret
@@ -524,7 +530,7 @@ pub fn delete_mls_pairwise_key_package_publish_marker(
 ///
 /// Delegates to the account-scoped secret. `device_id` no longer scopes the
 /// stored key.
-pub fn load_device_snapshot_secret(
+pub fn load_device_checkpoint_secret(
     store: &dyn SecureKeyStore,
     authority: &AccountId,
     _device_id: &DeviceId,
@@ -544,7 +550,7 @@ pub fn load_device_snapshot_secret(
 pub fn prepare_account_mls_secret_rotation(
     store: &dyn SecureKeyStore,
     authority: &AccountId,
-    snapshots: &BTreeMap<String, MlsSnapshotEnvelope>,
+    snapshots: &BTreeMap<String, MlsLocalCheckpointEnvelope>,
 ) -> Result<AccountMlsSecretRotation, MlsRuntimeError> {
     let previous_secret = load_account_mls_secret(store, authority)
         .map_err(MlsRuntimeError::DeviceSecret)?
@@ -559,7 +565,7 @@ pub fn prepare_account_mls_secret_rotation(
         )));
     }
     let new_secret = generate_account_mls_secret().map_err(MlsRuntimeError::DeviceSecret)?;
-    let mut rewrapped_snapshots = BTreeMap::new();
+    let mut rewrapped_checkpoints = BTreeMap::new();
     let mut failed_realms = Vec::new();
     for (realm_id, snapshot) in snapshots {
         // COR-12: one corrupt / format-drifted realm snapshot MUST NOT block the
@@ -567,7 +573,7 @@ pub fn prepare_account_mls_secret_rotation(
         // depend on it). Record the failure and skip, mirroring the welcome-apply
         // path's "per-item failure does not abort the batch" model. The secret
         // still rotates for all decryptable realms.
-        let plaintext = match snapshot_envelope::decrypt_envelope(snapshot, &previous_secret.secret)
+        let plaintext = match local_checkpoint::decrypt_envelope(snapshot, &previous_secret.secret)
         {
             Ok(plaintext) => plaintext,
             Err(err) => {
@@ -584,7 +590,7 @@ pub fn prepare_account_mls_secret_rotation(
         getrandom::fill(&mut salt).map_err(|err| MlsRuntimeError::Salt(err.to_string()))?;
         // Re-wrapping does not advance the epoch — carry the epoch-start clock
         // so a secret rotation never resets the §2.9 minimal-metadata 1h cap.
-        let rotated = snapshot_envelope::encrypt_state(
+        let rotated = local_checkpoint::encrypt_state(
             &snapshot.realm_id,
             &snapshot.group_id,
             snapshot.epoch,
@@ -593,13 +599,13 @@ pub fn prepare_account_mls_secret_rotation(
             &salt,
         )
         .carry_epoch_started_at(snapshot);
-        rewrapped_snapshots.insert(realm_id.clone(), rotated);
+        rewrapped_checkpoints.insert(realm_id.clone(), rotated);
     }
     Ok(AccountMlsSecretRotation {
         previous_version: previous_secret.version,
         new_version,
         new_secret,
-        rewrapped_snapshots,
+        rewrapped_checkpoints,
         failed_realms,
     })
 }

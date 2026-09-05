@@ -67,7 +67,7 @@ struct FileState {
     deliveries: VecDeque<PendingDelivery>,
     outbound: crate::sync_client::SendQueueSnapshot,
     stamp_floors: BTreeMap<String, StampFloor>,
-    accepted_mls_artifacts: crate::VersionedAcceptedMlsArtifactSnapshot,
+    accepted_mls_artifacts: crate::VersionedAcceptedMlsArtifactState,
 }
 
 impl FileStore {
@@ -539,8 +539,8 @@ impl DurableInboxStore for FileStore {
 }
 
 impl crate::AcceptedMlsArtifactStore for FileStore {
-    fn load_accepted_mls_artifacts(&self) -> Result<crate::VersionedAcceptedMlsArtifactSnapshot> {
-        self.read(|inner| crate::VersionedAcceptedMlsArtifactSnapshot {
+    fn load_accepted_mls_artifacts(&self) -> Result<crate::VersionedAcceptedMlsArtifactState> {
+        self.read(|inner| crate::VersionedAcceptedMlsArtifactState {
             revision: inner.state.accepted_mls_artifacts.revision,
             snapshot: inner.state.accepted_mls_artifacts.snapshot.clone(),
         })
@@ -549,7 +549,7 @@ impl crate::AcceptedMlsArtifactStore for FileStore {
     fn compare_and_swap_accepted_mls_artifacts<'a>(
         &'a self,
         expected_revision: u64,
-        snapshot: &'a crate::AcceptedMlsArtifactSnapshot,
+        snapshot: &'a crate::AcceptedMlsArtifactState,
     ) -> impl Future<Output = Result<bool>> + crate::MaybeSend + 'a {
         async move {
             self.mutate(|inner| {
@@ -613,7 +613,7 @@ mod tests {
         DeviceId, DidCoreId, EventId, EventKind, Hlc, NotificationDelta, NotificationDeltaAction,
         NotificationId, RealmId, ScopeRef,
     };
-    use crate::{AcceptedMlsArtifactStore, DurableAcceptedMlsArtifact, QueuedMlsSnapshot};
+    use crate::{AcceptedMlsArtifactStore, DurableAcceptedMlsArtifact, QueuedMlsLocalCheckpoint};
 
     use super::*;
 
@@ -649,7 +649,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accepted_mls_ready_snapshot_survives_process_reopen() {
+    async fn accepted_mls_ready_checkpoint_survives_process_reopen() {
         let path = temp_path("accepted-mls-reopen");
         let _ = std::fs::remove_file(&path);
         let realm_id =
@@ -669,7 +669,7 @@ mod tests {
         )
         .unwrap();
         let event_key = event.event_id.to_string();
-        let mut snapshot = crate::AcceptedMlsArtifactSnapshot::default();
+        let mut snapshot = crate::AcceptedMlsArtifactState::default();
         snapshot.artifacts.insert(
             event_key.clone(),
             DurableAcceptedMlsArtifact {
@@ -682,7 +682,7 @@ mod tests {
                     transition_ref: EventId::new(event_key.clone()).unwrap(),
                     ciphertext: vec![4],
                 },
-                snapshot: QueuedMlsSnapshot {
+                snapshot: QueuedMlsLocalCheckpoint {
                     realm_id: realm_id.to_string(),
                     group_id: group_id.clone(),
                     epoch: 0,

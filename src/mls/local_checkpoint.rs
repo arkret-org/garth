@@ -10,17 +10,17 @@
 //!
 //! 1. **Serialize on commit.** The SDK MLS group exposes `export_state_record()` /
 //!    `restore_from_state_record()` so the provider storage round-trips through a typed
-//!    [`MlsGroupStateRecord`]. [`MlsSnapshotEnvelope`] wraps that record in a device-scoped
+//!    [`MlsGroupStateRecord`]. [`MlsLocalCheckpointEnvelope`] wraps that record in a device-scoped
 //!    confidentiality layer so a stolen local state blob does not leak the provider keys.
 //!
-//! 2. **Persist locally.** The active group snapshot is endpoint-bound state. Human portable
+//! 2. **Persist locally.** The active group checkpoint is endpoint-bound state. Human portable
 //!    recovery must use scope-bound `history_secret_ranges` material and never exports this
-//!    snapshot through `key_backup`.
+//!    checkpoint through `key_backup`.
 //!
 //! 3. **Restore on boot.** [`decrypt_with_epoch_check`] decrypts the envelope with this device's
-//!    MLS snapshot secret and rejects a stale epoch. Two failure modes are pinned in tests:
+//!    MLS checkpoint secret and rejects a stale epoch. Two failure modes are pinned in tests:
 //!    [`EnvelopeError::SecretMismatch`] (wrong device secret or tampered envelope) and
-//!    [`EnvelopeError::OutdatedSnapshot`] (the envelope's recorded epoch is older than the current
+//!    [`EnvelopeError::OutdatedCheckpoint`] (the envelope's recorded epoch is older than the current
 //!    Seal view — a paired-in device must NOT bind to a stale epoch since that would silently fork
 //!    the group). Reconstructing the live group from the decrypted record needs the SDK MLS
 //!    engine, so that last step stays with the host that links it.
@@ -29,7 +29,7 @@
 //!
 //! The envelope uses ChaCha20-Poly1305 AEAD, which builds cleanly on wasm32. The layout:
 //!
-//! * **Key derivation:** HKDF-SHA256 with the per-envelope salt and the device snapshot secret as
+//! * **Key derivation:** HKDF-SHA256 with the per-envelope salt and the device checkpoint secret as
 //!   input keying material. The resulting 32-byte key feeds the ChaCha20-Poly1305 AEAD directly.
 //! * **Symmetric layer:** ChaCha20-Poly1305 AEAD with a fresh 12-byte random nonce per envelope.
 //!   The nonce is stored alongside the ciphertext so decryption is self-contained.
@@ -52,14 +52,15 @@ use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 
 use crate::executor::{HostClock, SystemClock};
-use crate::queued_record::QueuedMlsSnapshot;
+use crate::queued_record::QueuedMlsLocalCheckpoint;
 
 /// Magic-bytes prefix burned into every v1 envelope.
 ///
 /// The literal is at-rest data, not a name: it is the HKDF `info` string and
 /// the leading AEAD additional-data bytes of every envelope already written to
-/// disk. Renaming it would make every stored snapshot undecryptable, so it
-/// keeps its original spelling after the move out of the host crate.
+/// disk. Renaming it would make every stored checkpoint undecryptable, so it keeps
+/// its original spelling through both the move out of the host crate and the
+/// rename off the word snapshot.
 pub const MLS_ENVELOPE_MAGIC: &[u8] = b"inkson-mls-snap-v1";
 
 /// AEAD envelope version. `1` = ChaCha20-Poly1305 AEAD with
@@ -68,11 +69,11 @@ pub const AEAD_VERSION_CHACHA20_POLY1305: u8 = 1;
 
 /// Typed envelope wrapping an encrypted MLS group state record. Persisted by
 /// the host for same-endpoint restart recovery. The fields here are
-/// the minimum required for tamper detection + outdated-snapshot
+/// the minimum required for tamper detection + outdated-checkpoint
 /// detection; everything else (signing key set / openmls provider
 /// storage entries) lives inside the key-backup `ciphertext`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct MlsSnapshotEnvelope {
+pub struct MlsLocalCheckpointEnvelope {
     /// The realm id the envelope belongs to. Not encrypted —
     /// the boot path needs to know which envelope maps to which
     /// Realm without decrypting them all first.
@@ -80,8 +81,8 @@ pub struct MlsSnapshotEnvelope {
     /// Recorded MLS group id (hex-encoded by the SDK). Surfaced for
     /// debug + audit; does not leak material.
     pub group_id: String,
-    /// MLS epoch as recorded at snapshot time. Primary signal for
-    /// outdated-snapshot detection — a peer that paired in a fresher
+    /// MLS epoch as recorded at checkpoint time. Primary signal for
+    /// outdated-checkpoint detection — a peer that paired in a fresher
     /// device sees the larger epoch on the server's seal view.
     pub epoch: u64,
     /// Immutable epoch at which this device joined the group. Request planning
@@ -130,9 +131,9 @@ pub struct MlsSnapshotEnvelope {
     pub aead_version: u8,
 }
 
-impl MlsSnapshotEnvelope {
-    pub fn into_queued(self) -> QueuedMlsSnapshot {
-        QueuedMlsSnapshot {
+impl MlsLocalCheckpointEnvelope {
+    pub fn into_queued(self) -> QueuedMlsLocalCheckpoint {
+        QueuedMlsLocalCheckpoint {
             realm_id: self.realm_id,
             group_id: self.group_id,
             epoch: self.epoch,
@@ -149,8 +150,8 @@ impl MlsSnapshotEnvelope {
     }
 }
 
-impl From<QueuedMlsSnapshot> for MlsSnapshotEnvelope {
-    fn from(snapshot: QueuedMlsSnapshot) -> Self {
+impl From<QueuedMlsLocalCheckpoint> for MlsLocalCheckpointEnvelope {
+    fn from(snapshot: QueuedMlsLocalCheckpoint) -> Self {
         Self {
             realm_id: snapshot.realm_id,
             group_id: snapshot.group_id,
@@ -184,7 +185,7 @@ pub enum EnvelopeError {
     /// Restoring would silently fork the MLS group; the caller must
     /// fetch a newer envelope before restoring.
     #[error("outdated snapshot: envelope epoch {envelope_epoch} < current epoch {current_epoch}")]
-    OutdatedSnapshot {
+    OutdatedCheckpoint {
         envelope_epoch: u64,
         current_epoch: u64,
     },
@@ -215,7 +216,7 @@ pub enum EnvelopeError {
     WasmMlsRestoreUnsupported,
 }
 
-/// Encrypt a serialised MLS group state record under a device snapshot secret.
+/// Encrypt a serialised MLS group state record under a device checkpoint secret.
 /// `realm_id` is metadata only (not encrypted); `state_bytes` is the
 /// SDK-serialised `MlsGroupStateRecord` JSON. `salt` SHOULD be a
 /// 16-byte random value but the helper accepts any length so tests
@@ -233,11 +234,11 @@ pub fn encrypt_state(
     group_id: &str,
     epoch: u64,
     state_bytes: &[u8],
-    snapshot_secret: &str,
+    checkpoint_secret: &str,
     salt: &[u8],
-) -> MlsSnapshotEnvelope {
+) -> MlsLocalCheckpointEnvelope {
     let recorded_at = SystemClock.now();
-    let key = derive_key(snapshot_secret, salt);
+    let key = derive_key(checkpoint_secret, salt);
     let mut nonce_bytes = [0_u8; 12];
     getrandom::fill(&mut nonce_bytes).expect("operating system RNG must be available");
     let nonce = Nonce::from(nonce_bytes);
@@ -255,7 +256,7 @@ pub fn encrypt_state(
         // exceeds the 256 GiB AEAD limit, which is impossible for an
         // MLS group state record. Treat as unreachable.
         .expect("chacha20-poly1305 encrypt should not fail for in-memory MLS state");
-    MlsSnapshotEnvelope {
+    MlsLocalCheckpointEnvelope {
         realm_id: realm_id.to_owned(),
         group_id: group_id.to_owned(),
         epoch,
@@ -268,7 +269,7 @@ pub fn encrypt_state(
         // New-epoch baseline: a freshly minted envelope is assumed to start a
         // new epoch on this device, so the epoch clock starts now. The reaction
         // path (which re-snapshots WITHOUT advancing the epoch) overrides this
-        // via [`MlsSnapshotEnvelope::carry_epoch_started_at`] so the §2.9 1h cap
+        // via [`MlsLocalCheckpointEnvelope::carry_epoch_started_at`] so the §2.9 1h cap
         // measures true epoch age, not last-write time.
         epoch_started_at: recorded_at,
         app_messages_observed: 0,
@@ -282,11 +283,11 @@ pub fn encrypt_state(
 /// For [`AEAD_VERSION_CHACHA20_POLY1305`] envelopes the AEAD's
 /// Poly1305 tag detects both device-secret mismatch and tamper.
 pub fn decrypt_envelope(
-    envelope: &MlsSnapshotEnvelope,
-    snapshot_secret: &str,
+    envelope: &MlsLocalCheckpointEnvelope,
+    checkpoint_secret: &str,
 ) -> Result<Vec<u8>, EnvelopeError> {
     match envelope.aead_version {
-        AEAD_VERSION_CHACHA20_POLY1305 => decrypt_envelope_aead_v1(envelope, snapshot_secret),
+        AEAD_VERSION_CHACHA20_POLY1305 => decrypt_envelope_aead_v1(envelope, checkpoint_secret),
         other => Err(EnvelopeError::Malformed(format!(
             "unsupported aead_version {other}"
         ))),
@@ -294,8 +295,8 @@ pub fn decrypt_envelope(
 }
 
 fn decrypt_envelope_aead_v1(
-    envelope: &MlsSnapshotEnvelope,
-    snapshot_secret: &str,
+    envelope: &MlsLocalCheckpointEnvelope,
+    checkpoint_secret: &str,
 ) -> Result<Vec<u8>, EnvelopeError> {
     let salt = hex_decode(&envelope.salt_hex)
         .ok_or_else(|| EnvelopeError::Malformed("salt is not hex".to_owned()))?;
@@ -309,7 +310,7 @@ fn decrypt_envelope_aead_v1(
             nonce_bytes.len()
         )));
     }
-    let key = derive_key(snapshot_secret, &salt);
+    let key = derive_key(checkpoint_secret, &salt);
     let aad = build_aead_aad(&salt, envelope.epoch, envelope.recorded_at);
     let cipher = ChaCha20Poly1305::new((&key).into());
     let nonce = Nonce::try_from(nonce_bytes.as_slice()).expect("nonce length was validated");
@@ -342,17 +343,17 @@ fn build_aead_aad(salt: &[u8], epoch: u64, recorded_at: DateTime<Utc>) -> Vec<u8
 
 /// Decrypt + verify epoch freshness. Returns the inner state bytes
 /// when the envelope's epoch is `>= current_epoch_floor`, otherwise
-/// [`EnvelopeError::OutdatedSnapshot`]. Used by the multi-device
+/// [`EnvelopeError::OutdatedCheckpoint`]. Used by the multi-device
 /// restore path so a freshly-paired device doesn't bind to a stale
 /// envelope and silently fork the group.
 pub fn decrypt_with_epoch_check(
-    envelope: &MlsSnapshotEnvelope,
-    snapshot_secret: &str,
+    envelope: &MlsLocalCheckpointEnvelope,
+    checkpoint_secret: &str,
     current_epoch_floor: u64,
 ) -> Result<Vec<u8>, EnvelopeError> {
-    let bytes = decrypt_envelope(envelope, snapshot_secret)?;
+    let bytes = decrypt_envelope(envelope, checkpoint_secret)?;
     if envelope.epoch < current_epoch_floor {
-        return Err(EnvelopeError::OutdatedSnapshot {
+        return Err(EnvelopeError::OutdatedCheckpoint {
             envelope_epoch: envelope.epoch,
             current_epoch: current_epoch_floor,
         });
@@ -360,7 +361,7 @@ pub fn decrypt_with_epoch_check(
     Ok(bytes)
 }
 
-impl MlsSnapshotEnvelope {
+impl MlsLocalCheckpointEnvelope {
     /// SEC-08 — carry the epoch-start clock forward from a prior snapshot when
     /// this re-snapshot did NOT advance the epoch.
     ///
@@ -371,7 +372,7 @@ impl MlsSnapshotEnvelope {
     /// `minimal_metadata_realm` clock on every reaction. When the epoch genuinely
     /// changed, the freshly stamped `recorded_at` baseline is kept.
     #[must_use]
-    pub fn carry_epoch_started_at(mut self, previous: &MlsSnapshotEnvelope) -> Self {
+    pub fn carry_epoch_started_at(mut self, previous: &MlsLocalCheckpointEnvelope) -> Self {
         if self.epoch == previous.epoch {
             self.epoch_started_at = previous.epoch_started_at;
         }
@@ -399,8 +400,8 @@ impl MlsSnapshotEnvelope {
 // ───────────────────── Crypto primitives ────────────────────────
 
 #[allow(clippy::expect_used)]
-fn derive_key(snapshot_secret: &str, salt: &[u8]) -> [u8; 32] {
-    let hkdf = Hkdf::<Sha256>::new(Some(salt), snapshot_secret.as_bytes());
+fn derive_key(checkpoint_secret: &str, salt: &[u8]) -> [u8; 32] {
+    let hkdf = Hkdf::<Sha256>::new(Some(salt), checkpoint_secret.as_bytes());
     let mut out = [0u8; 32];
     hkdf.expand(MLS_ENVELOPE_MAGIC, &mut out)
         .expect("HKDF output length is fixed at 32 bytes");
@@ -469,7 +470,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_secret_mismatch_is_rejected_distinct_from_other_errors() {
+    fn checkpoint_secret_mismatch_is_rejected_distinct_from_other_errors() {
         let bytes = fake_state_record_bytes("dead", 1);
         let envelope = encrypt_state(
             "ak:realm:A_UALC69_WeDbu3WQ3suidUfmxa1MAW5tIIxjRS1C9yE",
@@ -515,14 +516,14 @@ mod tests {
         // current_epoch_floor == 5 → envelope is stale by 2 epochs.
         let result = decrypt_with_epoch_check(&envelope, "p1", 5);
         match result {
-            Err(EnvelopeError::OutdatedSnapshot {
+            Err(EnvelopeError::OutdatedCheckpoint {
                 envelope_epoch,
                 current_epoch,
             }) => {
                 assert_eq!(envelope_epoch, 3);
                 assert_eq!(current_epoch, 5);
             }
-            other => panic!("expected OutdatedSnapshot, got {other:?}"),
+            other => panic!("expected OutdatedCheckpoint, got {other:?}"),
         }
 
         // Secret mismatch beats outdated check (we don't leak the
@@ -600,7 +601,7 @@ mod tests {
         let plaintext = decrypt_envelope(&envelope, "p").unwrap();
         #[cfg(not(target_arch = "wasm32"))]
         {
-            let parsed = MlsSnapshotEnvelope::restore_state_record(&plaintext);
+            let parsed = MlsLocalCheckpointEnvelope::restore_state_record(&plaintext);
             assert!(matches!(parsed, Err(EnvelopeError::InvalidStateRecord(_))));
         }
         #[cfg(target_arch = "wasm32")]

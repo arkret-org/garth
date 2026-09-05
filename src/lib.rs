@@ -75,11 +75,11 @@ pub use arkret_retry::RetrySchedule;
 pub use arkret_wire::{HistoryAccess, HistoryEffectiveScope, OrganizationRecoveryArchive};
 pub use crypto_state_store::{
     AcceptedMlsArtifactApplicator, AcceptedMlsArtifactCommit, AcceptedMlsArtifactCommitOutcome,
-    AcceptedMlsArtifactConsumer, AcceptedMlsArtifactSnapshot, AcceptedMlsArtifactStore,
-    CryptoStore, DurableAcceptedMlsArtifact, MemoryCryptoStore, MlsCommitSource,
-    MlsEpochSecretRecord, MlsGroupStateRecord, MlsGroupStateSink, MlsWelcomeState,
-    PreparedAcceptedMlsArtifact, QueuedMlsHistorySecret, StoredDeviceVerification,
-    VersionedAcceptedMlsArtifactSnapshot, is_checkpoint_winning_accepted_mls_artifact,
+    AcceptedMlsArtifactConsumer, AcceptedMlsArtifactState, AcceptedMlsArtifactStore, CryptoStore,
+    DurableAcceptedMlsArtifact, MemoryCryptoStore, MlsCommitSource, MlsEpochSecretRecord,
+    MlsGroupStateRecord, MlsGroupStateSink, MlsWelcomeState, PreparedAcceptedMlsArtifact,
+    QueuedMlsHistorySecret, StoredDeviceVerification, VersionedAcceptedMlsArtifactState,
+    is_checkpoint_winning_accepted_mls_artifact,
 };
 pub use direct_conversation::{
     DirectConversationFoundingAction, direct_conversation_founding_action,
@@ -113,8 +113,8 @@ pub use inbound::{DecodedInbound, DecodedMessage, InboundDecoder};
 pub use maybe_send::{MaybeSend, MaybeSendSync};
 pub use mls::{
     ACCOUNT_MLS_SECRET_CURRENT_VERSION, AEAD_VERSION_CHACHA20_POLY1305, AccountMlsSecretRotation,
-    EnvelopeError, MLS_ENVELOPE_MAGIC, MlsRuntimeError, MlsRuntimeStatus, MlsSnapshotEnvelope,
-    SELF_PRESERVATION_JITTER_SLOTS, SELF_PRESERVATION_MAX_EPOCH_AGE_DAYS,
+    EnvelopeError, MLS_ENVELOPE_MAGIC, MlsLocalCheckpointEnvelope, MlsRuntimeError,
+    MlsRuntimeStatus, SELF_PRESERVATION_JITTER_SLOTS, SELF_PRESERVATION_MAX_EPOCH_AGE_DAYS,
     SELF_PRESERVATION_MAX_EPOCH_APP_MESSAGES, StoredAccountMlsSecret,
     canonical_mls_remove_membership_frontier, idle_self_update_jitter_passed,
     mls_commit_preconditions, should_force_epoch_advance,
@@ -146,7 +146,7 @@ pub use projection::{
 pub use protocol::{PresencePlaintext, ReadReceipt, TypingPlaintext, open_signal_plaintext};
 pub use queued_record::{
     AuthoringAuthorityModel, AuthoringGeneration, MlsAdmissionStage, QueuedAuthoredEventAttempt,
-    QueuedEventIntent, QueuedMlsSnapshot, QueuedMlsWelcomes, QueuedPostAcceptAction,
+    QueuedEventIntent, QueuedMlsLocalCheckpoint, QueuedMlsWelcomes, QueuedPostAcceptAction,
     QueuedRealmBootstrap, QueuedRecord, QueuedSdkEvent, ScheduledSendDispatchRecord,
     ScheduledSendSubmissionState,
 };

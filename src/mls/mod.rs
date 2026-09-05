@@ -16,8 +16,8 @@ pub mod backup_series;
 pub mod checkpoint_authority;
 pub mod commit_preconditions;
 pub mod device_secret;
+pub mod local_checkpoint;
 pub mod self_preservation;
-pub mod snapshot_envelope;
 pub mod status;
 pub mod welcome_admission;
 
@@ -41,26 +41,26 @@ pub use device_secret::{
     account_mls_secret_key, account_mls_secret_key_for_version, account_mls_secret_verified,
     create_device_hpke_keypair_durable, delete_mls_key_package_identity_state,
     delete_mls_pairwise_key_package_publish_marker, ensure_account_mls_secret_durable,
-    ensure_existing_account_mls_secret_durable, load_account_mls_secret, load_device_hpke_keypair,
-    load_device_hpke_private_key, load_device_snapshot_secret, load_mls_key_package_identity_state,
-    load_mls_key_package_inventory, load_mls_pairwise_key_package_publish_marker,
-    load_or_create_account_mls_secret, mark_account_mls_secret_verified,
-    mls_key_package_consume_request_key, mls_key_package_identity_state_key,
-    mls_key_package_inventory_key, mls_pairwise_key_package_publish_marker_key,
-    prepare_account_mls_secret_rotation, replace_account_mls_secret_version,
-    store_account_mls_secret, store_account_mls_secret_version,
+    ensure_existing_account_mls_secret_durable, load_account_mls_secret,
+    load_device_checkpoint_secret, load_device_hpke_keypair, load_device_hpke_private_key,
+    load_mls_key_package_identity_state, load_mls_key_package_inventory,
+    load_mls_pairwise_key_package_publish_marker, load_or_create_account_mls_secret,
+    mark_account_mls_secret_verified, mls_key_package_consume_request_key,
+    mls_key_package_identity_state_key, mls_key_package_inventory_key,
+    mls_pairwise_key_package_publish_marker_key, prepare_account_mls_secret_rotation,
+    replace_account_mls_secret_version, store_account_mls_secret, store_account_mls_secret_version,
     store_mls_key_package_identity_state, store_mls_key_package_identity_state_durable,
     store_mls_key_package_inventory, store_mls_pairwise_key_package_publish_marker,
     x25519_public_from_private,
+};
+pub use local_checkpoint::{
+    AEAD_VERSION_CHACHA20_POLY1305, EnvelopeError, MLS_ENVELOPE_MAGIC, MlsLocalCheckpointEnvelope,
+    decrypt_envelope, decrypt_with_epoch_check, encrypt_state,
 };
 pub use self_preservation::{
     SELF_PRESERVATION_JITTER_SLOTS, SELF_PRESERVATION_MAX_EPOCH_AGE_DAYS,
     SELF_PRESERVATION_MAX_EPOCH_APP_MESSAGES, canonical_mls_remove_membership_frontier,
     idle_self_update_jitter_passed, should_force_epoch_advance,
-};
-pub use snapshot_envelope::{
-    AEAD_VERSION_CHACHA20_POLY1305, EnvelopeError, MLS_ENVELOPE_MAGIC, MlsSnapshotEnvelope,
-    decrypt_envelope, decrypt_with_epoch_check, encrypt_state,
 };
 pub use status::{MlsRuntimeError, MlsRuntimeStatus};
 pub use welcome_admission::{

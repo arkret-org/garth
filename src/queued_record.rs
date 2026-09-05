@@ -142,7 +142,7 @@ pub struct ScheduledSendDispatchRecord {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct QueuedMlsSnapshot {
+pub struct QueuedMlsLocalCheckpoint {
     pub realm_id: String,
     pub group_id: String,
     pub epoch: u64,
@@ -218,7 +218,7 @@ pub enum QueuedPostAcceptAction {
         #[serde(default)]
         commit_was_duplicate: bool,
         welcomes: QueuedMlsWelcomes,
-        snapshot: QueuedMlsSnapshot,
+        snapshot: QueuedMlsLocalCheckpoint,
     },
 }
 

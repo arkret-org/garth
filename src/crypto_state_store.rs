@@ -21,7 +21,7 @@ use crate::protocol::{
     DeviceId, DeviceVerificationState, DidCoreId, Error, Event, EventId, EventKind, Hash,
     MlsCommitEnvelope, MlsKeyPackageRecord, MlsWelcomeEnvelope, Result, ScopeRef,
 };
-use crate::{MaybeSend, MaybeSendSync, QueuedMlsSnapshot};
+use crate::{MaybeSend, MaybeSendSync, QueuedMlsLocalCheckpoint};
 
 /// Local processing state for an exact Welcome envelope.
 ///
@@ -68,7 +68,7 @@ pub struct DurableAcceptedMlsArtifact {
     pub event: Event,
     pub event_digest: Hash,
     pub winning_transition_ref: EventId,
-    pub snapshot: QueuedMlsSnapshot,
+    pub snapshot: QueuedMlsLocalCheckpoint,
     pub history_secret: QueuedMlsHistorySecret,
 }
 
@@ -87,13 +87,13 @@ pub struct QueuedMlsHistorySecret {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedAcceptedMlsArtifact {
-    pub snapshot: QueuedMlsSnapshot,
+    pub snapshot: QueuedMlsLocalCheckpoint,
     pub history_secret: QueuedMlsHistorySecret,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct AcceptedMlsArtifactSnapshot {
+pub struct AcceptedMlsArtifactState {
     pub artifacts: BTreeMap<String, DurableAcceptedMlsArtifact>,
     pub ready_groups: BTreeMap<String, String>,
     pub history_secrets: BTreeMap<String, QueuedMlsHistorySecret>,
@@ -101,20 +101,20 @@ pub struct AcceptedMlsArtifactSnapshot {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct VersionedAcceptedMlsArtifactSnapshot {
+pub struct VersionedAcceptedMlsArtifactState {
     pub revision: u64,
-    pub snapshot: AcceptedMlsArtifactSnapshot,
+    pub snapshot: AcceptedMlsArtifactState,
 }
 
 /// Durable atomic store for accepted MLS artifacts. A successful CAS MUST mean
 /// the encrypted snapshot is crash-recoverable before it returns `true`.
 pub trait AcceptedMlsArtifactStore: Clone + MaybeSendSync + 'static {
-    fn load_accepted_mls_artifacts(&self) -> Result<VersionedAcceptedMlsArtifactSnapshot>;
+    fn load_accepted_mls_artifacts(&self) -> Result<VersionedAcceptedMlsArtifactState>;
 
     fn compare_and_swap_accepted_mls_artifacts<'a>(
         &'a self,
         expected_revision: u64,
-        snapshot: &'a AcceptedMlsArtifactSnapshot,
+        snapshot: &'a AcceptedMlsArtifactState,
     ) -> impl Future<Output = Result<bool>> + MaybeSend + 'a;
 }
 
@@ -129,7 +129,7 @@ pub trait AcceptedMlsArtifactApplicator: MaybeSendSync {
     fn prepare<'a>(
         &'a self,
         event: &'a Event,
-        previous: Option<&'a QueuedMlsSnapshot>,
+        previous: Option<&'a QueuedMlsLocalCheckpoint>,
     ) -> impl Future<Output = Result<PreparedAcceptedMlsArtifact>> + MaybeSend + 'a;
 }
 
@@ -161,11 +161,11 @@ where
         &self.store
     }
 
-    pub fn ready_snapshot(
+    pub fn ready_checkpoint(
         &self,
         scope: &ScopeRef,
         group_id: &str,
-    ) -> Result<Option<QueuedMlsSnapshot>> {
+    ) -> Result<Option<QueuedMlsLocalCheckpoint>> {
         let state = self.store.load_accepted_mls_artifacts()?.snapshot;
         let key = ready_group_key(scope, group_id)?;
         let Some(event_id) = state.ready_groups.get(&key) else {
@@ -839,12 +839,12 @@ mod tests {
 
     #[derive(Clone, Default)]
     struct TestAcceptedStore {
-        state: Arc<Mutex<VersionedAcceptedMlsArtifactSnapshot>>,
+        state: Arc<Mutex<VersionedAcceptedMlsArtifactState>>,
         fail_write: Arc<AtomicBool>,
     }
 
     impl AcceptedMlsArtifactStore for TestAcceptedStore {
-        fn load_accepted_mls_artifacts(&self) -> Result<VersionedAcceptedMlsArtifactSnapshot> {
+        fn load_accepted_mls_artifacts(&self) -> Result<VersionedAcceptedMlsArtifactState> {
             self.state
                 .lock()
                 .map_err(|_| Error::Protocol("test accepted store lock poisoned".to_owned()))
@@ -854,7 +854,7 @@ mod tests {
         fn compare_and_swap_accepted_mls_artifacts<'a>(
             &'a self,
             expected_revision: u64,
-            snapshot: &'a AcceptedMlsArtifactSnapshot,
+            snapshot: &'a AcceptedMlsArtifactState,
         ) -> impl Future<Output = Result<bool>> + MaybeSend + 'a {
             async move {
                 if self.fail_write.load(Ordering::SeqCst) {
@@ -885,7 +885,7 @@ mod tests {
         fn prepare<'a>(
             &'a self,
             event: &'a Event,
-            previous: Option<&'a QueuedMlsSnapshot>,
+            previous: Option<&'a QueuedMlsLocalCheckpoint>,
         ) -> impl Future<Output = Result<PreparedAcceptedMlsArtifact>> + MaybeSend + 'a {
             async move {
                 self.calls.fetch_add(1, Ordering::SeqCst);
@@ -922,7 +922,7 @@ mod tests {
                         transition_ref: transition.clone(),
                         ciphertext: vec![4],
                     },
-                    snapshot: QueuedMlsSnapshot {
+                    snapshot: QueuedMlsLocalCheckpoint {
                         realm_id: "realm".to_owned(),
                         group_id: self.group_id.clone(),
                         epoch,
@@ -1041,7 +1041,7 @@ mod tests {
             .unwrap();
 
         let ready = restarted
-            .ready_snapshot(&scope, &group_id)
+            .ready_checkpoint(&scope, &group_id)
             .unwrap()
             .unwrap();
         assert_eq!(ready.epoch, 1);
@@ -1134,7 +1134,7 @@ mod tests {
         assert!(error.to_string().contains("write failure"));
         assert!(
             consumer
-                .ready_snapshot(&scope, &group_id)
+                .ready_checkpoint(&scope, &group_id)
                 .unwrap()
                 .is_none()
         );
