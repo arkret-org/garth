@@ -477,6 +477,14 @@ fn state_from_refresh_outcome(
     if outcome.account_id != current.account_id {
         return Err(protocol("refreshed session grant AccountId changed"));
     }
+    // `sync/service-http-binding.md` requires the refresh successor to keep
+    // subject/scope/audience/cnf.jkt, and neither refresh request branch carries
+    // a requested scope, so any delta - widening or narrowing - is an unrequested
+    // server-side rewrite. A runtime that needs a different scope obtains a new
+    // session instead (`agent_session_scope_refresh_required`).
+    if outcome.granted_scope != current.granted_scope {
+        return Err(protocol("refreshed session grant scope changed"));
+    }
     if outcome.session_grant_id == current.grant_id {
         return Err(protocol("refreshed session grant id was replayed"));
     }
@@ -502,10 +510,16 @@ fn state_from_refresh_outcome(
             "refreshed session grant device mismatched request",
         ));
     }
+    // The issuer echoes the bound device on every successor, so an absent
+    // `device_id` is a missing echo rather than a claim of "no device binding";
+    // `state_from_issue_outcome` fails closed on exactly the same shape.
+    if outcome.device_id.as_ref() != current.device_id.as_ref() {
+        return Err(protocol("refreshed session grant device changed"));
+    }
 
     Ok(SessionGrantState {
         account_id: outcome.account_id,
-        device_id: current.device_id.clone(),
+        device_id: outcome.device_id,
         grant_id: outcome.session_grant_id,
         grant_jwt: outcome.session_grant,
         expires_at: outcome.expires_at,
@@ -764,7 +778,7 @@ mod tests {
         SessionGrantOutcome {
             session_grant_id: grant,
             account_id: AccountId::new(principal_id(), audience()),
-            device_id: None,
+            device_id: Some(device_id()),
             session_grant: token.to_owned(),
             session_public_key: session_public_jwk(),
             expires_at: now() + Duration::hours(1),
@@ -931,19 +945,48 @@ mod tests {
         )
         .unwrap();
 
-        for outcome in [
-            wrong_audience,
-            wrong_previous,
-            replayed,
-            expired,
-            wrong_dpop,
+        let mut widened_scope = refresh_outcome("grant-widened-scope", grant_id(34));
+        widened_scope.granted_scope = vec![
+            "ak.self.events.stream.subscribe.v1".to_owned(),
+            "ak.self.events.command.submit.v1".to_owned(),
+        ];
+
+        let mut narrowed_scope = refresh_outcome("grant-narrowed-scope", grant_id(35));
+        narrowed_scope.granted_scope = Vec::new();
+
+        let mut substituted_scope = refresh_outcome("grant-substituted-scope", grant_id(36));
+        substituted_scope.granted_scope = vec!["ak.self.events.command.submit.v1".to_owned()];
+
+        let mut wrong_device = refresh_outcome("grant-wrong-device", grant_id(37));
+        wrong_device.device_id = Some(other_device_id());
+
+        let mut unechoed_device = refresh_outcome("grant-unechoed-device", grant_id(38));
+        unechoed_device.device_id = None;
+
+        for (outcome, expected_error) in [
+            (wrong_audience, "refreshed session grant audience changed"),
+            (wrong_previous, "refreshed session grant chain changed"),
+            (replayed, "refreshed session grant id was replayed"),
+            (expired, "refreshed session grant is expired"),
+            (wrong_dpop, "refreshed session grant DPoP key changed"),
+            (widened_scope, "refreshed session grant scope changed"),
+            (narrowed_scope, "refreshed session grant scope changed"),
+            (substituted_scope, "refreshed session grant scope changed"),
+            (wrong_device, "refreshed session grant device changed"),
+            (unechoed_device, "refreshed session grant device changed"),
         ] {
             let transport = MockSessionTransport::with_refresh_responses(vec![Ok(outcome)]);
             let engine = SessionEngine::with_state(transport, active_state());
 
-            let result = engine.refresh_once(refresh_options(), now()).await;
+            let error = engine
+                .refresh_once(refresh_options(), now())
+                .await
+                .expect_err("a changed successor is rejected");
 
-            assert!(result.is_err());
+            assert!(
+                error.to_string().contains(expected_error),
+                "expected `{expected_error}`, got `{error}`"
+            );
             assert_eq!(engine.current_state().unwrap().grant_jwt, "grant-1");
         }
     }

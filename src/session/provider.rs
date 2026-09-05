@@ -401,7 +401,9 @@ mod tests {
                 DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
                 DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             ),
-            device_id: None,
+            device_id: Some(
+                DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
+            ),
             session_grant: "grant-2".to_owned(),
             session_public_key: session_public_jwk(),
             expires_at: Utc::now() + Duration::hours(1),
