@@ -12,14 +12,17 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use arkret_models_collaboration::events_payloads::realm::RealmProfile;
+use arkret_models_collaboration::governance::holder_quarantine::{
+    HolderQuarantine, HolderQuarantineEntry, HolderQuarantineSurfaceKind,
+};
 use arkret_wire::{
-    ActorId, DeviceId, Did, Event, EventId, EventKind, PredicateOp, REALM_PROFILE_CELL,
-    event_kind_str, project_did_to_core_id,
+    AccountDataKey, AccountId, ActorId, DeviceId, Did, Event, EventId, EventKind, PredicateOp,
+    REALM_PROFILE_CELL, event_kind_str, project_did_to_core_id,
 };
 use serde_json::Value;
 
 use crate::protocol::sync::{RealmUpdate, SyncUpdates};
-use crate::protocol::{DeviceMessageEnvelope, DidCoreId};
+use crate::protocol::{AccountDataRow, DeviceMessageEnvelope, DidCoreId, Error, Result};
 
 /// True when an account-subscribe step carries nothing an ingest could act on.
 pub fn account_updates_are_empty(updates: &SyncUpdates) -> bool {
@@ -517,9 +520,89 @@ pub fn for_each_projection_identity_event(
     }
 }
 
+/// The holder's pending-review inbox, split by the closed `surface_kind`
+/// discriminator.
+///
+/// `identity/consent-model.md` section 6.1.1 gives the two branches different
+/// terminal semantics, so a client that renders them as one list is wrong even
+/// when both look like "someone is waiting on me": accepting an
+/// `invite_delivery` builds a section 3.2 grant and MAY additionally accept the
+/// original invite, while accepting a `consent_request` builds the grant and
+/// stops -- that branch has no original object, and the requester retries the
+/// normal path once the grant is active.
+///
+/// A quarantine entry is not a consent cell. It grants nothing, it is not
+/// addressed by a `consent_id`, and it never appears in
+/// `ak.self.consent.query.cells.v1`. Nor is it the Contact surface: a Contact
+/// request has its own `pending_incoming` state and deliberately produces no
+/// entry here.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HolderQuarantineReview<'a> {
+    /// Quarantined private invite deliveries, oldest first.
+    pub invite_deliveries: Vec<&'a HolderQuarantineEntry>,
+    /// Quarantined `ak.self.consent.command.request.v1` submissions, oldest
+    /// first.
+    pub consent_requests: Vec<&'a HolderQuarantineEntry>,
+}
+
+impl<'a> HolderQuarantineReview<'a> {
+    /// Split one decoded cell. The cell already stores its entries oldest
+    /// first, so each branch keeps that order.
+    #[must_use]
+    pub fn from_cell(cell: &'a HolderQuarantine) -> Self {
+        let mut review = Self::default();
+        for entry in &cell.quarantine_entries {
+            match entry.surface_kind() {
+                HolderQuarantineSurfaceKind::InviteDelivery => {
+                    review.invite_deliveries.push(entry);
+                }
+                HolderQuarantineSurfaceKind::ConsentRequest => {
+                    review.consent_requests.push(entry);
+                }
+            }
+        }
+        review
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.invite_deliveries.is_empty() && self.consent_requests.is_empty()
+    }
+
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.invite_deliveries.len() + self.consent_requests.len()
+    }
+}
+
+/// Decode the holder's `ak.account.holder_quarantine` cell out of one
+/// Station-CAS account-data row.
+///
+/// The row comes from the authoritative register: the account-subscribe
+/// `account_data.station_cas` complete baseline and its cursor-covered
+/// upsert/remove deltas. `holder_account_id` is the authenticated holder, never
+/// an identity read out of the first entry, so a cell addressed to another
+/// account fails instead of being rendered.
+pub fn holder_quarantine_cell(
+    row: &AccountDataRow,
+    holder_account_id: &AccountId,
+) -> Result<HolderQuarantine> {
+    if row.account_data_key != AccountDataKey::ACCOUNT_HOLDER_QUARANTINE {
+        return Err(Error::Protocol(format!(
+            "{} is not the holder quarantine cell",
+            row.account_data_key
+        )));
+    }
+    let cell: HolderQuarantine = serde_json::from_value(row.content.clone())
+        .map_err(|error| Error::Protocol(format!("invalid holder quarantine cell: {error}")))?;
+    cell.validate_holder(holder_account_id)
+        .map_err(|error| Error::Protocol(format!("holder quarantine binding: {error}")))?;
+    Ok(cell)
+}
+
 #[cfg(test)]
 mod tests {
-    use arkret_wire::{AccountId, Hlc, RealmId, ScopeRef};
+    use arkret_wire::{Hlc, RealmId, ScopeRef};
     use serde_json::json;
 
     use super::*;
@@ -920,5 +1003,101 @@ mod tests {
         );
 
         assert!(!response_revokes_local_device(&projections, &actor, device));
+    }
+
+    fn quarantine_holder() -> AccountId {
+        AccountId::new(
+            DidCoreId::new("ak:did_core:web:holder.example").unwrap(),
+            station(),
+        )
+    }
+
+    fn quarantine_row(entries: Value) -> AccountDataRow {
+        AccountDataRow {
+            account_data_key: AccountDataKey::ACCOUNT_HOLDER_QUARANTINE.to_owned(),
+            revision: 3,
+            content: json!({
+                "schema": "ak.schema.holder_quarantine.v1",
+                "updated_at": "2026-09-05T12:00:00.000Z",
+                "quarantine_entries": entries,
+            }),
+            updated_at: "2026-09-05T12:00:00.000Z".parse().unwrap(),
+        }
+    }
+
+    #[test]
+    fn a_restored_quarantine_cell_reviews_each_surface_separately() {
+        let row = quarantine_row(json!([
+            {
+                "entry_digest": format!("sha256:{}", "a".repeat(64)),
+                "account_id": {
+                    "principal_id": "ak:did_core:web:holder.example",
+                    "station_id": "ak:did_core:web:principal.example"
+                },
+                "source_peer_principal_id": "ak:did_core:web:inviter.example",
+                "source_id": "ak:did_core:web:peer-station.example",
+                "surface_kind": "invite_delivery",
+                "consent_scope": "invite",
+                "introduction_kind": "locator_ref",
+                "effective_kind": "locator_ref",
+                "trust_tier": "high",
+                "invite_event_id": "ak:event:AS8XThowW7JnZc80U10gJh-_lqkA-iSQ-LAvBXj6_9O5",
+                "request_digest": format!("sha256:{}", "b".repeat(64)),
+                "idempotency_key_digest": format!("sha256:{}", "c".repeat(64)),
+                "received_at": "2026-09-05T10:00:00.000Z",
+                "expires_at": "2026-10-05T10:00:00.000Z"
+            },
+            {
+                "entry_digest": format!("sha256:{}", "d".repeat(64)),
+                "account_id": {
+                    "principal_id": "ak:did_core:web:holder.example",
+                    "station_id": "ak:did_core:web:principal.example"
+                },
+                "source_peer_principal_id": "ak:did_core:web:asker.example",
+                "source_id": "ak:did_core:web:principal.example",
+                "surface_kind": "consent_request",
+                "consent_scope": "direct_message",
+                "received_at": "2026-09-05T11:00:00.000Z",
+                "expires_at": "2026-10-05T11:00:00.000Z"
+            }
+        ]));
+        let cell = holder_quarantine_cell(&row, &quarantine_holder()).unwrap();
+        let review = HolderQuarantineReview::from_cell(&cell);
+        assert_eq!(review.len(), 2);
+        assert_eq!(review.invite_deliveries.len(), 1);
+        assert_eq!(review.consent_requests.len(), 1);
+        assert!(
+            review.invite_deliveries[0]
+                .surface
+                .invite_event_id()
+                .is_some()
+        );
+        assert!(
+            review.consent_requests[0]
+                .surface
+                .invite_event_id()
+                .is_none()
+        );
+        assert!(
+            review.consent_requests[0]
+                .consent_request_live_key()
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn a_cell_addressed_to_another_holder_is_refused() {
+        let row = quarantine_row(json!([]));
+        let foreign = AccountId::new(
+            DidCoreId::new("ak:did_core:web:someone-else.example").unwrap(),
+            station(),
+        );
+        // An empty cell still belongs to one exact account, but it carries no
+        // entry to disagree with, so only a wrong key is refusable here.
+        holder_quarantine_cell(&row, &foreign).unwrap();
+        let mut wrong_key = row;
+        wrong_key.account_data_key = "ak.account.invite_receive_policy".to_owned();
+        holder_quarantine_cell(&wrong_key, &quarantine_holder())
+            .expect_err("another account-data key is not this carrier");
     }
 }
