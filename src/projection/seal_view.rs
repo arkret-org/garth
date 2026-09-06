@@ -285,7 +285,6 @@ impl LocalSealView {
             }
             let event_ids: Vec<String> = bottom
                 .get("event_ids")
-                .or_else(|| bottom.get("move_ids"))
                 .and_then(|v| v.as_array())
                 .map(|arr| {
                     arr.iter()

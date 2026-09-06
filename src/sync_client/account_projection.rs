@@ -385,8 +385,6 @@ pub fn discussion_state_control_event_kind(event: &Value) -> Option<&str> {
         .get("kind")
         .or_else(|| event.get("event_kind"))
         .or_else(|| event.get("type"))
-        .or_else(|| event.get("op_type"))
-        .or_else(|| event.get("event_type"))
         .and_then(Value::as_str)
 }
 
