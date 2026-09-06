@@ -312,6 +312,9 @@ where
         let outcome = self
             .scan_realm_catchup_uncheckpointed_classified(transport, realm_id.clone(), options)
             .await?;
+        if let Some(error) = compacted_log_reason(&outcome) {
+            return Err(ProjectedRunError::Transport(error));
+        }
 
         let decoder = crate::InboundDecoder::new();
         let mut batch = Vec::new();
@@ -461,10 +464,29 @@ where
     }
 }
 
+/// The error a compacted Realm log deserves, or `None` when the rows really are
+/// the whole history.
+///
+/// A `realm_state_snapshot_bootstrap` hint means the server answered from a log
+/// whose prefix has been compacted into the snapshot it names. The rows are a
+/// suffix; a baseline built from them is missing every Event before the
+/// snapshot frontier, and nothing in the rows themselves says so. Callers that
+/// want that state restore the snapshot instead — see
+/// `arkret_http_client::Client::restore_realm_state_snapshot_for_bootstrap`.
+fn compacted_log_reason(outcome: &crate::protocol::EventsQueryOutcome) -> Option<Error> {
+    let bootstrap = outcome.realm_state_snapshot_bootstrap.as_ref()?;
+    Some(Error::Protocol(format!(
+        "Realm history is compacted behind snapshot {}: the returned rows start past genesis, so \
+         they are a suffix rather than a baseline. Restore the snapshot instead of replaying them.",
+        bootstrap.realm_state_snapshot_ref
+    )))
+}
+
 fn verify_complete_realm_history(
     outcome: &crate::protocol::EventsQueryOutcome,
     digest_suite: arkret_canonical::DigestSuite,
 ) -> Result<()> {
+    compacted_log_reason(outcome).map_or(Ok(()), Err)?;
     for (index, row) in outcome.events.iter().cloned().enumerate() {
         let event = row.into_event().ok_or_else(|| {
             Error::Protocol(format!(
@@ -490,6 +512,61 @@ mod tests {
     use crate::protocol::{AccountStreamInterrupt, Error, SyncRequestBody};
     use crate::protocol::{EventsQueryOutcome, EventsSubscribeFrame};
     use crate::{ClientEvent, MemoryStore};
+
+    /// A compacted log is a suffix, not a baseline. The old check only looked
+    /// at the rows it was handed, so a truncated history that happened to
+    /// contain complete Events passed as "the whole Realm".
+    #[test]
+    fn compacted_realm_history_is_not_a_complete_baseline() {
+        let complete = crate::protocol::EventsQueryOutcome {
+            events: Vec::new(),
+            realm_state_snapshot_bootstrap: None,
+            prev_cursor: None,
+            next_cursor: None,
+            has_more: false,
+        };
+        verify_complete_realm_history(&complete, arkret_canonical::DigestSuite::Sha256).unwrap();
+
+        let compacted = crate::protocol::EventsQueryOutcome {
+            realm_state_snapshot_bootstrap: Some(compacted_bootstrap_hint()),
+            ..complete
+        };
+        let error =
+            verify_complete_realm_history(&compacted, arkret_canonical::DigestSuite::Sha256)
+                .unwrap_err();
+        let message = error.to_string();
+        assert!(
+            message.contains("compacted") && message.contains("past genesis"),
+            "the diagnostic must name the real cause, got: {message}"
+        );
+    }
+
+    fn compacted_bootstrap_hint()
+    -> arkret_models_collaboration::sync_frames::realm_state_snapshot::RealmStateSnapshotBootstrap
+    {
+        serde_json::from_value(serde_json::json!({
+            "realm_state_snapshot_ref": "ak:realm_state_snapshot:01904100-0000-7000-8000-000000000001",
+            "state_digest": format!("sha256:{}", "11".repeat(32)),
+            "realm_state_snapshot_frontier": [],
+            "created_by": {"kind": "service", "service_id": "ak:did_core:webvh:z6mkfixture"},
+            "created_at": "2026-06-01T00:00:00.000Z",
+            "authority_binding": {
+                "authority_kind": "realm_policy_snapshot_issuer",
+                "auth_state_digest": format!("sha256:{}", "22".repeat(32)),
+                "auth_frontier": [],
+                "checked_at": "2026-06-01T00:00:00.000Z"
+            },
+            "signature": {
+                "kind": "detached_jws",
+                "verification_method": "did:webvh:z6mkfixture:station.example#snapshot",
+                "payload_digest": format!("sha256:{}", "33".repeat(32)),
+                "created_at": "2026-06-01T00:00:00.000Z",
+                "jws": "header..signature"
+            }
+        }))
+        .expect("bootstrap hint fixture")
+    }
+
 
     fn actor_id() -> DidCoreId {
         DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()
