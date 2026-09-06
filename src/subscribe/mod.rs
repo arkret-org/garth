@@ -567,7 +567,6 @@ mod tests {
         .expect("bootstrap hint fixture")
     }
 
-
     fn actor_id() -> DidCoreId {
         DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()
     }
