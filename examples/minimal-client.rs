@@ -67,7 +67,7 @@ impl EventsScanTransport for ReferenceTransport {
         Box::pin(async {
             Ok(EventsQueryOutcome {
                 events: Vec::new(),
-                snapshot_bootstrap: None,
+                realm_state_snapshot_bootstrap: None,
                 prev_cursor: None,
                 next_cursor: None,
                 has_more: false,

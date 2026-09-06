@@ -521,7 +521,7 @@ mod tests {
     fn backfill_outcome(next_cursor: Option<&str>) -> EventsQueryOutcome {
         EventsQueryOutcome {
             events: Vec::new(),
-            snapshot_bootstrap: None,
+            realm_state_snapshot_bootstrap: None,
             prev_cursor: None,
             next_cursor: next_cursor.map(str::to_owned),
             has_more: false,

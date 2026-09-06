@@ -105,7 +105,7 @@ where
     let mut after = options.after;
     let mut aggregate = EventsQueryOutcome {
         events: Vec::new(),
-        snapshot_bootstrap: None,
+        realm_state_snapshot_bootstrap: None,
         prev_cursor: None,
         next_cursor: None,
         has_more: false,
@@ -126,8 +126,9 @@ where
         if aggregate.prev_cursor.is_none() {
             aggregate.prev_cursor = outcome.prev_cursor.clone();
         }
-        if aggregate.snapshot_bootstrap.is_none() {
-            aggregate.snapshot_bootstrap = outcome.snapshot_bootstrap.take();
+        if aggregate.realm_state_snapshot_bootstrap.is_none() {
+            aggregate.realm_state_snapshot_bootstrap =
+                outcome.realm_state_snapshot_bootstrap.take();
         }
         let next_cursor = outcome.next_cursor.clone();
         let has_more = outcome.has_more;
@@ -159,7 +160,7 @@ mod tests {
     fn outcome(next_cursor: Option<&str>, has_more: bool) -> EventsQueryOutcome {
         EventsQueryOutcome {
             events: Vec::new(),
-            snapshot_bootstrap: None,
+            realm_state_snapshot_bootstrap: None,
             prev_cursor: None,
             next_cursor: next_cursor.map(str::to_owned),
             has_more,
