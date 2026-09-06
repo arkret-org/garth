@@ -10,7 +10,7 @@ pub enum MlsRuntimeStatus {
     Denied(String),
     MissingWelcome,
     MissingDeviceSecret(String),
-    SnapshotDecryptFailed(String),
+    CheckpointDecryptFailed(String),
     UnsupportedTarget,
 }
 
@@ -27,7 +27,7 @@ impl MlsRuntimeStatus {
             Self::MissingDeviceSecret(reason) => {
                 format!("device MLS checkpoint secret unavailable: {reason}")
             }
-            Self::SnapshotDecryptFailed(reason) => {
+            Self::CheckpointDecryptFailed(reason) => {
                 format!("stored MLS history could not be decrypted ({reason}); restore your encrypted MLS history with your 24-word Recovery Key.")
             }
             Self::UnsupportedTarget => {
@@ -45,7 +45,7 @@ pub enum MlsRuntimeError {
     Identity(String),
     Genesis(String),
     Welcome(String),
-    SnapshotRestore(String),
+    CheckpointRestore(String),
     /// A complete sync roster hint differs from the local MLS group, or a
     /// verified §2.4.1 binding transition is still pending. Encrypted
     /// application writes must pause instead of using the old epoch.
@@ -70,10 +70,10 @@ impl MlsRuntimeError {
             Self::MissingWelcome => MlsRuntimeStatus::MissingWelcome,
             Self::DeviceSecret(err) => MlsRuntimeStatus::MissingDeviceSecret(err.to_string()),
             Self::Identity(reason) | Self::Welcome(reason) => {
-                MlsRuntimeStatus::SnapshotDecryptFailed(reason.clone())
+                MlsRuntimeStatus::CheckpointDecryptFailed(reason.clone())
             }
-            Self::SnapshotRestore(reason) => {
-                MlsRuntimeStatus::SnapshotDecryptFailed(reason.clone())
+            Self::CheckpointRestore(reason) => {
+                MlsRuntimeStatus::CheckpointDecryptFailed(reason.clone())
             }
             Self::Genesis(reason) | Self::Commit(reason) => {
                 MlsRuntimeStatus::Pending(reason.clone())
@@ -98,7 +98,7 @@ impl MlsRuntimeError {
     pub fn user_message(&self) -> String {
         match self {
             Self::EmptyPlaintext => "internal: no MLS plaintext values to encrypt".to_owned(),
-            Self::MissingWelcome | Self::DeviceSecret(_) | Self::SnapshotRestore(_) => {
+            Self::MissingWelcome | Self::DeviceSecret(_) | Self::CheckpointRestore(_) => {
                 self.status().user_message()
             }
             Self::Identity(reason) => format!("MLS identity unavailable: {reason}"),
