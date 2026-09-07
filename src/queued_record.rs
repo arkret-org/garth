@@ -73,20 +73,20 @@ pub struct QueuedEventIntent {
 
 impl QueuedEventIntent {
     pub fn new(intent: EventIntent, digest_suite: arkret_canonical::DigestSuite) -> Self {
-        // A CBA basis the producer did not pin is per-attempt state: each retry
+        // A CBS basis the producer did not pin is per-attempt state: each retry
         // re-reads the Seal view it authors against.
         Self {
             digest_suite,
-            intent: intent.without_cba_basis(),
+            intent: intent.without_cbs_basis(),
         }
     }
 
-    /// Freeze an intent that pins its own CBA basis.
+    /// Freeze an intent that pins its own CBS basis.
     ///
     /// A pre-join `ak.invite.accept` cannot re-resolve the membership-gated
     /// Realm Seal view, so the join-candidate basis its author resolved is part
     /// of the operation, not of one attempt at it.
-    pub fn with_pinned_cba_basis(
+    pub fn with_pinned_cbs_basis(
         intent: EventIntent,
         digest_suite: arkret_canonical::DigestSuite,
     ) -> Self {
@@ -279,7 +279,7 @@ impl QueuedSdkEvent {
     ///
     /// `intent` is passed in rather than reconstructed from `envelope`: the
     /// caller authored the envelope *from* that intent, and only the caller
-    /// knows which CBA members the producer pinned as part of the operation
+    /// knows which CBS members the producer pinned as part of the operation
     /// versus resolved for this attempt.
     #[allow(clippy::too_many_arguments)]
     pub fn authored(
