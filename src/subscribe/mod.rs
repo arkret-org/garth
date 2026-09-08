@@ -7,11 +7,6 @@ pub mod signal;
 pub(crate) mod test_support;
 
 pub use account::account_updates_to_events;
-
-use crate::protocol::{DeviceId, DidCoreId, Error, RealmId, Result};
-use crate::sync_client::{
-    AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot,
-};
 pub use driver::{SubscriptionLoopDriver, SubscriptionStopReason};
 pub use realm::{
     BoxRealmStreamFuture, RealmEventsDriver, RealmEventsFrameSource, RealmEventsTransport,
@@ -24,6 +19,10 @@ pub use signal::{
     SignalStreamTransport,
 };
 
+use crate::protocol::{DeviceId, DidCoreId, Error, RealmId, Result};
+use crate::sync_client::{
+    AsyncSyncTransport, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot,
+};
 use crate::{
     ClientEvent, ClientProjector, CursorScope, CursorStore, DurableInboxStore, EventCacheStore,
     Executor, OpaqueCursor,
@@ -509,8 +508,9 @@ mod tests {
     use super::test_support::{RecordingExecutor, queued_transport, sync_response};
     use super::*;
     use crate::protocol::identifiers::Cursor;
-    use crate::protocol::{AccountStreamInterrupt, Error, SyncRequestBody};
-    use crate::protocol::{EventsQueryOutcome, EventsSubscribeFrame};
+    use crate::protocol::{
+        AccountStreamInterrupt, Error, EventsQueryOutcome, EventsSubscribeFrame, SyncRequestBody,
+    };
     use crate::{ClientEvent, MemoryStore};
 
     /// A compacted log is a suffix, not a baseline. The old check only looked

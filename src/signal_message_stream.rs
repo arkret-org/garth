@@ -2,21 +2,18 @@
 
 use std::collections::BTreeMap;
 
+use arkret_models_collaboration::signal_message_stream::MESSAGE_STREAM_KIND;
 use chrono::{DateTime, Duration, Utc};
-
 use serde_json::Value;
 
 use crate::MaybeSendSync;
-
 use crate::protocol::{
     ActorId, DeviceId, Error, Event, EventKind, MAX_MESSAGE_STREAM_LIFETIME_SECONDS,
     MAX_MESSAGE_STREAM_PREVIEW_BYTES, MAX_MESSAGE_STREAMS_PER_DEVICE,
     MESSAGE_STREAM_STALLED_AFTER_SECONDS, MessageCreatePayload, MessageId, MessageStreamFormat,
     MessageStreamFrame, MessageStreamId, Result, ScopeRef, SignalSequenceEndpoint, StrandId,
 };
-
 use crate::signal::SignalPlaintext;
-use arkret_models_collaboration::signal_message_stream::MESSAGE_STREAM_KIND;
 
 pub trait MessageStreamAuthorizer: MaybeSendSync {
     fn can_display(&self, plaintext: &SignalPlaintext, frame: &MessageStreamFrame) -> bool;
@@ -418,7 +415,6 @@ mod tests {
     use arkret_models_collaboration::signal_message_stream::{
         MessageStreamAbort, MessageStreamAbortReason, MessageStreamDelta, MessageStreamKeyframe,
     };
-
     use arkret_wire::{DidCoreId, EventId, RealmId, SealId};
 
     use super::*;

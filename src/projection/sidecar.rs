@@ -265,14 +265,13 @@ fn push_private<T: Clone>(
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::protocol::models::{
         AgentSidecarExchangeFoldedFrontier, AgentSidecarExchangeId,
         AgentSidecarExchangeProjectionSchema, AgentSidecarExchangeStatus,
         AgentSidecarSourceTrackRef, agent_sidecar_exchange_event_set_digest,
     };
     use crate::protocol::{AccountId, DidCoreId, Hlc, NonEmptyString, SidecarId};
-
-    use super::*;
 
     fn indexed_event_id(index: usize) -> EventId {
         let mut digest = [0_u8; 32];

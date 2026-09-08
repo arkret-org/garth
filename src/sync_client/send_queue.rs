@@ -745,16 +745,14 @@ fn validate_record_scope(realm_id: &RealmId, record: &QueuedRecord) -> Result<()
 /// gate production code runs.
 #[cfg(test)]
 pub(crate) mod test_publication {
-    use arkret_wire::SchemaId;
-    use chrono::{DateTime, Utc};
-
     use arkret_wire::{
         AuthoritySetAuthorizationRule, AuthoritySetIssuer, AuthoritySetIssuerRole,
         AuthoritySetPolicy, AuthoritySetPolicyKind, AuthoritySetPolicySource, AuthoritySetRef,
         AuthoritySetSourceKind, AuthorizationLease, AuthorizationLeaseId, DeviceId, Did, DidCoreId,
         DidUrl, EventId, Hash, IngressReceipt, LeaseBasisRef, PayloadProof, ReceiptId, RiskTier,
-        ScopeRef, SealId,
+        SchemaId, ScopeRef, SealId,
     };
+    use chrono::{DateTime, Utc};
 
     use crate::protocol::RealmId;
 

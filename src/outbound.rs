@@ -1,13 +1,14 @@
 use std::collections::hash_map::DefaultHasher;
+use std::future::Future;
 use std::hash::{Hash, Hasher};
-use std::{future::Future, pin::Pin, time::Duration};
+use std::pin::Pin;
+use std::time::Duration;
 
-use crate::QueuedRecord;
-use crate::protocol::{Error, EventId, IngressReceipt, RealmId, Result};
-use crate::sync_client::{SendQueue, SendQueueItem, SendQueueSnapshot};
 use chrono::{DateTime, Utc};
 
-use crate::MaybeSendSync;
+use crate::protocol::{Error, EventId, IngressReceipt, RealmId, Result};
+use crate::sync_client::{SendQueue, SendQueueItem, SendQueueSnapshot};
+use crate::{MaybeSendSync, QueuedRecord};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub type BoxOutboundFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
@@ -455,9 +456,10 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
+    use arkret_wire::{Did, DidCoreId, EventKind, Hlc, ScopeRef, project_did_to_core_id};
+
     use super::*;
     use crate::MemoryStore;
-    use arkret_wire::{Did, DidCoreId, EventKind, Hlc, ScopeRef, project_did_to_core_id};
 
     fn actor_id() -> crate::protocol::ActorId {
         crate::protocol::ActorId::account(crate::protocol::AccountId::new(

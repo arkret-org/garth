@@ -564,12 +564,12 @@ fn build_frontier(
 
 #[cfg(test)]
 mod tests {
-    use crate::protocol::models::AgentSidecarExchangeCompletionPolicy;
-    use crate::protocol::models::AgentSidecarExchangeControlSchema;
-    use crate::protocol::models::AgentSidecarSourceTrackRef;
-    use crate::protocol::{RealmId, StrandId};
-
     use super::*;
+    use crate::protocol::models::{
+        AgentSidecarExchangeCompletionPolicy, AgentSidecarExchangeControlSchema,
+        AgentSidecarSourceTrackRef,
+    };
+    use crate::protocol::{RealmId, StrandId};
 
     fn event_id(suffix: u32) -> EventId {
         let mut digest = [0_u8; 32];

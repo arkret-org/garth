@@ -655,7 +655,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_warm_up_hook_runs_even_for_an_envelope_that_is_then_rejected() {
-        let (envelope, _, _) = signed_signal(presence_plaintext(1), [46; 32]);
+        let (envelope, ..) = signed_signal(presence_plaintext(1), [46; 32]);
         let transport = VecTransport::new(vec![Some(SignalStreamFrame::signal(envelope)), None]);
         let sink = RecordingSink::default();
         // The host could not resolve the sender at all; admission still fails
@@ -683,7 +683,7 @@ mod tests {
         // The first envelope is signed by a key the resolver will not return,
         // so it fails the proof check; the second is well-formed. §4.5 makes
         // loss normal input, so one bad sender must not close the rail.
-        let (bad_envelope, _, _) = signed_signal(presence_plaintext(1), [42; 32]);
+        let (bad_envelope, ..) = signed_signal(presence_plaintext(1), [42; 32]);
         let (good_envelope, public_key, plaintext) = signed_signal(presence_plaintext(2), [43; 32]);
         let transport = VecTransport::new(vec![
             Some(SignalStreamFrame::signal(bad_envelope)),

@@ -10,8 +10,7 @@
 //!
 //! Layering, deliberately:
 //!
-//! - the SDK owns every protocol decision (frames, codec, channel state,
-//!   close-code table, proof);
+//! - the SDK owns every protocol decision (frames, codec, channel state, close-code table, proof);
 //! - this module owns the connection lifecycle and the demultiplex;
 //! - the host owns the socket and the holder key ([`socket`]).
 //!
@@ -27,6 +26,13 @@ pub mod socket;
 #[cfg(test)]
 mod tests;
 
+// Re-exported so a host can drive the §8.1 decision table without depending on
+// `arkret-models-collaboration` directly.
+pub use arkret_models_collaboration::sync_frames::websocket_session::{
+    WebSocketConsumerHandoff, WebSocketConsumerOwner, WebSocketFallbackPolicy,
+    WebSocketHandshakeFailure, WebSocketTransportDecision,
+};
+pub use arkret_models_discovery::websocket_binding::select_websocket_binding;
 pub use channels::{
     SharedConnection, WebSocketAccountChannel, WebSocketEventsChannel, WebSocketSignalChannel,
     WebSocketTransport,
@@ -37,11 +43,3 @@ pub use socket::{
     AuthProofRequest, BoxSocketFuture, WebSocketConnector, WebSocketInbound, WebSocketPacer,
     WebSocketSocket,
 };
-
-// Re-exported so a host can drive the §8.1 decision table without depending on
-// `arkret-models-collaboration` directly.
-pub use arkret_models_collaboration::sync_frames::websocket_session::{
-    WebSocketConsumerHandoff, WebSocketConsumerOwner, WebSocketFallbackPolicy,
-    WebSocketHandshakeFailure, WebSocketTransportDecision,
-};
-pub use arkret_models_discovery::websocket_binding::select_websocket_binding;

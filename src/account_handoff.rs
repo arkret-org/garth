@@ -4,6 +4,8 @@
 //! module owns the canonical request sequence and delegates all protocol
 //! cryptography and DTO validation to the Arkret SDK.
 
+use std::collections::BTreeSet;
+
 use crate::protocol::{
     AccountBindingReceipt, AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
     AccountRegisterOutcome, AccountRegisterRequestBody, Base64UrlString, DeviceId, Did, DidCoreId,
@@ -15,7 +17,6 @@ use crate::protocol::{
     UnsignedAccountHandoffAuthenticationProof, UnsignedAccountHandoffRequestBody,
     UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
 };
-use std::collections::BTreeSet;
 
 #[derive(Clone, Debug)]
 pub struct OidcAccountHandoffInput {
@@ -728,8 +729,9 @@ fn protocol(message: impl Into<String>) -> crate::protocol::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use chrono::Utc;
+
+    use super::*;
 
     fn lease(state: IdentityCreationLeaseState) -> IdentityCreationLease {
         let reserved_identity = state.has_reserved_identity().then(|| {

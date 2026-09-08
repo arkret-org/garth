@@ -2,14 +2,13 @@ use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::protocol::{Error, EventId, Result};
-
 use super::inbox::{bounded_delivery_error, bounded_pending_limit};
 use super::seen_window::BoundedSeenWindow;
 use super::{
     CursorScope, CursorStore, DeliveryErrorClass, DeliveryId, DurableInboxStore, EventCacheStore,
     OpaqueCursor, PendingDelivery,
 };
+use crate::protocol::{Error, EventId, Result};
 use crate::stamp::{MonotonicStampStore, StampFloor, StampFloorUpdate, StampScope};
 use crate::{ClientEvent, OutboundQueueStore};
 
@@ -261,9 +260,8 @@ impl MonotonicStampStore for MemoryStore {
 
 #[cfg(test)]
 mod tests {
-    use crate::protocol::{DeviceId, DidCoreId, EventId};
-
     use super::*;
+    use crate::protocol::{DeviceId, DidCoreId, EventId};
 
     fn account_scope() -> CursorScope {
         CursorScope::Account {

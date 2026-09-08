@@ -1,12 +1,14 @@
 //! Service routes derive exclusively from independently verified DID method state.
-use crate::{Error, Result};
+use std::collections::BTreeMap;
+
 use arkret_models_identity::{
     AuthenticatedServiceResolution, ServiceMethodState, ServiceRouteCacheEntry,
 };
 use arkret_wire::DidCoreId;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
+
+use crate::{Error, Result};
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RouteForkQuarantine {

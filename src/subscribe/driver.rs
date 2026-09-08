@@ -1,10 +1,9 @@
 use std::future::Future;
 
-use crate::protocol::Result;
-use crate::sync_client::{AsyncSyncTransport, SyncLoop, SyncLoopControl, SyncLoopStep};
-
 use super::account::account_updates_to_events_with_origin;
 use super::{ProjectedRunError, ProjectedRunResult, account_updates_to_events};
+use crate::protocol::Result;
+use crate::sync_client::{AsyncSyncTransport, SyncLoop, SyncLoopControl, SyncLoopStep};
 use crate::{ClientProjector, CursorScope, DurableInboxStore, Executor};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,12 +199,10 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    use crate::protocol::Error;
-    use crate::protocol::Problem;
-
     use super::super::test_support::{RecordingExecutor, queued_transport, sync_response};
     use super::*;
     use crate::ClientEvent;
+    use crate::protocol::{Error, Problem};
 
     struct CountingProjector {
         events: Arc<Mutex<usize>>,

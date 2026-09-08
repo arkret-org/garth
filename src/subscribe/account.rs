@@ -1,5 +1,4 @@
 use crate::protocol::SyncUpdates;
-
 use crate::{AccountUpdateContext, ClientEvent};
 
 /// Fan an account-subscribe step's [`SyncUpdates`] into the ordered
@@ -61,13 +60,12 @@ pub(crate) fn account_updates_to_events_with_origin(
 mod tests {
     use std::sync::{Arc, Mutex};
 
+    use super::*;
     use crate::protocol::{
         AccountSubscribeDeviceListChanges, NotificationDelta, NotificationDeltaAction,
         NotificationId, RealmId, RealmSyncEntry, RealmUpdate, StationCasAccountDataContainer,
         SyncUpdates,
     };
-
-    use super::*;
 
     fn updates() -> SyncUpdates {
         SyncUpdates {

@@ -1,9 +1,8 @@
-use crate::protocol::{Error, Result};
 use zeroize::Zeroizing;
 
 use super::SessionGrantState;
-use crate::{PutSecretOptions, SecretClass, SecretDurability};
-use crate::{SecureKeyStore, SecureKeyStoreError};
+use crate::protocol::{Error, Result};
+use crate::{PutSecretOptions, SecretClass, SecretDurability, SecureKeyStore, SecureKeyStoreError};
 
 pub trait SessionGrantStore: Clone + crate::MaybeSendSync + 'static {
     fn load(&self) -> Result<Option<SessionGrantState>>;

@@ -7,10 +7,6 @@ mod seen_window;
 
 use std::future::Future;
 
-use crate::protocol::{DeviceId, DidCoreId, EventId, RealmId, Result};
-use serde::{Deserialize, Serialize};
-
-use crate::MaybeSendSync;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use file::FileStore;
 pub use inbox::{
@@ -24,6 +20,10 @@ pub use keystore::{
 };
 pub use memory::MemoryStore;
 pub use seen_window::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
+use serde::{Deserialize, Serialize};
+
+use crate::MaybeSendSync;
+use crate::protocol::{DeviceId, DidCoreId, EventId, RealmId, Result};
 
 /// Client-side continuation token.
 ///

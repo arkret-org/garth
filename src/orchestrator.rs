@@ -12,25 +12,22 @@
 //! [`RunStopReason::Unauthorized`] is returned only when the provider cannot
 //! recover and the host must require sign-in or stop the client.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::time::Duration;
-use std::{
-    collections::hash_map::DefaultHasher,
-    hash::{Hash, Hasher},
-};
 
 use crate::protocol::{DeviceId, DidCoreId, RealmId, Result, SyncUpdates};
-use crate::sync_client::{AsyncSyncTransport, SyncLoopControl, SyncLoopStep};
-
 use crate::signal::{SignalDecryptor, SignalSenderKeyResolver};
+use crate::subscribe::account::{account_updates_to_events, account_updates_to_events_with_origin};
 use crate::subscribe::{
     EventsScanTransport, ProjectedRunError, RealmEventsTransport, RealmStreamStopReason,
     ScanCatchupOptions, SignalReceiveHandlers, SignalRunError, SignalSink, SignalStreamDriver,
     SignalStreamStopReason, SignalStreamTransport,
 };
+use crate::sync_client::{AsyncSyncTransport, SyncLoopControl, SyncLoopStep};
 use crate::{
     ArkretClient, ClientProjector, CursorStore, DurableInboxStore, EventCacheStore, Executor,
     HostClock, RetrySchedule,
-    subscribe::account::{account_updates_to_events, account_updates_to_events_with_origin},
 };
 
 /// Host seam that yields a ready-to-use transport (SDK http-client) with

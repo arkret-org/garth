@@ -1,9 +1,8 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use crate::protocol::{EventsQueryOrder, EventsQueryOutcome, RealmId, Result};
-
 use super::{ProjectedRunError, ProjectedRunResult};
+use crate::protocol::{EventsQueryOrder, EventsQueryOutcome, RealmId, Result};
 use crate::{MaybeSend, MaybeSendSync, OpaqueCursor};
 
 // Native builds keep the boxed scan future `Send` so host runtimes can move it

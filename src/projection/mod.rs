@@ -1,5 +1,4 @@
-use crate::protocol::RealmState;
-use crate::protocol::{Event, RealmId, Result};
+use crate::protocol::{Event, RealmId, RealmState, Result};
 
 mod realm_merge;
 mod seal_view;
@@ -68,9 +67,8 @@ impl RealmStateReducer for () {
 
 #[cfg(test)]
 mod tests {
-    use crate::protocol::RealmId;
-
     use super::*;
+    use crate::protocol::RealmId;
 
     #[derive(Default)]
     struct CountingProjector {

@@ -20,10 +20,10 @@
 //! 3. **Restore on boot.** [`decrypt_with_epoch_check`] decrypts the envelope with this device's
 //!    MLS checkpoint secret and rejects a stale epoch. Two failure modes are pinned in tests:
 //!    [`EnvelopeError::SecretMismatch`] (wrong device secret or tampered envelope) and
-//!    [`EnvelopeError::OutdatedCheckpoint`] (the envelope's recorded epoch is older than the current
-//!    Seal view — a paired-in device must NOT bind to a stale epoch since that would silently fork
-//!    the group). Reconstructing the live group from the decrypted record needs the SDK MLS
-//!    engine, so that last step stays with the host that links it.
+//!    [`EnvelopeError::OutdatedCheckpoint`] (the envelope's recorded epoch is older than the
+//!    current Seal view — a paired-in device must NOT bind to a stale epoch since that would
+//!    silently fork the group). Reconstructing the live group from the decrypted record needs the
+//!    SDK MLS engine, so that last step stays with the host that links it.
 //!
 //! ### Crypto choice
 //!
@@ -37,8 +37,8 @@
 //!   bind the envelope's `(salt, epoch, recorded_at, magic)` into the AEAD's `additional_data` so a
 //!   tampered envelope (e.g. an attacker swapping the recorded epoch to bypass the freshness check)
 //!   trips the AEAD verification instead of decrypting cleanly under a forged epoch.
-//! * **Replay defence:** `recorded_at` is part of the AEAD AAD, so an envelope cannot be
-//!   replayed with a forged timestamp to make it look fresh. The freshness check
+//! * **Replay defence:** `recorded_at` is part of the AEAD AAD, so an envelope cannot be replayed
+//!   with a forged timestamp to make it look fresh. The freshness check
 //!   ([`decrypt_with_epoch_check`]) still relies on the epoch ordering provided by the Seal view,
 //!   but the AAD binding guarantees the timestamp the caller sees has not been swapped out.
 

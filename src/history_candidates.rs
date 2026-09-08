@@ -7,6 +7,8 @@
 //! not: the secret bytes in the secure key store, and the write ordering that
 //! keeps those bytes and the ledger consistent across a crash.
 
+use std::collections::BTreeSet;
+
 use arkret_canonical::canonical::canonical_sha256;
 use arkret_models_collaboration::history_key::HistoryCandidateOriginAttribution;
 use arkret_state::history_store::{HistoryMaterialLedger, ResidentHistoryMaterial};
@@ -15,7 +17,6 @@ use arkret_wire::{
     HistoryCandidateMaterialRecord, HistoryEffectiveScope,
 };
 use chrono::{DateTime, Utc};
-use std::collections::BTreeSet;
 
 use crate::store::{SecretClass, SecretDurability, SecureKeyStore};
 use crate::{Error, PutSecretOptions, Result};
@@ -294,11 +295,12 @@ fn history_candidate_secret_key(material_key: &HistoryCandidateMaterialKey) -> R
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use arkret_models_collaboration::history_key::{
         HistoryResponseId, ResponseSenderOriginRef, ResponseSenderQuotaDomain,
     };
     use arkret_wire::{EventCandidateBindingOutcome, EventId, HistoryEffectiveScope, RealmId};
+
+    use super::*;
 
     fn hash(byte: char) -> Hash {
         Hash::new(format!("sha256:{}", byte.to_string().repeat(64))).unwrap()

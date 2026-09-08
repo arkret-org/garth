@@ -10,12 +10,11 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::Executor;
 use crate::protocol::{
     AccountSubscribeBatch, AccountSubscribeFrame, AccountSubscribeFrameKind, Result,
     SyncRequestBody,
 };
-
-use crate::Executor;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct RecordingExecutor {

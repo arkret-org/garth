@@ -4,10 +4,10 @@ use std::pin::Pin;
 use std::str;
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::protocol::{Error, KeyBytes, KeyStore, KeyStoreError};
 use thiserror::Error;
 
 use crate::MaybeSendSync;
+use crate::protocol::{Error, KeyBytes, KeyStore, KeyStoreError};
 
 /// Character-safe storage namespace for an account authority pair.
 ///

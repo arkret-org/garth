@@ -8,8 +8,9 @@
 use std::future::Future;
 use std::pin::Pin;
 
-use arkret_models_crypto::SecurityTransactionContinueRequest;
-use arkret_models_crypto::{BackupSeriesEraseOutcome, BackupSeriesEraseRequestBody};
+use arkret_models_crypto::{
+    BackupSeriesEraseOutcome, BackupSeriesEraseRequestBody, SecurityTransactionContinueRequest,
+};
 use arkret_wire::{
     Hash, IssueRecoveryCompletionGrantOutcome, IssueRecoveryCompletionGrantRequest,
     SecurityTransaction, SecurityTransactionCreateRequest, SecurityTransactionResultKind,

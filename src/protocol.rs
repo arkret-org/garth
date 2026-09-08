@@ -3,7 +3,6 @@
 //! Runtime code imports protocol-owned types through this module so the
 //! implementation remains readable without publishing a second protocol API.
 
-pub(crate) use crate::{Error, Result};
 pub(crate) use arkret_keystore::{KeyBytes, KeyStore, KeyStoreError};
 pub(crate) use arkret_models_collaboration::account_lifecycle::{
     AccountRegisterOutcome, AccountRegisterRequestBody,
@@ -39,14 +38,14 @@ pub(crate) use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountStreamInterrupt, AccountSubscribeBatch, AccountSubscribeFrameKind,
     StationCasAccountDataContainer,
 };
-pub(crate) use arkret_models_collaboration::sync_frames::account_sync::{
-    AccountSubscribeDeviceListChanges, AccountSubscribeRealmSummary, DeviceMessageEnvelope,
-    NotificationDelta, NotificationDeltaAction, Timeline,
-};
 // The sender endpoint is only constructed by the sync-loop fixtures: the
 // runtime consumes envelopes it decodes rather than building them.
 #[cfg(test)]
 pub(crate) use arkret_models_collaboration::sync_frames::account_sync::DeviceMessageSender;
+pub(crate) use arkret_models_collaboration::sync_frames::account_sync::{
+    AccountSubscribeDeviceListChanges, AccountSubscribeRealmSummary, DeviceMessageEnvelope,
+    NotificationDelta, NotificationDeltaAction, Timeline,
+};
 pub(crate) use arkret_models_collaboration::sync_frames::client_sync::{RealmUpdate, SyncUpdates};
 pub(crate) use arkret_models_collaboration::sync_frames::stream_trace::StreamTraceValidator;
 pub(crate) use arkret_models_crypto::{
@@ -68,14 +67,15 @@ pub(crate) use arkret_models_identity::{
     UnsignedIdentityCreationControlProofBody,
 };
 pub(crate) use arkret_state::resolver::RealmState;
-pub(crate) use arkret_wire::project_did_to_core_id;
 pub(crate) use arkret_wire::{
     AccountId, ActorId, Base64UrlString, DeviceId, Did, DidCoreId, DidUrl, Event, EventId,
     EventKind, Hash, Hlc, MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit, RealmId,
     RequestId, ScopeRef, SealId, SessionGrantId, SidecarId, SignalEnvelope, SignalStreamFrame,
-    StrandId,
+    StrandId, project_did_to_core_id,
 };
 pub use arkret_wire::{AuthorizationLease, IngressReceipt};
+
+pub(crate) use crate::{Error, Result};
 
 pub(crate) fn verified_event_id(
     event: &Event,
@@ -154,11 +154,10 @@ pub(crate) mod session_grant {
 }
 
 pub(crate) mod signatures {
-    pub(crate) use arkret_signatures::PublicKeyMaterial;
     pub(crate) use arkret_signatures::proof::verify_ed25519_signal_proof;
     #[cfg(test)]
     pub(crate) use arkret_signatures::sign_ed25519_detached_jws;
-    pub(crate) use arkret_signatures::webvh;
+    pub(crate) use arkret_signatures::{PublicKeyMaterial, webvh};
 }
 
 pub(crate) mod sync {

@@ -1,6 +1,7 @@
-use crate::protocol::{Event, Result};
 use arkret_event_draft::{EventPayloadExt, MessageEventPayload};
 use serde::{Deserialize, Serialize};
+
+use crate::protocol::{Event, Result};
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DecodedMessage {

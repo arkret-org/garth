@@ -1,9 +1,9 @@
 use std::future::Future;
 
-use crate::protocol::Result;
 use serde::{Deserialize, Serialize};
 
 use super::{CursorScope, OpaqueCursor};
+use crate::protocol::Result;
 use crate::{ClientEvent, MaybeSendSync};
 
 pub const MAX_DELIVERY_ERROR_BYTES: usize = 2048;

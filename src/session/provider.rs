@@ -1,11 +1,10 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::protocol::{Result, SessionGrantId};
-
 use super::{
     NoopSessionGrantStore, SessionEngine, SessionGrantState, SessionGrantStore,
     SessionGrantTransport, SessionRefreshOptions,
 };
+use crate::protocol::{Result, SessionGrantId};
 use crate::{HostClock, TransportProvider};
 
 type TransportCache<T> = Arc<Mutex<Option<(SessionGrantId, T)>>>;
@@ -301,10 +300,6 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
-    use crate::protocol::{
-        AccountId, Base64UrlString, DeviceId, DidCoreId, DidUrl, Error, Hash, SessionGrantOutcome,
-        SessionGrantRefreshRequestBody, SessionGrantRequestBody,
-    };
     use arkret_models_collaboration::session_grant_bodies::{
         AgentSessionGrantRefreshRequest, AgentSessionRefreshProofContext,
         UnsignedAgentSessionRefreshProof,
@@ -312,6 +307,10 @@ mod tests {
     use chrono::{Duration, Utc};
 
     use super::*;
+    use crate::protocol::{
+        AccountId, Base64UrlString, DeviceId, DidCoreId, DidUrl, Error, Hash, SessionGrantOutcome,
+        SessionGrantRefreshRequestBody, SessionGrantRequestBody,
+    };
     use crate::session::BoxSessionFuture;
 
     #[derive(Clone)]

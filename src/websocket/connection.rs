@@ -35,10 +35,9 @@ use arkret_wire::websocket_binding::{
     WebSocketTransportError,
 };
 
-use crate::protocol::{Error, Result};
-
 use super::shared::SharedCell;
 use super::socket::{AuthProofRequest, WebSocketConnector, WebSocketInbound, WebSocketSocket};
+use crate::protocol::{Error, Result};
 
 /// One frame handed to a channel adapter, already resolved against the
 /// channel's operation by the SDK state machine.

@@ -3,11 +3,10 @@ use std::pin::Pin;
 
 use arkret_canonical::DigestSuite;
 
+use super::{ProjectedRunError, ProjectedRunResult};
 use crate::protocol::{
     DidCoreId, Event, EventsSubscribeFrame, RealmId, Result, StreamTraceValidator,
 };
-
-use super::{ProjectedRunError, ProjectedRunResult};
 use crate::{
     ClientEvent, ClientProjector, CursorScope, CursorStore, DecodedInbound, DurableInboxStore,
     Error, EventCacheStore, InboundDecoder, OpaqueCursor,
@@ -463,17 +462,17 @@ where
 
 #[cfg(test)]
 mod tests {
-    use arkret_models_collaboration::http_bodies::EventsSubscribeFrameKind;
-    use arkret_wire::EventKind;
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
-    use crate::protocol::identifiers::Cursor;
-    use crate::protocol::{DidCoreId, Event, Hlc};
+    use arkret_models_collaboration::http_bodies::EventsSubscribeFrameKind;
+    use arkret_wire::EventKind;
     use serde_json::{Value, json};
 
     use super::*;
     use crate::MemoryStore;
+    use crate::protocol::identifiers::Cursor;
+    use crate::protocol::{DidCoreId, Event, Hlc};
     use crate::store::{CursorStore, DurableInboxStore};
 
     struct VecFrameSource {

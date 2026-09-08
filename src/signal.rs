@@ -32,12 +32,10 @@ use crate::protocol::signatures::{PublicKeyMaterial, verify_ed25519_signal_proof
 use crate::protocol::{
     AccountId, ActorId, Error, Result, ScopeRef, SignalEnvelope, SignalSequence,
     SignalSequenceDecision, SignalSequenceDomain, SignalSequenceEndpoint, SignalSequenceHighWater,
-    open_signal_plaintext,
+    open_signal_plaintext, validate_last_active_at, validate_status_message,
 };
-use crate::store::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
-
 pub use crate::protocol::{PresenceStatus, aggregate_presence_states};
-use crate::protocol::{validate_last_active_at, validate_status_message};
+use crate::store::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
 
 /// Decrypted payload kind of a presence Signal (`profiles-presence.md` §3.3).
 pub const SIGNAL_PLAINTEXT_KIND_PRESENCE: &str = "ak.presence";
@@ -86,16 +84,14 @@ impl VerifiedSignalSenderKey {
     /// What this constructor does enforce, fail-closed, is every completeness
     /// condition of the evidence tuple that is decidable locally:
     ///
-    /// * `authority` is structurally valid and equals the complete account
-    ///   carried by `actor_id`, including its Station;
-    /// * `verification_method` is a DID URL whose DID projects to
-    ///   the signing principal of `actor_id` and whose fragment equals `device_id` (the §1
-    ///   directory-lookup completeness condition, mirrored from
-    ///   [`SignalEnvelope::validate_structural`] so a mis-bound key cannot be
-    ///   constructed even before an envelope exists);
-    /// * `public_key` decodes to a 32-byte Ed25519 verifying key, so
-    ///   malformed key material is rejected here instead of surfacing as a
-    ///   spurious signature failure later.
+    /// * `authority` is structurally valid and equals the complete account carried by `actor_id`,
+    ///   including its Station;
+    /// * `verification_method` is a DID URL whose DID projects to the signing principal of
+    ///   `actor_id` and whose fragment equals `device_id` (the §1 directory-lookup completeness
+    ///   condition, mirrored from [`SignalEnvelope::validate_structural`] so a mis-bound key cannot
+    ///   be constructed even before an envelope exists);
+    /// * `public_key` decodes to a 32-byte Ed25519 verifying key, so malformed key material is
+    ///   rejected here instead of surfacing as a spurious signature failure later.
     pub fn from_directory_evidence(
         public_key: PublicKeyMaterial,
         actor_id: ActorId,
@@ -297,13 +293,12 @@ impl VerifiedSignalSenderKey {
 /// `proof.verification_method` itself. Two separate state domains meet here
 /// and must not be collapsed:
 ///
-/// * the **Realm/scope** basis is `envelope.seal_ref` — membership, capability
-///   and product actions are re-evaluated there;
-/// * **device authorization** is independently replayed for the exact
-///   authority pair selected by the Realm membership. It cannot be
-///   target-Seal-relative:
-///   a target-Realm Seal does not locate another principal's device frontier,
-///   and `keys_query_request_body` carries no as-of basis by design.
+/// * the **Realm/scope** basis is `envelope.seal_ref` — membership, capability and product actions
+///   are re-evaluated there;
+/// * **device authorization** is independently replayed for the exact authority pair selected by
+///   the Realm membership. It cannot be target-Seal-relative: a target-Realm Seal does not locate
+///   another principal's device frontier, and `keys_query_request_body` carries no as-of basis by
+///   design.
 ///
 /// Implementations return `None` — failing the Signal closed — when exact
 /// authority evidence is unavailable, the device is revoked or non-active,
@@ -921,13 +916,13 @@ pub fn live_signal_projection_key(plaintext: &SignalPlaintext) -> Result<String>
 /// native and wasm. Three independent conditions have to hold, and each is
 /// fail-closed:
 ///
-/// * the observed Seal view must carry no exposed bottom cell and must not
-///   have moved past the checkpoint the client verified;
-/// * the sender's membership cell must materialize to `join` at both the
-///   checkpoint basis and the basis the envelope itself declares, so a Signal
-///   cannot borrow authority from a Seal the sender picked;
-/// * a moderation-class Signal additionally needs `call.moderate` at both
-///   bases, resolved from the checkpoint's own capability grants.
+/// * the observed Seal view must carry no exposed bottom cell and must not have moved past the
+///   checkpoint the client verified;
+/// * the sender's membership cell must materialize to `join` at both the checkpoint basis and the
+///   basis the envelope itself declares, so a Signal cannot borrow authority from a Seal the sender
+///   picked;
+/// * a moderation-class Signal additionally needs `call.moderate` at both bases, resolved from the
+///   checkpoint's own capability grants.
 pub async fn admit_signal_governance(
     checkpoint: &arkret_state::mls_governance_proof::MlsGovernanceVerificationCheckpoint,
     observed: &crate::projection::LocalSealView,
@@ -1023,10 +1018,8 @@ pub async fn admit_signal_governance(
 
 #[cfg(test)]
 mod tests {
-    use chrono::Duration;
-
     use arkret_wire::{DeviceId, DidCoreId, DidUrl, EventId, Hash, RealmId, SealId};
-    use chrono::TimeZone;
+    use chrono::{Duration, TimeZone};
     use ed25519_dalek::SigningKey;
     use serde_json::json;
 

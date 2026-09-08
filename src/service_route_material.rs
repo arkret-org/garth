@@ -1,11 +1,13 @@
 //! Materialize complete DID evidence and independently fetched current state.
-use crate::service_route::{ServiceDescribeBinding, ServiceRouteCandidate, ServiceRouteSource};
-use crate::{Error, Result};
+use std::collections::BTreeMap;
+
 use arkret_models_discovery::ServiceDescribe;
 use arkret_models_identity::AuthenticatedServiceResolution;
 use arkret_wire::DidCoreId;
 use chrono::{DateTime, Utc};
-use std::collections::BTreeMap;
+
+use crate::service_route::{ServiceDescribeBinding, ServiceRouteCandidate, ServiceRouteSource};
+use crate::{Error, Result};
 
 pub fn authenticate_fetched_resolution(
     resolution: AuthenticatedServiceResolution,
@@ -85,11 +87,12 @@ impl ServiceRouteSource for PrefetchedRouteSource {
 /// Current-document fixtures explicitly model the no-history did:web policy.
 #[cfg(any(test, feature = "route-material-test-support"))]
 pub mod test_fixture {
-    use super::*;
     use arkret_models_discovery::TransportBinding;
     use arkret_models_identity::{DidDocument, ResolutionCommitment};
     use arkret_wire::{Did, ServiceKind, TrustDomainId};
     use ed25519_dalek::SigningKey;
+
+    use super::*;
     pub struct CurrentRouteFixture {
         pub service_id: DidCoreId,
         pub resolution: AuthenticatedServiceResolution,
@@ -161,10 +164,11 @@ pub mod test_fixture {
 }
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::{MemoryServiceRouteStateStore, ServiceRouteEvaluator};
     use chrono::Duration;
     use test_fixture::current_web_route_fixture;
+
+    use super::*;
+    use crate::{MemoryServiceRouteStateStore, ServiceRouteEvaluator};
     #[test]
     fn refresh_after_many_cache_periods_and_restart_needs_no_address_history() {
         let fixture = current_web_route_fixture("media.example", "media_service", 31);

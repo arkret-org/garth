@@ -9,10 +9,9 @@
 //! `actor_seq` and `prev_refs` from the typed `(realm_id, actor_id)` frontier (or
 //! the previous event in the same authoring transaction). Burning a local actor
 //! sequence before acceptance would create an unfillable chain gap.
-//! - `hlc` is a per-`(realm, device)` generator. The physical component is unix
-//!   milliseconds; the durable floor makes it monotonic across restarts and
-//!   immune to a backward wall clock. The `node_id` segment is the SDK's
-//!   Realm-scoped pseudonymous derivation (`encoding.md` §7).
+//! - `hlc` is a per-`(realm, device)` generator. The physical component is unix milliseconds; the
+//!   durable floor makes it monotonic across restarts and immune to a backward wall clock. The
+//!   `node_id` segment is the SDK's Realm-scoped pseudonymous derivation (`encoding.md` §7).
 //!
 //! The HLC advance is driven by a [`HostClock`] rather than the SDK
 //! `HlcGenerator`'s advancing entry points, which read `SystemTime::now()` and
@@ -21,9 +20,9 @@
 
 use std::future::Future;
 
-use crate::protocol::{DeviceId, DidCoreId, Error, Hlc, RealmId, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::protocol::{DeviceId, DidCoreId, Error, Hlc, RealmId, Result};
 use crate::{HostClock, MaybeSendSync};
 
 /// 16-bit logical counter ceiling (`encoding.md` §7: 4 lowercase hex digits).
@@ -203,14 +202,13 @@ pub struct RemoteStamp {
 /// Monotonic HLC advance driven by a host-provided `now_ms`.
 ///
 /// - `now_ms > floor`: jump to the newer physical time, reset logical.
-/// - `now_ms <= floor` (clock stalled or rolled back): hold the physical floor
-///   and bump logical, so the tuple stays strictly greater and is never reused.
-/// - logical saturated: fail with `hlc_logical_overflow`. `encoding.md` §7
-///   permits exactly two responses: wait for a larger `unix_ms`, or abort the
-///   write with a local transient error for the caller to retry; it
-///   explicitly forbids faking a larger wall clock to escape the overflow. A
-///   wasm host cannot block, so this takes the error path (the same one the
-///   SDK's non-blocking `HlcGenerator::try_generate` takes).
+/// - `now_ms <= floor` (clock stalled or rolled back): hold the physical floor and bump logical, so
+///   the tuple stays strictly greater and is never reused.
+/// - logical saturated: fail with `hlc_logical_overflow`. `encoding.md` §7 permits exactly two
+///   responses: wait for a larger `unix_ms`, or abort the write with a local transient error for
+///   the caller to retry; it explicitly forbids faking a larger wall clock to escape the overflow.
+///   A wasm host cannot block, so this takes the error path (the same one the SDK's non-blocking
+///   `HlcGenerator::try_generate` takes).
 fn advance_hlc(floor_physical: u64, floor_logical: u32, now_ms: u64) -> Result<(u64, u32)> {
     if now_ms > MAX_PHYSICAL {
         return Err(Error::Protocol(

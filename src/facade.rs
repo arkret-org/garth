@@ -1,7 +1,8 @@
-use crate::{CursorStore, EventCacheStore, Executor, SubscriptionEngine};
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::{CursorStore, EventCacheStore, Executor, SubscriptionEngine};
 
 static FALLBACK_SEED_COUNTER: AtomicU64 = AtomicU64::new(0);
 static FALLBACK_SEED_BASE: OnceLock<u64> = OnceLock::new();

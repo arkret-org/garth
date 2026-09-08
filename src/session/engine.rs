@@ -3,10 +3,6 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use crate::protocol::{
-    AccountId, DeviceId, DidCoreId, Error, Result, SessionGrantId, SessionGrantOutcome,
-    SessionGrantRefreshRequestBody, SessionGrantRequestBody,
-};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -14,6 +10,10 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 use super::SessionHandle;
 use super::login::LoginKind;
 use super::refresh::{RefreshDecision, SessionGrantRefreshState, refresh_decision};
+use crate::protocol::{
+    AccountId, DeviceId, DidCoreId, Error, Result, SessionGrantId, SessionGrantOutcome,
+    SessionGrantRefreshRequestBody, SessionGrantRequestBody,
+};
 
 #[cfg(not(target_arch = "wasm32"))]
 pub type BoxSessionFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
@@ -547,10 +547,6 @@ mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
-    use crate::protocol::{
-        Base64UrlString, DidUrl, Hash, RealmId, SessionGrantAgentScopeRequest,
-        SessionGrantDpopBindingProof,
-    };
     use arkret_models_collaboration::session_grant_bodies::{
         AgentSessionGrantRefreshRequest, AgentSessionRefreshProofContext,
         UnsignedAgentSessionRefreshProof,
@@ -558,6 +554,10 @@ mod tests {
     use chrono::Duration;
 
     use super::*;
+    use crate::protocol::{
+        Base64UrlString, DidUrl, Hash, RealmId, SessionGrantAgentScopeRequest,
+        SessionGrantDpopBindingProof,
+    };
     use crate::session::AgentKeyProofLogin;
 
     #[derive(Clone, Default)]

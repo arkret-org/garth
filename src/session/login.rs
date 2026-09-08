@@ -1,9 +1,10 @@
+use chrono::{DateTime, Utc};
+
 use crate::protocol::session_grant::agent_key_proof_session_grant_request;
 use crate::protocol::{
     AgentRequestedScopeDisclosure, DeviceId, DidCoreId, DidUrl, Result,
     SessionGrantAgentScopeRequest, SessionGrantDpopBindingProof, SessionGrantRequestBody,
 };
-use chrono::{DateTime, Utc};
 
 #[derive(Clone, Debug)]
 pub struct AgentKeyProofLogin {
@@ -57,9 +58,8 @@ impl LoginKind {
 
 #[cfg(test)]
 mod tests {
-    use crate::protocol::RealmId;
-
     use super::*;
+    use crate::protocol::RealmId;
 
     fn principal_id() -> DidCoreId {
         DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()

@@ -12,7 +12,6 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::protocol::{Error, EventId, Result};
 use serde::{Deserialize, Serialize};
 
 use super::inbox::{bounded_delivery_error, bounded_pending_limit};
@@ -21,6 +20,7 @@ use super::{
     CursorScope, CursorStore, DeliveryErrorClass, DeliveryId, DurableInboxStore, EventCacheStore,
     OpaqueCursor, PendingDelivery,
 };
+use crate::protocol::{Error, EventId, Result};
 use crate::stamp::{MonotonicStampStore, StampFloor, StampFloorUpdate, StampScope};
 use crate::{ClientEvent, OutboundQueueStore};
 
@@ -609,13 +609,12 @@ impl MonotonicStampStore for FileStore {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::protocol::{
         DeviceId, DidCoreId, EventId, EventKind, Hlc, NotificationDelta, NotificationDeltaAction,
         NotificationId, RealmId, ScopeRef,
     };
     use crate::{AcceptedMlsArtifactStore, DurableAcceptedMlsArtifact, QueuedMlsLocalCheckpoint};
-
-    use super::*;
 
     fn temp_path(name: &str) -> PathBuf {
         // Index-derived unique name (no wall-clock / rng in this crate).

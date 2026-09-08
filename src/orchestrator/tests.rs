@@ -2,14 +2,14 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use crate::protocol::{AccountStreamInterrupt, AccountSubscribeBatch, Error, SyncRequestBody};
-use crate::protocol::{
-    EventKind, EventsQueryOutcome, EventsSubscribeFrame, Hlc, NotificationDelta,
-    NotificationDeltaAction, NotificationId, Problem, RealmId,
-};
 use serde_json::json;
 
 use super::*;
+use crate::protocol::{
+    AccountStreamInterrupt, AccountSubscribeBatch, Error, EventKind, EventsQueryOutcome,
+    EventsSubscribeFrame, Hlc, NotificationDelta, NotificationDeltaAction, NotificationId, Problem,
+    RealmId, SyncRequestBody,
+};
 use crate::store::CursorStore;
 use crate::subscribe::scan::BoxScanFuture;
 use crate::subscribe::test_support::{RecordingExecutor, sync_response};

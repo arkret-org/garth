@@ -1,10 +1,10 @@
+use serde::{Deserialize, Serialize};
+
+use crate::DecodedMessage;
 use crate::protocol::{
     AccountSubscribeDeviceListChanges, DeviceMessageEnvelope, Event, EventsQueryOutcome,
     NotificationDelta, RealmId, RealmUpdate, StationCasAccountDataContainer,
 };
-use serde::{Deserialize, Serialize};
-
-use crate::DecodedMessage;
 
 /// Typed events emitted by the shared client engines toward a host adapter.
 #[allow(clippy::large_enum_variant)]
