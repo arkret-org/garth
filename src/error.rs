@@ -82,6 +82,7 @@ impl Error {
             "cursor_unrecognized",
             "cursor_invalid",
             "invalid_cursor",
+            "stream_resync_required",
         ];
         let code = error.code();
         if CODES.contains(&code) {

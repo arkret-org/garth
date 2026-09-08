@@ -223,7 +223,6 @@ impl SyncResponseProcessor {
     fn apply_station_cas(&mut self, delta: &StationCasAccountDataContainer) -> Result<()> {
         if delta.complete {
             self.station_cas_account_data.clear();
-            self.station_cas_revisions.clear();
         }
         for upsert in &delta.upserts {
             let canonical_change = canonical::canonical_json_bytes(upsert)?;

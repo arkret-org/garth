@@ -320,6 +320,30 @@ fn sync_loop_discards_rejected_cursor_before_retry() {
 }
 
 #[test]
+fn sync_loop_treats_retention_gap_as_initial_resync() {
+    let mut sync_loop = SyncLoop::from_snapshot(SyncLoopSnapshot {
+        token: Some("ak:cursor:retention-gap".to_owned()),
+        timeout_ms: 30_000,
+        gap_strategy: SyncGapStrategy::PreserveTokenAndBackfill,
+    });
+    let mut transport = |_request: SyncRequestBody, _options| {
+        Err(Error::Api {
+            status: 409,
+            error: Box::new(Problem::from_code(
+                "stream_resync_required",
+                "account-data retention gap",
+            )),
+        })
+    };
+
+    assert!(matches!(
+        sync_loop.step(&mut transport),
+        SyncLoopStep::Retry { retry_after, .. } if retry_after.is_zero()
+    ));
+    assert!(sync_loop.token().is_none());
+}
+
+#[test]
 fn sync_loop_exposes_to_device_loss_recovery_actions() {
     let mut transport = |_request: SyncRequestBody, _options| {
         let mut response = sync_response("loss1");
@@ -624,6 +648,18 @@ fn station_cas_baseline_and_deltas_are_revision_safe() {
         }),
     });
     processor.process(reset).unwrap();
+    assert!(processor.station_cas_account_data(key).is_none());
+
+    let mut stale_baseline = sync_response("station-cas-stale-baseline");
+    delta_mut(&mut stale_baseline).account_data = Some(AccountDataContainer {
+        events: Vec::new(),
+        station_cas: Some(StationCasAccountDataContainer {
+            complete: true,
+            upserts: vec![station_cas_row(key, 2)],
+            removals: Vec::new(),
+        }),
+    });
+    assert!(processor.process(stale_baseline).is_err());
     assert!(processor.station_cas_account_data(key).is_none());
 }
 

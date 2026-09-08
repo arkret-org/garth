@@ -486,6 +486,16 @@ impl SyncLoop {
                 }
                 SyncLoopStep::Updates(Box::new(updates))
             }
+            Err(Error::Protocol(message))
+                if message.starts_with("station_cas revision regressed")
+                    || message.starts_with("station_cas revision conflict") =>
+            {
+                self.reset();
+                SyncLoopStep::Retry {
+                    retry_after: Duration::ZERO,
+                    error: format!("{message}; restarting initial sync"),
+                }
+            }
             Err(error) => SyncLoopStep::Failed {
                 error: error.to_string(),
             },
