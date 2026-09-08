@@ -1121,42 +1121,6 @@ pub fn ranges_cover(outer: &[EpochRange], inner: &[EpochRange]) -> bool {
     })
 }
 
-/// The signer-resolution evidence coordinates a projected Event carries for one
-/// `(realm, principal, verification method)` triple.
-///
-/// A value that does not decode as an Event, or that belongs to another
-/// principal or Realm, contributes nothing rather than failing the scan.
-pub fn principal_signer_evidence_coordinates_from_event(
-    value: &serde_json::Value,
-    realm_id: &arkret_wire::RealmId,
-    actor_id: &arkret_wire::DidCoreId,
-    verification_method: &arkret_wire::DidUrl,
-) -> Result<Option<arkret_wire::SignerEvidenceRef>> {
-    let Ok(event) = serde_json::from_value::<arkret_wire::Event>(value.clone()) else {
-        return Ok(None);
-    };
-    if event.actor_id.signing_principal_id() != actor_id
-        || event.scope_ref.realm_id_opt() != Some(realm_id)
-    {
-        return Ok(None);
-    }
-    for proof in &event.proofs {
-        let arkret_wire::EventProof::Producer(producer) = proof else {
-            continue;
-        };
-        let Some(evidence_ref) = &producer.signer_resolution_evidence_ref else {
-            continue;
-        };
-        if producer.verification_method == *verification_method {
-            evidence_ref
-                .content_digest()
-                .map_err(|error| Error::Protocol(error.to_string()))?;
-            return Ok(Some(evidence_ref.clone()));
-        }
-    }
-    Ok(None)
-}
-
 #[cfg(test)]
 mod tests {
     use arkret_wire::SealId;
