@@ -418,13 +418,18 @@ async fn winning_accepted_artifact(
         ))
     })?;
     let cell = arkret_state::mls_cells::mls_epoch_cell_id(&scope, &group_id)?;
+    let authority_audits =
+        arkret_schema::CapabilityAuthorityAuditIndex::from_events(&checkpoint.accepted_events);
     let winning = arkret_state::mls_governance_proof::materialize_registered_cell_value_from_verified_checkpoint(
         checkpoint,
         &cell,
         &registry,
         |event, digest_suite| {
-            arkret_schema::project_registered_cell_writes(event, digest_suite)
-                .map_err(|error| error.to_string())
+            arkret_schema::project_registered_cell_writes_with_authority_resolver(
+                event,
+                digest_suite,
+                &|grant_id| authority_audits.resolve(grant_id),
+            ).map_err(|error| error.to_string())
         },
     )
     .await?;

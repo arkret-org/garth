@@ -39,6 +39,47 @@ fn delta_mut(batch: &mut AccountSubscribeBatch) -> &mut AccountSubscribeFrame {
     batch.frames.first_mut().unwrap()
 }
 
+#[test]
+fn interrupted_account_stream_retries_cursor_and_delivers_approval() {
+    let mut sync_loop = SyncLoop::new();
+    let mut initial = |_: SyncRequestBody, _| Ok(sync_response("before-approval"));
+    assert!(matches!(
+        sync_loop.step(&mut initial),
+        SyncLoopStep::Updates(_)
+    ));
+
+    let mut interrupted = |request: SyncRequestBody, _| {
+        assert_eq!(request.after.as_deref(), Some("before-approval"));
+        Err(Error::Http("response body interrupted".to_owned()))
+    };
+    assert!(matches!(
+        sync_loop.step(&mut interrupted),
+        SyncLoopStep::Retry { .. }
+    ));
+    assert_eq!(sync_loop.token(), Some("before-approval"));
+
+    let mut recovered = |request: SyncRequestBody, _| {
+        assert_eq!(request.after.as_deref(), Some("before-approval"));
+        let mut batch = sync_response("after-approval");
+        delta_mut(&mut batch).notifications = Some(approval_notifications(
+            "ak:notification:01964137-0000-7000-8000-000000000001",
+            "2099-07-13T10:05:00.000Z",
+        ));
+        Ok(batch)
+    };
+    match sync_loop.step(&mut recovered) {
+        SyncLoopStep::Updates(updates) => {
+            assert_eq!(updates.notifications.len(), 1);
+            assert!(matches!(
+                updates.notifications[0].data,
+                Some(NotificationData::AgentRuntimeApproval(_))
+            ));
+        }
+        other => panic!("expected approval after reconnect, got {other:?}"),
+    }
+    assert_eq!(sync_loop.token(), Some("after-approval"));
+}
+
 fn station_cas_row(key: &str, revision: u64) -> AccountDataRow {
     AccountDataRow {
         account_data_key: key.to_owned(),
