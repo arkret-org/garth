@@ -159,11 +159,10 @@ pub use security_transaction::{
 pub use service_route::{
     MemoryServiceRouteStateStore, RouteCandidateSource, RouteForkQuarantine, RouteResolution,
     ServiceDescribeBinding, ServiceRouteCandidate, ServiceRouteDurableSnapshot,
-    ServiceRouteEvaluator, ServiceRouteNoticeCandidate, ServiceRouteSource, ServiceRouteStateStore,
+    ServiceRouteEvaluator, ServiceRouteSource, ServiceRouteStateStore,
 };
 pub use service_route_material::{
-    PrefetchedRouteSource, authenticate_fetched_record, describe_route_binding,
-    validate_route_binding, verify_client_method_evidence,
+    PrefetchedRouteSource, authenticate_fetched_resolution, describe_route_binding,
 };
 pub use session::{
     AgentKeyProofLogin, AuthenticatedTransportFactory, GRANT_ROTATION_SKEW_SECS, LoginKind,
