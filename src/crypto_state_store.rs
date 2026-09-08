@@ -815,7 +815,6 @@ mod tests {
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
-    use arkret_wire::Hlc;
     use serde_json::json;
 
     use super::*;
@@ -951,7 +950,7 @@ mod tests {
             principal_id("alice"),
             principal_id("server"),
             sequence,
-            Hlc::new(format!("01970e589d21-{sequence:04x}-a13f9c2e")).unwrap(),
+            arkret_test_kit::pinned_hlc(u16::try_from(sequence).expect("fixture HLC counter")),
             json!({}),
         )
         .unwrap()

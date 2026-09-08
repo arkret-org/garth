@@ -578,7 +578,7 @@ mod tests {
     }
 
     fn hlc(counter: u32) -> Hlc {
-        Hlc::new(format!("01970e589d21-{counter:04x}-a13f9c2e")).unwrap()
+        arkret_test_kit::pinned_hlc(u16::try_from(counter).expect("fixture HLC counter"))
     }
 
     fn controller() -> DidCoreId {

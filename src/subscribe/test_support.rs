@@ -72,3 +72,31 @@ pub(crate) fn queued_transport(
         })
     }
 }
+
+/// Subscription fixtures exercise accepted-envelope projection, not admission verification.
+pub(crate) fn structural_only_accepted_event(event: arkret_wire::Event) -> arkret_wire::Event {
+    let accepted_at = event.created_at;
+    let signer = arkret_test_kit::StructuralOnlyPayloadSigner::new(
+        arkret_wire::Did::new("did:webvh:z6mkfixture:alice.example").unwrap(),
+        arkret_wire::DidUrl::new("did:webvh:z6mkfixture:alice.example#device-1").unwrap(),
+    );
+    arkret_test_kit::structural_only_admitted_event(
+        event,
+        &signer,
+        arkret_test_kit::StructuralOnlyAdmissionFixture {
+            verification_method: arkret_wire::DidUrl::new("did:web:principal.example#admission-1")
+                .unwrap(),
+            producer_signing_key_did: arkret_wire::DidKey::new("did:key:z6MkhFixtureDeviceKey")
+                .unwrap(),
+            signer_resolution_evidence_ref: arkret_wire::SignerEvidenceRef::new(format!(
+                "ak:signer_evidence:sha256:{}",
+                "11".repeat(32)
+            ))
+            .unwrap(),
+            accepted_at,
+        },
+        arkret_canonical::DigestSuite::Sha256,
+    )
+    .expect("structural-only accepted fixture builds")
+    .expect_structural_only()
+}

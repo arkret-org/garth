@@ -77,6 +77,7 @@ zeroize = { version = "1.9.0", default-features = false, features = ["derive"] }
 gloo-timers = { version = "0.4", default-features = false, features = ["futures"], optional = true }
 
 [dev-dependencies]
+arkret-test-kit = { path = "../arkret-rust-sdk/crates/test-kit" }
 arkret-wire = { version = "0.3.0", path = "../arkret-rust-sdk/crates/wire", default-features = false, features = ["test-support"] }
 tokio = { version = "1.53.1", default-features = false, features = ["macros", "rt", "sync", "time"] }
 uuid = { version = "1.26", default-features = false, features = ["std", "v7"] }

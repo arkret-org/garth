@@ -325,7 +325,7 @@ fn unauthorized_frame() -> EventsSubscribeFrame {
 }
 
 fn accepted_event() -> arkret_wire::Event {
-    let mut event = arkret_wire::test_support::raw_event(
+    let event = arkret_wire::test_support::raw_event(
         EventKind::MessageCreate.as_str(),
         crate::protocol::ScopeRef::Realm {
             realm_id: realm_id(),
@@ -346,47 +346,7 @@ fn accepted_event() -> arkret_wire::Event {
         }),
     )
     .unwrap();
-    let event_digest = arkret_wire::Hash::new(
-        event
-            .event_digest_with_digest_suite(arkret_canonical::DigestSuite::Sha256)
-            .unwrap(),
-    )
-    .unwrap();
-    let producer = arkret_wire::ProducerEventProof {
-        kind: arkret_wire::proof_kind::DETACHED_JWS.to_owned(),
-        verification_method: arkret_wire::DidUrl::new(
-            "did:webvh:z6mkfixture:alice.example#device-1",
-        )
-        .unwrap(),
-        event_digest: event_digest.clone(),
-        signer_resolution_evidence_ref: None,
-        created_at: event.created_at,
-        domain: None,
-        audience: None,
-        proof_purpose: None,
-        jws: "header..producer".to_owned(),
-    };
-    let admission = arkret_wire::StationAdmissionProof {
-        kind: arkret_wire::StationAdmissionProofKind::StationAdmission,
-        verification_method: arkret_wire::DidUrl::new("did:web:principal.example#admission-1")
-            .unwrap(),
-        event_digest,
-        producer_proof_digest: arkret_wire::StationAdmissionProof::producer_proof_digest(&producer)
-            .unwrap(),
-        producer_verification_method: producer.verification_method.clone(),
-        producer_signing_key_did: arkret_wire::DidKey::new("did:key:z6MkhFixtureDeviceKey")
-            .unwrap(),
-        producer_signer_resolution_evidence_ref: None,
-        signer_resolution_evidence_ref: arkret_wire::SignerEvidenceRef::new(format!(
-            "ak:signer_evidence:sha256:{}",
-            "11".repeat(32)
-        ))
-        .unwrap(),
-        accepted_at: event.created_at,
-        jws: "header..admission".to_owned(),
-    };
-    event.proofs = vec![producer.into(), admission.into()];
-    event
+    crate::subscribe::test_support::structural_only_accepted_event(event)
 }
 
 fn event_frame() -> EventsSubscribeFrame {

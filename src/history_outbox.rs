@@ -741,7 +741,8 @@ mod tests {
         HistoryResponseManifestKind, SealedHistoryChunk, SealedHistoryChunkKind,
     };
     use arkret_wire::{
-        DidCoreId, DidUrl, HistoryEffectiveScope, PayloadProof, RealmId, SignerEvidenceRef,
+        DidCoreId, DidUrl, HistoryEffectiveScope, PayloadProof, PayloadSigner, RealmId,
+        SignerEvidenceRef,
     };
 
     use super::*;
@@ -757,6 +758,7 @@ mod tests {
         .unwrap()
     }
 
+    // Outbox replay tests bind exact bytes but do not perform signature verification.
     fn signed_response(
         response_id: HistoryResponseId,
         content: HistoryKeyResponseContent,
@@ -765,8 +767,12 @@ mod tests {
         let evidence_digest = digest('a');
         let evidence_ref =
             SignerEvidenceRef::new(format!("ak:signer_evidence:{evidence_digest}")).unwrap();
-        HistoryKeyResponseSendRequest::build_signed_proof(
+        let signer = arkret_test_kit::StructuralOnlyPayloadSigner::new(
+            arkret_wire::Did::new("did:key:z6MkHistorySource").unwrap(),
             DidUrl::new("did:key:z6MkHistorySource#response-key").unwrap(),
+        );
+        HistoryKeyResponseSendRequest::build_signed_proof(
+            signer.verification_method_id().clone(),
             expires_at - chrono::Duration::minutes(1),
             |source_proof| HistoryKeyResponseSendRequest {
                 response_id: response_id.clone(),
@@ -785,7 +791,7 @@ mod tests {
                 content: content.clone(),
                 source_proof,
             },
-            |_| Ok("test-source-signature".to_owned()),
+            |bytes| signer.sign_payload(bytes).map(|signature| signature.jws),
         )
         .unwrap()
     }
@@ -870,15 +876,19 @@ mod tests {
             service_proof: placeholder_proof(accepted_at),
         };
         let receipt_digest = temporary.send_receipt_digest().unwrap();
-        HistoryKeyResponseSendReceipt::build_signed_proof(
+        let signer = arkret_test_kit::StructuralOnlyPayloadSigner::new(
+            arkret_wire::Did::new("did:key:z6MkHistoryService").unwrap(),
             DidUrl::new("did:key:z6MkHistoryService#notary-key").unwrap(),
+        );
+        HistoryKeyResponseSendReceipt::build_signed_proof(
+            signer.verification_method_id().clone(),
             accepted_at,
             |service_proof| HistoryKeyResponseSendReceipt {
                 receipt_digest: receipt_digest.clone(),
                 service_proof,
                 ..temporary.clone()
             },
-            |_| Ok("test-service-signature".to_owned()),
+            |bytes| signer.sign_payload(bytes).map(|signature| signature.jws),
         )
         .unwrap()
     }
