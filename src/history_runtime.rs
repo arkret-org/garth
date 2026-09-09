@@ -1025,49 +1025,6 @@ pub fn cryptographically_rejected_disposition(
     }
 }
 
-/// The join epoch a requester's authorization incarnation retains for one
-/// effective scope.
-///
-/// `history-visibility.md` binds a member's readable history to the epoch its
-/// *retained* join created, so the incarnation branch must match the scope
-/// branch: a Realm incarnation never authorizes a Circle traversal and vice
-/// versa, and a mismatch is refused rather than silently narrowed.
-pub fn verify_authorization_incarnation_is_retained_join(
-    checkpoint: &MlsGovernanceVerificationCheckpoint,
-    scope: &arkret_wire::HistoryEffectiveScope,
-    actor_id: &arkret_wire::ActorId,
-    incarnation: &AuthorizationIncarnation,
-) -> Result<u64> {
-    let group_id = arkret_wire::MlsGroupId::new(
-        scope
-            .canonical_mls_group_id()
-            .map_err(|error| Error::Protocol(error.to_string()))?,
-    )
-    .map_err(|error| Error::Protocol(error.to_string()))?;
-    let join_epoch = arkret_state::direct_traversal::derive_history_join_epoch(
-        &checkpoint.accepted_events,
-        &arkret_state::direct_traversal::HistoryJoinEpochSubject {
-            mls_group_id: group_id,
-            requester_actor_id: actor_id.clone(),
-            authorization_incarnation: incarnation.clone(),
-        },
-    )
-    .map_err(|error| Error::Protocol(error.to_string()))?;
-    match (scope, incarnation) {
-        (
-            arkret_wire::HistoryEffectiveScope::Realm { .. },
-            AuthorizationIncarnation::Realm { .. },
-        )
-        | (
-            arkret_wire::HistoryEffectiveScope::Circle { .. },
-            AuthorizationIncarnation::Circle { .. },
-        ) => Ok(join_epoch),
-        _ => Err(Error::Protocol(
-            "history request scope and authorization incarnation branch differ".to_owned(),
-        )),
-    }
-}
-
 /// Collapse a set of epochs into the minimal ascending list of closed ranges
 /// that covers exactly them.
 pub fn canonical_ranges_for_epochs(epochs: impl IntoIterator<Item = u64>) -> Vec<EpochRange> {
