@@ -423,11 +423,19 @@ pub fn reconcile_identity_creation(
         .iter()
         .copied()
         .collect::<BTreeSet<_>>();
+    let mut allowed = required.clone();
+    if goal == IdentityCreationGoal::CompleteIdentity
+        && lease.state == IdentityCreationLeaseState::Reserved
+    {
+        // A prepared request remains reusable across holder-lease renewal.
+        // It is optional until prepared, so it is not a required artifact.
+        allowed.insert(IdentityCreationLocalArtifactKind::PreparedRegistrationRequest);
+    }
     let keep = stored
         .intersection(&valid)
         .copied()
         .collect::<BTreeSet<_>>()
-        .intersection(&required)
+        .intersection(&allowed)
         .copied()
         .collect::<Vec<_>>();
     let keep_set = keep.iter().copied().collect::<BTreeSet<_>>();
@@ -466,6 +474,9 @@ pub fn reconcile_identity_creation(
                 IdentityCreationNextStep::Collect(RegistrationCheckpoint)
             } else {
                 match lease.state {
+                    Reserved if keep_set.contains(&PreparedRegistrationRequest) => {
+                        IdentityCreationNextStep::Execute(SubmitRegistration)
+                    }
                     Active | Reserved => {
                         IdentityCreationNextStep::Execute(IssueIdentityBindingChallenge)
                     }
@@ -1217,10 +1228,11 @@ mod tests {
         )
         .unwrap();
 
-        assert!(plan.keep_artifacts.is_empty());
+        assert_eq!(plan.keep_artifacts, vec![PreparedRegistrationRequest]);
         assert!(plan.discard_artifacts.contains(&RegistrationCheckpoint));
         assert!(
-            plan.discard_artifacts
+            !plan
+                .discard_artifacts
                 .contains(&PreparedRegistrationRequest)
         );
         assert!(plan.discard_artifacts.contains(&AbandonmentChallenge));
@@ -1249,6 +1261,46 @@ mod tests {
             )
         );
         assert!(plan.missing_artifacts.is_empty());
+    }
+
+    #[test]
+    fn reserved_completion_reuses_prepared_request_after_reauthentication() {
+        use IdentityCreationLocalArtifactKind::{
+            PreparedRegistrationRequest, RegistrationCheckpoint,
+        };
+        for prepared_is_valid in [true, false] {
+            let valid = if prepared_is_valid {
+                vec![RegistrationCheckpoint, PreparedRegistrationRequest]
+            } else {
+                vec![RegistrationCheckpoint]
+            };
+            let plan = reconcile_identity_creation(
+                &lease(IdentityCreationLeaseState::Reserved),
+                IdentityCreationGoal::CompleteIdentity,
+                IdentityCreationRecoveryKeyState::ExistingValidatedDurable,
+                [RegistrationCheckpoint, PreparedRegistrationRequest],
+                valid,
+            )
+            .unwrap();
+            assert_eq!(
+                plan.next_step,
+                IdentityCreationNextStep::Execute(if prepared_is_valid {
+                    IdentityCreationCommandKind::SubmitRegistration
+                } else {
+                    IdentityCreationCommandKind::IssueIdentityBindingChallenge
+                })
+            );
+            assert_eq!(
+                plan.keep_artifacts.contains(&PreparedRegistrationRequest),
+                prepared_is_valid
+            );
+            assert_eq!(
+                plan.discard_artifacts
+                    .contains(&PreparedRegistrationRequest),
+                !prepared_is_valid
+            );
+            assert!(plan.missing_artifacts.is_empty());
+        }
     }
 
     #[test]
