@@ -13,7 +13,7 @@
 use std::collections::BTreeMap;
 
 use arkret_models_crypto::{BackupKind, SecretStorageItemKind};
-use arkret_wire::{HistoryEffectiveScope, SchemaId};
+use arkret_wire::HistoryEffectiveScope;
 use serde_json::Value;
 
 use crate::mls::backup_series::backup_series_seq;
@@ -94,60 +94,18 @@ pub fn is_mls_history_backup(body: &Value) -> bool {
     backup_kind_is(body, BackupKind::MlsHistory)
 }
 
-/// The authoritative active series for one backup class.
-///
-/// `device-lifecycle.md` §12 only requires an authoritative active-series
-/// record when one backup class has multiple series. With exactly one series
-/// there is no choice to arbitrate, so that unique id is inferred. Missing
-/// metadata still fails closed as soon as two distinct series are visible.
+/// The current Account Station pointer selects the eligible backup series.
+/// Missing, absent or malformed state never permits guessing from envelopes.
 pub fn active_series_id_for_backup_class(
     list_payload: &Value,
     backup_kind: BackupKind,
 ) -> Option<&str> {
-    let recorded = list_payload
-        .get("active_series")
-        .and_then(Value::as_array)
-        .and_then(|records| {
-            records.iter().find(|record| {
-                record.get("schema").and_then(Value::as_str)
-                    == Some(SchemaId::KEY_BACKUP_ACTIVE_SERIES_V1)
-                    && record.get("backup_kind").and_then(Value::as_str)
-                        == Some(backup_kind.as_str())
-            })
-        })
-        .and_then(|record| record.get("active_series_id"))
-        .and_then(Value::as_str)
-        .filter(|series_id| !series_id.is_empty());
-    if recorded.is_some() {
-        return recorded;
+    let pointer = list_payload.get("active_series")?.get(backup_kind.as_str())?;
+    if pointer.get("state")?.as_str()? != "active"
+        || pointer.get("series_pointer_version")?.as_u64()? == 0 {
+        return None;
     }
-
-    let mut series_ids = iter_backup_bodies(list_payload)
-        .filter(|body| backup_kind_is(body, backup_kind))
-        .filter_map(|body| body.get("series_id").and_then(Value::as_str))
-        .filter(|series_id| !series_id.is_empty());
-    let first = series_ids.next()?;
-    if series_ids.any(|series_id| series_id != first) {
-        None
-    } else {
-        Some(first)
-    }
-}
-
-/// The series a restore is allowed to select from, falling back to the sole
-/// visible series when no active-series record has been projected yet.
-pub fn selectable_series_id_for_backup_class(
-    list_payload: &Value,
-    backup_kind: BackupKind,
-) -> Option<&str> {
-    active_series_id_for_backup_class(list_payload, backup_kind).or_else(|| {
-        let mut matching = iter_backup_bodies(list_payload)
-            .filter(|body| backup_kind_is(body, backup_kind))
-            .filter_map(|body| body.get("series_id").and_then(Value::as_str))
-            .filter(|series_id| !series_id.is_empty());
-        let sole = matching.next()?;
-        matching.all(|series_id| series_id == sole).then_some(sole)
-    })
+    pointer.get("active_series_id")?.as_str().filter(|id| !id.is_empty())
 }
 
 fn matches_active_series(body: &Value, active_series: Option<&str>) -> bool {
@@ -179,7 +137,7 @@ pub fn mls_account_secret_backup_version(body: &Value) -> u32 {
 /// `series_seq` wins, followed by the creation timestamp.
 pub fn select_mls_private_plaintext_backup(list_payload: &Value) -> Option<Value> {
     let active_series =
-        selectable_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
+        active_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
     iter_backup_bodies(list_payload)
         .filter(|body| is_mls_private_plaintext_backup(body))
         .filter(|body| matches_active_series(body, active_series))
@@ -208,12 +166,10 @@ fn account_secret_order(body: &Value) -> (u64, u64, &str) {
 /// NOT be able to resurrect an old low-seq link by stamping a newer
 /// timestamp); `created_at` is only a last-resort tiebreak.
 ///
-/// A verified active-series record (key-management.md §7.6) selects the only
-/// eligible series. When the projection is absent, one non-empty series is
-/// unambiguous; multiple series fail closed until a pointer is available.
+/// The current Station active-series result selects the only eligible series.
 pub fn select_mls_account_secret_backup(list_payload: &Value) -> Option<Value> {
     let active_series =
-        selectable_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
+        active_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
     iter_backup_bodies(list_payload)
         .filter(|body| is_passphrase_account_secret_backup(body))
         .filter(|body| matches_active_series(body, active_series))
@@ -226,7 +182,7 @@ pub fn select_mls_account_secret_backup(list_payload: &Value) -> Option<Value> {
 /// `(secret_version, series_seq, created_at)`.
 pub fn select_mls_account_secret_recovery_public_key_backup(list_payload: &Value) -> Option<Value> {
     let active_series =
-        selectable_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
+        active_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
     iter_backup_bodies(list_payload)
         .filter(|body| is_recovery_public_key_account_secret_backup(body))
         .filter(|body| matches_active_series(body, active_series))
@@ -241,7 +197,7 @@ pub fn select_preferred_mls_account_secret_backup(list_payload: &Value) -> Optio
 
 /// Collect every `mls_history` backup body in the active series.
 pub fn select_mls_history_backups(list_payload: &Value) -> Vec<Value> {
-    let active_series = selectable_series_id_for_backup_class(list_payload, BackupKind::MlsHistory);
+    let active_series = active_series_id_for_backup_class(list_payload, BackupKind::MlsHistory);
     iter_backup_bodies(list_payload)
         .filter(|body| backup_kind_is(body, BackupKind::MlsHistory))
         .filter(|body| matches_active_series(body, active_series))
@@ -286,7 +242,7 @@ pub fn latest_mls_history_backups_by_scope(list_payload: &Value) -> Vec<Value> {
 /// decrypt target is an account-secret envelope.
 pub fn all_mls_account_secret_backups(list_payload: &Value) -> Vec<Value> {
     let active_series =
-        selectable_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
+        active_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
     iter_backup_bodies(list_payload)
         .filter(|body| backup_kind_is(body, BackupKind::SecretStorage))
         .filter(|body| matches_active_series(body, active_series))
@@ -319,11 +275,10 @@ mod tests {
             })
         };
         let payload = json!({
-            "active_series": [{
-                "schema": SchemaId::KEY_BACKUP_ACTIVE_SERIES_V1,
-                "backup_kind": "mls_history",
+            "active_series": {"mls_history": {
+                "state": "active", "series_pointer_version": 1,
                 "active_series_id": "ak:backup_series:01964137-0000-7000-8000-000000000001",
-            }],
+            }},
             "backups": [
                 history("old-a", realm_a, 0),
                 history("scope-b", realm_b, 1),

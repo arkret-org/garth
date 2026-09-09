@@ -8,11 +8,10 @@ use std::collections::BTreeMap;
 use std::future::Future;
 
 use arkret_models_collaboration::events_payloads::{MlsGenesisPayload, MlsWelcomePayload};
-use arkret_models_crypto::MlsCommitPayload;
-pub use arkret_models_crypto::{MlsCommitSource, MlsGroupStateSink};
-use arkret_state::mls_governance_proof::{
-    MlsGovernanceVerificationCheckpoint, VerifiedMlsGovernanceFrontier,
+use arkret_models_crypto::{
+    MlsAcceptedArtifactOutcome, MlsAcceptedArtifactRequest, MlsCommitPayload,
 };
+pub use arkret_models_crypto::{MlsCommitSource, MlsGroupStateSink};
 use arkret_wire::WireError;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -59,15 +58,15 @@ pub struct StoredDeviceVerification {
     pub updated_at: DateTime<Utc>,
 }
 
-/// One encrypted MLS snapshot committed from an Event proven accepted by a
-/// complete governance checkpoint. The snapshot itself is the ready marker:
-/// no parallel in-memory readiness bit exists.
+/// One encrypted MLS snapshot committed from a Station-accepted Event. The snapshot itself is the
+/// ready marker: no parallel in-memory readiness bit exists.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DurableAcceptedMlsArtifact {
     pub event: Event,
     pub event_digest: Hash,
     pub winning_transition_ref: EventId,
+    pub transition_head: arkret_models_crypto::MlsEpochHead,
     pub snapshot: QueuedMlsLocalCheckpoint,
     pub history_secret: QueuedMlsHistorySecret,
 }
@@ -83,7 +82,7 @@ pub struct QueuedMlsHistorySecret {
     pub ciphertext: Vec<u8>,
 }
 
-/// Fully prepared local material for one checkpoint-proven MLS artifact.
+/// Fully prepared local material for one Station-accepted MLS artifact.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PreparedAcceptedMlsArtifact {
@@ -118,9 +117,8 @@ pub trait AcceptedMlsArtifactStore: Clone + MaybeSendSync + 'static {
     ) -> impl Future<Output = Result<bool>> + MaybeSend + 'a;
 }
 
-/// Provider boundary invoked only after the Event has been recovered from a
-/// complete verified checkpoint and proven to be the checkpoint's winning
-/// transition (or a Welcome bound to that transition). Implementations MUST
+/// Provider boundary invoked after the Station accepts the exact Event and
+/// its binding matches the selected transition (including a Welcome target). Implementations MUST
 /// derive the returned material from the Event, previous durable snapshot and
 /// host-owned durable staging/secure-key inputs. A CAS retry may invoke
 /// `prepare` again; preparation MUST NOT publish readiness, persist history
@@ -174,7 +172,16 @@ where
         let artifact = state.artifacts.get(event_id).ok_or_else(|| {
             Error::Protocol("accepted MLS ready index references a missing artifact".to_owned())
         })?;
-        if artifact.snapshot.group_id != group_id || artifact.snapshot.aead_version != 1 {
+        artifact.transition_head.validate()?;
+        if artifact.snapshot.group_id != group_id
+            || artifact.snapshot.aead_version != 1
+            || artifact.transition_head.effective_scope != *scope
+            || artifact.transition_head.mls_group_id.as_str() != group_id
+            || artifact.transition_head.next_epoch != artifact.snapshot.epoch
+            || artifact.transition_head.transition_ref != artifact.winning_transition_ref
+            || artifact.snapshot.group_state_event_id.as_ref()
+                != Some(&artifact.winning_transition_ref)
+        {
             return Err(Error::Protocol(
                 "accepted MLS ready index references a mismatched snapshot".to_owned(),
             ));
@@ -188,30 +195,25 @@ where
         Ok(Some(artifact.snapshot.clone()))
     }
 
-    /// Apply one accepted winning MLS artifact and atomically publish its
-    /// encrypted snapshot as ready. A fetched Event cannot call this path: the
-    /// Event is selected from the verified checkpoint by id.
+    /// Consume one exact Event accepted by the authenticated Account Station.
+    /// The host must keep the response in its current account/session scope.
     pub async fn consume<A>(
         &self,
-        frontier: &VerifiedMlsGovernanceFrontier,
-        event_id: &EventId,
+        request: &MlsAcceptedArtifactRequest,
+        outcome: &MlsAcceptedArtifactOutcome,
+        event: &Event,
         applicator: &A,
     ) -> Result<AcceptedMlsArtifactCommit>
     where
         A: AcceptedMlsArtifactApplicator,
     {
-        if frontier.proof_target_basis != frontier.target_checkpoint.basis {
-            return Err(Error::Protocol(
-                "verified MLS frontier target basis changed under its checkpoint".to_owned(),
-            ));
-        }
-        let accepted = verified_accepted_artifact(&frontier.target_checkpoint, event_id).await?;
-        self.consume_verified(accepted, applicator).await
+        let accepted = accepted_artifact(request, outcome, event)?;
+        self.consume_accepted(accepted, applicator).await
     }
 
-    async fn consume_verified<A>(
+    async fn consume_accepted<A>(
         &self,
-        accepted: VerifiedAcceptedMlsArtifact,
+        accepted: StationAcceptedMlsArtifact,
         applicator: &A,
     ) -> Result<AcceptedMlsArtifactCommit>
     where
@@ -224,6 +226,7 @@ where
                 if existing.event == accepted.event
                     && existing.event_digest == accepted.event_digest
                     && existing.winning_transition_ref == accepted.winning_transition_ref
+                    && existing.transition_head == accepted.transition_head
                 {
                     return Ok(AcceptedMlsArtifactCommit {
                         outcome: AcceptedMlsArtifactCommitOutcome::ExactReplay,
@@ -288,6 +291,7 @@ where
                 event: accepted.event.clone(),
                 event_digest: accepted.event_digest.clone(),
                 winning_transition_ref: accepted.winning_transition_ref.clone(),
+                transition_head: accepted.transition_head.clone(),
                 snapshot: prepared.snapshot,
                 history_secret: prepared.history_secret,
             };
@@ -330,213 +334,94 @@ enum AcceptedMlsApplication {
 }
 
 #[derive(Clone)]
-struct VerifiedAcceptedMlsArtifact {
+struct StationAcceptedMlsArtifact {
     event: Event,
     event_digest: Hash,
     scope: ScopeRef,
     group_id: String,
     epoch: u64,
     winning_transition_ref: EventId,
+    transition_head: arkret_models_crypto::MlsEpochHead,
     application: AcceptedMlsApplication,
 }
 
-async fn verified_accepted_artifact(
-    checkpoint: &MlsGovernanceVerificationCheckpoint,
-    event_id: &EventId,
-) -> Result<VerifiedAcceptedMlsArtifact> {
-    winning_accepted_artifact(checkpoint, event_id)
-        .await?
-        .ok_or_else(|| {
-            Error::Protocol("MLS artifact is not a checkpoint-winning artifact".to_owned())
-        })
-}
-
-/// Returns whether an accepted MLS Event is executable at the checkpoint's
-/// winning epoch. Historical transitions remain part of the verified closure,
-/// but MUST NOT be reapplied as if they were the current winner.
-pub async fn is_checkpoint_winning_accepted_mls_artifact(
-    checkpoint: &MlsGovernanceVerificationCheckpoint,
-    event_id: &EventId,
-) -> Result<bool> {
-    Ok(winning_accepted_artifact(checkpoint, event_id)
-        .await?
-        .is_some())
-}
-
-async fn winning_accepted_artifact(
-    checkpoint: &MlsGovernanceVerificationCheckpoint,
-    event_id: &EventId,
-) -> Result<Option<VerifiedAcceptedMlsArtifact>> {
-    checkpoint.validate_checkpoint()?;
-    let mut matching = checkpoint
-        .accepted_events
-        .iter()
-        .filter(|event| &event.event_id == event_id);
-    let event = matching.next().ok_or_else(|| {
-        Error::Protocol("MLS artifact is not in the accepted checkpoint".to_owned())
-    })?;
-    if matching.next().is_some() {
+fn accepted_artifact(
+    request: &MlsAcceptedArtifactRequest,
+    outcome: &MlsAcceptedArtifactOutcome,
+    event: &Event,
+) -> Result<StationAcceptedMlsArtifact> {
+    outcome.validate_for_request(request)?;
+    if event.event_id != request.artifact_ref || event.scope_ref != request.effective_scope {
         return Err(Error::Protocol(
-            "accepted checkpoint repeats an MLS artifact Event id".to_owned(),
+            "MLS artifact differs from the exact Station query".to_owned(),
         ));
     }
-    let payload_value = serde_json::to_value(&event.payload)?;
-    let (scope, group_id, epoch, application, welcome_commit_ref) = match event.kind {
+    let (binding, epoch, reference, transition_digest, application) = match event.kind {
         EventKind::MlsGenesis => {
-            let payload: MlsGenesisPayload = serde_json::from_value(payload_value)?;
+            let payload: MlsGenesisPayload =
+                serde_json::from_value(serde_json::to_value(&event.payload)?)?;
+            let digest = payload.transition_digest()?;
             (
-                payload.effective_scope.clone(),
-                payload.mls_group_id.to_string(),
+                payload.governance_binding,
                 0,
+                event.event_id.clone(),
+                Some(digest),
                 AcceptedMlsApplication::Genesis,
-                None,
             )
         }
         EventKind::MlsCommit => {
-            let payload: MlsCommitPayload = serde_json::from_value(payload_value)?;
+            let payload: MlsCommitPayload =
+                serde_json::from_value(serde_json::to_value(&event.payload)?)?;
             (
-                payload.governance_binding().effective_scope().clone(),
-                payload.mls_group_id().to_owned(),
+                payload.governance_binding().clone(),
                 payload.next_epoch(),
+                event.event_id.clone(),
+                Some(payload.commit_digest().clone()),
                 AcceptedMlsApplication::Commit {
                     base_epoch: payload.base_epoch(),
                     base_epoch_ref: payload.base_epoch_ref().to_owned(),
                 },
-                None,
             )
         }
         EventKind::MlsWelcome => {
-            let payload: MlsWelcomePayload = serde_json::from_value(payload_value)?;
+            let payload: MlsWelcomePayload =
+                serde_json::from_value(serde_json::to_value(&event.payload)?)?;
             (
-                payload.governance_binding.effective_scope().clone(),
-                payload.mls_group_id.to_string(),
+                payload.governance_binding,
                 payload.epoch,
+                payload.commit_ref,
+                None,
                 AcceptedMlsApplication::Welcome,
-                Some(payload.commit_ref),
             )
         }
-        _ => return Ok(None),
+        _ => return Err(Error::Protocol("Event is not an MLS artifact".to_owned())),
     };
-    let canonical_group_id = scope.canonical_mls_group_id()?;
-    if canonical_group_id != group_id {
+    let head = &outcome.transition_head;
+    if binding != outcome.governance_binding
+        || reference != head.transition_ref
+        || epoch != head.next_epoch
+        || transition_digest
+            .as_ref()
+            .is_some_and(|digest| digest != &head.mls_transition_digest)
+    {
         return Err(Error::Protocol(
-            "accepted MLS artifact group id is not canonical for its scope".to_owned(),
+            "MLS Event payload differs from the accepted Station transition".to_owned(),
         ));
     }
-    let registry = arkret_lattice_registry::try_build_sdk_cell_registry().map_err(|error| {
-        Error::Protocol(format!(
-            "accepted MLS artifact registry construction failed: {error}"
-        ))
-    })?;
-    let cell = arkret_state::mls_cells::mls_epoch_cell_id(&scope, &group_id)?;
-    let authority_audits =
-        arkret_schema::CapabilityAuthorityAuditIndex::from_events(&checkpoint.accepted_events);
-    let winning = arkret_state::mls_governance_proof::materialize_registered_cell_value_from_verified_checkpoint(
-        checkpoint,
-        &cell,
-        &registry,
-        |event, digest_suite| {
-            arkret_schema::project_registered_cell_writes_with_authority_resolver(
-                event,
-                digest_suite,
-                &|grant_id| authority_audits.resolve(grant_id),
-            ).map_err(|error| error.to_string())
-        },
-    )
-    .await?;
-    let transition_ref = winning
-        .get("transition_ref")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| Error::Protocol("winning MLS epoch cell lacks transition_ref".to_owned()))?;
-    let winning_epoch = winning
-        .get("epoch")
-        .or_else(|| winning.get("next_epoch"))
-        .and_then(serde_json::Value::as_u64)
-        .ok_or_else(|| Error::Protocol("winning MLS epoch cell lacks epoch".to_owned()))?;
-    if winning_epoch < epoch {
-        return Ok(None);
-    }
-    let winning_transition_ref = winning_ancestor_ref(
-        &checkpoint.accepted_events,
-        &scope,
-        &group_id,
-        EventId::new(transition_ref.to_owned())?,
-        winning_epoch,
-        epoch,
-    )?;
-    match &application {
-        AcceptedMlsApplication::Genesis | AcceptedMlsApplication::Commit { .. }
-            if &winning_transition_ref != event_id =>
-        {
-            return Ok(None);
-        }
-        AcceptedMlsApplication::Welcome => match (&welcome_commit_ref, epoch) {
-            (Some(commit_ref), _) if commit_ref == &winning_transition_ref => {}
-            (None, 0) => {}
-            _ => {
-                return Ok(None);
-            }
-        },
-        _ => {}
-    }
-    Ok(Some(VerifiedAcceptedMlsArtifact {
+    Ok(StationAcceptedMlsArtifact {
         event: event.clone(),
-        event_digest: event.event_id.identity_key().event_digest(),
-        scope,
-        group_id,
+        event_digest: event.event_id.event_digest(),
+        scope: request.effective_scope.clone(),
+        group_id: request.mls_group_id.to_string(),
         epoch,
-        winning_transition_ref,
+        winning_transition_ref: reference,
+        transition_head: head.clone(),
         application,
-    }))
-}
-
-fn winning_ancestor_ref(
-    events: &[Event],
-    scope: &ScopeRef,
-    group_id: &str,
-    mut winning_transition_ref: EventId,
-    mut ancestor_epoch: u64,
-    epoch: u64,
-) -> Result<EventId> {
-    // A client catching up must execute every predecessor of the verified
-    // winner, not just its last Commit. Follow only exact accepted base refs;
-    // arrival order and unrelated accepted candidates cannot select ancestry.
-    while ancestor_epoch > epoch {
-        let mut matching = events
-            .iter()
-            .filter(|candidate| candidate.event_id == winning_transition_ref);
-        let ancestor = matching
-            .next()
-            .ok_or_else(|| Error::Protocol("winning MLS ancestry is incomplete".to_owned()))?;
-        if matching.next().is_some() {
-            return Err(Error::Protocol(
-                "winning MLS ancestry repeats an Event id".to_owned(),
-            ));
-        }
-        if ancestor.kind != EventKind::MlsCommit {
-            return Err(Error::Protocol(
-                "winning MLS ancestry has no Commit".to_owned(),
-            ));
-        }
-        let commit: MlsCommitPayload =
-            serde_json::from_value(serde_json::to_value(&ancestor.payload)?)?;
-        if commit.mls_group_id() != group_id
-            || commit.governance_binding().effective_scope() != scope
-            || commit.next_epoch() != ancestor_epoch
-            || commit.base_epoch().checked_add(1) != Some(ancestor_epoch)
-        {
-            return Err(Error::Protocol(
-                "winning MLS ancestry has an invalid transition".to_owned(),
-            ));
-        }
-        winning_transition_ref = EventId::new(commit.base_epoch_ref().to_owned())?;
-        ancestor_epoch = commit.base_epoch();
-    }
-    Ok(winning_transition_ref)
+    })
 }
 
 fn validate_prepared_artifact(
-    accepted: &VerifiedAcceptedMlsArtifact,
+    accepted: &StationAcceptedMlsArtifact,
     prepared: &PreparedAcceptedMlsArtifact,
 ) -> Result<()> {
     let snapshot = &prepared.snapshot;
@@ -1031,15 +916,26 @@ mod tests {
         .unwrap()
     }
 
-    fn verified_artifact(
+    fn station_artifact(
         event: Event,
         scope: ScopeRef,
         group_id: &str,
         epoch: u64,
         winning_transition_ref: EventId,
         application: AcceptedMlsApplication,
-    ) -> VerifiedAcceptedMlsArtifact {
-        VerifiedAcceptedMlsArtifact {
+    ) -> StationAcceptedMlsArtifact {
+        let transition_head = arkret_models_crypto::MlsEpochHead {
+            transition_ref: winning_transition_ref.clone(),
+            transition_event_digest: winning_transition_ref.event_digest(),
+            mls_transition_digest: winning_transition_ref.event_digest(),
+            effective_scope: scope.clone(),
+            mls_group_id: arkret_wire::Base64UrlString::new(group_id).unwrap(),
+            previous_epoch: epoch.saturating_sub(1),
+            next_epoch: epoch,
+            content_scheme: arkret_wire::ContentScheme::MlsRfc9420,
+        };
+        StationAcceptedMlsArtifact {
+            transition_head,
             event_digest: event.event_id.identity_key().event_digest(),
             event,
             scope,
@@ -1048,91 +944,6 @@ mod tests {
             winning_transition_ref,
             application,
         }
-    }
-
-    #[test]
-    fn winning_mls_ancestry_follows_exact_refs_across_missed_epochs() {
-        let genesis = artifact_event(EventKind::MlsGenesis, 1);
-        let scope = genesis.scope_ref.clone();
-        let group_id = scope.canonical_mls_group_id().unwrap();
-        let make_commit = |base: u64, reference: &EventId, sequence| {
-            let binding = arkret_models_crypto::MlsGovernanceBindingPayload::realm(
-                scope.realm_id_opt().unwrap().clone(),
-                &group_id,
-                base,
-                base + 1,
-                Hash::new(format!("sha256:{}", "ab".repeat(32))).unwrap(),
-                arkret_wire::ContentScheme::MlsRfc9420,
-                None,
-                arkret_wire::ProfileId::MLS_GOVERNANCE_BINDING_FULL_V1,
-                arkret_wire::CORE_REDUCER_PROFILE,
-            )
-            .unwrap();
-            let payload = MlsCommitPayload::new(
-                base,
-                reference.as_str(),
-                vec![],
-                &MlsCommitEnvelope {
-                    group_id: group_id.clone(),
-                    epoch: base + 1,
-                    commit: arkret_canonical::base64url_encode(b"commit"),
-                    commit_digest: Hash::new(arkret_canonical::sha256_digest(b"commit")).unwrap(),
-                    ratchet_tree: None,
-                },
-                binding,
-            )
-            .unwrap();
-            let mut event = artifact_event(EventKind::MlsCommit, sequence);
-            event.payload = serde_json::from_value(serde_json::to_value(payload).unwrap()).unwrap();
-            event
-        };
-        let first = make_commit(0, &genesis.event_id, 2);
-        let second = make_commit(1, &first.event_id, 3);
-        let unrelated = make_commit(0, &genesis.event_id, 4);
-        let events = vec![
-            second.clone(),
-            unrelated.clone(),
-            genesis.clone(),
-            first.clone(),
-        ];
-        assert_eq!(
-            winning_ancestor_ref(&events, &scope, &group_id, second.event_id.clone(), 2, 1)
-                .unwrap(),
-            first.event_id
-        );
-        assert_eq!(
-            winning_ancestor_ref(&events, &scope, &group_id, second.event_id.clone(), 2, 0)
-                .unwrap(),
-            genesis.event_id
-        );
-        assert_ne!(
-            winning_ancestor_ref(&events, &scope, &group_id, second.event_id.clone(), 2, 1)
-                .unwrap(),
-            unrelated.event_id
-        );
-        assert!(
-            winning_ancestor_ref(
-                &[second.clone()],
-                &scope,
-                &group_id,
-                second.event_id.clone(),
-                2,
-                0
-            )
-            .is_err()
-        );
-        assert!(
-            winning_ancestor_ref(
-                &events,
-                &scope,
-                "different-group",
-                second.event_id.clone(),
-                2,
-                1
-            )
-            .is_err()
-        );
-        assert!(winning_ancestor_ref(&events, &scope, &group_id, second.event_id, 3, 1).is_err());
     }
 
     #[tokio::test]
@@ -1154,8 +965,8 @@ mod tests {
             serde_json::from_value(json!({"epoch": 1, "commit_ref": commit.event_id})).unwrap();
 
         consumer
-            .consume_verified(
-                verified_artifact(
+            .consume_accepted(
+                station_artifact(
                     genesis.clone(),
                     scope.clone(),
                     &group_id,
@@ -1170,8 +981,8 @@ mod tests {
 
         let restarted = AcceptedMlsArtifactConsumer::new(store.clone());
         restarted
-            .consume_verified(
-                verified_artifact(
+            .consume_accepted(
+                station_artifact(
                     commit.clone(),
                     scope.clone(),
                     &group_id,
@@ -1187,8 +998,8 @@ mod tests {
             .await
             .unwrap();
         let duplicate_welcome = restarted
-            .consume_verified(
-                verified_artifact(
+            .consume_accepted(
+                station_artifact(
                     welcome.clone(),
                     scope.clone(),
                     &group_id,
@@ -1230,8 +1041,8 @@ mod tests {
         );
         let joining = AcceptedMlsArtifactConsumer::new(TestAcceptedStore::default());
         joining
-            .consume_verified(
-                verified_artifact(
+            .consume_accepted(
+                station_artifact(
                     welcome,
                     scope.clone(),
                     &group_id,
@@ -1265,7 +1076,7 @@ mod tests {
             calls: AtomicUsize::new(0),
         };
         let event = artifact_event(EventKind::MlsGenesis, 1);
-        let accepted = verified_artifact(
+        let accepted = station_artifact(
             event.clone(),
             scope,
             &group_id,
@@ -1274,11 +1085,11 @@ mod tests {
             AcceptedMlsApplication::Genesis,
         );
         consumer
-            .consume_verified(accepted.clone(), &applicator)
+            .consume_accepted(accepted.clone(), &applicator)
             .await
             .unwrap();
         let replay = consumer
-            .consume_verified(accepted, &applicator)
+            .consume_accepted(accepted, &applicator)
             .await
             .unwrap();
         assert_eq!(
@@ -1286,6 +1097,53 @@ mod tests {
             AcceptedMlsArtifactCommitOutcome::ExactReplay
         );
         assert_eq!(applicator.calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn ready_snapshot_rejects_mismatched_retained_epoch_metadata() {
+        let event = artifact_event(EventKind::MlsGenesis, 1);
+        let scope = event.scope_ref.clone();
+        let group_id = scope.canonical_mls_group_id().unwrap();
+        let store = TestAcceptedStore::default();
+        let consumer = AcceptedMlsArtifactConsumer::new(store.clone());
+        let applicator = TestApplicator {
+            group_id: group_id.clone(),
+            calls: AtomicUsize::new(0),
+        };
+        consumer
+            .consume_accepted(
+                station_artifact(
+                    event.clone(),
+                    scope.clone(),
+                    &group_id,
+                    0,
+                    event.event_id.clone(),
+                    AcceptedMlsApplication::Genesis,
+                ),
+                &applicator,
+            )
+            .await
+            .unwrap();
+        assert!(
+            consumer
+                .ready_checkpoint(&scope, &group_id)
+                .unwrap()
+                .is_some()
+        );
+        let mut current = store.load_accepted_mls_artifacts().unwrap();
+        let artifact = current
+            .snapshot
+            .artifacts
+            .get_mut(event.event_id.as_str())
+            .unwrap();
+        artifact.transition_head.next_epoch = 1;
+        assert!(
+            store
+                .compare_and_swap_accepted_mls_artifacts(current.revision, &current.snapshot)
+                .await
+                .unwrap()
+        );
+        assert!(consumer.ready_checkpoint(&scope, &group_id).is_err());
     }
 
     #[tokio::test]
@@ -1303,8 +1161,8 @@ mod tests {
         };
         let event = artifact_event(EventKind::MlsGenesis, 1);
         let error = consumer
-            .consume_verified(
-                verified_artifact(
+            .consume_accepted(
+                station_artifact(
                     event.clone(),
                     scope.clone(),
                     &group_id,

@@ -28,7 +28,7 @@ pub use backup_selection::{
     latest_mls_history_backups_by_scope, mls_account_secret_backup_version,
     select_mls_account_secret_backup, select_mls_account_secret_recovery_public_key_backup,
     select_mls_history_backups, select_mls_private_plaintext_backup,
-    select_preferred_mls_account_secret_backup, selectable_series_id_for_backup_class,
+    select_preferred_mls_account_secret_backup,
 };
 pub use backup_series::{
     backup_series_seq, fresh_backup_id, series_supersedes_digest, verify_series_chain,

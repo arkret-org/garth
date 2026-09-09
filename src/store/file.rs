@@ -672,6 +672,16 @@ mod tests {
         snapshot.artifacts.insert(
             event_key.clone(),
             DurableAcceptedMlsArtifact {
+                transition_head: arkret_models_crypto::MlsEpochHead {
+                    transition_ref: event.event_id.clone(),
+                    transition_event_digest: event.event_id.event_digest(),
+                    mls_transition_digest: event.event_id.event_digest(),
+                    effective_scope: scope.clone(),
+                    mls_group_id: arkret_wire::Base64UrlString::new(group_id.clone()).unwrap(),
+                    previous_epoch: 0,
+                    next_epoch: 0,
+                    content_scheme: arkret_wire::ContentScheme::MlsRfc9420,
+                },
                 event_digest: event.event_id.identity_key().event_digest(),
                 winning_transition_ref: event.event_id.clone(),
                 event,
