@@ -7,7 +7,7 @@
 use std::collections::BTreeSet;
 
 use crate::protocol::{
-    AccountBindingReceipt, AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
+    AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
     AccountRegisterOutcome, AccountRegisterRequestBody, Base64UrlString, DeviceId, Did, DidCoreId,
     DidOperationSubmitRequestBody, Hash, IdentityBindingChallengeOutcome,
     IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationCommandKind,
@@ -689,20 +689,6 @@ pub fn identity_creation_register_request(
     };
     request.validate()?;
     Ok(request)
-}
-
-/// Verify an Account Authority receipt against the complete method-native DID
-/// history effective at the receipt timestamp. The explicit error variants
-/// let hosts distinguish retryable resolver unavailability from a fork,
-/// revoked/unauthorized key, or invalid signature.
-pub fn verify_binding_receipt_at_issuance(
-    receipt: &AccountBindingReceipt,
-    resolver: &dyn arkret_identity::AuthorityDidHistoryResolver,
-) -> std::result::Result<
-    arkret_identity::VerifiedAccountBindingReceipt,
-    arkret_identity::AuthorityHistoryVerificationError,
-> {
-    arkret_identity::verify_account_binding_receipt_at_issuance(receipt, resolver)
 }
 
 /// Validate the only successful identity-creation terminal: the account is

@@ -53,7 +53,7 @@ pub use account_handoff::{
     classify_bound_completion_resume, classify_registration_checkpoint,
     identity_binding_challenge_request, identity_creation_register_request,
     normalize_local_evidence, oidc_account_handoff_request, reconcile_identity_creation,
-    route_bound_session, validate_identity_creation_outcome, verify_binding_receipt_at_issuance,
+    route_bound_session, validate_identity_creation_outcome,
 };
 pub use arkret_identity::{
     AuthorityDidHistoryResolver, AuthorityHistoryUnavailable, AuthorityHistoryVerificationError,
@@ -117,7 +117,6 @@ pub use mls::{
     SELF_PRESERVATION_MAX_EPOCH_APP_MESSAGES, StoredAccountMlsSecret,
     canonical_mls_remove_membership_frontier, idle_self_update_jitter_passed,
     mls_commit_preconditions, should_force_epoch_advance,
-    verified_checkpoint_actor_has_realm_action,
 };
 pub use orchestrator::{
     AccountCommitOutcome, AccountPostCommitHook, AccountPostCommitOutcome, AccountStepCommitter,
@@ -175,7 +174,7 @@ pub use signal::{
     PresenceObservation, PresenceProjection, PresenceStatus, SIGNAL_PLAINTEXT_KIND_CALL,
     SIGNAL_PLAINTEXT_KIND_PRESENCE, SignalDecryptor, SignalPlaintext, SignalReceiver,
     SignalSenderKeyResolver, VerifiedSignalSenderAuthority, VerifiedSignalSenderKey,
-    admit_signal_governance, aggregate_presence_states, live_signal_projection_key,
+    aggregate_presence_states, live_signal_projection_key,
 };
 pub use signal_message_stream::{
     MessageStreamApplyOutcome, MessageStreamAuthorizer, MessageStreamIgnoreReason,

@@ -13,7 +13,6 @@
 
 pub mod backup_selection;
 pub mod backup_series;
-pub mod checkpoint_authority;
 pub mod commit_preconditions;
 pub mod device_secret;
 pub mod local_checkpoint;
@@ -34,7 +33,6 @@ pub use backup_selection::{
 pub use backup_series::{
     backup_series_seq, fresh_backup_id, series_supersedes_digest, verify_series_chain,
 };
-pub use checkpoint_authority::verified_checkpoint_actor_has_realm_action;
 pub use commit_preconditions::mls_commit_preconditions;
 pub use device_secret::{
     ACCOUNT_MLS_SECRET_CURRENT_VERSION, AccountMlsSecretRotation, StoredAccountMlsSecret,
