@@ -444,7 +444,6 @@ impl SyncLoop {
             after: self.token.clone(),
             catchup: Some(true),
             filter: self.filter.clone(),
-            subscriptions: None,
         }
     }
 
