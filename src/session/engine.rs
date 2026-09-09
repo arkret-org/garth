@@ -689,9 +689,9 @@ mod tests {
             },
             verification_method: DidUrl::new("did:webvh:z6mkfixture:agent.example#runtime-key-1")
                 .unwrap(),
-            challenge: "agent-challenge".to_owned(),
-            nonce: "agent-nonce".to_owned(),
+            challenge: "AAECAwQFBgcICQoLDA0ODw".to_owned(),
             audience_id: audience(),
+            issued_at: now(),
             expires_at: now() + Duration::minutes(5),
             signature: "agent-signature".to_owned(),
         })

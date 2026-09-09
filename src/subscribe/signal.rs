@@ -415,7 +415,6 @@ mod tests {
                 ))
                 .unwrap(),
                 envelope_digest: Hash::new(format!("sha256:{}", "0".repeat(64))).unwrap(),
-                created_at: sent_at(),
                 domain: None,
                 audience: None,
                 jws: "header..signature".to_owned(),

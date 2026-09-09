@@ -17,8 +17,8 @@ pub struct AgentKeyProofLogin {
     pub dpop_binding_proof: SessionGrantDpopBindingProof,
     pub verification_method: DidUrl,
     pub challenge: String,
-    pub nonce: String,
     pub audience_id: DidCoreId,
+    pub issued_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
     pub signature: String,
 }
@@ -35,8 +35,8 @@ impl AgentKeyProofLogin {
             self.dpop_binding_proof,
             self.verification_method,
             self.challenge,
-            self.nonce,
             self.audience_id,
+            self.issued_at,
             self.expires_at,
             self.signature,
         )?)
@@ -98,9 +98,9 @@ mod tests {
             },
             verification_method: DidUrl::new("did:webvh:z6mkfixture:agent.example#runtime-key-1")
                 .unwrap(),
-            challenge: "agent-challenge".to_owned(),
-            nonce: "agent-nonce".to_owned(),
+            challenge: "AAECAwQFBgcICQoLDA0ODw".to_owned(),
             audience_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+            issued_at: expires_at() - chrono::Duration::minutes(5),
             expires_at: expires_at(),
             signature: "agent-signature".to_owned(),
         })

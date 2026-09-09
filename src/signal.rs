@@ -497,7 +497,7 @@ impl SignalReceiver {
     /// ([`SignalEnvelope::validate_structural`] — `scope_ref.realm_id` equal to
     /// the envelope Realm, the fixed `scheme` / `purpose`, the class TTL
     /// ceiling, the recomputed `aad_digest` over the immutable header, the
-    /// `proof.created_at == sent_at` equality, the recomputed
+    /// outer `sent_at` signature binding, the recomputed
     /// `envelope_digest` and the canonical size bound); wall-clock expiry;
     /// the exact-authority device evidence lookup; the device proof
     /// signature; exact-envelope replay suppression; the AEAD open; the closed
@@ -1088,7 +1088,6 @@ mod tests {
                 kind: "detached_jws".to_owned(),
                 verification_method,
                 envelope_digest: Hash::new(format!("sha256:{}", "0".repeat(64))).unwrap(),
-                created_at: sent_at(),
                 domain: None,
                 audience: None,
                 jws: "header..signature".to_owned(),
