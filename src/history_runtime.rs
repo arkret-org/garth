@@ -764,7 +764,6 @@ fn validate_receipt_bound_traversal(
     let HistoryGovernanceTraversalIntent::MemberHistoryDelivery {
         effective_scope,
         mls_group_id,
-        trusted_history_base_basis,
         trusted_current_basis,
         target_basis,
         request_digest: intent_request_digest,
@@ -781,8 +780,6 @@ fn validate_receipt_bound_traversal(
     validate_release_target_basis(trusted_current_basis, target_basis)?;
     if effective_scope != &request.effective_scope
         || mls_group_id != &request.effective_scope.canonical_mls_group_id()?
-        || trusted_history_base_basis != &request.trusted_history_base_basis
-        || trusted_current_basis != &request.trusted_current_basis
         || intent_request_digest != request_digest
         || requested_ranges != &request.requested_ranges
         || authorization_incarnation != &request.requester_authorization_incarnation

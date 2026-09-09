@@ -100,12 +100,18 @@ pub fn active_series_id_for_backup_class(
     list_payload: &Value,
     backup_kind: BackupKind,
 ) -> Option<&str> {
-    let pointer = list_payload.get("active_series")?.get(backup_kind.as_str())?;
+    let pointer = list_payload
+        .get("active_series")?
+        .get(backup_kind.as_str())?;
     if pointer.get("state")?.as_str()? != "active"
-        || pointer.get("series_pointer_version")?.as_u64()? == 0 {
+        || pointer.get("series_pointer_version")?.as_u64()? == 0
+    {
         return None;
     }
-    pointer.get("active_series_id")?.as_str().filter(|id| !id.is_empty())
+    pointer
+        .get("active_series_id")?
+        .as_str()
+        .filter(|id| !id.is_empty())
 }
 
 fn matches_active_series(body: &Value, active_series: Option<&str>) -> bool {
@@ -136,8 +142,7 @@ pub fn mls_account_secret_backup_version(body: &Value) -> u32 {
 /// Pick the latest `mls_private_plaintext` backup, if present. Newer
 /// `series_seq` wins, followed by the creation timestamp.
 pub fn select_mls_private_plaintext_backup(list_payload: &Value) -> Option<Value> {
-    let active_series =
-        active_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
+    let active_series = active_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
     iter_backup_bodies(list_payload)
         .filter(|body| is_mls_private_plaintext_backup(body))
         .filter(|body| matches_active_series(body, active_series))
@@ -168,8 +173,7 @@ fn account_secret_order(body: &Value) -> (u64, u64, &str) {
 ///
 /// The current Station active-series result selects the only eligible series.
 pub fn select_mls_account_secret_backup(list_payload: &Value) -> Option<Value> {
-    let active_series =
-        active_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
+    let active_series = active_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
     iter_backup_bodies(list_payload)
         .filter(|body| is_passphrase_account_secret_backup(body))
         .filter(|body| matches_active_series(body, active_series))
@@ -181,8 +185,7 @@ pub fn select_mls_account_secret_backup(list_payload: &Value) -> Option<Value> {
 /// passphrase-free fresh-device recovery path). Newest by
 /// `(secret_version, series_seq, created_at)`.
 pub fn select_mls_account_secret_recovery_public_key_backup(list_payload: &Value) -> Option<Value> {
-    let active_series =
-        active_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
+    let active_series = active_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
     iter_backup_bodies(list_payload)
         .filter(|body| is_recovery_public_key_account_secret_backup(body))
         .filter(|body| matches_active_series(body, active_series))
@@ -241,8 +244,7 @@ pub fn latest_mls_history_backups_by_scope(list_payload: &Value) -> Vec<Value> {
 /// verification must retain those intermediate links even when the selected
 /// decrypt target is an account-secret envelope.
 pub fn all_mls_account_secret_backups(list_payload: &Value) -> Vec<Value> {
-    let active_series =
-        active_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
+    let active_series = active_series_id_for_backup_class(list_payload, BackupKind::SecretStorage);
     iter_backup_bodies(list_payload)
         .filter(|body| backup_kind_is(body, BackupKind::SecretStorage))
         .filter(|body| matches_active_series(body, active_series))
