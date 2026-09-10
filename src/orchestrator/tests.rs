@@ -175,6 +175,7 @@ impl EventsScanTransport for TestRealmTransport {
 
 struct AccountTransport {
     response: Mutex<Option<Result<AccountSubscribeBatch>>>,
+    read_error: Mutex<Option<Error>>,
 }
 
 struct RecordingStepCommitter {
@@ -183,6 +184,10 @@ struct RecordingStepCommitter {
 }
 
 impl AccountStepCommitter for RecordingStepCommitter {
+    async fn reset_account_context(&self, _session_generation: u64) -> Result<bool> {
+        self.store.clear(account_scope()).await?;
+        Ok(true)
+    }
     fn commit<'a>(
         &'a self,
         step: &'a AccountStreamStep,
@@ -194,7 +199,9 @@ impl AccountStepCommitter for RecordingStepCommitter {
                 .clone()
                 .ok_or_else(|| Error::Protocol("test step has no cursor".to_owned()))?;
             self.store.save(account_scope(), cursor).await?;
-            Ok(AccountCommitOutcome::Committed)
+            Ok(AccountCommitOutcome::Committed {
+                updates: step.updates.clone(),
+            })
         }
     }
 }
@@ -228,6 +235,7 @@ impl AccountTransport {
     fn new(response: Result<AccountSubscribeBatch>) -> Self {
         Self {
             response: Mutex::new(Some(response)),
+            read_error: Mutex::new(None),
         }
     }
 }
@@ -245,6 +253,41 @@ impl AsyncSyncTransport for AccountTransport {
             .take()
             .expect("test account transport exhausted");
         Box::pin(async move { response })
+    }
+}
+
+struct AccountTestFrames(
+    std::collections::VecDeque<crate::protocol::AccountSubscribeFrame>,
+    Option<Error>,
+);
+
+impl crate::AccountFrameSource for AccountTestFrames {
+    fn next_frame(&mut self) -> BoxSyncFuture<'_, Option<crate::protocol::AccountSubscribeFrame>> {
+        if let Some(error) = self.1.take() {
+            return Box::pin(async move { Err(error) });
+        }
+        let frame = self.0.pop_front();
+        Box::pin(async move { Ok(frame) })
+    }
+}
+
+impl crate::AccountFrameTransport for AccountTransport {
+    type Source = AccountTestFrames;
+    fn open_account_frames(
+        &self,
+        _request: SyncRequestBody,
+        _options: arkret_http_client::ClientRequestOptions,
+    ) -> BoxSyncFuture<'_, Self::Source> {
+        let response = self
+            .response
+            .lock()
+            .unwrap()
+            .take()
+            .expect("test source exhausted");
+        let read_error = self.read_error.lock().unwrap().take();
+        Box::pin(
+            async move { response.map(|batch| AccountTestFrames(batch.frames.into(), read_error)) },
+        )
     }
 }
 
@@ -887,6 +930,98 @@ async fn run_account_steps_commits_before_host_postprocessing() {
         store.load(account_scope()).await.unwrap().as_deref(),
         Some("ak:cursor:standard-step")
     );
+}
+
+#[tokio::test]
+async fn account_frame_commit_failure_never_checkpoints_or_runs_product_hook() {
+    struct FailCommit;
+    impl AccountStepCommitter for FailCommit {
+        async fn reset_account_context(&self, _session_generation: u64) -> Result<bool> {
+            Err(Error::Protocol("durable reset failed".into()))
+        }
+        async fn commit(&self, _step: &AccountStreamStep) -> Result<AccountCommitOutcome> {
+            Err(Error::Protocol("durable transaction failed".into()))
+        }
+    }
+    let store = MemoryStore::new();
+    let client = test_client(RecordingExecutor::default(), store.clone());
+    let mut batch = sync_response("ak:cursor:Zmlyc3Q");
+    batch
+        .frames
+        .extend(sync_response("ak:cursor:c2Vjb25k").frames);
+    let provider = QueueProvider::new(vec![Ok(AccountTransport::new(Ok(batch)))]);
+    let control = SyncLoopControl::new();
+    let order = Arc::new(Mutex::new(Vec::new()));
+    let hook = RecordingPostCommitHook {
+        order: order.clone(),
+        store: store.clone(),
+        control: control.clone(),
+    };
+    let error = client
+        .run_account_steps(
+            actor_id(),
+            device_id(),
+            &provider,
+            AccountStepHandlers::new(&FailCommit, &hook),
+            &control,
+            options(),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(error.class, RunErrorClass::StoreFailure);
+    assert!(store.load(account_scope()).await.unwrap().is_none());
+    assert!(order.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn account_expired_cursor_resets_durably_before_reopening() {
+    for reject_during_read in [false, true] {
+        let store = MemoryStore::new();
+        store
+            .save(account_scope(), "ak:cursor:b2xk".into())
+            .await
+            .unwrap();
+        let client = test_client(RecordingExecutor::default(), store.clone());
+        let rejected = if reject_during_read {
+            let transport = AccountTransport::new(Ok(sync_response("ak:cursor:b2xk")));
+            *transport.read_error.lock().unwrap() = Some(cursor_expired_error());
+            transport
+        } else {
+            AccountTransport::new(Err(cursor_expired_error()))
+        };
+        let provider = QueueProvider::new(vec![
+            Ok(rejected),
+            Ok(AccountTransport::new(Ok(sync_response("ak:cursor:bmV3")))),
+        ]);
+        let control = SyncLoopControl::new();
+        let order = Arc::new(Mutex::new(Vec::new()));
+        let committer = RecordingStepCommitter {
+            order: order.clone(),
+            store: store.clone(),
+        };
+        let hook = RecordingPostCommitHook {
+            order,
+            store: store.clone(),
+            control: control.clone(),
+        };
+        let stop = client
+            .run_account_steps(
+                actor_id(),
+                device_id(),
+                &provider,
+                AccountStepHandlers::new(&committer, &hook),
+                &control,
+                options(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(stop, RunStopReason::Cancelled);
+        assert_eq!(provider.calls(), 2);
+        assert_eq!(
+            store.load(account_scope()).await.unwrap().as_deref(),
+            Some("ak:cursor:bmV3")
+        );
+    }
 }
 
 #[tokio::test]

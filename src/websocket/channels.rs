@@ -7,9 +7,7 @@
 
 use std::collections::VecDeque;
 
-use arkret_models_collaboration::sync_frames::account_subscribe::{
-    AccountSubscribeBatch, AccountSubscribeFrame,
-};
+use arkret_models_collaboration::sync_frames::account_subscribe::AccountSubscribeFrame;
 use arkret_models_collaboration::sync_frames::client_sync::SyncRequestBody;
 use arkret_models_collaboration::sync_frames::websocket_binding::{
     WebSocketAccountOpenParameters, WebSocketChannelControlPayload, WebSocketDataPayload,
@@ -25,7 +23,7 @@ use crate::subscribe::realm::{BoxRealmStreamFuture, RealmEventsFrameSource, Real
 use crate::subscribe::signal::{
     BoxSignalStreamFuture, SignalStreamFrameSource, SignalStreamTransport,
 };
-use crate::sync_client::{AsyncSyncTransport, BoxSyncFuture};
+use crate::sync_client::BoxSyncFuture;
 
 // garth has no cross-task notification primitive that works on both targets,
 // and adding one would mean a runtime dependency. An adapter therefore
@@ -58,15 +56,23 @@ where
     }
 
     /// Open the account channel and return the seam `SyncLoop` already drives.
-    pub fn open_account(&self, after: Option<&str>) -> Result<WebSocketAccountChannel<E>> {
+    pub fn open_account(&self, request: SyncRequestBody) -> Result<WebSocketAccountChannel<E>> {
+        let trace = crate::protocol::StreamTraceValidator::new(
+            request.catchup.unwrap_or(false),
+            request.after.clone(),
+        );
         let parameters = WebSocketOpenParameters::Account(WebSocketAccountOpenParameters {
-            after: after
+            after: request
+                .after
+                .as_deref()
                 .map(|value| Cursor::new(value.to_owned()))
                 .transpose()?,
             // §6.1 — a resume cursor asks for bounded catch-up from that
             // position; a cursorless open is an initial sync.
-            catchup: after.is_some().then_some(true),
-            filter: None,
+            catchup: request.catchup,
+            filter: request.filter,
+            realm_list: request.realm_list,
+            replace_filter: request.replace_filter,
             wait_for: None,
         });
         let channel_id = self.open(&parameters)?;
@@ -74,6 +80,7 @@ where
             connection: self.connection.clone(),
             pacer: self.pacer.clone(),
             channel_id,
+            trace,
         })
     }
 
@@ -142,17 +149,12 @@ where
     }
 }
 
-/// Account channel as an [`AsyncSyncTransport`].
-///
-/// `SyncLoop` asks for "the next batch from this cursor". On a long-lived
-/// channel the `open` already carried that cursor, so a call here awaits the
-/// next server frames rather than issuing a request. The cursor the batch
-/// reports is the channel's own, which is what keeps `SyncLoop`'s resume rule
-/// identical on both transports.
+/// A demand-bound account source. The shared pump queues at most two frames.
 pub struct WebSocketAccountChannel<E> {
     connection: SharedConnection,
     pacer: E,
     channel_id: String,
+    trace: crate::protocol::StreamTraceValidator,
 }
 
 impl<E> WebSocketAccountChannel<E> {
@@ -161,64 +163,58 @@ impl<E> WebSocketAccountChannel<E> {
     }
 }
 
-impl<E> AsyncSyncTransport for WebSocketAccountChannel<E>
-where
-    E: WebSocketPacer,
-{
-    fn sync_async<'a>(
-        &'a self,
-        _request: SyncRequestBody,
-        _options: arkret_http_client::ClientRequestOptions,
-    ) -> BoxSyncFuture<'a, AccountSubscribeBatch> {
-        Box::pin(async move {
-            let mut frames: Vec<AccountSubscribeFrame> = Vec::new();
-            loop {
-                for frame in next_frames(&self.connection, &self.pacer, &self.channel_id).await {
-                    match frame {
-                        ChannelFrame::Data(WebSocketDataPayload::Account(payload)) => {
-                            frames.push(*payload);
-                        }
-                        ChannelFrame::Control(WebSocketChannelControlPayload::Account(payload)) => {
-                            frames.push(*payload);
-                        }
-                        ChannelFrame::Closed => {
-                            if frames.is_empty() {
-                                return Err(Error::Protocol(
-                                    "the account channel closed".to_owned(),
-                                ));
-                            }
-                        }
-                        ChannelFrame::Failed(error) => {
-                            return Err(Error::Protocol(error.message));
-                        }
-                        // A payload of another operation can only reach here
-                        // through a state-machine bug; refusing keeps the
-                        // channel's contract intact.
-                        _ => {
-                            return Err(Error::Protocol(
-                                "a foreign payload reached the account channel".to_owned(),
-                            ));
-                        }
-                    }
-                }
-                if frames.is_empty() {
-                    continue;
-                }
-                // §6.1 — the batch's resume point is the last cursor observed,
-                // and it becomes durable only once the caller checkpoints.
-                let cursor = frames
-                    .iter()
-                    .rev()
-                    .find_map(|frame| frame.cursor.clone())
-                    .unwrap_or_default();
-                self.connection
-                    .with_mut(|connection| connection.checkpoint(&self.channel_id));
-                return Ok(AccountSubscribeBatch { frames, cursor });
-            }
-        })
+impl<E> Drop for WebSocketAccountChannel<E> {
+    fn drop(&mut self) {
+        let _ = self.connection.with_mut(|connection| connection.enqueue_close_channel(
+            &self.channel_id,
+            arkret_models_collaboration::sync_frames::websocket_binding::WebSocketCloseReason::ClientRequest,
+        ));
     }
 }
 
+impl<E: WebSocketPacer> crate::AccountFrameSource for WebSocketAccountChannel<E> {
+    fn next_frame(&mut self) -> BoxSyncFuture<'_, Option<AccountSubscribeFrame>> {
+        Box::pin(async move {
+            loop {
+                let queued = self
+                    .connection
+                    .with_mut(|connection| connection.take_account_frame(&self.channel_id));
+                match queued {
+                    Some(ChannelFrame::Data(WebSocketDataPayload::Account(frame)))
+                    | Some(ChannelFrame::Control(WebSocketChannelControlPayload::Account(frame))) =>
+                    {
+                        self.trace.push(frame.as_ref())?;
+                        return Ok(Some(*frame));
+                    }
+                    Some(ChannelFrame::Closed) => {
+                        self.trace.finish()?;
+                        return Ok(None);
+                    }
+                    Some(ChannelFrame::Failed(error)) => {
+                        return Err(Error::Api {
+                            status: error.code.http_status(),
+                            error: Box::new(arkret_wire::Problem::from_code(
+                                error.code.as_str(),
+                                error.message,
+                            )),
+                        });
+                    }
+                    Some(_) => {
+                        return Err(Error::Protocol("foreign payload on account channel".into()));
+                    }
+                    None => {
+                        self.pacer.pace().await?;
+                    }
+                }
+            }
+        })
+    }
+
+    fn committed(&mut self, cursor: &str) -> Result<()> {
+        self.connection
+            .with_mut(|connection| connection.checkpoint_exact(&self.channel_id, cursor))
+    }
+}
 /// Events channel as a [`RealmEventsFrameSource`].
 pub struct WebSocketEventsChannel<E> {
     connection: SharedConnection,
@@ -254,8 +250,6 @@ where
             match self.pending.pop_front() {
                 Some(ChannelFrame::Data(WebSocketDataPayload::Events(payload)))
                 | Some(ChannelFrame::Control(WebSocketChannelControlPayload::Events(payload))) => {
-                    self.connection
-                        .with_mut(|connection| connection.checkpoint(&self.channel_id));
                     Ok(Some(*payload))
                 }
                 Some(ChannelFrame::Closed) | None => Ok(None),

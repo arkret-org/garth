@@ -103,8 +103,7 @@ pub use history_outbox::{
 pub use history_runtime::{
     DurableHistoryRequest, DurableHistoryResponseStream, DurableVerifiedHistoryManifest,
     HistoryResponseCapabilityOpener, HistoryRuntime, HistoryRuntimeSnapshot, HistoryRuntimeStore,
-    HistoryRuntimeTransport, MemoryHistoryRuntimeStore, ReceiptBoundHistoryTraversal,
-    VerifiedHistoryTraversal, VersionedHistoryRuntimeSnapshot,
+    HistoryRuntimeTransport, MemoryHistoryRuntimeStore, VersionedHistoryRuntimeSnapshot,
     cryptographically_rejected_disposition,
 };
 pub use inbound::{DecodedInbound, DecodedMessage, InboundDecoder};
@@ -114,8 +113,7 @@ pub use mls::{
     EnvelopeError, MLS_ENVELOPE_MAGIC, MlsLocalCheckpointEnvelope, MlsRuntimeError,
     MlsRuntimeStatus, SELF_PRESERVATION_JITTER_SLOTS, SELF_PRESERVATION_MAX_EPOCH_AGE_DAYS,
     SELF_PRESERVATION_MAX_EPOCH_APP_MESSAGES, StoredAccountMlsSecret,
-    canonical_mls_remove_membership_frontier, idle_self_update_jitter_passed,
-    mls_commit_preconditions, should_force_epoch_advance,
+    idle_self_update_jitter_passed, mls_commit_preconditions, should_force_epoch_advance,
 };
 pub use orchestrator::{
     AccountCommitOutcome, AccountPostCommitHook, AccountPostCommitOutcome, AccountStepCommitter,
@@ -128,9 +126,10 @@ pub use outbound::{
     OutboundSubmitOutcome, OutboundSubmitter,
 };
 pub use projection::{
-    BottomCellHead, BottomCellInfo, LocalSealView, ProjectionMount, RealmProjectionFrame,
-    RealmStateReducer, encryption_profile_is_encrypted, realm_authority_root_controller_for_realm,
-    realm_authority_root_controller_from_events, realm_authority_root_value_for_realm,
+    BottomCellHead, BottomCellInfo, CurrentCoverageCleanup, CurrentInstallPlan,
+    CurrentRealmProgress, LocalSealView, ProjectionMount, RealmProjectionFrame, RealmStateReducer,
+    encryption_profile_is_encrypted, plan_current_entry, plan_current_install,
+    realm_authority_root_controller_for_realm, realm_authority_root_value_for_realm,
     realm_projection_is_encrypted, realm_projection_security_state, reconcile_realm_projection,
     security_projection_for_scope_id, strand_projection_security_state,
 };
@@ -169,11 +168,11 @@ pub use session::{
     SessionTransportProvider, grant_due_for_rotation, grant_is_dead, refresh_decision,
 };
 pub use signal::{
-    BoxSignalDecryptFuture, LiveSignalBody, LiveSignalProjection, MAX_LIVE_SIGNAL_BODIES,
-    PresenceObservation, PresenceProjection, PresenceStatus, SIGNAL_PLAINTEXT_KIND_CALL,
-    SIGNAL_PLAINTEXT_KIND_PRESENCE, SignalDecryptor, SignalPlaintext, SignalReceiver,
-    SignalSenderKeyResolver, VerifiedSignalSenderAuthority, VerifiedSignalSenderKey,
-    aggregate_presence_states, live_signal_projection_key,
+    BoxSignalDecryptFuture, BoxSignalSenderKeyFuture, LiveSignalBody, LiveSignalProjection,
+    MAX_LIVE_SIGNAL_BODIES, PresenceObservation, PresenceProjection, PresenceStatus,
+    SIGNAL_PLAINTEXT_KIND_CALL, SIGNAL_PLAINTEXT_KIND_PRESENCE, SignalDecryptor, SignalPlaintext,
+    SignalReceiver, SignalSenderKeyResolver, VerifiedSignalSenderAuthority,
+    VerifiedSignalSenderKey, aggregate_presence_states, live_signal_projection_key,
 };
 pub use signal_message_stream::{
     MessageStreamApplyOutcome, MessageStreamAuthorizer, MessageStreamIgnoreReason,
@@ -202,8 +201,9 @@ pub use subscribe::{
     account_updates_to_events, expand_realm_delivery_events,
 };
 pub use sync_client::{
-    AsyncSyncTransport, BackoffConfig, BackpressureConfig, BoxSyncFuture, CancellationToken,
-    ExponentialBackoff, LocalEcho, ProcessedRealm, SendQueue, SendQueueItem, SendQueueSnapshot,
-    SendQueueStatus, SyncGapStrategy, SyncLoop, SyncLoopControl, SyncLoopSnapshot, SyncLoopStep,
-    SyncRecoveryAction, SyncResponseProcessor, SyncTransport,
+    AccountFrameSource, AccountFrameTransport, AsyncSyncTransport, BackoffConfig,
+    BackpressureConfig, BoxSyncFuture, CancellationToken, ExponentialBackoff, LocalEcho,
+    ProcessedRealm, SendQueue, SendQueueItem, SendQueueSnapshot, SendQueueStatus, SyncGapStrategy,
+    SyncLoop, SyncLoopControl, SyncLoopSnapshot, SyncLoopStep, SyncRecoveryAction,
+    SyncResponseProcessor, SyncTransport,
 };

@@ -11,7 +11,7 @@ use std::sync::{Arc, Mutex};
 
 use arkret_models_collaboration::history_key::{
     EpochRange, HistoryKeyResponseContent, HistoryKeyResponseSendReceipt,
-    HistoryKeyResponseSendRequest, HistoryKeySourceRelay, HistoryRequestId, HistoryResponseId,
+    HistoryKeyResponseSendRequestBody, HistoryKeySourceRelay, HistoryRequestId, HistoryResponseId,
     HistorySourceSendDisposition,
 };
 use arkret_wire::Hash;
@@ -32,7 +32,7 @@ pub const MAX_UNFINISHED_HISTORY_ATTEMPTS_PER_REQUEST: usize = 8;
 #[serde(tag = "route", rename_all = "snake_case", deny_unknown_fields)]
 pub enum HistorySourceOutboundRecord {
     Direct {
-        request: Box<HistoryKeyResponseSendRequest>,
+        request: Box<HistoryKeyResponseSendRequestBody>,
     },
     Relay {
         relay: Box<HistoryKeySourceRelay>,
@@ -54,7 +54,7 @@ impl HistorySourceOutboundRecord {
         }
     }
 
-    pub fn response(&self) -> &HistoryKeyResponseSendRequest {
+    pub fn response(&self) -> &HistoryKeyResponseSendRequestBody {
         match self {
             Self::Direct { request } => request,
             Self::Relay { relay } => &relay.response,
@@ -658,8 +658,8 @@ fn prepare_attempt(bundle: HistorySourceAttemptBundle) -> Result<PreparedAttempt
 }
 
 fn same_attempt_binding(
-    manifest: &HistoryKeyResponseSendRequest,
-    record: &HistoryKeyResponseSendRequest,
+    manifest: &HistoryKeyResponseSendRequestBody,
+    record: &HistoryKeyResponseSendRequestBody,
 ) -> bool {
     manifest.effective_scope == record.effective_scope
         && manifest.source_actor_id == record.source_actor_id
@@ -736,9 +736,10 @@ mod tests {
     use arkret_models_collaboration::history_key::{
         EpochRange, HistoryKeyRequest, HistoryKeyRequestCreateOutcome,
         HistoryKeyRequestListOutcome, HistoryKeyRequestListQuery, HistoryKeyResponseAckOutcome,
-        HistoryKeyResponseAckRequest, HistoryKeyResponseListOutcome, HistoryKeyResponseListQuery,
-        HistoryKeyResponseSendReceipt, HistoryResponseChunkDescriptor, HistoryResponseManifest,
-        HistoryResponseManifestKind, SealedHistoryChunk, SealedHistoryChunkKind,
+        HistoryKeyResponseAckRequestBody, HistoryKeyResponseListOutcome,
+        HistoryKeyResponseListQuery, HistoryKeyResponseSendReceipt, HistoryResponseChunkDescriptor,
+        HistoryResponseManifest, HistoryResponseManifestKind, SealedHistoryChunk,
+        SealedHistoryChunkKind,
     };
     use arkret_wire::{
         DidCoreId, DidUrl, HistoryEffectiveScope, PayloadProof, PayloadSigner, RealmId,
@@ -763,7 +764,7 @@ mod tests {
         response_id: HistoryResponseId,
         content: HistoryKeyResponseContent,
         expires_at: DateTime<Utc>,
-    ) -> HistoryKeyResponseSendRequest {
+    ) -> HistoryKeyResponseSendRequestBody {
         let evidence_digest = digest('a');
         let evidence_ref =
             SignerEvidenceRef::new(format!("ak:signer_evidence:{evidence_digest}")).unwrap();
@@ -771,10 +772,10 @@ mod tests {
             arkret_wire::Did::new("did:key:z6MkHistorySource").unwrap(),
             DidUrl::new("did:key:z6MkHistorySource#response-key").unwrap(),
         );
-        HistoryKeyResponseSendRequest::build_signed_proof(
+        HistoryKeyResponseSendRequestBody::build_signed_proof(
             signer.verification_method_id().clone(),
             expires_at - chrono::Duration::minutes(1),
-            |source_proof| HistoryKeyResponseSendRequest {
+            |source_proof| HistoryKeyResponseSendRequestBody {
                 response_id: response_id.clone(),
                 effective_scope: HistoryEffectiveScope::Realm {
                     realm_id: RealmId::new("ak:realm:AdkQ-RmB1a8zyc52yl9GWAsodQ_EUle1WAVZqbO7pc19")
@@ -859,7 +860,7 @@ mod tests {
     }
 
     fn receipt(
-        request: &HistoryKeyResponseSendRequest,
+        request: &HistoryKeyResponseSendRequestBody,
         manifest_admission_digest: &Hash,
         sequence: u64,
     ) -> HistoryKeyResponseSendReceipt {
@@ -929,7 +930,7 @@ mod tests {
 
         fn send_response<'a>(
             &'a self,
-            request: &'a HistoryKeyResponseSendRequest,
+            request: &'a HistoryKeyResponseSendRequestBody,
         ) -> impl Future<Output = Result<HistoryKeyResponseSendReceipt>> + MaybeSend + 'a {
             async move {
                 let mut sent = self.sent.lock().unwrap();
@@ -956,7 +957,7 @@ mod tests {
         fn acknowledge_responses<'a>(
             &'a self,
             _capability_b64u: &'a str,
-            _request: &'a HistoryKeyResponseAckRequest,
+            _request: &'a HistoryKeyResponseAckRequestBody,
         ) -> impl Future<Output = Result<HistoryKeyResponseAckOutcome>> + MaybeSend + 'a {
             async { unreachable!("not used by source outbox") }
         }
@@ -1054,7 +1055,7 @@ mod tests {
 
         fn send_response<'a>(
             &'a self,
-            _request: &'a HistoryKeyResponseSendRequest,
+            _request: &'a HistoryKeyResponseSendRequestBody,
         ) -> impl Future<Output = Result<HistoryKeyResponseSendReceipt>> + MaybeSend + 'a {
             async move { Err(self.error()) }
         }
@@ -1077,7 +1078,7 @@ mod tests {
         fn acknowledge_responses<'a>(
             &'a self,
             _capability_b64u: &'a str,
-            _request: &'a HistoryKeyResponseAckRequest,
+            _request: &'a HistoryKeyResponseAckRequestBody,
         ) -> impl Future<Output = Result<HistoryKeyResponseAckOutcome>> + MaybeSend + 'a {
             async { unreachable!("not used by source outbox") }
         }

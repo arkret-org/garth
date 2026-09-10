@@ -1,38 +1,6 @@
 //! Tests for §5.6 forced-epoch-advance and deterministic member-order jitter.
 
-use arkret_wire::EventId;
-
 use super::*;
-
-fn event_id(value: &str) -> EventId {
-    EventId::new(value.to_owned()).unwrap()
-}
-
-#[test]
-fn mls_remove_membership_frontier_requires_revocation_evidence() {
-    let err = canonical_mls_remove_membership_frontier(&[]).unwrap_err();
-
-    assert!(
-        err.user_message()
-            .contains("accepted ak.device.revoke event or imported revocation Control Move")
-    );
-}
-
-#[test]
-fn mls_remove_membership_frontier_is_canonicalized_without_seal_fallback() {
-    let b = event_id("ak:event:AQM8rE4gp8l4axkSbbb9_dkqwWE8ZPYHwFsC24o2mrIL");
-    let a = event_id("ak:event:Aepgr15HbtERKfqPAh9SrfWBdihSvX_c94JvujvBS2f-");
-
-    let frontier = canonical_mls_remove_membership_frontier(&[b.clone(), a.clone(), b]).unwrap();
-
-    assert_eq!(
-        frontier,
-        vec![
-            event_id("ak:event:AQM8rE4gp8l4axkSbbb9_dkqwWE8ZPYHwFsC24o2mrIL"),
-            a
-        ]
-    );
-}
 
 #[test]
 fn force_epoch_advance_only_for_overdue_minimal_metadata_realm() {

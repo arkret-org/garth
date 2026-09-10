@@ -1,38 +1,11 @@
 //! `encryption-and-audit.md` §2.9 / §5.6 self-preservation commit policy.
 //!
 //! Pure committer decisions: when an epoch is overdue, when this member's
-//! deterministic jitter slot has opened, and what governance frontier a Remove
-//! commit must canonicalize. No group handle, no host state — the caller reads
+//! deterministic jitter slot has opened. No group handle, no host state — the caller reads
 //! those facts and asks these functions what the spec says to do, which makes
 //! the policy identical in every client rather than per host.
 
 use arkret_policy::minimal_metadata_epoch_overdue;
-use arkret_wire::EventId;
-
-use super::status::MlsRuntimeError;
-
-/// Canonicalize the governance frontier required for an MLS Remove commit.
-///
-/// The caller must pass the accepted `ak.device.revoke` event id or the
-/// Realm/Circle governance Control Move that imported that revocation. This
-/// helper deliberately does not fall back to `LocalSealView.frontier` or
-/// `leaves`: those sets are useful for ordinary commit freshness but are not
-/// proof that this Remove covers the specific revocation that triggered it.
-pub fn canonical_mls_remove_membership_frontier(
-    revocation_membership_frontier: &[EventId],
-) -> Result<Vec<EventId>, MlsRuntimeError> {
-    if revocation_membership_frontier.is_empty() {
-        return Err(MlsRuntimeError::Commit(
-            "MLS Remove governance binding requires the accepted ak.device.revoke event \
-             or imported revocation Control Move frontier"
-                .to_owned(),
-        ));
-    }
-    let mut frontier = revocation_membership_frontier.to_vec();
-    frontier.sort();
-    frontier.dedup();
-    Ok(frontier)
-}
 
 /// `encryption-and-audit.md` §5.6 — deterministic per-member jitter window
 /// (whole hours) over which a large group spreads its self-preservation

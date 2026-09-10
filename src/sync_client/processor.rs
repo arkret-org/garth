@@ -66,6 +66,25 @@ impl SyncResponseProcessor {
             ));
         }
 
+        self.process_frames(batch.frames)
+    }
+
+    /// Derive product deltas from one frame without accumulating a catch-up
+    /// round or cloning the processor's retained account state.
+    pub fn process_frame(frame: AccountSubscribeFrame) -> Result<SyncUpdates> {
+        let mut processor = Self::new();
+        if frame.kind == AccountSubscribeFrameKind::Delta {
+            processor.process_frames(std::iter::once(frame))
+        } else {
+            frame.validate()?;
+            processor.process_frames(std::iter::empty())
+        }
+    }
+
+    fn process_frames(
+        &mut self,
+        frames: impl IntoIterator<Item = AccountSubscribeFrame>,
+    ) -> Result<SyncUpdates> {
         let mut realm_updates = Vec::new();
         let mut malformed_realms = Vec::new();
         let mut to_device = Vec::new();
@@ -78,10 +97,9 @@ impl SyncResponseProcessor {
         let mut account_data = Vec::new();
         let mut station_cas_account_data = Vec::new();
         let mut notifications = Vec::new();
-        let mut agent_signer_evidence = Vec::new();
         let mut partial = false;
 
-        for frame in batch.frames {
+        for frame in frames {
             frame.validate()?;
             if frame.kind != AccountSubscribeFrameKind::Delta {
                 return Err(Error::Protocol(
@@ -109,10 +127,10 @@ impl SyncResponseProcessor {
                             self.limited_timelines.insert(realm_id.clone(), limited);
                         }
                     }
-                    processed.state_events += entry
-                        .state
+                    processed.current_results += entry
+                        .current
                         .as_ref()
-                        .map_or(0, |container| container.events.len());
+                        .map_or(0, |container| container.entries.len());
                     // Realm entries are per-stream deltas: a delta that only
                     // reports, say, unread counts or event states legitimately
                     // omits `summary`. Do not erase the last durable summary
@@ -173,9 +191,6 @@ impl SyncResponseProcessor {
                     notifications.push(notification);
                 }
             }
-            if let Some(bundle) = frame.agent_signer_evidence_bundle {
-                agent_signer_evidence.extend(bundle.evidence_items);
-            }
             partial |= frame.partial.unwrap_or(false);
         }
 
@@ -199,7 +214,6 @@ impl SyncResponseProcessor {
             account_data,
             station_cas_account_data,
             notifications,
-            agent_signer_evidence,
             partial,
         })
     }
@@ -221,9 +235,6 @@ impl SyncResponseProcessor {
     }
 
     fn apply_station_cas(&mut self, delta: &StationCasAccountDataContainer) -> Result<()> {
-        if delta.complete {
-            self.station_cas_account_data.clear();
-        }
         for upsert in &delta.upserts {
             let canonical_change = canonical::canonical_json_bytes(upsert)?;
             self.apply_station_cas_revision(
@@ -308,7 +319,7 @@ impl SyncResponseProcessor {
 pub struct ProcessedRealm {
     pub last_timeline: Option<Timeline>,
     pub timeline_events: usize,
-    pub state_events: usize,
+    pub current_results: usize,
     pub summary: Option<AccountSubscribeRealmSummary>,
     pub notification_count: u64,
     pub highlight_count: u64,

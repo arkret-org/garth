@@ -9,7 +9,7 @@ use std::future::Future;
 
 use arkret_models_collaboration::events_payloads::{MlsGenesisPayload, MlsWelcomePayload};
 use arkret_models_crypto::{
-    MlsAcceptedArtifactOutcome, MlsAcceptedArtifactRequest, MlsCommitPayload,
+    MlsAcceptedArtifactOutcome, MlsAcceptedArtifactRequestBody, MlsCommitPayload,
 };
 pub use arkret_models_crypto::{MlsCommitSource, MlsGroupStateSink};
 use arkret_wire::WireError;
@@ -199,7 +199,7 @@ where
     /// The host must keep the response in its current account/session scope.
     pub async fn consume<A>(
         &self,
-        request: &MlsAcceptedArtifactRequest,
+        request: &MlsAcceptedArtifactRequestBody,
         outcome: &MlsAcceptedArtifactOutcome,
         event: &Event,
         applicator: &A,
@@ -346,7 +346,7 @@ struct StationAcceptedMlsArtifact {
 }
 
 fn accepted_artifact(
-    request: &MlsAcceptedArtifactRequest,
+    request: &MlsAcceptedArtifactRequestBody,
     outcome: &MlsAcceptedArtifactOutcome,
     event: &Event,
 ) -> Result<StationAcceptedMlsArtifact> {

@@ -3,16 +3,14 @@ use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use arkret_models_collaboration::history_key::{
-    EpochRange, HistoryGovernanceTraversalIntent, HistoryGovernanceTraversalRetention,
-    HistoryKeyRequest, HistoryKeyRequestCreateOutcome, HistoryKeyRequestListOutcome,
-    HistoryKeyRequestListQuery, HistoryKeyResponseAckOutcome, HistoryKeyResponseAckRequest,
-    HistoryKeyResponseListOutcome, HistoryKeyResponseListQuery, HistoryKeyResponseSendReceipt,
-    HistoryKeyResponseSendRequest, HistoryKeySourceRelay, HistoryRequestId,
-    HistoryResponseAckEntry, HistoryResponseChunkDescriptor, HistoryResponseId,
-    HistoryResponsePageEntry, HistoryResponseRecordStatus, SelfHistoryTraversalAccess,
-    response_capability_commitment,
+    EpochRange, HistoryGovernanceTraversalIntent, HistoryKeyRequest,
+    HistoryKeyRequestCreateOutcome, HistoryKeyRequestListOutcome, HistoryKeyRequestListQuery,
+    HistoryKeyResponseAckOutcome, HistoryKeyResponseAckRequestBody, HistoryKeyResponseListOutcome,
+    HistoryKeyResponseListQuery, HistoryKeyResponseSendReceipt, HistoryKeyResponseSendRequestBody,
+    HistoryKeySourceRelay, HistoryRequestId, HistoryResponseAckEntry,
+    HistoryResponseChunkDescriptor, HistoryResponseId, HistoryResponsePageEntry,
+    HistoryResponseRecordStatus, response_capability_commitment,
 };
-use arkret_state::mls_governance_proof::MlsGovernanceVerificationCheckpoint;
 use arkret_wire::{Hash, SealBasis};
 use serde::{Deserialize, Serialize};
 
@@ -34,8 +32,6 @@ pub struct DurableHistoryRequest {
     pub response_capability_secret_ref: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub response_stream: Option<DurableHistoryResponseStream>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub verified_traversal_basis: Option<SealBasis>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,7 +44,7 @@ pub struct DurableHistoryResponseStream {
     pub pending_page: Option<HistoryKeyResponseListOutcome>,
     pub pending_dispositions: BTreeMap<u64, HistoryResponseAckEntry>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_ack: Option<HistoryKeyResponseAckRequest>,
+    pub pending_ack: Option<HistoryKeyResponseAckRequestBody>,
     #[serde(default)]
     pub verified_manifests: BTreeMap<String, DurableVerifiedHistoryManifest>,
 }
@@ -142,7 +138,7 @@ pub trait HistoryRuntimeTransport: MaybeSendSync {
 
     fn send_response<'a>(
         &'a self,
-        request: &'a HistoryKeyResponseSendRequest,
+        request: &'a HistoryKeyResponseSendRequestBody,
     ) -> impl Future<Output = Result<HistoryKeyResponseSendReceipt>> + MaybeSend + 'a;
 
     fn relay_response<'a>(
@@ -159,7 +155,7 @@ pub trait HistoryRuntimeTransport: MaybeSendSync {
     fn acknowledge_responses<'a>(
         &'a self,
         capability_b64u: &'a str,
-        request: &'a HistoryKeyResponseAckRequest,
+        request: &'a HistoryKeyResponseAckRequestBody,
     ) -> impl Future<Output = Result<HistoryKeyResponseAckOutcome>> + MaybeSend + 'a;
 }
 
@@ -180,7 +176,7 @@ impl HistoryRuntimeTransport for arkret_http_client::Client {
 
     fn send_response<'a>(
         &'a self,
-        request: &'a HistoryKeyResponseSendRequest,
+        request: &'a HistoryKeyResponseSendRequestBody,
     ) -> impl Future<Output = Result<HistoryKeyResponseSendReceipt>> + MaybeSend + 'a {
         async move { Ok(self.history_key_response_send(request).await?) }
     }
@@ -207,7 +203,7 @@ impl HistoryRuntimeTransport for arkret_http_client::Client {
     fn acknowledge_responses<'a>(
         &'a self,
         capability_b64u: &'a str,
-        request: &'a HistoryKeyResponseAckRequest,
+        request: &'a HistoryKeyResponseAckRequestBody,
     ) -> impl Future<Output = Result<HistoryKeyResponseAckOutcome>> + MaybeSend + 'a {
         async move {
             Ok(self
@@ -222,19 +218,6 @@ pub trait HistoryResponseCapabilityOpener: MaybeSendSync {
         &'a self,
         outcome: &'a HistoryKeyRequestCreateOutcome,
     ) -> impl Future<Output = Result<String>> + MaybeSend + 'a;
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct VerifiedHistoryTraversal {
-    pub checkpoint: MlsGovernanceVerificationCheckpoint,
-}
-
-pub trait ReceiptBoundHistoryTraversal: MaybeSendSync {
-    fn acquire_and_verify<'a>(
-        &'a self,
-        retention: &'a HistoryGovernanceTraversalRetention,
-        access: &'a SelfHistoryTraversalAccess,
-    ) -> impl Future<Output = Result<VerifiedHistoryTraversal>> + MaybeSend + 'a;
 }
 
 pub struct HistoryRuntime<S> {
@@ -303,7 +286,6 @@ where
                             accepted: None,
                             response_capability_secret_ref: None,
                             response_stream: None,
-                            verified_traversal_basis: None,
                         },
                     );
                     Ok(None)
@@ -642,83 +624,6 @@ where
         .await?;
         Ok(outcome)
     }
-
-    pub async fn acquire_receipt_bound_traversal<A>(
-        &self,
-        acquirer: &A,
-        request_id: &HistoryRequestId,
-    ) -> Result<VerifiedHistoryTraversal>
-    where
-        A: ReceiptBoundHistoryTraversal,
-    {
-        let snapshot = self.store.load_history_runtime()?.snapshot;
-        let (retention, target_basis, realm_id, receipt_digest) = {
-            let state = snapshot.requests.get(request_id.as_str()).ok_or_else(|| {
-                Error::Protocol(format!("history request is not durable: {request_id}"))
-            })?;
-            let accepted = state
-                .accepted
-                .as_ref()
-                .ok_or_else(|| Error::Protocol("history request is not accepted".to_owned()))?;
-            validate_receipt_bound_traversal(&state.request, &state.request_digest, accepted)?;
-            (
-                accepted.request_receipt.history_traversal_retention.clone(),
-                traversal_target_basis(
-                    &accepted
-                        .request_receipt
-                        .history_traversal_retention
-                        .traversal_intent,
-                )
-                .clone(),
-                scope_realm_id(&state.request.effective_scope),
-                accepted.request_receipt.request_receipt_digest()?,
-            )
-        };
-        let access = SelfHistoryTraversalAccess::RequestReceipt {
-            request_receipt_digest: receipt_digest,
-        };
-        let verified = acquirer.acquire_and_verify(&retention, &access).await?;
-        verified.checkpoint.validate_checkpoint()?;
-        if verified.checkpoint.basis != target_basis || verified.checkpoint.realm_id != realm_id {
-            return Err(Error::Protocol(
-                "verified history traversal checkpoint does not match receipt target".to_owned(),
-            ));
-        }
-        let trusted_current_basis = traversal_trusted_current_basis(&retention.traversal_intent);
-        let trusted_history_base_basis =
-            traversal_trusted_history_base_basis(&retention.traversal_intent);
-        if !checkpoint_contains_basis(&verified.checkpoint, trusted_current_basis)
-            || !checkpoint_contains_basis(&verified.checkpoint, trusted_history_base_basis)
-        {
-            return Err(Error::Protocol(
-                "verified history traversal target does not dominate both signed bases".to_owned(),
-            ));
-        }
-        self.mutate(|snapshot| {
-            let state = request_state_mut(snapshot, request_id)?;
-            let accepted = state
-                .accepted
-                .as_ref()
-                .ok_or_else(|| Error::Protocol("history request is not accepted".to_owned()))?;
-            validate_receipt_bound_traversal(&state.request, &state.request_digest, accepted)?;
-            let current_target = traversal_target_basis(
-                &accepted
-                    .request_receipt
-                    .history_traversal_retention
-                    .traversal_intent,
-            );
-            if current_target != &verified.checkpoint.basis {
-                return Err(Error::IdempotencyConflict(format!(
-                    "history-traversal:{}",
-                    request_id.as_str()
-                )));
-            }
-            state.verified_traversal_basis = Some(verified.checkpoint.basis.clone());
-            Ok(())
-        })
-        .await?;
-        Ok(verified)
-    }
 }
 
 fn validate_accepted_request(
@@ -802,65 +707,6 @@ fn validate_release_target_basis(
     Ok(())
 }
 
-fn traversal_target_basis(intent: &HistoryGovernanceTraversalIntent) -> &SealBasis {
-    match intent {
-        HistoryGovernanceTraversalIntent::MemberHistoryDelivery { target_basis, .. }
-        | HistoryGovernanceTraversalIntent::OrganizationRecoveryArchive { target_basis, .. } => {
-            target_basis
-        }
-    }
-}
-
-fn traversal_trusted_history_base_basis(intent: &HistoryGovernanceTraversalIntent) -> &SealBasis {
-    match intent {
-        HistoryGovernanceTraversalIntent::MemberHistoryDelivery {
-            trusted_history_base_basis,
-            ..
-        }
-        | HistoryGovernanceTraversalIntent::OrganizationRecoveryArchive {
-            trusted_history_base_basis,
-            ..
-        } => trusted_history_base_basis,
-    }
-}
-
-fn traversal_trusted_current_basis(intent: &HistoryGovernanceTraversalIntent) -> &SealBasis {
-    match intent {
-        HistoryGovernanceTraversalIntent::MemberHistoryDelivery {
-            trusted_current_basis,
-            ..
-        }
-        | HistoryGovernanceTraversalIntent::OrganizationRecoveryArchive {
-            trusted_current_basis,
-            ..
-        } => trusted_current_basis,
-    }
-}
-
-fn checkpoint_contains_basis(
-    checkpoint: &MlsGovernanceVerificationCheckpoint,
-    basis: &SealBasis,
-) -> bool {
-    seal_ids_contain_basis(checkpoint.accepted_seals.iter().map(|seal| &seal.id), basis)
-}
-
-fn seal_ids_contain_basis<'a>(
-    seal_ids: impl IntoIterator<Item = &'a arkret_wire::SealId>,
-    basis: &SealBasis,
-) -> bool {
-    let accepted = seal_ids
-        .into_iter()
-        .collect::<std::collections::BTreeSet<_>>();
-    basis.leaves.iter().all(|leaf| accepted.contains(leaf))
-}
-
-fn scope_realm_id(scope: &arkret_wire::HistoryEffectiveScope) -> arkret_wire::RealmId {
-    match scope {
-        arkret_wire::HistoryEffectiveScope::Realm { realm_id }
-        | arkret_wire::HistoryEffectiveScope::Circle { realm_id, .. } => realm_id.clone(),
-    }
-}
-
 fn history_response_capability_secret_ref(request_id: &HistoryRequestId) -> String {
     format!(
         "{HISTORY_RESPONSE_CAPABILITY_PREFIX}{}",
@@ -941,7 +787,7 @@ fn validate_disposition_for_page(
 
 fn build_ack_for_pending_page(
     response_stream: &DurableHistoryResponseStream,
-) -> Result<HistoryKeyResponseAckRequest> {
+) -> Result<HistoryKeyResponseAckRequestBody> {
     let page = response_stream
         .pending_page
         .as_ref()
@@ -969,7 +815,7 @@ fn build_ack_for_pending_page(
         HistoryResponsePageEntry::Record { record } => record.cursor.clone(),
         HistoryResponsePageEntry::Lost { lost_record } => lost_record.cursor.clone(),
     };
-    let request = HistoryKeyResponseAckRequest {
+    let request = HistoryKeyResponseAckRequestBody {
         ack_token: page.ack_token.clone().ok_or_else(|| {
             Error::Protocol("non-empty history response page omitted ack_token".to_owned())
         })?,
@@ -1118,29 +964,6 @@ mod tests {
         let release_target = basis('b');
         assert_ne!(trusted_current, release_target);
         validate_release_target_basis(&trusted_current, &release_target).unwrap();
-    }
-
-    #[test]
-    fn verified_target_closure_must_contain_every_trusted_current_leaf() {
-        let trusted_current = SealBasis {
-            leaves: vec![basis('a').leaves[0].clone(), basis('b').leaves[0].clone()],
-        };
-        let only_one = [trusted_current.leaves[0].clone()];
-        assert!(!seal_ids_contain_basis(only_one.iter(), &trusted_current));
-        assert!(seal_ids_contain_basis(
-            trusted_current.leaves.iter(),
-            &trusted_current,
-        ));
-    }
-
-    #[test]
-    fn verified_target_closure_must_also_contain_history_base() {
-        let trusted_history_base = basis('a');
-        let target_seals = [basis('b').leaves[0].clone()];
-        assert!(!seal_ids_contain_basis(
-            target_seals.iter(),
-            &trusted_history_base,
-        ));
     }
 
     #[test]

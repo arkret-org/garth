@@ -238,7 +238,9 @@ mod tests {
             events: Arc::clone(&events),
             control,
         };
-        let responses = Arc::new(Mutex::new(VecDeque::from([Ok(sync_response("s1"))])));
+        let responses = Arc::new(Mutex::new(VecDeque::from([Ok(sync_response(
+            "ak:cursor:czE",
+        ))])));
         let transport = queued_transport(responses);
         let mut sync_loop = SyncLoop::new();
 
@@ -249,7 +251,7 @@ mod tests {
 
         assert_eq!(reason, SubscriptionStopReason::Cancelled);
         assert_eq!(*events.lock().unwrap(), 1);
-        assert_eq!(sync_loop.token(), Some("s1"));
+        assert_eq!(sync_loop.token(), Some("ak:cursor:czE"));
     }
 
     #[tokio::test]
@@ -266,7 +268,7 @@ mod tests {
                 status: 503,
                 error: Box::new(Problem::from_code("service_unavailable", "network down")),
             }),
-            Ok(sync_response("s1")),
+            Ok(sync_response("ak:cursor:czE")),
         ])));
         let transport = queued_transport(responses);
         let mut sync_loop = SyncLoop::new();
@@ -277,7 +279,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(reason, SubscriptionStopReason::Cancelled);
-        assert_eq!(sync_loop.token(), Some("s1"));
+        assert_eq!(sync_loop.token(), Some("ak:cursor:czE"));
         let sleeps = executor.sleeps();
         assert!(sleeps.len() > 1);
         assert!(

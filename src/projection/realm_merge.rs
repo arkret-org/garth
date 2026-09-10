@@ -11,8 +11,6 @@
 //! transport, no UI. Every client that caches Realm projections needs exactly
 //! this fold, which is why it lives here rather than in one host.
 
-use std::collections::BTreeSet;
-
 use serde_json::Value;
 
 /// Account-subscribe Realm projection payload with explicit replacement
@@ -61,21 +59,7 @@ fn event_id(event: &Value) -> Option<&str> {
     event.get("event_id").and_then(Value::as_str)
 }
 
-fn state_event_cells(event: &Value) -> BTreeSet<&str> {
-    event
-        .get("effects")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|effect| effect.get("cell").and_then(Value::as_str))
-        .collect()
-}
-
-fn merged_event_container(
-    cached: Option<&Value>,
-    incoming: &Value,
-    replace_same_state_cell: bool,
-) -> Value {
+fn merged_event_container(cached: Option<&Value>, incoming: &Value) -> Value {
     let mut merged = incoming.clone();
     let Some(incoming_events) = incoming.get("events").and_then(Value::as_array) else {
         return merged;
@@ -87,19 +71,8 @@ fn merged_event_container(
         .unwrap_or_default();
     for incoming_event in incoming_events {
         let incoming_id = event_id(incoming_event);
-        let incoming_cells = replace_same_state_cell.then(|| state_event_cells(incoming_event));
-        events.retain(|cached_event| {
-            if incoming_id.is_some() && event_id(cached_event) == incoming_id {
-                return false;
-            }
-            let Some(incoming_cells) = incoming_cells.as_ref() else {
-                return true;
-            };
-            if incoming_cells.is_empty() {
-                return true;
-            }
-            state_event_cells(cached_event).is_disjoint(incoming_cells)
-        });
+        events
+            .retain(|cached_event| incoming_id.is_none() || event_id(cached_event) != incoming_id);
         events.push(incoming_event.clone());
     }
     if let Some(object) = merged.as_object_mut() {
@@ -108,28 +81,8 @@ fn merged_event_container(
     merged
 }
 
-fn without_state_cells(container: Option<&Value>, cells: &BTreeSet<&str>) -> Option<Value> {
-    let mut container = container?.clone();
-    let Some(events) = container.get_mut("events").and_then(Value::as_array_mut) else {
-        return Some(container);
-    };
-    events.retain(|event| state_event_cells(event).is_disjoint(cells));
-    Some(container)
-}
-
-fn state_container_cells(container: Option<&Value>) -> BTreeSet<&str> {
-    container
-        .and_then(|container| container.get("events"))
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .flat_map(state_event_cells)
-        .collect()
-}
-
-/// Apply an account-subscribe Realm delta without treating omitted fields or
-/// current-state cells as deletions. `client-sync.md` defines `state` and
-/// `state_after` as deltas; timeline events are likewise incremental.
+/// Merge timeline and presentation metadata. Current selectors are installed
+/// by the host transaction; raw current pages must never be folded as Events.
 fn merge_incremental_realm_projection(cached: Option<&Value>, incoming: &Value) -> Value {
     let Some(cached) = cached else {
         return incoming.clone();
@@ -139,31 +92,16 @@ fn merge_incremental_realm_projection(cached: Option<&Value>, incoming: &Value) 
     let Some(object) = merged.as_object_mut() else {
         return incoming.clone();
     };
-    let incoming_state_cells = state_container_cells(incoming.get("state"));
-    let incoming_state_after_cells = state_container_cells(incoming.get("state_after"));
-    let mut state = incoming
-        .get("state")
-        .map(|container| merged_event_container(cached.get("state"), container, true));
-    if state.is_none() && !incoming_state_after_cells.is_empty() {
-        state = without_state_cells(cached.get("state"), &incoming_state_after_cells);
-    } else if !incoming_state_after_cells.is_empty() {
-        state = without_state_cells(state.as_ref(), &incoming_state_after_cells);
-    }
-    if let Some(state) = state {
-        object.insert("state".to_owned(), state);
-    }
-
-    let state_after_base = without_state_cells(cached.get("state_after"), &incoming_state_cells);
-    let state_after = incoming
-        .get("state_after")
-        .map(|container| merged_event_container(state_after_base.as_ref(), container, true));
-    if let Some(state_after) = state_after.or(state_after_base) {
-        object.insert("state_after".to_owned(), state_after);
+    // The bounded materialized current view is supplied separately by the
+    // durable current store after its commit pointer is installed.
+    object.remove("current");
+    if let Some(current) = cached.get("current") {
+        object.insert("current".to_owned(), current.clone());
     }
     if let Some(container) = incoming.get("timeline") {
         object.insert(
             "timeline".to_owned(),
-            merged_event_container(cached.get("timeline"), container, false),
+            merged_event_container(cached.get("timeline"), container),
         );
     }
     merged
@@ -192,124 +130,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn incremental_realm_delta_preserves_omitted_policy_state() {
-        let cached = json!({
-            "__kind": "realm",
-            "content_scheme": "mls_exporter_aead_v1",
-            "history_access": "all_history_for_current_members",
-            "summary": {"title": "Shared history"},
-            "state": {"events": [
-                {
-                    "event_id": "ak:event:AOPouRuEAbPjs9CNNW54RZQ5izPb-t3rASYtAKICB4_4",
-                    "kind": "ak.realm.create",
-                    "effects": [{"cell": "ak:cell:realm.create"}]
-                },
-                {
-                    "event_id": "ak:event:AYwttCl6UHftOF7dIFruPKJ1OzaTcqP5xL4VBoi3jCV0",
-                    "kind": "ak.realm.policy_bundle",
-                    "effects": [{"cell": "ak:cell:realm.policy_bundle"}],
-                    "payload": {"value": {"content_scheme": "mls_exporter_aead_v1"}}
-                }
-            ]},
-            "timeline": {"events": [{"event_id": "ak:event:ArdiKvN1WdQsibAXsFKmzazqXR5bjyMgrLwAYfQJlfNg"}]}
-        });
-        let incoming = json!({
-            "summary": {"joined_member_count": 1},
-            "state": {"events": [{
-                "event_id": "ak:event:AbY3zzcatsuTwazU86xXdmZh0E8aA5G_xs4cT5T1GSt4",
-                "kind": "ak.mls.genesis"
-            }]},
-            "timeline": {"events": [{"event_id": "ak:event:ArUan4HuaK0xF-YoPctbaNdHflOJq9noQhgxcuPYUjFc"}]}
-        });
-
-        let merged =
-            reconcile_realm_projection(Some(&cached), RealmProjectionFrame::Incremental(&incoming));
-
-        assert_eq!(merged["content_scheme"], "mls_exporter_aead_v1");
-        assert_eq!(merged["summary"]["title"], "Shared history");
-        assert_eq!(merged["summary"]["joined_member_count"], 1);
-        assert_eq!(merged["state"]["events"].as_array().unwrap().len(), 3);
-        assert_eq!(merged["timeline"]["events"].as_array().unwrap().len(), 2);
-    }
-
-    #[test]
-    fn incremental_state_delta_replaces_the_same_reducer_cell() {
-        let cached = json!({
-            "state": {"events": [{
-                "event_id": "ak:event:AeNOC6NPDq283vfH6UTqiJq9Uy2DXQQ01SIj_J7jhkO0",
-                "kind": "ak.realm.policy_bundle",
-                "effects": [{"cell": "ak:cell:realm.policy_bundle"}],
-                "payload": {"value": {"content_scheme": "mls_rfc9420"}}
-            }]},
-            "state_after": {"events": [{
-                "event_id": "ak:event:AHofA7a120KAdEJgSXxs6l9Nnna66PU65X3xDL_awEBw",
-                "kind": "ak.realm.policy_bundle",
-                "effects": [{"cell": "ak:cell:realm.policy_bundle"}],
-                "payload": {"value": {"content_scheme": "mls_rfc9420"}}
-            }]}
-        });
-        let incoming = json!({
-            "state": {"events": [{
-                "event_id": "ak:event:Avv2ZpC4D6LojRWUseH7_Cn0rzqd7GLMSKGeMxqLlY44",
-                "kind": "ak.realm.policy_bundle",
-                "effects": [{"cell": "ak:cell:realm.policy_bundle"}],
-                "payload": {"value": {"content_scheme": "mls_exporter_aead_v1"}}
-            }]}
-        });
-
-        let merged =
-            reconcile_realm_projection(Some(&cached), RealmProjectionFrame::Incremental(&incoming));
-        let events = merged["state"]["events"].as_array().unwrap();
-
-        assert_eq!(events.len(), 1);
-        assert_eq!(
-            events[0]["event_id"],
-            "ak:event:Avv2ZpC4D6LojRWUseH7_Cn0rzqd7GLMSKGeMxqLlY44"
-        );
-        assert!(
-            merged["state_after"]["events"]
-                .as_array()
-                .unwrap()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn incremental_state_after_delta_shadows_the_same_current_state_cell() {
-        let cached = json!({
-            "state": {"events": [{
-                "event_id": "ak:event:AeNOC6NPDq283vfH6UTqiJq9Uy2DXQQ01SIj_J7jhkO0",
-                "kind": "ak.realm.policy_bundle",
-                "effects": [{"cell": "ak:cell:realm.policy_bundle"}],
-                "payload": {"value": {"content_scheme": "mls_rfc9420"}}
-            }]}
-        });
-        let incoming = json!({
-            "state_after": {"events": [{
-                "event_id": "ak:event:Avv2ZpC4D6LojRWUseH7_Cn0rzqd7GLMSKGeMxqLlY44",
-                "kind": "ak.realm.policy_bundle",
-                "effects": [{"cell": "ak:cell:realm.policy_bundle"}],
-                "payload": {"value": {"content_scheme": "mls_exporter_aead_v1"}}
-            }]}
-        });
-
-        let merged =
-            reconcile_realm_projection(Some(&cached), RealmProjectionFrame::Incremental(&incoming));
-
-        assert!(merged["state"]["events"].as_array().unwrap().is_empty());
-        assert_eq!(
-            merged["state_after"]["events"][0]["event_id"],
-            "ak:event:Avv2ZpC4D6LojRWUseH7_Cn0rzqd7GLMSKGeMxqLlY44"
-        );
-    }
-
-    #[test]
     fn incremental_realm_projection_preserves_create_locked_security_state() {
         let encrypted_create = json!({
             "state_at_window_start": {"e2ee_epoch": null},
-            "state": {"events": [{
-                "kind": "ak.realm.create",
-                "payload": {"object": {"encryption_profile": "mls_rfc9420"}}
+            "current": {"entries": [{
+                "selector":{"scope_ref":{"kind":"realm","realm_id":"ak:realm:AY789mrKRCQEVlbVgiTgLdjVO5oCMJiUCrF-D-JlRNxI"},"cell_id":"ak:cell:ak.component.realm.genesis.v1:null"},
+                "result":{"status":"value","value":{"encryption_profile":"mls_rfc9420"}}
             }]}
         });
         let initial =
@@ -321,7 +147,7 @@ mod tests {
                 "realm_metadata": {"title": "Renamed Realm"},
                 "e2ee_epoch": null
             },
-            "state": {"events": []}
+            "current": {"entries": []}
         });
         let merged = reconcile_realm_projection(
             Some(&initial),
@@ -341,7 +167,7 @@ mod tests {
         });
         let incoming = json!({
             "summary": {"title": "Authoritative title"},
-            "state": {"events": []}
+            "current": {"entries": []}
         });
 
         let reconciled =
@@ -357,9 +183,9 @@ mod tests {
         let cached = json!({"__realm_security_encrypted": true});
         let incoming = json!({
             "state_at_window_start": {"e2ee_epoch": null},
-            "state": {"events": [{
-                "kind": "ak.realm.create",
-                "payload": {"object": {"encryption_profile": "none"}}
+            "current": {"entries": [{
+                "selector":{"scope_ref":{"kind":"realm","realm_id":"ak:realm:AY789mrKRCQEVlbVgiTgLdjVO5oCMJiUCrF-D-JlRNxI"},"cell_id":"ak:cell:ak.component.realm.genesis.v1:null"},
+                "result":{"status":"value","value":{"encryption_profile":"none"}}
             }]}
         });
 
@@ -403,9 +229,9 @@ mod tests {
     fn realm_projection_keeps_explicit_plaintext_state() {
         let plaintext_create = json!({
             "state_at_window_start": {"e2ee_epoch": null},
-            "state": {"events": [{
-                "kind": "ak.realm.create",
-                "payload": {"object": {"encryption_profile": "none"}}
+            "current": {"entries": [{
+                "selector":{"scope_ref":{"kind":"realm","realm_id":"ak:realm:AY789mrKRCQEVlbVgiTgLdjVO5oCMJiUCrF-D-JlRNxI"},"cell_id":"ak:cell:ak.component.realm.genesis.v1:null"},
+                "result":{"status":"value","value":{"encryption_profile":"none"}}
             }]}
         });
         let merged =

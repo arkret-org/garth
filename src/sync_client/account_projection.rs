@@ -11,18 +11,17 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use arkret_models_collaboration::events_payloads::realm::RealmProfile;
 use arkret_models_collaboration::governance::holder_quarantine::{
     HolderQuarantine, HolderQuarantineEntry, HolderQuarantineSurfaceKind,
 };
 use arkret_wire::{
-    AccountDataKey, AccountId, ActorId, DeviceId, Did, Event, EventId, EventKind, PredicateOp,
-    REALM_PROFILE_CELL, event_kind_str, project_did_to_core_id,
+    AccountDataKey, AccountId, ActorId, DeviceId, Did, Event, event_kind_str,
+    project_did_to_core_id,
 };
 use serde_json::Value;
 
 use crate::protocol::sync::{RealmUpdate, SyncUpdates};
-use crate::protocol::{AccountDataRow, DeviceMessageEnvelope, DidCoreId, Error, Result};
+use crate::protocol::{AccountDataRow, DeviceMessageEnvelope, Error, Result};
 
 /// True when an account-subscribe step carries nothing an ingest could act on.
 pub fn account_updates_are_empty(updates: &SyncUpdates) -> bool {
@@ -38,7 +37,6 @@ pub fn account_updates_are_empty(updates: &SyncUpdates) -> bool {
         && updates.account_data.is_empty()
         && updates.station_cas_account_data.is_empty()
         && updates.notifications.is_empty()
-        && updates.agent_signer_evidence.is_empty()
         && !updates.partial
 }
 
@@ -48,8 +46,8 @@ pub fn realm_update_has_durable_projection(update: &RealmUpdate) -> bool {
     let entry = &update.entry;
     entry.timeline.is_some()
         || entry.state_at_window_start.is_some()
-        || entry.state.is_some()
-        || entry.state_after.is_some()
+        || entry.current.is_some()
+        || entry.baseline.is_some()
         || entry.account_data.is_some()
         || entry.summary.is_some()
         || entry.member_roster.is_some()
@@ -71,15 +69,6 @@ pub fn to_device_backfill_cursor(updates: &SyncUpdates) -> Option<String> {
         .flatten()
 }
 
-/// The canonical top-level `state[].events` log of one Realm projection body.
-pub fn sync_realm_state_events(body: &Value) -> Vec<Value> {
-    body.get("state")
-        .and_then(|state| state.get("events"))
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-}
-
 /// Discussion message events ride a SEPARATE projection array from the state
 /// log: `timeline.events[]`.
 pub fn sync_realm_timeline_events(body: &Value) -> Vec<Value> {
@@ -88,85 +77,6 @@ pub fn sync_realm_timeline_events(body: &Value) -> Vec<Value> {
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default()
-}
-
-/// Accepted leave/ban membership frontier for one effective scope.
-///
-/// The Realm-default scope takes every accepted `ak.member.state` transition to
-/// `leave`/`ban`. A Circle scope additionally takes the `ak.circle.member.state`
-/// transitions naming that Circle, because a Realm departure removes the
-/// principal from every Circle in it while a Circle departure does not touch
-/// the Realm roster.
-pub fn membership_removal_frontier(projection: &Value, circle_id: Option<&str>) -> Vec<EventId> {
-    let mut membership_frontier = sync_realm_state_events(projection)
-        .into_iter()
-        .filter(|event| {
-            let kind = event
-                .get("kind")
-                .or_else(|| event.get("event_kind"))
-                .and_then(Value::as_str);
-            let payload = event
-                .get("payload")
-                .or_else(|| event.get("content"))
-                .unwrap_or(&Value::Null);
-            match kind {
-                Some(kind) if kind == EventKind::MemberState.as_str() => true,
-                Some(kind) if kind == EventKind::CircleMemberState.as_str() => circle_id
-                    .is_some_and(|circle_id| {
-                        payload.get("circle_id").and_then(Value::as_str) == Some(circle_id)
-                    }),
-                _ => false,
-            }
-        })
-        .filter(|event| {
-            let payload = event
-                .get("payload")
-                .or_else(|| event.get("content"))
-                .unwrap_or(&Value::Null);
-            matches!(
-                payload
-                    .get("membership")
-                    .or_else(|| payload.get("target_state"))
-                    .or_else(|| payload.get("state"))
-                    .and_then(Value::as_str),
-                Some("leave" | "ban")
-            )
-        })
-        .filter_map(|event| {
-            event
-                .get("event_id")
-                .and_then(Value::as_str)
-                .and_then(|event_id| EventId::new(event_id.to_owned()).ok())
-        })
-        .collect::<Vec<_>>();
-    membership_frontier.sort();
-    membership_frontier.dedup();
-    membership_frontier
-}
-
-/// The active roster plus the removal frontier a Realm-default MLS Remove
-/// obligation is derived from, or `None` when the projection cannot answer.
-pub fn realm_membership_removal_basis(
-    projection: &Value,
-) -> Option<(BTreeSet<ActorId>, Vec<EventId>)> {
-    // A truncated roster is not negative membership evidence. Waiting for a
-    // complete projection is required before comparing it with the MLS tree.
-    if projection
-        .get("member_roster_entries_limited")
-        .and_then(Value::as_bool)
-        != Some(false)
-    {
-        return None;
-    }
-    let active_members = projection
-        .get("member_roster_entries")?
-        .as_array()?
-        .iter()
-        .filter(|member| member.get("membership").and_then(Value::as_str) == Some("join"))
-        .map(|member| serde_json::from_value::<ActorId>(member.get("actor_id")?.clone()).ok())
-        .collect::<Option<BTreeSet<_>>>()?;
-    let membership_frontier = membership_removal_frontier(projection, None);
-    (!membership_frontier.is_empty()).then_some((active_members, membership_frontier))
 }
 
 /// Recursively scan a projection `Value` for `ak.member.identity.update`
@@ -350,34 +260,6 @@ pub fn to_device_batch_safe_for_ingest_ack(messages: &[DeviceMessageEnvelope]) -
         .any(|message| message.kind.as_str() == event_kind_str::MLS_WELCOME)
 }
 
-/// True when any Realm projection in this step carries an accepted
-/// `ak.device.revoke` naming this device.
-pub fn response_revokes_local_device(
-    realm_projections: &BTreeMap<String, Value>,
-    principal_id: &DidCoreId,
-    device_id: &str,
-) -> bool {
-    let device_id = device_id.trim();
-    if device_id.is_empty() {
-        return false;
-    }
-    realm_projections.values().any(|body| {
-        sync_realm_state_events(body).iter().any(|event| {
-            let kind = event
-                .get("kind")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            let Some(payload) = event.get("payload") else {
-                return false;
-            };
-            kind == event_kind_str::DEVICE_REVOKE
-                && payload.get("principal_id").and_then(Value::as_str)
-                    == Some(principal_id.as_str())
-                && payload.get("device_id").and_then(Value::as_str) == Some(device_id)
-        })
-    })
-}
-
 /// The control-event kind of a discussion-state projection entry, across the
 /// field names a projection may carry it under.
 pub fn discussion_state_control_event_kind(event: &Value) -> Option<&str> {
@@ -419,62 +301,6 @@ pub fn accepted_human_event_signing_device(event: &Event) -> Option<DeviceId> {
     DeviceId::new(fragment.to_owned()).ok()
 }
 
-/// The `(event_id, expected_head, payload)` triple an `ak.realm.profile` Event
-/// contributes to the profile cell chain, or `None` when it is not a
-/// single-guard head-equality write.
-pub fn realm_profile_event_entry(event: &Event) -> Option<(String, Value, Value)> {
-    if event.kind != EventKind::RealmProfile {
-        return None;
-    }
-    let payload = serde_json::to_value(&event.payload).ok()?;
-    serde_json::from_value::<RealmProfile>(payload.clone()).ok()?;
-    let guards = event
-        .preconditions
-        .iter()
-        .filter(|guard| guard.cell_id.as_str() == REALM_PROFILE_CELL)
-        .collect::<Vec<_>>();
-    let [guard] = guards.as_slice() else {
-        return None;
-    };
-    if guard.predicate.op != PredicateOp::HeadEq {
-        return None;
-    }
-    Some((
-        event.event_id.to_string(),
-        guard.predicate.value.clone()?,
-        payload,
-    ))
-}
-
-/// Walk the realm-profile cell chain forward from `start`, consuming every
-/// entry whose expected head matches. A fork (two candidates for one head)
-/// aborts: `cas_register` admits exactly one successor, so an ambiguous set is
-/// not a chain this client may collapse.
-pub fn advance_realm_profile_chain(
-    start: Value,
-    entries: &[(String, Value, Value)],
-) -> Option<(Value, usize)> {
-    let mut current = start;
-    let mut remaining = (0..entries.len()).collect::<Vec<_>>();
-    let mut consumed = 0;
-    loop {
-        let candidates = remaining
-            .iter()
-            .copied()
-            .filter(|index| entries[*index].1 == current)
-            .collect::<Vec<_>>();
-        match candidates.as_slice() {
-            [] => return Some((current, consumed)),
-            [next] => {
-                current = entries[*next].2.clone();
-                remaining.retain(|index| index != next);
-                consumed += 1;
-            }
-            _ => return None,
-        }
-    }
-}
-
 /// The event kind of a projection entry, across the two field names a
 /// projection may carry it under.
 pub fn projection_event_kind(event: &Value) -> &str {
@@ -495,12 +321,10 @@ pub fn for_each_projection_identity_event(
     body: &Value,
     mut visit: impl FnMut(&Value, Option<&Value>),
 ) {
-    for event in &sync_realm_state_events(body) {
-        visit(event, None);
-    }
     for source in [
-        body.get("members"),
-        body.get("summary").and_then(|s| s.get("members")),
+        body.get("member_roster_entries"),
+        body.get("member_roster")
+            .and_then(|roster| roster.get("entries")),
     ]
     .into_iter()
     .flatten()
@@ -600,20 +424,14 @@ pub fn holder_quarantine_cell(
 
 #[cfg(test)]
 mod tests {
-    use arkret_wire::{Hlc, RealmId, ScopeRef};
+    use arkret_wire::RealmId;
     use serde_json::json;
 
     use super::*;
+    use crate::protocol::DidCoreId;
 
     fn station() -> DidCoreId {
         DidCoreId::new("ak:did_core:web:principal.example").unwrap()
-    }
-
-    fn account_actor(principal: &str) -> ActorId {
-        ActorId::account(AccountId::new(
-            DidCoreId::new(principal).unwrap(),
-            station(),
-        ))
     }
 
     fn account_actor_string(did: &str) -> String {
@@ -637,26 +455,12 @@ mod tests {
             account_data: Vec::new(),
             station_cas_account_data: Vec::new(),
             notifications: Vec::new(),
-            agent_signer_evidence: Vec::new(),
             partial: false,
         }
     }
 
     fn realm() -> RealmId {
         RealmId::new("ak:realm:AZQnaSleDidYaYIvfwYy3au5gnd_DSinxyUHEl7ewtxk").unwrap()
-    }
-
-    fn fixture_event(kind: &str, payload: Value) -> Event {
-        arkret_wire::test_support::raw_event(
-            kind,
-            ScopeRef::Realm { realm_id: realm() },
-            DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
-            station(),
-            1,
-            Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
-            payload,
-        )
-        .unwrap()
     }
 
     fn to_device_message(kind: &str) -> DeviceMessageEnvelope {
@@ -692,66 +496,6 @@ mod tests {
     }
 
     #[test]
-    fn realm_profile_chain_settles_independently_of_delivery_order() {
-        let initial = json!({
-            "schema": "ak.schema.realm_profile.v1",
-            "title": "Initial"
-        });
-        let updated = json!({
-            "schema": "ak.schema.realm_profile.v1",
-            "title": "Updated",
-            "summary": "Visible"
-        });
-        let cleared = json!({
-            "schema": "ak.schema.realm_profile.v1",
-            "title": "Updated"
-        });
-        let entries = vec![
-            ("event-c".to_owned(), updated.clone(), cleared.clone()),
-            ("event-a".to_owned(), Value::Null, initial.clone()),
-            ("event-b".to_owned(), initial, updated),
-        ];
-
-        let settled = advance_realm_profile_chain(Value::Null, &entries).unwrap();
-
-        assert_eq!(settled, (cleared, 3));
-    }
-
-    #[test]
-    fn realm_mls_removal_basis_requires_complete_roster_and_accepted_frontier() {
-        let removal_event = "ak:event:AXYOPItXAzTTu_rqIAINR7C7AvNSR5bjjBslclmJ9ZVt";
-        let projection = json!({
-            "member_roster_entries_limited": false,
-            "member_roster_entries": [{
-                "actor_id": {"kind":"account","account_id":{"principal_id":"ak:did_core:webvh:z6mkfixture:alice.example","station_id":"ak:did_core:web:principal.example"}},
-                "membership": "join"
-            }],
-            "state": {"events": [{
-                "event_id": removal_event,
-                "kind": "ak.member.state",
-                "payload": {
-                    "member_id": {"kind":"account","account_id":{"principal_id":"ak:did_core:webvh:z6mkfixture:bob.example","station_id":"ak:did_core:web:principal.example"}},
-                    "membership": "ban"
-                }
-            }]}
-        });
-
-        let (active, frontier) = realm_membership_removal_basis(&projection).unwrap();
-        assert_eq!(
-            active,
-            BTreeSet::from([account_actor("ak:did_core:webvh:z6mkfixture:alice.example")])
-        );
-        assert_eq!(
-            frontier,
-            vec![EventId::new(removal_event.to_owned()).unwrap()]
-        );
-
-        let mut truncated = projection;
-        truncated["member_roster_entries_limited"] = json!(true);
-        assert!(realm_membership_removal_basis(&truncated).is_none());
-    }
-
-    #[test]
     fn frontier_only_account_step_is_projection_empty() {
         let mut updates = empty_updates();
         assert!(account_updates_are_empty(&updates));
@@ -781,10 +525,7 @@ mod tests {
         let durable = RealmUpdate {
             realm_id: realm(),
             entry: serde_json::from_value(json!({
-                "state": {"events": [serde_json::to_value(fixture_event(
-                    "ak.circle.member.remove",
-                    json!({"circle_id": "ak:circle:Aepgr15HbtERKfqPAh9SrfWBdihSvX_c94JvujvBS2f-"})
-                )).unwrap()]}
+                "current": {"entries": []}
             }))
             .expect("durable Realm update"),
         };
@@ -942,65 +683,6 @@ mod tests {
         );
 
         assert!(collect_persistent_proof_sender_devices(&projections, &|_: &str| false).is_empty());
-    }
-
-    #[test]
-    fn accepted_device_revoke_targets_current_local_device() {
-        let actor = DidCoreId::new("ak:did_core:web:alice.example").unwrap();
-        let device = "ak:device:0196419b-0000-7000-8000-000000000001";
-        let mut projections = BTreeMap::new();
-        projections.insert(
-            "ak:realm:AQM8rE4gp8l4axkSbbb9_dkqwWE8ZPYHwFsC24o2mrIL".to_owned(),
-            json!({
-                "state": { "events": [{
-                    "event_id": "ak:event:AV624IkuHj3HmxAYE6uyYmBa4Est3gGGdnOsjn71z5L2",
-                    "kind": "ak.device.revoke",
-                    "payload": {
-                        "principal_id": actor.as_str(),
-                        "device_id": device,
-                        "revoked_by": "ak:device:0196419b-0000-7000-8000-000000000004",
-                        "revoked_at": "2026-07-14T02:00:00.000Z",
-                        "reason": "device_loss"
-                    }
-                }]}
-            }),
-        );
-
-        assert!(response_revokes_local_device(&projections, &actor, device));
-        assert!(!response_revokes_local_device(
-            &projections,
-            &actor,
-            "ak:device:0196419b-0000-7000-8000-0000000000ff"
-        ));
-        let other_actor = DidCoreId::new("ak:did_core:web:mallory.example").unwrap();
-        assert!(!response_revokes_local_device(
-            &projections,
-            &other_actor,
-            device
-        ));
-    }
-
-    #[test]
-    fn malformed_or_non_state_device_revoke_does_not_trigger_local_wipe() {
-        let actor = DidCoreId::new("ak:did_core:web:alice.example").unwrap();
-        let device = "ak:device:0196419b-0000-7000-8000-000000000001";
-        let mut projections = BTreeMap::new();
-        projections.insert(
-            "ak:realm:AQM8rE4gp8l4axkSbbb9_dkqwWE8ZPYHwFsC24o2mrIL".to_owned(),
-            json!({
-                "state": { "events": [{
-                    "kind": "ak.device.revoke",
-                    "principal_id": actor.as_str(),
-                    "device_id": device
-                }]},
-                "timeline": { "events": [{
-                    "kind": "ak.device.revoke",
-                    "payload": { "principal_id": actor.as_str(), "device_id": device }
-                }]}
-            }),
-        );
-
-        assert!(!response_revokes_local_device(&projections, &actor, device));
     }
 
     fn quarantine_holder() -> AccountId {

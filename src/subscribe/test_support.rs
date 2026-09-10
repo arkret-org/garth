@@ -42,11 +42,14 @@ pub(crate) fn sync_response(cursor: &str) -> AccountSubscribeBatch {
             kind: AccountSubscribeFrameKind::Delta,
             cursor: Some(cursor.to_owned()),
             realms: None,
+            realm_list: None,
+            realm_list_changes: None,
+            baseline: None,
+            realm_invalidations: None,
             to_device: None,
             device_lists: None,
             account_data: None,
             notifications: None,
-            agent_signer_evidence_bundle: None,
             partial: None,
             priority: None,
             reconnect_after_ms: None,
@@ -67,7 +70,7 @@ pub(crate) fn queued_transport(
                 .lock()
                 .unwrap()
                 .pop_front()
-                .unwrap_or_else(|| Ok(sync_response("fallback")))
+                .unwrap_or_else(|| Ok(sync_response("ak:cursor:ZmFsbGJhY2s")))
         })
     }
 }

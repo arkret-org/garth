@@ -444,6 +444,8 @@ impl SyncLoop {
             after: self.token.clone(),
             catchup: Some(true),
             filter: self.filter.clone(),
+            realm_list: None,
+            replace_filter: None,
         }
     }
 

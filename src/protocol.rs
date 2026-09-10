@@ -54,7 +54,6 @@ pub(crate) use arkret_models_crypto::{
 pub use arkret_models_discovery::{
     PresenceStatus, aggregate_presence_states, validate_last_active_at, validate_status_message,
 };
-pub(crate) use arkret_models_identity::agent_signer_evidence::AgentSignerEvidence;
 pub(crate) use arkret_models_identity::{
     AccountDataRow, AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
     DeviceVerificationState, DidOperationSubmitRequestBody, IdentityBindingChallengeOutcome,
@@ -93,17 +92,15 @@ pub(crate) mod signal {
     };
 }
 
+pub(crate) use arkret_models_collaboration::sync_frames::account_subscribe::AccountSubscribeFrame;
 #[cfg(test)]
-pub(crate) use arkret_models_collaboration::sync_frames::account_subscribe::{
-    AccountSubscribeFrame, AccountSubscribeRealms,
-};
+pub(crate) use arkret_models_collaboration::sync_frames::account_subscribe::AccountSubscribeRealms;
 #[cfg(test)]
 pub(crate) use arkret_models_collaboration::sync_frames::account_sync::{
     AccountSubscribeUnreadCounts, AgentRuntimeApprovalNotificationData,
     AgentRuntimeApprovalNotificationRemovalData, AgentRuntimeApprovalRemovalReason,
     DeviceMessageContainer, NotificationContainer, NotificationData, RealmSyncEntry,
 };
-#[cfg(test)]
 pub(crate) use arkret_models_collaboration::sync_frames::client_sync::SyncRequestBody;
 #[cfg(test)]
 pub(crate) use arkret_models_crypto::MlsKeyPackageState;

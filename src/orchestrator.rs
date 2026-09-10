@@ -30,6 +30,8 @@ use crate::{
     HostClock, RetrySchedule,
 };
 
+mod account_frames;
+
 /// Host seam that yields a ready-to-use transport (SDK http-client) with
 /// current credentials. Called on each (re)start of a run loop; a provider that
 /// refreshes credentials here makes the run loop recover across restarts.
@@ -43,6 +45,27 @@ pub trait TransportProvider {
     }
 
     fn observe(&self, _event: RunEvent) {}
+
+    /// Build a complete demand request from the last durable cursor. Hosts
+    /// retain the filter with that cursor and explicitly replace it on navigation.
+    fn account_request(&self, after: Option<String>) -> Result<crate::protocol::SyncRequestBody> {
+        Ok(crate::protocol::SyncRequestBody {
+            after,
+            catchup: Some(true),
+            filter: None,
+            realm_list: None,
+            replace_filter: None,
+        })
+    }
+
+    /// A cheap lifecycle/demand coordinate check; never scan local projections.
+    fn account_request_is_current(&self, _request: &crate::protocol::SyncRequestBody) -> bool {
+        self.is_active()
+    }
+
+    fn account_session_generation(&self) -> u64 {
+        0
+    }
 
     /// Host lifecycle guard (route/profile/channel generation). It is polled
     /// during network restarts and every backoff quantum.
@@ -68,17 +91,20 @@ fn next_signal_drain_delay(
 /// step, so hosts never need to parse frames or reconstruct cursor ordering.
 #[derive(Clone, Debug)]
 pub struct AccountStreamStep {
-    /// True when the request started without a resume cursor and therefore
-    /// carries a server-authoritative full account snapshot.
-    pub initial: bool,
+    pub session_generation: u64,
+    pub request_sequence: u64,
+    pub request: crate::protocol::SyncRequestBody,
+    /// The original frame retains baseline and demand context independently
+    /// of the product delta projection.
+    pub frame: crate::protocol::AccountSubscribeFrame,
     pub cursor: Option<String>,
     pub updates: SyncUpdates,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum AccountCommitOutcome {
     /// The validated cursor was durably committed with the raw updates.
-    Committed,
+    Committed { updates: SyncUpdates },
     /// The host durably retained the updates but intentionally withheld the
     /// cursor (for example until incomplete to-device material is resolved).
     /// Garth must restore the stream loop from the durable cursor before the
@@ -94,6 +120,13 @@ pub enum AccountCommitOutcome {
 /// work that must not hold the protocol cursor open (invite refresh, MLS,
 /// calls, and to-device acknowledgements).
 pub trait AccountStepCommitter {
+    /// Reset an expired/rejected account cursor and all baseline progress in
+    /// one durable host transaction. False means its session is no longer active.
+    fn reset_account_context(
+        &self,
+        session_generation: u64,
+    ) -> impl std::future::Future<Output = Result<bool>> + '_;
+
     fn commit<'a>(
         &'a self,
         step: &'a AccountStreamStep,
@@ -732,150 +765,13 @@ where
     ) -> RunResult<RunStopReason>
     where
         TP: TransportProvider,
-        TP::Transport: AsyncSyncTransport,
+        TP::Transport: crate::AccountFrameTransport,
         CMT: AccountStepCommitter + ?Sized,
         H: AccountPostCommitHook<TP::Transport> + ?Sized,
     {
-        let engine = self.subscription_engine().with_control(control.clone());
-        let scope = engine.account_scope(actor_id, device_id);
-        let mut sync_loop = engine
-            .restore_account_loop(scope.clone())
+        self.run_account_frame_steps(actor_id, device_id, provider, handlers, control, options)
             .await
-            .map_err(|error| Self::fail(provider, RunErrorClass::StoreFailure, error))?;
-        let mut backoff = RetrySchedule::new(options.min_backoff, options.max_backoff).with_jitter(
-            options.jitter_ratio,
-            account_backoff_seed(self.backoff_seed, &scope),
-        );
-        loop {
-            if !provider.is_active() {
-                return Ok(Self::stop(provider, RunStopReason::LifecycleEnded));
-            }
-            if control.is_cancelled() {
-                return Ok(Self::stop(provider, RunStopReason::Cancelled));
-            }
-            provider.observe(RunEvent::Connecting);
-            let transport = match provider.provide().await {
-                Ok(transport) => {
-                    backoff.reset();
-                    provider.observe(RunEvent::Online);
-                    transport
-                }
-                Err(error) if retryable(classify_error(&error)) => {
-                    let delay = backoff.next_delay();
-                    provider.observe(RunEvent::Backoff { delay });
-                    if let Some(reason) = self.wait_guarded(delay, control, provider).await {
-                        return Ok(Self::stop(provider, reason));
-                    }
-                    continue;
-                }
-                Err(error) => return Err(Self::fail(provider, classify_error(&error), error)),
-            };
-            let initial = sync_loop.token().is_none();
-            match sync_loop.step_async_with_control(&transport, control).await {
-                SyncLoopStep::Updates(updates) => {
-                    let step = AccountStreamStep {
-                        initial,
-                        cursor: sync_loop.token().map(str::to_owned),
-                        updates: *updates,
-                    };
-                    let commit_outcome =
-                        handlers.committer.commit(&step).await.map_err(|error| {
-                            Self::fail(provider, RunErrorClass::StoreFailure, error)
-                        })?;
-                    let post_commit = handlers
-                        .post_commit
-                        .post_commit(&transport, &step)
-                        .await
-                        .map_err(|error| {
-                            Self::fail(provider, RunErrorClass::ProjectorFailure, error)
-                        })?;
-                    match post_commit {
-                        AccountPostCommitOutcome::Continue => {}
-                        AccountPostCommitOutcome::Retry => {
-                            let delay = backoff.next_delay();
-                            provider.observe(RunEvent::Backoff { delay });
-                            if let Some(reason) = self.wait_guarded(delay, control, provider).await
-                            {
-                                return Ok(Self::stop(provider, reason));
-                            }
-                        }
-                        AccountPostCommitOutcome::Unauthorized { reason } => {
-                            match self
-                                .recover_unauthorized(provider, control, &mut backoff)
-                                .await?
-                            {
-                                UnauthorizedRecovery::Recovered | UnauthorizedRecovery::Retry => {
-                                    continue;
-                                }
-                                UnauthorizedRecovery::GuardedStop(reason) => return Ok(reason),
-                                UnauthorizedRecovery::Unavailable => {}
-                            }
-                            return Ok(Self::stop(
-                                provider,
-                                RunStopReason::Unauthorized { reason },
-                            ));
-                        }
-                    }
-                    if commit_outcome == AccountCommitOutcome::Replay {
-                        sync_loop =
-                            engine
-                                .restore_account_loop(scope.clone())
-                                .await
-                                .map_err(|error| {
-                                    Self::fail(provider, RunErrorClass::StoreFailure, error)
-                                })?;
-                        if let Some(reason) = self
-                            .wait_guarded(options.min_backoff, control, provider)
-                            .await
-                        {
-                            return Ok(Self::stop(provider, reason));
-                        }
-                    }
-                }
-                SyncLoopStep::Retry { retry_after, .. } => {
-                    engine
-                        .checkpoint_account_cursor(
-                            scope.clone(),
-                            sync_loop.token().map(str::to_owned),
-                        )
-                        .await
-                        .map_err(|error| {
-                            Self::fail(provider, RunErrorClass::StoreFailure, error)
-                        })?;
-                    if let Some(reason) = self.wait_guarded(retry_after, control, provider).await {
-                        return Ok(Self::stop(provider, reason));
-                    }
-                }
-                SyncLoopStep::Failed { error } => {
-                    return Err(Self::fail(
-                        provider,
-                        RunErrorClass::ProtocolViolation,
-                        crate::protocol::Error::Protocol(error),
-                    ));
-                }
-                SyncLoopStep::Backpressure { retry_after } => {
-                    if let Some(reason) = self.wait_guarded(retry_after, control, provider).await {
-                        return Ok(Self::stop(provider, reason));
-                    }
-                }
-                SyncLoopStep::Cancelled => {
-                    return Ok(Self::stop(provider, RunStopReason::Cancelled));
-                }
-                SyncLoopStep::Unauthorized { reason } => {
-                    match self
-                        .recover_unauthorized(provider, control, &mut backoff)
-                        .await?
-                    {
-                        UnauthorizedRecovery::Recovered | UnauthorizedRecovery::Retry => continue,
-                        UnauthorizedRecovery::GuardedStop(reason) => return Ok(reason),
-                        UnauthorizedRecovery::Unavailable => {}
-                    }
-                    return Ok(Self::stop(provider, RunStopReason::Unauthorized { reason }));
-                }
-            }
-        }
     }
-
     /// Resilient account runner whose successful checkpoint unit is an atomic
     /// durable-inbox commit instead of a synchronous host projection.
     pub async fn run_account_to_inbox<TP>(

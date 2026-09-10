@@ -8,7 +8,7 @@
 
 use std::collections::BTreeMap;
 
-use arkret_wire::{ActorId, EventKind, event_kind_str};
+use arkret_wire::ActorId;
 use serde_json::Value;
 
 /// First non-empty trimmed string under any of `keys`.
@@ -166,107 +166,54 @@ pub fn security_projection_for_scope_id<'a>(
         .or(Some(direct))
 }
 
-/// Current controller of the Realm authority-root cell, read from the locally
-/// projected event log.
-///
-/// `ak.realm.create` is the registered genesis writer of
-/// `ak.component.realm.authority_root.v1` (contract-registry.json), and its
-/// registered `value_projection` sets `controller_actor_id` from the Event
-/// envelope's `actor_id`; every accepted `ak.realm.owner.transfer` afterwards
-/// moves the controller to `payload.patch.controller_actor_id`. This replays those
-/// cell inputs in log order; it is not the forbidden `realm_state.owner` /
-/// membership fallback — those are projection mirrors of a different fact,
-/// and post-P1 realm projections no longer carry them at all.
-pub fn realm_authority_root_controller_from_events(events: &[Value]) -> Option<ActorId> {
-    realm_authority_root_value_from_events(events).map(|root| root.controller_actor_id)
-}
-
-/// Fully replayed current value of the Realm authority-root cell.
-///
-/// Genesis comes from the accepted `ak.realm.create` envelope `actor_id`; the
-/// registered CAS transitions (`ak.realm.owner.transfer` and
-/// `ak.realm.authority.reset`) are then applied in log order, mirroring the
-/// soland reducer's `apply_realm_authority_transition` effects. `None` when no
-/// valid create is projected.
-///
-/// The `canonical_sha256` of the returned value is exactly the
-/// `expected_state_digest` the security-barrier governance payloads must
-/// carry, so callers building `ak.realm.owner.transfer` or
-/// `ak.realm.authority.reset` MUST source it from here rather than re-deriving
-/// fragments.
-pub fn realm_authority_root_value_from_events(
-    events: &[Value],
-) -> Option<arkret_policy::realm_bootstrap::RealmAuthorityRootValue> {
-    use arkret_policy::realm_bootstrap::RealmAuthorityRootValue;
-    let mut root: Option<RealmAuthorityRootValue> = None;
-    for event in events {
-        let Some(kind) = event
-            .get("kind")
-            .or_else(|| event.get("event_kind"))
-            .and_then(Value::as_str)
-        else {
-            continue;
-        };
-        if kind == EventKind::RealmCreate.as_str() {
-            root = (|| {
-                let controller_actor_id =
-                    serde_json::from_value::<ActorId>(event.get("actor_id")?.clone()).ok()?;
-                Some(RealmAuthorityRootValue::genesis(controller_actor_id))
-            })();
-            continue;
-        }
-        let Some(current) = root.as_mut() else {
-            // Transitions on a Realm with no root cell are rejected server-side
-            // (`realm_authority_root_missing`); ignore them here the same way.
-            continue;
-        };
-        match kind {
-            event_kind_str::REALM_OWNER_TRANSFER => {
-                if let Some(controller) = event
-                    .pointer("/payload/patch/controller_actor_id")
-                    .cloned()
-                    .and_then(|next| serde_json::from_value::<ActorId>(next).ok())
-                {
-                    let epoch = current.controller_epoch.checked_add(1)?;
-                    current.controller_actor_id = controller;
-                    current.controller_epoch = epoch;
-                }
-            }
-            event_kind_str::REALM_AUTHORITY_RESET => {
-                current.authority_generation = current.authority_generation.checked_add(1)?;
-            }
-            _ => {}
-        }
+/// Read an already-installed singleton Realm cell. Projection input has passed
+/// the SDK's current-result validation and the host's atomic installation.
+fn installed_realm_cell_value<'a>(
+    body: &'a Value,
+    realm_id: Option<&str>,
+    cell_id: &str,
+) -> Option<&'a Value> {
+    let entries = body.pointer("/current/entries")?.as_array()?;
+    let mut matches = entries.iter().filter(|entry| {
+        entry.pointer("/selector/cell_id").and_then(Value::as_str) == Some(cell_id)
+            && entry
+                .pointer("/selector/scope_ref/kind")
+                .and_then(Value::as_str)
+                == Some("realm")
+            && realm_id.is_none_or(|id| {
+                entry
+                    .pointer("/selector/scope_ref/realm_id")
+                    .and_then(Value::as_str)
+                    == Some(id)
+            })
+    });
+    let entry = matches.next()?;
+    if matches.next().is_some()
+        || entry.pointer("/result/status").and_then(Value::as_str) != Some("value")
+    {
+        return None;
     }
-    root
+    entry.pointer("/result/value")
 }
 
-/// [`realm_authority_root_value_from_events`] over the Realm's full
-/// projection entry (`realm_tree_projections[realm_id]`).
+/// The Station's current authority-root result; no local Event replay.
 pub fn realm_authority_root_value_for_realm(
     projections: &BTreeMap<String, Value>,
     realm_id: &str,
 ) -> Option<arkret_policy::realm_bootstrap::RealmAuthorityRootValue> {
-    let events = projections
-        .get(realm_id.trim())?
-        .get("state")?
-        .get("events")?
-        .as_array()?;
-    realm_authority_root_value_from_events(events)
+    let value = installed_realm_cell_value(
+        projections.get(realm_id)?,
+        Some(realm_id),
+        "ak:cell:ak.component.realm.authority_root.v1:null",
+    )?;
+    serde_json::from_value(value.clone()).ok()
 }
 
-/// [`realm_authority_root_controller_from_events`] over the Realm's full
-/// projection entry (`realm_tree_projections[realm_id]`).
 pub fn realm_authority_root_controller_for_realm(
     projections: &BTreeMap<String, Value>,
     realm_id: &str,
 ) -> Option<ActorId> {
-    let events = projections
-        .get(realm_id.trim())?
-        .get("state")?
-        .get("events")?
-        .as_array()?;
-    realm_authority_root_controller_from_events(events)
+    realm_authority_root_value_for_realm(projections, realm_id).map(|root| root.controller_actor_id)
 }
 
 pub fn realm_projection_security_state(body: &Value) -> Option<bool> {
@@ -283,51 +230,11 @@ pub fn realm_projection_security_state(body: &Value) -> Option<bool> {
         }
     }
 
-    for event in body
-        .get("state")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .chain(
-            body.get("state")
-                .and_then(|state| state.get("events"))
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten(),
-        )
-        .chain(
-            body.get("state_after")
-                .and_then(|state| state.get("events"))
-                .and_then(Value::as_array)
-                .into_iter()
-                .flatten(),
-        )
+    if let Some(genesis) =
+        installed_realm_cell_value(body, None, "ak:cell:ak.component.realm.genesis.v1:null")
     {
-        let kind = event
-            .get("kind")
-            .or_else(|| event.get("type"))
-            .and_then(Value::as_str)
-            .unwrap_or_default();
-        if !kind.contains("realm.create") && !kind.contains("encryption") {
-            continue;
-        }
-        for container in [
-            event.get("payload").unwrap_or(&Value::Null),
-            event
-                .get("payload")
-                .and_then(|payload| payload.get("object"))
-                .unwrap_or(&Value::Null),
-            event.get("content").unwrap_or(&Value::Null),
-            event
-                .get("content")
-                .and_then(|content| content.get("object"))
-                .unwrap_or(&Value::Null),
-            event.get("object").unwrap_or(&Value::Null),
-            event,
-        ] {
-            if let Some(state) = direct_security_state(container) {
-                return Some(state);
-            }
+        if let Some(state) = direct_security_state(genesis) {
+            return Some(state);
         }
     }
 
@@ -358,138 +265,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn realm_authority_root_controller_comes_from_create_envelope_actor() {
-        let events = json!([{
-            "kind": "ak.realm.create",
-            "actor_id": {
-                "kind": "account",
-                "account_id": {
-                    "principal_id": "ak:did_core:webvh:z6mkcreator",
-                    "station_id": "ak:did_core:web:station.example"
-                }
-            },
-            "payload": {
-                "object": {
-                    "schema": "ak.schema.realm_genesis.v1",
-                    "purpose": "collaboration"
-                }
-            }
-        }]);
-        assert_eq!(
-            realm_authority_root_controller_from_events(events.as_array().unwrap()),
-            Some(serde_json::from_value(events[0]["actor_id"].clone()).unwrap())
-        );
-    }
-
-    #[test]
-    fn realm_authority_root_replay_follows_owner_transfer_and_reset() {
-        let events = json!([
-            {
-                "kind": "ak.realm.create",
-                "actor_id": {
-                    "kind": "account",
-                    "account_id": {
-                        "principal_id": "ak:did_core:webvh:z6mkcreator",
-                        "station_id": "ak:did_core:web:station.example"
-                    }
-                },
-                "payload": {
-                    "object": {
-                        "schema": "ak.schema.realm_genesis.v1",
-                        "purpose": "collaboration"
-                    }
-                }
-            },
-            {
-                "kind": "ak.realm.owner.transfer",
-                "actor_id": {
-                    "kind": "account",
-                    "account_id": {
-                        "principal_id": "ak:did_core:webvh:z6mkcreator",
-                        "station_id": "ak:did_core:web:station.example"
-                    }
-                },
-                "payload": {
-                    "patch": {
-                        "controller_actor_id": {
-                            "kind": "account",
-                            "account_id": {
-                                "principal_id": "ak:did_core:web:successor.example",
-                                "station_id": "ak:did_core:web:station.example"
-                            }
-                        }
-                    }
-                }
-            },
-            {
-                "kind": "ak.realm.authority.reset",
-                "actor_id": {
-                    "kind": "account",
-                    "account_id": {
-                        "principal_id": "ak:did_core:web:successor.example",
-                        "station_id": "ak:did_core:web:station.example"
-                    }
-                },
-                "payload": {
-                    "destructive_confirmation": "ak.realm.authority.reset"
-                }
-            }
-        ]);
-        let events = events.as_array().unwrap();
-        let root = realm_authority_root_value_from_events(events).unwrap();
-        assert_eq!(
-            root.controller_actor_id.signing_principal_id().as_str(),
-            "ak:did_core:web:successor.example"
-        );
-        assert_eq!(root.controller_epoch, 1);
-        assert_eq!(root.authority_generation, 1);
-        // The presentation-grade controller helper follows the same transfer.
-        assert_eq!(
-            realm_authority_root_controller_from_events(events),
-            Some(root.controller_actor_id)
-        );
-    }
-
-    #[test]
-    fn realm_authority_root_replay_accepts_the_current_create_shape() {
-        let events = json!([
-            {
-                "kind": "ak.realm.create",
-                "actor_id": {
-                    "kind": "account",
-                    "account_id": {
-                        "principal_id": "ak:did_core:webvh:z6mkcreator",
-                        "station_id": "ak:did_core:web:station.example"
-                    }
-                },
-                "payload": { "object": { "schema": "ak.schema.realm_genesis.v1" } }
-            },
-            {
-                "kind": "ak.realm.owner.transfer",
-                "payload": {
-                    "patch": {
-                        "controller_actor_id": {
-                            "kind": "account",
-                            "account_id": {
-                                "principal_id": "ak:did_core:web:successor.example",
-                                "station_id": "ak:did_core:web:station.example"
-                            }
-                        }
-                    }
-                }
-            }
-        ]);
-        let events = events.as_array().unwrap();
-        let root = realm_authority_root_value_from_events(events).unwrap();
-        assert_eq!(
-            root.controller_actor_id.signing_principal_id().as_str(),
-            "ak:did_core:web:successor.example"
-        );
-        assert_eq!(root.controller_epoch, 1);
-        assert_eq!(
-            realm_authority_root_controller_from_events(events),
-            Some(root.controller_actor_id)
-        );
+    fn authority_root_reads_current_value_and_never_replays_timeline() {
+        let realm = "ak:realm:AY789mrKRCQEVlbVgiTgLdjVO5oCMJiUCrF-D-JlRNxI";
+        let controller = json!({"kind":"account","account_id":{
+            "principal_id":"ak:did_core:web:successor.example",
+            "station_id":"ak:did_core:web:station.example"
+        }});
+        let mut projections = BTreeMap::from([(
+            realm.to_owned(),
+            json!({
+                "current":{"entries":[{
+                    "selector":{"scope_ref":{"kind":"realm","realm_id":realm},
+                        "cell_id":"ak:cell:ak.component.realm.authority_root.v1:null"},
+                    "result":{"status":"value","value":{
+                        "controller_actor_id":controller,"controller_epoch":5,"authority_generation":8
+                    }}
+                }]},
+                "timeline":{"events":[{"kind":"ak.realm.authority.reset"}]}
+            }),
+        )]);
+        let root = realm_authority_root_value_for_realm(&projections, realm).unwrap();
+        assert_eq!(root.controller_epoch, 5);
+        assert_eq!(root.authority_generation, 8);
+        projections.get_mut(realm).unwrap()["current"]["entries"][0]["result"] =
+            json!({"status":"unavailable","reason":"bottom"});
+        assert!(realm_authority_root_value_for_realm(&projections, realm).is_none());
     }
 
     #[test]
@@ -533,9 +333,9 @@ mod tests {
                 "realm_metadata": {"title": "Encrypted Realm"},
                 "e2ee_epoch": null
             },
-            "state": {"events": [{
-                "kind": "ak.realm.create",
-                "payload": {"object": {"encryption_profile": "mls_rfc9420"}}
+            "current": {"entries": [{
+                "selector":{"scope_ref":{"kind":"realm","realm_id":"ak:realm:AY789mrKRCQEVlbVgiTgLdjVO5oCMJiUCrF-D-JlRNxI"},"cell_id":"ak:cell:ak.component.realm.genesis.v1:null"},
+                "result":{"status":"value","value":{"encryption_profile":"mls_rfc9420"}}
             }]}
         });
         assert_eq!(

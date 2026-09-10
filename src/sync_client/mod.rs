@@ -15,19 +15,19 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-#[cfg(test)]
-use crate::protocol::AccountSubscribeFrame;
 use crate::protocol::sync::{
     LimitedTimelineState, RealmUpdate, SyncFilter, SyncRequestBody, SyncUpdates,
 };
 use crate::protocol::{
     AccountDataRow, AccountStreamInterrupt, AccountSubscribeBatch,
-    AccountSubscribeDeviceListChanges, AccountSubscribeFrameKind, AccountSubscribeRealmSummary,
-    ActorId, AuthorizationLease, Error, Event, EventId, IngressReceipt, NotificationDelta,
-    NotificationDeltaAction, RealmId, Result, StationCasAccountDataContainer, Timeline, canonical,
+    AccountSubscribeDeviceListChanges, AccountSubscribeFrame, AccountSubscribeFrameKind,
+    AccountSubscribeRealmSummary, ActorId, AuthorizationLease, Error, Event, EventId,
+    IngressReceipt, NotificationDelta, NotificationDeltaAction, RealmId, Result,
+    StationCasAccountDataContainer, Timeline, canonical,
 };
 
 mod account_projection;
+mod frame_transport;
 mod loop_control;
 mod processor;
 mod send_queue;
@@ -35,6 +35,7 @@ mod send_queue;
 mod tests;
 
 pub use account_projection::*;
+pub use frame_transport::*;
 pub use loop_control::*;
 pub use processor::*;
 #[cfg(test)]

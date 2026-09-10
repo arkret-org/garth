@@ -1,17 +1,21 @@
 use crate::protocol::{Event, RealmId, RealmState, Result};
 
+mod current_results;
 mod realm_merge;
 mod seal_view;
 mod security_state;
 mod sidecar;
 mod sidecar_exchange;
 
+pub use current_results::{
+    CurrentCoverageCleanup, CurrentInstallPlan, CurrentRealmProgress, plan_current_entry,
+    plan_current_install,
+};
 pub use realm_merge::{RealmProjectionFrame, reconcile_realm_projection};
 pub use seal_view::{BottomCellHead, BottomCellInfo, LocalSealView};
 pub use security_state::{
     encryption_profile_is_encrypted, non_empty_string, projection_for_scope_id,
-    realm_authority_root_controller_for_realm, realm_authority_root_controller_from_events,
-    realm_authority_root_value_for_realm, realm_authority_root_value_from_events,
+    realm_authority_root_controller_for_realm, realm_authority_root_value_for_realm,
     realm_projection_is_encrypted, realm_projection_security_state,
     security_projection_for_scope_id, strand_projection_security_state, string_field,
 };

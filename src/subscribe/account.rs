@@ -24,7 +24,6 @@ pub(crate) fn account_updates_to_events_with_origin(
         account_data,
         station_cas_account_data,
         notifications,
-        agent_signer_evidence,
         partial,
     } = updates;
     let mut batch = vec![ClientEvent::AccountUpdates(AccountUpdateContext {
@@ -37,7 +36,6 @@ pub(crate) fn account_updates_to_events_with_origin(
         device_lists,
         account_data,
         station_cas_account_data,
-        agent_signer_evidence,
         partial,
     })];
 
@@ -92,7 +90,6 @@ mod tests {
                 action: NotificationDeltaAction::Remove,
                 data: None,
             }],
-            agent_signer_evidence: Vec::new(),
             partial: false,
         }
     }

@@ -57,8 +57,8 @@ pub use local_checkpoint::{
 };
 pub use self_preservation::{
     SELF_PRESERVATION_JITTER_SLOTS, SELF_PRESERVATION_MAX_EPOCH_AGE_DAYS,
-    SELF_PRESERVATION_MAX_EPOCH_APP_MESSAGES, canonical_mls_remove_membership_frontier,
-    idle_self_update_jitter_passed, should_force_epoch_advance,
+    SELF_PRESERVATION_MAX_EPOCH_APP_MESSAGES, idle_self_update_jitter_passed,
+    should_force_epoch_advance,
 };
 pub use status::{MlsRuntimeError, MlsRuntimeStatus};
 pub use welcome_admission::{

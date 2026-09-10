@@ -184,6 +184,15 @@ impl WebSocketChannelState {
             .unwrap_or_default()
     }
 
+    pub fn take_account_frame(&mut self, channel_id: &str) -> Option<ChannelFrame> {
+        let frames = self.inbound.get_mut(channel_id)?;
+        if frames.is_empty() {
+            None
+        } else {
+            Some(frames.remove(0))
+        }
+    }
+
     /// The resume point the receiver has checkpointed for a channel. Only this
     /// value may be used to re-open on the next connection (§6.1).
     pub fn durable_cursor(&self, channel_id: &str) -> Option<&str> {
@@ -195,13 +204,52 @@ impl WebSocketChannelState {
 
     /// Promote a channel's observed cursor to its durable resume point. The
     /// caller does this only after its own durable write landed.
-    pub fn checkpoint(&mut self, channel_id: &str) -> Option<String> {
-        self.state
-            .channel_mut(channel_id)
-            .and_then(|channel| channel.checkpoint().map(str::to_owned))
+    pub fn checkpoint_exact(&mut self, channel_id: &str, cursor: &str) -> Result<()> {
+        let channel = if self.state.channel(channel_id).is_some() {
+            self.state.channel_mut(channel_id)
+        } else {
+            self.state.retired_channel_mut(channel_id)
+        }
+        .ok_or_else(|| Error::Protocol("account checkpoint channel is absent".into()))?;
+        channel.checkpoint_exact(cursor)?;
+        Ok(())
     }
 
     fn push(&mut self, channel_id: &str, frame: ChannelFrame) {
+        let account = self
+            .state
+            .channel(channel_id)
+            .or_else(|| self.state.retired_channel(channel_id))
+            .is_some_and(|channel| {
+                channel.operation == WebSocketOperationId::AccountStreamSubscribe
+            });
+        if account {
+            let bytes = |frame: &ChannelFrame| match frame {
+                ChannelFrame::Data(WebSocketDataPayload::Account(value))
+                | ChannelFrame::Control(WebSocketChannelControlPayload::Account(value)) => {
+                    serde_json::to_vec(value).map_or(usize::MAX, |bytes| bytes.len())
+                }
+                _ => 0,
+            };
+            let pending = self.inbound.get(channel_id).map_or(0, Vec::len);
+            let pending_bytes = self.inbound.get(channel_id).map_or(0, |frames| {
+                frames.iter().map(bytes).fold(0usize, usize::saturating_add)
+            });
+            if pending >= 2 || pending_bytes.saturating_add(bytes(&frame)) > 16 * 1024 * 1024 {
+                // The durable host cursor is authoritative. Discard uncommitted
+                // queued frames and force replay instead of growing the queue.
+                let _ = self.enqueue_close_channel(channel_id,
+                    arkret_models_collaboration::sync_frames::websocket_binding::WebSocketCloseReason::ClientRequest);
+                self.inbound.insert(
+                    channel_id.to_owned(),
+                    vec![ChannelFrame::Failed(WebSocketTransportError::new(
+                        arkret_wire::error_codes::ErrorCode::LimitExceeded,
+                        "account consumer pending-frame budget exceeded",
+                    ))],
+                );
+                return;
+            }
+        }
         self.inbound
             .entry(channel_id.to_owned())
             .or_default()

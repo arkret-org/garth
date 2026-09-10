@@ -21,11 +21,14 @@ fn sync_response(cursor: &str) -> AccountSubscribeBatch {
             kind: AccountSubscribeFrameKind::Delta,
             cursor: Some(cursor.to_owned()),
             realms: None,
+            realm_list: None,
+            realm_list_changes: None,
+            baseline: None,
+            realm_invalidations: None,
             to_device: None,
             device_lists: None,
             account_data: None,
             notifications: None,
-            agent_signer_evidence_bundle: None,
             partial: None,
             priority: None,
             reconnect_after_ms: None,
@@ -40,25 +43,31 @@ fn delta_mut(batch: &mut AccountSubscribeBatch) -> &mut AccountSubscribeFrame {
 #[test]
 fn interrupted_account_stream_retries_cursor_and_delivers_approval() {
     let mut sync_loop = SyncLoop::new();
-    let mut initial = |_: SyncRequestBody, _| Ok(sync_response("before-approval"));
+    let mut initial = |_: SyncRequestBody, _| Ok(sync_response("ak:cursor:YmVmb3JlLWFwcHJvdmFs"));
     assert!(matches!(
         sync_loop.step(&mut initial),
         SyncLoopStep::Updates(_)
     ));
 
     let mut interrupted = |request: SyncRequestBody, _| {
-        assert_eq!(request.after.as_deref(), Some("before-approval"));
+        assert_eq!(
+            request.after.as_deref(),
+            Some("ak:cursor:YmVmb3JlLWFwcHJvdmFs")
+        );
         Err(Error::Http("response body interrupted".to_owned()))
     };
     assert!(matches!(
         sync_loop.step(&mut interrupted),
         SyncLoopStep::Retry { .. }
     ));
-    assert_eq!(sync_loop.token(), Some("before-approval"));
+    assert_eq!(sync_loop.token(), Some("ak:cursor:YmVmb3JlLWFwcHJvdmFs"));
 
     let mut recovered = |request: SyncRequestBody, _| {
-        assert_eq!(request.after.as_deref(), Some("before-approval"));
-        let mut batch = sync_response("after-approval");
+        assert_eq!(
+            request.after.as_deref(),
+            Some("ak:cursor:YmVmb3JlLWFwcHJvdmFs")
+        );
+        let mut batch = sync_response("ak:cursor:YWZ0ZXItYXBwcm92YWw");
         delta_mut(&mut batch).notifications = Some(approval_notifications(
             "ak:notification:01964137-0000-7000-8000-000000000001",
             "2099-07-13T10:05:00.000Z",
@@ -75,7 +84,7 @@ fn interrupted_account_stream_retries_cursor_and_delivers_approval() {
         }
         other => panic!("expected approval after reconnect, got {other:?}"),
     }
-    assert_eq!(sync_loop.token(), Some("after-approval"));
+    assert_eq!(sync_loop.token(), Some("ak:cursor:YWZ0ZXItYXBwcm92YWw"));
 }
 
 fn station_cas_row(key: &str, revision: u64) -> AccountDataRow {
@@ -267,7 +276,7 @@ fn sync_loop_recovers_after_failure() {
         } else {
             assert!(request.after.is_none());
             assert_eq!(request.catchup, Some(true));
-            Ok(sync_response("s1"))
+            Ok(sync_response("ak:cursor:czE"))
         }
     };
     let mut sync_loop = SyncLoop::new();
@@ -280,7 +289,7 @@ fn sync_loop_recovers_after_failure() {
         sync_loop.step(&mut transport),
         SyncLoopStep::Updates(_)
     ));
-    assert_eq!(sync_loop.token(), Some("s1"));
+    assert_eq!(sync_loop.token(), Some("ak:cursor:czE"));
 }
 
 #[test]
@@ -346,7 +355,7 @@ fn sync_loop_treats_retention_gap_as_initial_resync() {
 #[test]
 fn sync_loop_exposes_to_device_loss_recovery_actions() {
     let mut transport = |_request: SyncRequestBody, _options| {
-        let mut response = sync_response("loss1");
+        let mut response = sync_response("ak:cursor:bG9zczE");
         delta_mut(&mut response).to_device = Some(DeviceMessageContainer {
             messages: Vec::new(),
             ack_token: None,
@@ -378,7 +387,7 @@ async fn async_sync_loop_uses_transport_and_persists_token() {
     let transport = |request: SyncRequestBody, _options| async move {
         assert_eq!(request.catchup, Some(true));
         assert!(request.after.is_none());
-        Ok(sync_response("async1"))
+        Ok(sync_response("ak:cursor:YXN5bmMx"))
     };
     let mut sync_loop = SyncLoop::new().with_timeout(Duration::from_millis(15));
 
@@ -387,15 +396,19 @@ async fn async_sync_loop_uses_transport_and_persists_token() {
         SyncLoopStep::Updates(_)
     ));
     let snapshot = sync_loop.snapshot();
-    assert_eq!(snapshot.token.as_deref(), Some("async1"));
+    assert_eq!(snapshot.token.as_deref(), Some("ak:cursor:YXN5bmMx"));
 
     let restored = SyncLoop::from_snapshot(snapshot);
-    assert_eq!(restored.next_request().after.as_deref(), Some("async1"));
+    assert_eq!(
+        restored.next_request().after.as_deref(),
+        Some("ak:cursor:YXN5bmMx")
+    );
 }
 
 #[tokio::test]
 async fn async_sync_loop_honors_cancellation() {
-    let transport = |_request: SyncRequestBody, _options| async { Ok(sync_response("unused")) };
+    let transport =
+        |_request: SyncRequestBody, _options| async { Ok(sync_response("ak:cursor:dW51c2Vk")) };
     let control = SyncLoopControl::new();
     control.cancel();
 
@@ -431,7 +444,7 @@ fn sync_loop_control_applies_backpressure() {
 #[test]
 fn sync_loop_can_reset_token_on_limited_timeline_gap() {
     let realm_id = "ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV";
-    let mut response = sync_response("gap-token");
+    let mut response = sync_response("ak:cursor:Z2FwLXRva2Vu");
     let entry = RealmSyncEntry {
         timeline: Some(Timeline {
             events: Vec::new(),
@@ -472,7 +485,7 @@ fn sync_loop_sends_wait_for_as_header_option() {
 #[test]
 fn processor_dispatches_all_update_categories() {
     let realm_id = "ak:realm:AagCPdrqXX6jLnry9ez4FYiULbKas6Z7PCgbH06WlNUV";
-    let mut response = sync_response("s2");
+    let mut response = sync_response("ak:cursor:czI");
     let entry = RealmSyncEntry {
         summary: Some(AccountSubscribeRealmSummary {
             joined_member_count: Some(2),
@@ -589,11 +602,10 @@ fn station_cas_baseline_and_deltas_are_revision_safe() {
     let key = "ak.account.invite_delivery";
     let mut processor = SyncResponseProcessor::new();
 
-    let mut baseline = sync_response("station-cas-baseline");
+    let mut baseline = sync_response("ak:cursor:c3RhdGlvbi1jYXMtYmFzZWxpbmU");
     delta_mut(&mut baseline).account_data = Some(AccountDataContainer {
         events: Vec::new(),
         station_cas: Some(StationCasAccountDataContainer {
-            complete: true,
             upserts: vec![station_cas_row(key, 2)],
             removals: Vec::new(),
         }),
@@ -602,11 +614,10 @@ fn station_cas_baseline_and_deltas_are_revision_safe() {
     assert_eq!(updates.station_cas_account_data.len(), 1);
     assert_eq!(processor.station_cas_account_data(key).unwrap().revision, 2);
 
-    let mut conflict = sync_response("station-cas-conflict");
+    let mut conflict = sync_response("ak:cursor:c3RhdGlvbi1jYXMtY29uZmxpY3Q");
     delta_mut(&mut conflict).account_data = Some(AccountDataContainer {
         events: Vec::new(),
         station_cas: Some(StationCasAccountDataContainer {
-            complete: false,
             upserts: Vec::new(),
             removals: vec![StationCasAccountDataRemoval {
                 account_data_key: key.to_owned(),
@@ -620,11 +631,10 @@ fn station_cas_baseline_and_deltas_are_revision_safe() {
     assert!(processor.process(conflict).is_err());
     assert_eq!(processor.station_cas_account_data(key).unwrap().revision, 2);
 
-    let mut removal = sync_response("station-cas-removal");
+    let mut removal = sync_response("ak:cursor:c3RhdGlvbi1jYXMtcmVtb3ZhbA");
     delta_mut(&mut removal).account_data = Some(AccountDataContainer {
         events: Vec::new(),
         station_cas: Some(StationCasAccountDataContainer {
-            complete: false,
             upserts: Vec::new(),
             removals: vec![StationCasAccountDataRemoval {
                 account_data_key: key.to_owned(),
@@ -638,11 +648,10 @@ fn station_cas_baseline_and_deltas_are_revision_safe() {
     processor.process(removal).unwrap();
     assert!(processor.station_cas_account_data(key).is_none());
 
-    let mut reset = sync_response("station-cas-reset");
+    let mut reset = sync_response("ak:cursor:c3RhdGlvbi1jYXMtcmVzZXQ");
     delta_mut(&mut reset).account_data = Some(AccountDataContainer {
         events: Vec::new(),
         station_cas: Some(StationCasAccountDataContainer {
-            complete: true,
             upserts: Vec::new(),
             removals: Vec::new(),
         }),
@@ -650,11 +659,10 @@ fn station_cas_baseline_and_deltas_are_revision_safe() {
     processor.process(reset).unwrap();
     assert!(processor.station_cas_account_data(key).is_none());
 
-    let mut stale_baseline = sync_response("station-cas-stale-baseline");
+    let mut stale_baseline = sync_response("ak:cursor:c3RhdGlvbi1jYXMtc3RhbGUtYmFzZWxpbmU");
     delta_mut(&mut stale_baseline).account_data = Some(AccountDataContainer {
         events: Vec::new(),
         station_cas: Some(StationCasAccountDataContainer {
-            complete: true,
             upserts: vec![station_cas_row(key, 2)],
             removals: Vec::new(),
         }),
@@ -674,7 +682,7 @@ fn device_list_changes_preserve_same_principal_accounts_at_distinct_stations() {
     });
     let mut processor = SyncResponseProcessor::new();
     for (index, actor) in actors.iter().enumerate() {
-        let mut response = sync_response(&format!("device-list-{index}"));
+        let mut response = sync_response(["ak:cursor:YQ", "ak:cursor:Yg"][index]);
         delta_mut(&mut response).device_lists = Some(AccountSubscribeDeviceListChanges {
             changed_ids: vec![actor.clone()],
             left_ids: vec![actor.clone()],
@@ -702,7 +710,7 @@ fn summary_less_realm_delta_preserves_durable_processor_summary() {
     let parsed_realm_id = RealmId::new(realm_id).unwrap();
     let mut processor = SyncResponseProcessor::new();
 
-    let mut baseline = sync_response("s-summary-1");
+    let mut baseline = sync_response("ak:cursor:cy1zdW1tYXJ5LTE");
     delta_mut(&mut baseline).realms = Some(AccountSubscribeRealms {
         entries: BTreeMap::from([(
             realm_id.to_owned(),
@@ -718,7 +726,7 @@ fn summary_less_realm_delta_preserves_durable_processor_summary() {
     });
     processor.process(baseline).unwrap();
 
-    let mut unread_only = sync_response("s-summary-2");
+    let mut unread_only = sync_response("ak:cursor:cy1zdW1tYXJ5LTI");
     delta_mut(&mut unread_only).realms = Some(AccountSubscribeRealms {
         entries: BTreeMap::from([(
             realm_id.to_owned(),
@@ -763,7 +771,7 @@ fn processor_tracks_limited_timelines() {
         json!({"body":"hello"}),
     )
     .unwrap();
-    let mut response = sync_response("s3");
+    let mut response = sync_response("ak:cursor:czM");
     let entry = RealmSyncEntry {
         timeline: Some(Timeline {
             events: vec![event],
@@ -796,7 +804,7 @@ fn processor_tracks_limited_timelines() {
 fn processor_applies_notification_upsert_and_remove_deltas() {
     let notification_id = "ak:notification:01964137-0000-7000-8000-000000000001";
     let mut processor = SyncResponseProcessor::new();
-    let mut initial_upsert = sync_response("s-upsert-initial");
+    let mut initial_upsert = sync_response("ak:cursor:cy11cHNlcnQtaW5pdGlhbA");
     delta_mut(&mut initial_upsert).notifications = Some(approval_notifications(
         notification_id,
         "2026-07-13T10:15:00.000Z",
@@ -804,7 +812,7 @@ fn processor_applies_notification_upsert_and_remove_deltas() {
     processor.process(initial_upsert).unwrap();
     assert!(processor.notification(notification_id).is_some());
 
-    let mut replacement_upsert = sync_response("s-upsert-replacement");
+    let mut replacement_upsert = sync_response("ak:cursor:cy11cHNlcnQtcmVwbGFjZW1lbnQ");
     let replacement_notifications =
         approval_notifications(notification_id, "2026-07-13T10:20:00.000Z");
     delta_mut(&mut replacement_upsert).notifications = Some(replacement_notifications);
@@ -813,7 +821,7 @@ fn processor_applies_notification_upsert_and_remove_deltas() {
         serde_json::to_value(processor.notification(notification_id).unwrap()).unwrap();
     assert_eq!(serialized["data"]["expires_at"], "2026-07-13T10:20:00.000Z");
 
-    let mut remove = sync_response("s-remove");
+    let mut remove = sync_response("ak:cursor:cy1yZW1vdmU");
     delta_mut(&mut remove).notifications = Some(NotificationContainer {
         items: vec![NotificationDelta {
             id: NotificationId::new(notification_id).unwrap(),

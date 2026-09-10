@@ -45,8 +45,8 @@ pub const SIGNAL_PLAINTEXT_KIND_PRESENCE: &str = "ak.presence";
 /// [`crate::protocol::CallSignalPlaintext`]).
 pub const SIGNAL_PLAINTEXT_KIND_CALL: &str = "ak.call.signal";
 
-/// A Signal signing key admitted by the host from the current local PCR/device
-/// state for the exact public AccountId.
+/// A Signal signing key returned by the host's authenticated Station for this
+/// verification and bound to the exact sender Actor.
 #[derive(Clone, Debug)]
 pub struct VerifiedSignalSenderKey {
     public_key: PublicKeyMaterial,
@@ -73,13 +73,10 @@ impl VerifiedSignalSenderKey {
     /// the verified sender key for `(actor_id, device_id)`.
     ///
     /// The caller (a [`SignalSenderKeyResolver`] implementation) remains
-    /// responsible for the host-state half of `signal.md` §1: resolving the
-    /// authoritative verify key from its *current* accepted device directory
-    /// through current root-anchored PCR state or a verified origin-Station
-    /// projection attestation with exact account, generation, status and expiry.
-    /// Known revocation or fencing always overrides a remaining MLS leaf.
-    /// That evidence lives outside this crate by
-    /// layering — garth holds no device directory or PCR state.
+    /// responsible for obtaining a fresh current signer result from the
+    /// authenticated Account Station and binding it to this verification.
+    /// The Station verifies device authority; the client verifies the actual
+    /// Signal signature with the returned key.
     ///
     /// What this constructor does enforce, fail-closed, is every completeness
     /// condition of the evidence tuple that is decidable locally:
@@ -148,9 +145,9 @@ impl VerifiedSignalSenderKey {
 
     /// Production constructor for a current accepted Agent runtime key.
     ///
-    /// The resolver must already have verified Agent classification, active
-    /// lifecycle, controller membership, the complete authorization fold and
-    /// the unique active MLS leaf. This constructor prevents that evidence
+    /// The resolver must obtain the current Agent key from the authenticated
+    /// Account Station for this verification. The Station verifies Agent
+    /// authority and membership. This constructor prevents that result
     /// from being represented as a synthetic device and normalizes the raw
     /// key digest used by the payload-sequence domain.
     pub fn from_agent_evidence(
@@ -295,30 +292,45 @@ impl VerifiedSignalSenderKey {
 ///
 /// * the **Realm/scope** basis is `envelope.seal_ref` — membership, capability and product actions
 ///   are re-evaluated there;
-/// * **device authorization** is independently replayed for the exact authority pair selected by
-///   the Realm membership. It cannot be target-Seal-relative: a target-Realm Seal does not locate
-///   another principal's device frontier, and `keys_query_request_body` carries no as-of basis by
-///   design.
+/// * **device authorization** is resolved for the exact authority pair selected by the Realm
+///   membership. It cannot be target-Seal-relative: a target-Realm Seal does not locate another
+///   principal's device frontier, and `keys_query_request_body` carries no as-of basis by design.
 ///
 /// Implementations return `None` — failing the Signal closed — when exact
 /// authority evidence is unavailable, the device is revoked or non-active,
-/// its generation is fenced or conflicted, or the frozen trust chain is
-/// incomplete. `signal.md` §1
+/// its generation is fenced or conflicted, or the serving Station cannot supply
+/// the required current result. `signal.md` §1
 /// requires the method's DID to project to the sender's signing principal
 /// and its fragment to equal `sender_device_id`, but that is only the
 /// completeness condition of the lookup key and is already enforced by
 /// [`SignalEnvelope::validate_structural`]; it is never a substitute for the
 /// directory lookup.
+#[cfg(not(target_arch = "wasm32"))]
+pub type BoxSignalSenderKeyFuture<'a> =
+    Pin<Box<dyn Future<Output = Option<VerifiedSignalSenderKey>> + Send + 'a>>;
+
+#[cfg(target_arch = "wasm32")]
+pub type BoxSignalSenderKeyFuture<'a> =
+    Pin<Box<dyn Future<Output = Option<VerifiedSignalSenderKey>> + 'a>>;
+
 pub trait SignalSenderKeyResolver: MaybeSendSync {
-    fn resolve_sender_key(&self, envelope: &SignalEnvelope) -> Option<VerifiedSignalSenderKey>;
+    /// Resolve authority for this verification without retaining reusable
+    /// current authorization for a later Signal.
+    fn resolve_sender_key<'a>(
+        &'a self,
+        envelope: &'a SignalEnvelope,
+    ) -> BoxSignalSenderKeyFuture<'a>;
 }
 
 impl<F> SignalSenderKeyResolver for F
 where
     F: Fn(&SignalEnvelope) -> Option<VerifiedSignalSenderKey> + MaybeSendSync,
 {
-    fn resolve_sender_key(&self, envelope: &SignalEnvelope) -> Option<VerifiedSignalSenderKey> {
-        self(envelope)
+    fn resolve_sender_key<'a>(
+        &'a self,
+        envelope: &'a SignalEnvelope,
+    ) -> BoxSignalSenderKeyFuture<'a> {
+        Box::pin(async move { self(envelope) })
     }
 }
 
@@ -517,7 +529,7 @@ impl SignalReceiver {
         if envelope.expires_at <= now {
             return Err(Error::Protocol("signal has already expired".to_owned()));
         }
-        let verified_key = resolver.resolve_sender_key(envelope).ok_or_else(|| {
+        let verified_key = resolver.resolve_sender_key(envelope).await.ok_or_else(|| {
             Error::Protocol("signal sender device lacks exact-authority verified state".to_owned())
         })?;
         verified_key.validate_for(envelope)?;
@@ -1464,6 +1476,41 @@ mod tests {
             .unwrap_err();
 
         assert!(format!("{error}").contains("exact-authority verified state"));
+    }
+
+    #[tokio::test]
+    async fn each_signal_verification_resolves_current_authority_again() {
+        struct FreshResolver(std::sync::atomic::AtomicUsize);
+        impl SignalSenderKeyResolver for FreshResolver {
+            fn resolve_sender_key<'a>(
+                &'a self,
+                _: &'a SignalEnvelope,
+            ) -> BoxSignalSenderKeyFuture<'a> {
+                Box::pin(async move {
+                    self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    None
+                })
+            }
+        }
+        let (envelope, _, plaintext) = signed_signal(
+            device("000000000005"),
+            presence_plaintext("online", 1),
+            SignalClass::Session,
+            30,
+            [12; 32],
+        );
+        let resolver = FreshResolver(std::sync::atomic::AtomicUsize::new(0));
+        let mut receiver = SignalReceiver::new();
+        let decryptor = FixedDecryptor(plaintext);
+        for _ in 0..2 {
+            assert!(
+                receiver
+                    .accept(&envelope, &resolver, &decryptor, sent_at())
+                    .await
+                    .is_err()
+            );
+        }
+        assert_eq!(resolver.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

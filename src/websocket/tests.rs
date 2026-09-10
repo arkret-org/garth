@@ -156,7 +156,9 @@ async fn frames_are_demultiplexed_onto_their_own_channels() {
     let shared = connection.shared();
     let transport = super::channels::WebSocketTransport::new(shared.clone(), ImmediatePacer);
 
-    let account = transport.open_account(None).expect("account channel opens");
+    let account = transport
+        .open_account(account_request(None))
+        .expect("account channel opens");
     let signal = transport.open_signal().expect("signal channel opens");
     assert_eq!(account.channel_id(), "account-1");
     assert_eq!(signal.channel_id(), "signal-2");
@@ -186,17 +188,18 @@ async fn only_a_checkpointed_cursor_becomes_the_resume_point() {
     let mut connection = establish(vec![&challenge(), &welcome(), ACCOUNT_DELTA]).await;
     let shared = connection.shared();
     let transport = super::channels::WebSocketTransport::new(shared.clone(), ImmediatePacer);
-    transport.open_account(None).expect("account channel opens");
+    let _account = transport
+        .open_account(account_request(None))
+        .expect("account channel opens");
 
     connection.pump().await.expect("pump");
     // §6.1 — observing the cursor is not the same as being able to resume from
     // it; only the checkpoint makes it durable.
     shared.with_mut(|state| {
         assert_eq!(state.durable_cursor("account-1"), None);
-        assert_eq!(
-            state.checkpoint("account-1").as_deref(),
-            Some("ak:cursor:YWNjountY3Vyc29yLTAwMDE")
-        );
+        state
+            .checkpoint_exact("account-1", "ak:cursor:YWNjountY3Vyc29yLTAwMDE")
+            .unwrap();
         assert_eq!(
             state.durable_cursor("account-1"),
             Some("ak:cursor:YWNjountY3Vyc29yLTAwMDE")
@@ -213,7 +216,7 @@ async fn a_signal_channel_never_produces_a_cursor() {
     // `signal-1` is the first minted id here, so re-point the script's frame.
     shared.with_mut(|state| {
         assert_eq!(state.durable_cursor("signal-1"), None);
-        assert_eq!(state.checkpoint("signal-1"), None);
+        assert!(state.checkpoint_exact("signal-1", "ak:cursor:YQ").is_err());
     });
 }
 
@@ -222,7 +225,9 @@ async fn a_ping_is_answered_and_advances_nothing() {
     let mut connection = establish(vec![&challenge(), &welcome(), PING]).await;
     let shared = connection.shared();
     let transport = super::channels::WebSocketTransport::new(shared.clone(), ImmediatePacer);
-    transport.open_account(None).expect("account channel opens");
+    let _account = transport
+        .open_account(account_request(None))
+        .expect("account channel opens");
 
     connection.pump().await.expect("pump");
     shared.with_mut(|state| {
@@ -239,7 +244,9 @@ async fn an_exhausted_socket_closes_every_open_channel() {
     let mut connection = establish(vec![&challenge(), &welcome()]).await;
     let shared = connection.shared();
     let transport = super::channels::WebSocketTransport::new(shared.clone(), ImmediatePacer);
-    transport.open_account(None).expect("account channel opens");
+    let _account = transport
+        .open_account(account_request(None))
+        .expect("account channel opens");
     transport.open_signal().expect("signal channel opens");
 
     let outcome = connection.pump().await.expect("pump");
@@ -265,8 +272,8 @@ async fn an_account_open_carries_its_resume_cursor() {
     let connection = establish(vec![&challenge(), &welcome()]).await;
     let shared = connection.shared();
     let transport = super::channels::WebSocketTransport::new(shared.clone(), ImmediatePacer);
-    transport
-        .open_account(Some("ak:cursor:YWNjountY3Vyc29yLTAwMDE"))
+    let _account = transport
+        .open_account(account_request(Some("ak:cursor:YWNjountY3Vyc29yLTAwMDE")))
         .expect("account channel opens");
 
     // The frame is queued, not written: the pump owns the socket.
@@ -276,10 +283,24 @@ async fn an_account_open_carries_its_resume_cursor() {
         ),
         catchup: Some(true),
         filter: None,
+        realm_list: None,
+        replace_filter: None,
         wait_for: None,
     });
     assert_eq!(
         parameters.to_value().unwrap()["catchup"],
         serde_json::json!(true)
     );
+}
+
+fn account_request(
+    after: Option<&str>,
+) -> arkret_models_collaboration::sync_frames::client_sync::SyncRequestBody {
+    arkret_models_collaboration::sync_frames::client_sync::SyncRequestBody {
+        after: after.map(str::to_owned),
+        catchup: None,
+        filter: None,
+        realm_list: None,
+        replace_filter: None,
+    }
 }

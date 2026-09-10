@@ -127,22 +127,6 @@ pub enum SignalRejection {
 /// example re-checking `ak.message.stream.send` at `seal_ref`) still belongs to
 /// the host, inside `deliver`.
 pub trait SignalSink {
-    /// Runs once per inbound envelope *before* admission, so a host can warm
-    /// whatever state its synchronous [`SignalSenderKeyResolver`] reads.
-    ///
-    /// [`SignalReceiver::accept`] resolves the sender key before it touches
-    /// the AEAD, and that resolution has to be synchronous; a host whose
-    /// directory lookup is a network call would otherwise fail every first
-    /// contact closed — which for call signalling means the invite that starts
-    /// a session is the one that gets dropped.
-    ///
-    /// This hook decides nothing. Admission is still entirely
-    /// [`SignalReceiver::accept`], and a host that leaves its cache cold here
-    /// simply gets the envelope rejected as before.
-    fn prepare_admission<'a>(&'a self, _envelope: &'a SignalEnvelope) -> impl Future<Output = ()> {
-        async {}
-    }
-
     /// The authenticated envelope is handed over with its plaintext because a
     /// product route may still need the outer header — the call rail, for
     /// example, re-verifies the device proof before it will ring a user.
@@ -273,7 +257,6 @@ impl SignalStreamDriver {
             };
             match frame {
                 SignalStreamFrame::Signal { envelope } => {
-                    handlers.sink.prepare_admission(&envelope).await;
                     match self
                         .receiver
                         .accept(
@@ -522,14 +505,6 @@ mod tests {
     }
 
     impl SignalSink for RecordingSink {
-        fn prepare_admission<'a>(
-            &'a self,
-            _envelope: &'a SignalEnvelope,
-        ) -> impl Future<Output = ()> {
-            self.order.borrow_mut().push("prepare");
-            async {}
-        }
-
         fn deliver<'a>(
             &'a self,
             _envelope: &'a SignalEnvelope,
@@ -595,14 +570,10 @@ mod tests {
         assert_eq!(sink.delivered.borrow().len(), 1);
         assert_eq!(sink.delivered.borrow()[0].payload_sequence, 1);
         assert!(sink.rejected.borrow().is_empty());
-        // The warm-up hook must precede admission: a host whose sender-key
-        // lookup is a network call resolves it here, and the synchronous
-        // resolver inside `accept` then finds it. Keepalives and the drain are
-        // clock edges for the host's TTL projections, which is the only thing
-        // that wakes a preview whose producer went quiet.
+        // Keepalives and drain advance the host TTL projections.
         assert_eq!(
             *sink.order.borrow(),
-            vec!["idle", "idle", "prepare", "deliver", "idle"]
+            vec!["idle", "idle", "deliver", "idle"]
         );
     }
 
@@ -649,31 +620,6 @@ mod tests {
             *sink.order.borrow(),
             vec!["idle"],
             "an open failure must still expire presence/typing TTL projections"
-        );
-    }
-
-    #[tokio::test]
-    async fn the_warm_up_hook_runs_even_for_an_envelope_that_is_then_rejected() {
-        let (envelope, ..) = signed_signal(presence_plaintext(1), [46; 32]);
-        let transport = VecTransport::new(vec![Some(SignalStreamFrame::signal(envelope)), None]);
-        let sink = RecordingSink::default();
-        // The host could not resolve the sender at all; admission still fails
-        // closed, and the hook must not have been skipped on the way there.
-        let resolver = |_: &SignalEnvelope| None;
-        let decryptor = FixedDecryptor(Vec::new());
-
-        SignalStreamDriver::new()
-            .run(
-                &transport,
-                SignalReceiveHandlers::new(&resolver, &decryptor, &sink),
-                &FixedClock(sent_at()),
-            )
-            .await
-            .unwrap();
-
-        assert_eq!(
-            *sink.order.borrow(),
-            vec!["idle", "prepare", "rejected", "idle"]
         );
     }
 
