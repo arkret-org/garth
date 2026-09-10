@@ -73,8 +73,8 @@ impl VerifiedSignalSenderKey {
     /// the verified sender key for `(actor_id, device_id)`.
     ///
     /// The caller (a [`SignalSenderKeyResolver`] implementation) remains
-    /// responsible for obtaining a fresh current signer result from the
-    /// authenticated Account Station and binding it to this verification.
+    /// responsible for checking the current authority attached by the
+    /// authenticated recipient Station to this exact stream frame.
     /// The Station verifies device authority; the client verifies the actual
     /// Signal signature with the returned key.
     ///
@@ -319,18 +319,24 @@ pub trait SignalSenderKeyResolver: MaybeSendSync {
     fn resolve_sender_key<'a>(
         &'a self,
         envelope: &'a SignalEnvelope,
+        delivery_authority: &'a arkret_wire::SignalDeliveryAuthority,
     ) -> BoxSignalSenderKeyFuture<'a>;
 }
 
 impl<F> SignalSenderKeyResolver for F
 where
-    F: Fn(&SignalEnvelope) -> Option<VerifiedSignalSenderKey> + MaybeSendSync,
+    F: Fn(
+            &SignalEnvelope,
+            &arkret_wire::SignalDeliveryAuthority,
+        ) -> Option<VerifiedSignalSenderKey>
+        + MaybeSendSync,
 {
     fn resolve_sender_key<'a>(
         &'a self,
         envelope: &'a SignalEnvelope,
+        delivery_authority: &'a arkret_wire::SignalDeliveryAuthority,
     ) -> BoxSignalSenderKeyFuture<'a> {
-        Box::pin(async move { self(envelope) })
+        Box::pin(async move { self(envelope, delivery_authority) })
     }
 }
 
@@ -519,6 +525,7 @@ impl SignalReceiver {
     pub async fn accept(
         &mut self,
         envelope: &SignalEnvelope,
+        delivery_authority: &arkret_wire::SignalDeliveryAuthority,
         resolver: &dyn SignalSenderKeyResolver,
         decryptor: &dyn SignalDecryptor,
         now: DateTime<Utc>,
@@ -529,9 +536,17 @@ impl SignalReceiver {
         if envelope.expires_at <= now {
             return Err(Error::Protocol("signal has already expired".to_owned()));
         }
-        let verified_key = resolver.resolve_sender_key(envelope).await.ok_or_else(|| {
-            Error::Protocol("signal sender device lacks exact-authority verified state".to_owned())
-        })?;
+        delivery_authority
+            .validate_for_envelope(envelope)
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+        let verified_key = resolver
+            .resolve_sender_key(envelope, delivery_authority)
+            .await
+            .ok_or_else(|| {
+                Error::Protocol(
+                    "signal sender device lacks exact-authority verified state".to_owned(),
+                )
+            })?;
         verified_key.validate_for(envelope)?;
         verify_ed25519_signal_proof(envelope, &verified_key.public_key)
             .map_err(|error| Error::Crypto(error.to_string()))?;
@@ -1052,7 +1067,7 @@ mod tests {
             30,
             [0x61; 32],
         );
-        let resolver = |envelope: &SignalEnvelope| {
+        let resolver = |envelope: &SignalEnvelope, _: &arkret_wire::SignalDeliveryAuthority| {
             Some(VerifiedSignalSenderKey::for_test(envelope, key.clone()))
         };
         let mut receiver = SignalReceiver::new();
@@ -1060,6 +1075,7 @@ mod tests {
             receiver
                 .accept(
                     &hidden,
+                    &test_delivery(&hidden),
                     &resolver,
                     &FixedDecryptor(hidden_plaintext),
                     sent_at(),
@@ -1075,16 +1091,18 @@ mod tests {
             30,
             [0x62; 32],
         );
-        let honest_resolver = |envelope: &SignalEnvelope| {
-            Some(VerifiedSignalSenderKey::for_test(
-                envelope,
-                honest_key.clone(),
-            ))
-        };
+        let honest_resolver =
+            |envelope: &SignalEnvelope, _: &arkret_wire::SignalDeliveryAuthority| {
+                Some(VerifiedSignalSenderKey::for_test(
+                    envelope,
+                    honest_key.clone(),
+                ))
+            };
         assert!(
             receiver
                 .accept(
                     &honest,
+                    &test_delivery(&honest),
                     &honest_resolver,
                     &FixedDecryptor(honest_plaintext),
                     sent_at(),
@@ -1111,8 +1129,23 @@ mod tests {
         ))
     }
 
+    fn test_delivery(envelope: &SignalEnvelope) -> arkret_wire::SignalDeliveryAuthority {
+        arkret_wire::SignalDeliveryAuthority {
+            recipient_account_id: envelope.sender_actor_id.as_account_id().unwrap().clone(),
+            key: arkret_wire::StationSigningKey {
+                actor: envelope.sender_actor_id.clone(),
+                verification_method: envelope.proof.verification_method.clone(),
+                public_key_b64u: arkret_wire::Base64UrlString::new("A".repeat(43)).unwrap(),
+                authorization_ref: crate::protocol::EventId::from_digest(
+                    arkret_canonical::DigestSuite::Sha256,
+                    [0x42; 32],
+                ),
+            },
+        }
+    }
+
     fn key_of(public_key: PublicKeyMaterial) -> impl SignalSenderKeyResolver {
-        move |envelope: &SignalEnvelope| {
+        move |envelope: &SignalEnvelope, _: &arkret_wire::SignalDeliveryAuthority| {
             Some(VerifiedSignalSenderKey::for_test(
                 envelope,
                 public_key.clone(),
@@ -1322,7 +1355,8 @@ mod tests {
             30,
             [42; 32],
         );
-        let resolver = move |envelope: &SignalEnvelope| {
+        let resolver = move |envelope: &SignalEnvelope,
+                             _: &arkret_wire::SignalDeliveryAuthority| {
             let authority = envelope.sender_actor_id.as_account_id().unwrap().clone();
             VerifiedSignalSenderKey::from_directory_evidence(
                 public_key.clone(),
@@ -1335,7 +1369,13 @@ mod tests {
             .ok()
         };
         let accepted = SignalReceiver::new()
-            .accept(&envelope, &resolver, &FixedDecryptor(plaintext), sent_at())
+            .accept(
+                &envelope,
+                &test_delivery(&envelope),
+                &resolver,
+                &FixedDecryptor(plaintext),
+                sent_at(),
+            )
             .await
             .unwrap();
         assert_eq!(accepted.kind, SIGNAL_PLAINTEXT_KIND_PRESENCE);
@@ -1353,10 +1393,16 @@ mod tests {
         let mut receiver = SignalReceiver::new();
         // The old member may still possess its MLS leaf and epoch secret.
         // Revocation is decided independently, before invoking the opener.
-        let revoked = |_envelope: &SignalEnvelope| None;
+        let revoked = |_envelope: &SignalEnvelope, _: &arkret_wire::SignalDeliveryAuthority| None;
         assert!(
             receiver
-                .accept(&envelope, &revoked, &RefusingDecryptor, sent_at())
+                .accept(
+                    &envelope,
+                    &test_delivery(&envelope),
+                    &revoked,
+                    &RefusingDecryptor,
+                    sent_at()
+                )
                 .await
                 .is_err()
         );
@@ -1370,6 +1416,7 @@ mod tests {
             receiver
                 .accept(
                     &envelope,
+                    &test_delivery(&envelope),
                     &key_of(public_key),
                     &FixedDecryptor(plaintext),
                     sent_at()
@@ -1392,6 +1439,7 @@ mod tests {
         let accepted = receiver
             .accept(
                 &envelope,
+                &test_delivery(&envelope),
                 &key_of(public_key),
                 &FixedDecryptor(plaintext),
                 sent_at(),
@@ -1441,6 +1489,7 @@ mod tests {
         let accepted = SignalReceiver::new()
             .accept(
                 &envelope,
+                &test_delivery(&envelope),
                 &key_of(public_key),
                 &FixedDecryptor(plaintext),
                 sent_at(),
@@ -1463,11 +1512,13 @@ mod tests {
             [12; 32],
         );
         let mut receiver = SignalReceiver::new();
-        let unauthorized = |_envelope: &SignalEnvelope| None;
+        let unauthorized =
+            |_envelope: &SignalEnvelope, _: &arkret_wire::SignalDeliveryAuthority| None;
 
         let error = receiver
             .accept(
                 &envelope,
+                &test_delivery(&envelope),
                 &unauthorized,
                 &FixedDecryptor(plaintext),
                 sent_at(),
@@ -1479,12 +1530,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn each_signal_verification_resolves_current_authority_again() {
+    async fn each_signal_checks_its_exact_delivery_authority() {
         struct FreshResolver(std::sync::atomic::AtomicUsize);
         impl SignalSenderKeyResolver for FreshResolver {
             fn resolve_sender_key<'a>(
                 &'a self,
                 _: &'a SignalEnvelope,
+                _: &'a arkret_wire::SignalDeliveryAuthority,
             ) -> BoxSignalSenderKeyFuture<'a> {
                 Box::pin(async move {
                     self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -1505,7 +1557,13 @@ mod tests {
         for _ in 0..2 {
             assert!(
                 receiver
-                    .accept(&envelope, &resolver, &decryptor, sent_at())
+                    .accept(
+                        &envelope,
+                        &test_delivery(&envelope),
+                        &resolver,
+                        &decryptor,
+                        sent_at()
+                    )
                     .await
                     .is_err()
             );
@@ -1534,6 +1592,7 @@ mod tests {
             receiver
                 .accept(
                     &envelope,
+                    &test_delivery(&envelope),
                     &key_of(other),
                     &FixedDecryptor(plaintext),
                     sent_at()
@@ -1558,6 +1617,7 @@ mod tests {
         let error = receiver
             .accept(
                 &envelope,
+                &test_delivery(&envelope),
                 &key_of(public_key),
                 &FixedDecryptor(plaintext),
                 sent_at(),
@@ -1582,6 +1642,7 @@ mod tests {
         let error = receiver
             .accept(
                 &envelope,
+                &test_delivery(&envelope),
                 &key_of(public_key),
                 &FixedDecryptor(plaintext),
                 sent_at() + Duration::seconds(30),
@@ -1606,6 +1667,7 @@ mod tests {
         receiver
             .accept(
                 &envelope,
+                &test_delivery(&envelope),
                 &resolver,
                 &FixedDecryptor(plaintext.clone()),
                 sent_at(),
@@ -1614,7 +1676,13 @@ mod tests {
             .unwrap();
 
         let error = receiver
-            .accept(&envelope, &resolver, &FixedDecryptor(plaintext), sent_at())
+            .accept(
+                &envelope,
+                &test_delivery(&envelope),
+                &resolver,
+                &FixedDecryptor(plaintext),
+                sent_at(),
+            )
             .await
             .unwrap_err();
 
@@ -1628,6 +1696,7 @@ mod tests {
         receiver
             .accept(
                 &old,
+                &test_delivery(&old),
                 &key_of(old_key.clone()),
                 &FixedDecryptor(old_plaintext),
                 sent_at(),
@@ -1640,6 +1709,7 @@ mod tests {
         let error = receiver
             .accept(
                 &same_key_regression,
+                &test_delivery(&same_key_regression),
                 &key_of(old_key),
                 &FixedDecryptor(same_key_plaintext),
                 sent_at(),
@@ -1656,6 +1726,7 @@ mod tests {
         receiver
             .accept(
                 &replacement,
+                &test_delivery(&replacement),
                 &key_of(replacement_key),
                 &FixedDecryptor(replacement_plaintext),
                 sent_at(),
@@ -1694,6 +1765,7 @@ mod tests {
         receiver
             .accept(
                 &first,
+                &test_delivery(&first),
                 &resolver,
                 &FixedDecryptor(first_plaintext),
                 sent_at(),
@@ -1703,6 +1775,7 @@ mod tests {
         receiver
             .accept(
                 &second,
+                &test_delivery(&second),
                 &resolver,
                 &FixedDecryptor(second_plaintext),
                 sent_at(),
@@ -1726,6 +1799,7 @@ mod tests {
             let accepted = receiver
                 .accept(
                     &envelope,
+                    &test_delivery(&envelope),
                     &key_of(public_key),
                     &FixedDecryptor(plaintext),
                     sent_at(),
@@ -1747,6 +1821,7 @@ mod tests {
         let error = receiver
             .accept(
                 &stale,
+                &test_delivery(&stale),
                 &key_of(public_key),
                 &FixedDecryptor(plaintext),
                 sent_at(),
@@ -1778,6 +1853,7 @@ mod tests {
         let error = receiver
             .accept(
                 &envelope,
+                &test_delivery(&envelope),
                 &key_of(public_key),
                 &FixedDecryptor(canonical::canonical_json_bytes(&foreign).unwrap()),
                 sent_at(),
@@ -1802,6 +1878,7 @@ mod tests {
         let error = receiver
             .accept(
                 &envelope,
+                &test_delivery(&envelope),
                 &key_of(public_key),
                 &RefusingDecryptor,
                 sent_at(),
@@ -1829,6 +1906,7 @@ mod tests {
             let accepted = SignalReceiver::new()
                 .accept(
                     &envelope,
+                    &test_delivery(&envelope),
                     &key_of(public_key),
                     &FixedDecryptor(plaintext),
                     sent_at(),
@@ -1860,6 +1938,7 @@ mod tests {
         let mut first = SignalReceiver::new()
             .accept(
                 &first_envelope,
+                &test_delivery(&first_envelope),
                 &key_of(first_key),
                 &FixedDecryptor(first_plaintext),
                 sent_at(),
@@ -1871,6 +1950,7 @@ mod tests {
         let mut second = SignalReceiver::new()
             .accept(
                 &second_envelope,
+                &test_delivery(&second_envelope),
                 &key_of(second_key),
                 &FixedDecryptor(second_plaintext),
                 sent_at(),
@@ -1907,6 +1987,7 @@ mod tests {
         let accepted = SignalReceiver::new()
             .accept(
                 &envelope,
+                &test_delivery(&envelope),
                 &key_of(public_key),
                 &FixedDecryptor(plaintext),
                 sent_at(),
@@ -1925,6 +2006,7 @@ mod tests {
         let older = SignalReceiver::new()
             .accept(
                 &older_envelope,
+                &test_delivery(&older_envelope),
                 &key_of(older_key),
                 &FixedDecryptor(older_plaintext),
                 sent_at(),
@@ -1952,6 +2034,7 @@ mod tests {
         let error = SignalReceiver::new()
             .accept(
                 &unknown_envelope,
+                &test_delivery(&unknown_envelope),
                 &key_of(unknown_key),
                 &FixedDecryptor(unknown_plaintext),
                 sent_at(),

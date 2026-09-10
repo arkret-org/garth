@@ -572,7 +572,8 @@ async fn account_engine_cancel_preserves_preexisting_pending_delivery() {
             Some("ak:cursor:pending-before-cancel".to_owned()),
             vec![ClientEvent::Notification(NotificationDelta {
                 id: NotificationId::new("ak:notification:01964137-0000-7000-8000-000000000011")
-                    .unwrap(),
+                    .unwrap()
+                    .into(),
                 action: NotificationDeltaAction::Remove,
                 data: None,
             })],

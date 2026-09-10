@@ -9,7 +9,7 @@
 //! §2 rather than a resume position.
 //!
 //! Admission is entirely [`SignalReceiver::accept`]: structural contract,
-//! wall-clock expiry, the current-directory device-authorization lookup, the
+//! wall-clock expiry, the attached current sender authority, the
 //! device proof, the AEAD open and the `(sender_device_id, scope_ref,
 //! payload_sequence)` triple. A signal that fails any of them is dropped and
 //! reported to the sink; §4.5 makes loss, duplication and reordering normal
@@ -114,7 +114,7 @@ pub type SignalRunResult<T> = std::result::Result<T, SignalRunError>;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SignalRejection {
     /// The envelope failed [`SignalReceiver::accept`]: structure, TTL, expiry,
-    /// the current-directory sender authorization, the device proof, the AEAD
+    /// the frame-bound current sender authorization, the device proof, the AEAD
     /// open, the plaintext shape, or the §2 replay triple.
     Admission,
 }
@@ -256,11 +256,15 @@ impl SignalStreamDriver {
                 return Ok(SignalStreamStopReason::StreamEnded);
             };
             match frame {
-                SignalStreamFrame::Signal { envelope } => {
+                SignalStreamFrame::Signal {
+                    envelope,
+                    delivery_authority,
+                } => {
                     match self
                         .receiver
                         .accept(
                             &envelope,
+                            &delivery_authority,
                             handlers.resolver,
                             handlers.decryptor,
                             clock.now(),
@@ -526,8 +530,24 @@ mod tests {
         }
     }
 
+    fn test_frame(envelope: SignalEnvelope) -> SignalStreamFrame {
+        let authority = arkret_wire::SignalDeliveryAuthority {
+            recipient_account_id: envelope.sender_actor_id.as_account_id().unwrap().clone(),
+            key: arkret_wire::StationSigningKey {
+                actor: envelope.sender_actor_id.clone(),
+                verification_method: envelope.proof.verification_method.clone(),
+                public_key_b64u: arkret_wire::Base64UrlString::new("A".repeat(43)).unwrap(),
+                authorization_ref: EventId::from_digest(
+                    arkret_canonical::DigestSuite::Sha256,
+                    [0x42; 32],
+                ),
+            },
+        };
+        SignalStreamFrame::signal(envelope, authority)
+    }
+
     fn key_of(public_key: PublicKeyMaterial) -> impl SignalSenderKeyResolver {
-        move |envelope: &SignalEnvelope| {
+        move |envelope: &SignalEnvelope, _: &arkret_wire::SignalDeliveryAuthority| {
             Some(crate::signal::VerifiedSignalSenderKey::for_test(
                 envelope,
                 public_key.clone(),
@@ -540,7 +560,7 @@ mod tests {
         let (envelope, public_key, plaintext) = signed_signal(presence_plaintext(1), [41; 32]);
         let transport = VecTransport::new(vec![
             Some(SignalStreamFrame::Heartbeat),
-            Some(SignalStreamFrame::signal(envelope)),
+            Some(test_frame(envelope)),
             Some(SignalStreamFrame::Drain {
                 reconnect_after_ms: Some(250),
                 reason: Some("rotation".to_owned()),
@@ -580,7 +600,7 @@ mod tests {
     #[tokio::test]
     async fn transport_failure_advances_the_ttl_clock_before_reconnect() {
         let sink = RecordingSink::default();
-        let resolver = |_envelope: &SignalEnvelope| None;
+        let resolver = |_envelope: &SignalEnvelope, _: &arkret_wire::SignalDeliveryAuthority| None;
         let decryptor = FixedDecryptor(Vec::new());
 
         let error = SignalStreamDriver::new()
@@ -603,7 +623,7 @@ mod tests {
     #[tokio::test]
     async fn open_failure_advances_the_ttl_clock_before_reconnect() {
         let sink = RecordingSink::default();
-        let resolver = |_envelope: &SignalEnvelope| None;
+        let resolver = |_envelope: &SignalEnvelope, _: &arkret_wire::SignalDeliveryAuthority| None;
         let decryptor = FixedDecryptor(Vec::new());
 
         let error = SignalStreamDriver::new()
@@ -631,8 +651,8 @@ mod tests {
         let (bad_envelope, ..) = signed_signal(presence_plaintext(1), [42; 32]);
         let (good_envelope, public_key, plaintext) = signed_signal(presence_plaintext(2), [43; 32]);
         let transport = VecTransport::new(vec![
-            Some(SignalStreamFrame::signal(bad_envelope)),
-            Some(SignalStreamFrame::signal(good_envelope)),
+            Some(test_frame(bad_envelope)),
+            Some(test_frame(good_envelope)),
             None,
         ]);
         let sink = RecordingSink::default();
@@ -665,10 +685,7 @@ mod tests {
         let clock = FixedClock(sent_at());
 
         for _ in 0..2 {
-            let transport = VecTransport::new(vec![
-                Some(SignalStreamFrame::signal(envelope.clone())),
-                None,
-            ]);
+            let transport = VecTransport::new(vec![Some(test_frame(envelope.clone())), None]);
             driver.run(&transport, handlers, &clock).await.unwrap();
         }
 
@@ -683,7 +700,7 @@ mod tests {
             reason: Some("revoked".to_owned()),
         })]);
         let sink = RecordingSink::default();
-        let resolver = |_: &SignalEnvelope| None;
+        let resolver = |_: &SignalEnvelope, _: &arkret_wire::SignalDeliveryAuthority| None;
         let decryptor = FixedDecryptor(Vec::new());
 
         let reason = SignalStreamDriver::new()
@@ -706,7 +723,7 @@ mod tests {
     #[tokio::test]
     async fn an_envelope_that_expired_mid_stream_is_evaluated_against_the_current_instant() {
         let (envelope, public_key, plaintext) = signed_signal(presence_plaintext(1), [45; 32]);
-        let transport = VecTransport::new(vec![Some(SignalStreamFrame::signal(envelope)), None]);
+        let transport = VecTransport::new(vec![Some(test_frame(envelope)), None]);
         let sink = RecordingSink::default();
         let resolver = key_of(public_key);
         let decryptor = FixedDecryptor(plaintext);

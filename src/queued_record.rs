@@ -84,8 +84,8 @@ impl QueuedEventIntent {
     /// Freeze an intent that pins its own CBS basis.
     ///
     /// A pre-join `ak.invite.accept` cannot re-resolve the membership-gated
-    /// Realm Seal view, so the join-candidate basis its author resolved is part
-    /// of the operation, not of one attempt at it.
+    /// Realm Seal view, so the basis in the own-Station prepared Event remains
+    /// fixed for every retry of that signed Event.
     pub fn with_pinned_cbs_basis(
         intent: EventIntent,
         digest_suite: arkret_canonical::DigestSuite,

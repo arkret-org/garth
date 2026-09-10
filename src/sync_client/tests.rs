@@ -101,7 +101,7 @@ fn station_cas_row(key: &str, revision: u64) -> AccountDataRow {
 fn approval_notifications(notification_id: &str, expires_at: &str) -> NotificationContainer {
     NotificationContainer {
         items: vec![NotificationDelta {
-            id: NotificationId::new(notification_id).unwrap(),
+            id: NotificationId::new(notification_id).unwrap().into(),
             action: NotificationDeltaAction::Upsert,
             data: Some(NotificationData::AgentRuntimeApproval(
                 AgentRuntimeApprovalNotificationData {
@@ -824,7 +824,7 @@ fn processor_applies_notification_upsert_and_remove_deltas() {
     let mut remove = sync_response("ak:cursor:cy1yZW1vdmU");
     delta_mut(&mut remove).notifications = Some(NotificationContainer {
         items: vec![NotificationDelta {
-            id: NotificationId::new(notification_id).unwrap(),
+            id: NotificationId::new(notification_id).unwrap().into(),
             action: NotificationDeltaAction::Remove,
             data: Some(NotificationData::AgentRuntimeApprovalRemoval(
                 AgentRuntimeApprovalNotificationRemovalData {

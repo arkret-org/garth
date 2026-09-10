@@ -711,7 +711,6 @@ pub fn validate_identity_creation_outcome(
             != Some(registration.identity_creation_lease_id.as_str())
         || receipt.lease_fence != Some(registration.lease_fence)
         || receipt.operation_digest != registration.control_proof.operation_digest
-        || receipt.head_event_digest != registration.control_proof.log_head_digest
     {
         return Err(protocol(
             "account binding receipt does not match the accepted identity-creation request",

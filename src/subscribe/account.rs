@@ -86,7 +86,8 @@ mod tests {
             station_cas_account_data: vec![StationCasAccountDataContainer::default()],
             notifications: vec![NotificationDelta {
                 id: NotificationId::new("ak:notification:01964137-0000-7000-8000-000000000010")
-                    .unwrap(),
+                    .unwrap()
+                    .into(),
                 action: NotificationDeltaAction::Remove,
                 data: None,
             }],

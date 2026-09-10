@@ -981,7 +981,8 @@ mod tests {
         let scope = account_scope();
         let event = ClientEvent::Notification(NotificationDelta {
             id: NotificationId::new("ak:notification:01964137-0000-7000-8000-000000000012")
-                .unwrap(),
+                .unwrap()
+                .into(),
             action: NotificationDeltaAction::Remove,
             data: None,
         });
