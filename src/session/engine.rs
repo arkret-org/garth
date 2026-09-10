@@ -424,6 +424,8 @@ fn state_from_issue_outcome(
             Some(&request.device_id),
             &request.proof.audience_id,
         ),
+        // The accepted device authorizes issuance, but the pairwise endpoint
+        // is the holder of the resulting grant and has no device binding.
         SessionGrantRequestBody::PairwiseEndpoint(request) => {
             (&request.principal_id, None, &request.audience_id)
         }
