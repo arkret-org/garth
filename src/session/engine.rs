@@ -424,6 +424,9 @@ fn state_from_issue_outcome(
             Some(&request.device_id),
             &request.proof.audience_id,
         ),
+        SessionGrantRequestBody::PairwiseEndpoint(request) => {
+            (&request.principal_id, None, &request.audience_id)
+        }
     };
     if &outcome.account_id.principal_id != principal_id {
         return Err(protocol("issued session grant principal changed"));
