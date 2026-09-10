@@ -194,7 +194,7 @@ mod tests {
                     .resolve(&fixture.service_id, "media_service", at, &mut source)
                     .unwrap()
                     .route()
-                    .base_url,
+                    .base_url(),
                 "https://media.example/"
             );
             evaluator = ServiceRouteEvaluator::new(evaluator.store().clone(), Duration::minutes(1))
@@ -318,7 +318,7 @@ mod tests {
                     .resolve(&fixture.service_id, "media_service", at, &mut source)
                     .unwrap()
                     .route()
-                    .base_url,
+                    .base_url(),
                 base
             );
         }

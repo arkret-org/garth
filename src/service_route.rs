@@ -2,7 +2,8 @@
 use std::collections::BTreeMap;
 
 use arkret_models_identity::{
-    AuthenticatedServiceResolution, ServiceMethodState, ServiceRouteCacheEntry,
+    AuthenticatedServiceResolution, SERVICE_ROUTE_CACHE_MAX_SECONDS, ServiceMethodState,
+    VerifiedServiceRoute,
 };
 use arkret_wire::DidCoreId;
 use chrono::{DateTime, Duration, Utc};
@@ -80,14 +81,14 @@ pub enum RouteCandidateSource {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RouteResolution {
     source: RouteCandidateSource,
-    route: ServiceRouteCacheEntry,
+    route: VerifiedServiceRoute,
     authenticated_resolution: AuthenticatedServiceResolution,
 }
 impl RouteResolution {
     pub const fn source(&self) -> RouteCandidateSource {
         self.source
     }
-    pub const fn route(&self) -> &ServiceRouteCacheEntry {
+    pub const fn route(&self) -> &VerifiedServiceRoute {
         &self.route
     }
     pub const fn authenticated_resolution(&self) -> &AuthenticatedServiceResolution {
@@ -101,7 +102,9 @@ pub struct ServiceRouteEvaluator<S> {
 }
 impl<S: ServiceRouteStateStore> ServiceRouteEvaluator<S> {
     pub fn new(store: S, cache_ttl: Duration) -> Result<Self> {
-        if cache_ttl <= Duration::zero() || cache_ttl > Duration::minutes(5) {
+        if cache_ttl <= Duration::zero()
+            || cache_ttl > Duration::seconds(SERVICE_ROUTE_CACHE_MAX_SECONDS)
+        {
             return Err(Error::Protocol("service_route_cache_ttl_invalid".into()));
         }
         Ok(Self {
@@ -141,9 +144,9 @@ impl<S: ServiceRouteStateStore> ServiceRouteEvaluator<S> {
         if let Some(cached) = self.cache.get(&key) {
             if cached.route.is_routable_at(now)
                 && durable.method_state.as_ref().is_some_and(|state| {
-                    state.method_history_head == cached.route.method_history_head
-                        && state.version_id == cached.route.version_id
-                        && state.did == cached.route.did
+                    state.method_history_head == cached.route.method_history_head()
+                        && state.version_id == cached.route.version_id()
+                        && &state.did == cached.route.did()
                 })
             {
                 let mut result = cached.clone();
@@ -189,24 +192,12 @@ impl<S: ServiceRouteStateStore> ServiceRouteEvaluator<S> {
                 "service_route_describe_reverse_binding_mismatch".into(),
             ));
         }
-        let route = ServiceRouteCacheEntry {
-            service_id: id.clone(),
-            service_kind: kind.to_owned(),
-            did: projection.did.clone(),
-            method_history_head: projection.method_history_head.clone(),
-            version_id: projection.version_id.clone(),
-            base_url: projection.base_url,
+        let route = VerifiedServiceRoute {
+            projection,
             verified_at: candidate.verified_at,
             cache_expires_at: candidate.verified_at + self.cache_ttl,
         };
-        durable.method_state = Some(ServiceMethodState {
-            service_id: id.clone(),
-            service_kind: kind.to_owned(),
-            did: projection.did,
-            method_history_head: projection.method_history_head,
-            version_id: projection.version_id,
-            verified_at: candidate.verified_at,
-        });
+        durable.method_state = Some(route.method_state());
         self.store.save_route_state(&durable)?;
         let result = RouteResolution {
             source: RouteCandidateSource::CurrentResolution,
