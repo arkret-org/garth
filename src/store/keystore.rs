@@ -161,6 +161,15 @@ pub trait SecureKeyStore: MaybeSendSync + 'static {
 
     fn get_secret_bytes(&self, key: &str) -> SecureKeyStoreResult<Option<KeyBytes>>;
     fn delete_secret(&self, key: &str) -> SecureKeyStoreResult<()>;
+    /// Wait for removal from persistent storage. Async backends must override
+    /// this; synchronous keyrings and in-memory stores complete immediately.
+    fn delete_secret_durable<'a>(
+        &'a self,
+        key: &'a str,
+    ) -> BoxSecureStoreFuture<'a, SecureKeyStoreResult<()>> {
+        let result = self.delete_secret(key);
+        Box::pin(async move { result })
+    }
     fn list_secret_keys(&self, prefix: Option<&str>) -> SecureKeyStoreResult<Vec<String>>;
     fn backend_info(&self) -> SecureKeyStoreBackendInfo;
 
