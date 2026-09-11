@@ -54,14 +54,41 @@ where
                 )
             })?;
             provider.observe(RunEvent::Connecting);
-            let opened = async {
+            let mut opening = std::pin::pin!(async {
                 let transport = provider.provide().await?;
                 let source = transport
                     .open_account_frames(request.clone(), durable.next_request_options())
                     .await?;
                 Ok::<_, crate::Error>((transport, source))
-            }
-            .await;
+            });
+            // A browser fetch may not resolve until the long-poll server emits
+            // its first body bytes. Demand can change while that happens (for
+            // example when navigation selects a Realm), so the same freshness
+            // guard used while reading frames must also cover transport/open.
+            // Dropping the stale opening future aborts that request and lets the
+            // reconnect build a replacement request with the new filter.
+            let opened = loop {
+                if !provider.account_request_is_current(&request)
+                    || provider.account_session_generation() != session_generation
+                {
+                    continue 'reconnect;
+                }
+                if control.is_cancelled() {
+                    return Ok(Self::stop(provider, RunStopReason::Cancelled));
+                }
+                let mut tick = std::pin::pin!(self.executor.sleep(Duration::from_millis(250)));
+                let ready = std::future::poll_fn(|cx| {
+                    use std::future::Future;
+                    if let std::task::Poll::Ready(result) = opening.as_mut().poll(cx) {
+                        return std::task::Poll::Ready(Some(result));
+                    }
+                    tick.as_mut().poll(cx).map(|_| None)
+                })
+                .await;
+                if let Some(result) = ready {
+                    break result;
+                }
+            };
             let (transport, mut source) = match opened {
                 Ok(value) => value,
                 Err(error)
