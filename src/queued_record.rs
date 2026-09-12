@@ -69,6 +69,9 @@ impl AuthoringGeneration {
 pub struct QueuedEventIntent {
     pub digest_suite: arkret_canonical::DigestSuite,
     pub intent: EventIntent,
+    /// Immutable approval attachment retained across authoring retries.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication_event: Option<Event>,
 }
 
 impl QueuedEventIntent {
@@ -78,6 +81,7 @@ impl QueuedEventIntent {
         Self {
             digest_suite,
             intent: intent.without_authorization_basis(),
+            publication_event: None,
         }
     }
 
@@ -93,6 +97,7 @@ impl QueuedEventIntent {
         Self {
             digest_suite,
             intent,
+            publication_event: None,
         }
     }
 
@@ -410,6 +415,11 @@ impl QueuedSdkEvent {
                 return Err(Error::Protocol(
                     "queued SDK authored attempt must carry immutable transport identity, bytes, and digest suite"
                         .to_owned(),
+                ));
+            }
+            if attempt.envelope.publication_event() != self.intent.publication_event.as_ref() {
+                return Err(Error::Protocol(
+                    "queued approval attachment changed across authoring".to_owned(),
                 ));
             }
             let canonical = arkret_canonical::canonical_json_bytes(&attempt.envelope)?;
