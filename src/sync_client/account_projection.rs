@@ -738,7 +738,7 @@ mod tests {
                 "source_peer_principal_id": "ak:did_core:web:asker.example",
                 "source_id": "ak:did_core:web:principal.example",
                 "surface_kind": "consent_request",
-                "consent_scope": "direct_message",
+                "consent_scope": "voice_call",
                 "received_at": "2026-09-05T11:00:00.000Z",
                 "expires_at": "2026-10-05T11:00:00.000Z"
             }
