@@ -64,7 +64,6 @@ pub(crate) use arkret_models_identity::{
     UnsignedAccountHandoffAuthenticationProof, UnsignedAccountHandoffRequestBody,
     UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
 };
-pub(crate) use arkret_state::resolver::RealmState;
 pub(crate) use arkret_wire::{
     AccountId, ActorId, Base64UrlString, DeviceId, Did, DidCoreId, DidUrl, Event, EventId,
     EventKind, Hash, Hlc, MessageId, MessageStreamId, NonEmptyString, PcrGenesisUnit, RealmId,
@@ -80,7 +79,7 @@ pub(crate) fn verified_event_id(
     digest_suite: arkret_canonical::DigestSuite,
 ) -> Result<EventId> {
     event.verify_event_id_matches_content_with_digest_suite(digest_suite)?;
-    event.validate_station_admission_binding(digest_suite)?;
+    event.validate_proof_bindings_with_digest_suite(digest_suite)?;
     Ok(event.event_id.clone())
 }
 

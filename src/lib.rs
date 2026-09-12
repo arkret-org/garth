@@ -126,8 +126,8 @@ pub use outbound::{
     OutboundSubmitOutcome, OutboundSubmitter,
 };
 pub use projection::{
-    BottomCellHead, BottomCellInfo, CurrentCoverageCleanup, CurrentInstallPlan,
-    CurrentRealmProgress, LocalSealView, ProjectionMount, RealmProjectionFrame, RealmStateReducer,
+    CurrentCoverageCleanup, CurrentInstallPlan, CurrentRealmProgress, LocalSealView,
+    ProjectionMount, RealmEventProjector, RealmProjectionFrame, RealmProjectionState,
     encryption_profile_is_encrypted, plan_current_entry, plan_current_install,
     realm_authority_root_controller_for_realm, realm_authority_root_value_for_realm,
     realm_projection_is_encrypted, realm_projection_security_state, reconcile_realm_projection,

@@ -77,7 +77,7 @@ impl QueuedEventIntent {
         // re-reads the Seal view it authors against.
         Self {
             digest_suite,
-            intent: intent.without_cbs_basis(),
+            intent: intent.without_authorization_basis(),
         }
     }
 

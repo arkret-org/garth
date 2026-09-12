@@ -291,7 +291,9 @@ pub fn discussion_state_event_is_ingestable(event: &Value) -> bool {
 /// The device that signed an accepted human Event, when its producer proof is
 /// controlled by the Event's own signing principal.
 pub fn accepted_human_event_signing_device(event: &Event) -> Option<DeviceId> {
-    let proof = event.proofs.iter().find_map(|proof| proof.as_producer())?;
+    let [proof] = event.proofs.as_slice() else {
+        return None;
+    };
     let (controller, fragment) = proof.verification_method.as_str().split_once('#')?;
     let controller = Did::new(controller.to_owned()).ok()?;
     let controller = project_did_to_core_id(&controller).ok()?;

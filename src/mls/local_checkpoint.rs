@@ -4,7 +4,7 @@
 //! persistence the next message must refetch a Welcome and rejoin from
 //! scratch, which drops the device's leaf and churns the epoch — not
 //! viable for production, since MLS commits are causally tied to the
-//! Seal lattice.
+//! confirmed Realm safety sequence.
 //!
 //! This module owns the at-rest envelope only:
 //!
