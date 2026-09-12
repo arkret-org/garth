@@ -6,8 +6,8 @@
 //! 1. the previous complete MLS epoch winner tuple (`mls_epoch_cell.head_eq(previous_epoch_head)`)
 //!    — racing commits fail closed.
 //! 2. the previous key-schedule governance binding
-//!    (`key_schedule_cell.head_eq(previous_governance_binding)`) — both CAS registers advance from
-//!    an exact, accepted predecessor.
+//!    (`key_schedule_cell.head_eq(previous_governance_binding)`) — both sequenced-state cells
+//!    advance from an exact, accepted revision.
 //!
 //! What the commit *writes* is no longer producer-authored. v1 deleted the
 //! standalone Move object and its `effects[]` channel: the three governance
@@ -131,7 +131,7 @@ mod tests {
     /// host's governance-proof verifier, which is where the projection is
     /// actually consumed.
     #[test]
-    fn commit_preconditions_bind_both_cas_predecessors_by_composite_subject() {
+    fn commit_preconditions_bind_both_sequenced_revisions_by_composite_subject() {
         let previous_binding = governance_binding();
         let scope = ScopeRef::Realm {
             realm_id: RealmId::new("ak:realm:AYw-PHWIOTuZhm-EenZx-cCbOziC8pNCrh10oRfqiEmN")

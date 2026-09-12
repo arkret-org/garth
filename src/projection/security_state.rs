@@ -288,7 +288,7 @@ mod tests {
         assert_eq!(root.controller_epoch, 5);
         assert_eq!(root.authority_generation, 8);
         projections.get_mut(realm).unwrap()["current"]["entries"][0]["result"] =
-            json!({"status":"unavailable","reason":"bottom"});
+            json!({"status":"unavailable","reason":"temporarily_unavailable"});
         assert!(realm_authority_root_value_for_realm(&projections, realm).is_none());
     }
 
