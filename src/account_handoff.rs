@@ -443,16 +443,14 @@ pub fn reconcile_identity_creation(
     let missing = required.difference(&keep_set).copied().collect::<Vec<_>>();
 
     use IdentityCreationCommandKind::{
-        ConfirmAbandonment, IssueAbandonmentChallenge, IssueIdentityBindingChallenge,
-        SubmitRegistration,
+        ConfirmAbandonment, IssueIdentityBindingChallenge, SubmitRegistration,
     };
     use IdentityCreationGoal::{AbandonProvisionalIdentity, CompleteIdentity};
     use IdentityCreationLeaseState::{
         AccountBound, Active, Completed, DidPublished, PcrAccepted, Reserved,
     };
     use IdentityCreationLocalArtifactKind::{
-        AbandonmentChallenge, FreshAccountHandoff, PreparedRegistrationRequest,
-        RegistrationCheckpoint,
+        FreshAccountHandoff, PreparedRegistrationRequest, RegistrationCheckpoint,
     };
 
     let next_step = match goal {
@@ -493,9 +491,7 @@ pub fn reconcile_identity_creation(
             }
         }
         AbandonProvisionalIdentity => {
-            if !keep_set.contains(&AbandonmentChallenge) {
-                IdentityCreationNextStep::Execute(IssueAbandonmentChallenge)
-            } else if !keep_set.contains(&FreshAccountHandoff) {
+            if !keep_set.contains(&FreshAccountHandoff) {
                 IdentityCreationNextStep::Authenticate
             } else {
                 IdentityCreationNextStep::Execute(ConfirmAbandonment)
@@ -1222,17 +1218,13 @@ mod tests {
     #[test]
     fn reconciliation_discards_foreign_and_invalid_local_artifacts() {
         use IdentityCreationLocalArtifactKind::{
-            AbandonmentChallenge, PreparedRegistrationRequest, RegistrationCheckpoint,
+            PreparedRegistrationRequest, RegistrationCheckpoint,
         };
         let plan = reconcile_identity_creation(
             &lease(IdentityCreationLeaseState::Reserved),
             IdentityCreationGoal::CompleteIdentity,
             IdentityCreationRecoveryKeyState::GeneratedLocallyValidatedDurable,
-            [
-                RegistrationCheckpoint,
-                PreparedRegistrationRequest,
-                AbandonmentChallenge,
-            ],
+            [RegistrationCheckpoint, PreparedRegistrationRequest],
             [PreparedRegistrationRequest],
         )
         .unwrap();
@@ -1244,7 +1236,6 @@ mod tests {
                 .discard_artifacts
                 .contains(&PreparedRegistrationRequest)
         );
-        assert!(plan.discard_artifacts.contains(&AbandonmentChallenge));
         assert_eq!(
             plan.next_step,
             IdentityCreationNextStep::Collect(RegistrationCheckpoint)
@@ -1313,10 +1304,10 @@ mod tests {
     }
 
     #[test]
-    fn abandonment_requires_challenge_then_fresh_authentication() {
-        use IdentityCreationLocalArtifactKind::{AbandonmentChallenge, FreshAccountHandoff};
-        let lease = lease(IdentityCreationLeaseState::DidPublished);
-        let issue = reconcile_identity_creation(
+    fn abandonment_requires_fresh_authentication_without_a_challenge_artifact() {
+        use IdentityCreationLocalArtifactKind::FreshAccountHandoff;
+        let lease = lease(IdentityCreationLeaseState::Reserved);
+        let plan = reconcile_identity_creation(
             &lease,
             IdentityCreationGoal::AbandonProvisionalIdentity,
             IdentityCreationRecoveryKeyState::Unavailable,
@@ -1324,36 +1315,17 @@ mod tests {
             [],
         )
         .unwrap();
-        assert_eq!(
-            issue.next_step,
-            IdentityCreationNextStep::Execute(
-                IdentityCreationCommandKind::IssueAbandonmentChallenge
-            )
-        );
-
-        let authenticate = reconcile_identity_creation(
+        assert_eq!(plan.next_step, IdentityCreationNextStep::Authenticate);
+        let plan = reconcile_identity_creation(
             &lease,
             IdentityCreationGoal::AbandonProvisionalIdentity,
             IdentityCreationRecoveryKeyState::Unavailable,
-            [AbandonmentChallenge],
-            [AbandonmentChallenge],
+            [FreshAccountHandoff],
+            [FreshAccountHandoff],
         )
         .unwrap();
         assert_eq!(
-            authenticate.next_step,
-            IdentityCreationNextStep::Authenticate
-        );
-
-        let confirm = reconcile_identity_creation(
-            &lease,
-            IdentityCreationGoal::AbandonProvisionalIdentity,
-            IdentityCreationRecoveryKeyState::Unavailable,
-            [AbandonmentChallenge, FreshAccountHandoff],
-            [AbandonmentChallenge, FreshAccountHandoff],
-        )
-        .unwrap();
-        assert_eq!(
-            confirm.next_step,
+            plan.next_step,
             IdentityCreationNextStep::Execute(IdentityCreationCommandKind::ConfirmAbandonment)
         );
     }
