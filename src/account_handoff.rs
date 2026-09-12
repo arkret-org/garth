@@ -603,36 +603,59 @@ pub fn identity_binding_challenge_request(
     Ok(request)
 }
 
-/// Build the canonical identity-creation register request and sign its control
-/// proof with the cold inception root. The seed is borrowed and never retained.
+/// Authenticated host context frozen with the challenge request, never UI state.
+#[derive(Clone, Debug)]
+pub struct IdentityCreationBindingContext {
+    pub account_subject: Hash,
+    pub dpop_jkt: String,
+    pub audience_id: DidCoreId,
+    pub origin: arkret_wire::WebOrigin,
+    pub trust_domain: arkret_wire::TrustDomainId,
+}
+
+/// Reconstruct the closed proof from the frozen request and authenticated context.
+/// The response contributes only fresh challenge material and its lifetime.
 pub fn identity_creation_register_request(
     challenge: &IdentityBindingChallengeOutcome,
-    expected_account_subject: &Hash,
-    did_operation: DidOperationSubmitRequestBody,
+    frozen_request: &IdentityBindingChallengeRequestBody,
+    context: &IdentityCreationBindingContext,
     pcr_genesis_unit: PcrGenesisUnit,
     initial_session: InitialSessionGrantIntent,
     root_seed: &[u8; 32],
     display_name: Option<String>,
 ) -> Result<AccountRegisterRequestBody> {
+    frozen_request.canonical_request_digest()?;
+    let did_operation = &frozen_request.did_operation;
     let validated =
-        crate::protocol::signatures::webvh::validate_principal_inception_operation(&did_operation)
+        crate::protocol::signatures::webvh::validate_principal_inception_operation(did_operation)
             .map_err(|error| protocol(error.to_string()))?;
-    if &challenge.account_subject != expected_account_subject
-        || challenge.principal_id != validated.principal_id
-        || challenge.did != did_operation.did
-        || challenge.operation_digest != validated.operation_digest
-        || challenge.did_version_id != validated.did_version_id
-        || challenge.log_head_digest != validated.log_head_digest
-        || challenge.control_key_digest != validated.control_key_digest
+    if challenge.request_id != frozen_request.request_id
         || challenge.purpose != IdentityBindingPurpose::AccountBindingAndPcrGenesis
+        || challenge.challenge_id.is_empty()
+        || challenge.challenge.len() < 22
+        || challenge.expires_at <= challenge.issued_at
+        || challenge.expires_at - challenge.issued_at > chrono::Duration::seconds(300)
+        || initial_session.audience_id != context.audience_id
+        || initial_session.session_public_key.thumbprint_sha256()? != context.dpop_jkt
+        || frozen_request.initial_session_request_digest
+            != initial_session.canonical_request_digest()?
+        || frozen_request.pcr_realm_id != pcr_genesis_unit.create().realm_id
+        || frozen_request.realm_create_payload_digest
+            != Hash::new(crate::protocol::canonical::canonical_sha256(
+                &pcr_genesis_unit.create().payload,
+            )?)?
+        || frozen_request.founding_authorize_payload_digest
+            != Hash::new(crate::protocol::canonical::canonical_sha256(
+                &pcr_genesis_unit.founding_authorize().payload,
+            )?)?
     {
         return Err(protocol(
-            "identity-binding challenge does not match the inception operation",
+            "identity-binding challenge or submission does not match its frozen context",
         ));
     }
     let registration_did_evidence_draft =
         crate::protocol::signatures::webvh::sign_registration_did_evidence_draft(
-            &did_operation,
+            did_operation,
             challenge.issued_at,
             root_seed,
         )
@@ -642,24 +665,25 @@ pub fn identity_creation_register_request(
             challenge_id: challenge.challenge_id.clone(),
             challenge: challenge.challenge.clone(),
             purpose: challenge.purpose,
-            account_subject: challenge.account_subject.clone(),
-            principal_id: challenge.principal_id.clone(),
-            did: challenge.did.clone(),
-            operation_digest: challenge.operation_digest.clone(),
-            did_version_id: challenge.did_version_id.clone(),
-            log_head_digest: challenge.log_head_digest.clone(),
-            control_key_digest: challenge.control_key_digest.clone(),
-            pcr_realm_id: challenge.pcr_realm_id.clone(),
-            realm_create_payload_digest: challenge.realm_create_payload_digest.clone(),
-            founding_authorize_payload_digest: challenge.founding_authorize_payload_digest.clone(),
-            initial_session_request_digest: challenge.initial_session_request_digest.clone(),
-            genesis_unit_kinds: challenge.genesis_unit_kinds,
-            identity_creation_lease_id: challenge.identity_creation_lease_id.clone(),
-            lease_fence: challenge.lease_fence,
-            dpop_jkt: challenge.dpop_jkt.clone(),
-            audience_id: challenge.audience_id.clone(),
-            origin: challenge.origin.clone(),
-            trust_domain: challenge.trust_domain.clone(),
+            account_subject: context.account_subject.clone(),
+            principal_id: validated.principal_id.clone(),
+            did: did_operation.did.clone(),
+            operation_digest: validated.operation_digest,
+            did_version_id: validated.did_version_id,
+            control_key_digest: validated.control_key_digest,
+            pcr_realm_id: frozen_request.pcr_realm_id.clone(),
+            realm_create_payload_digest: frozen_request.realm_create_payload_digest.clone(),
+            founding_authorize_payload_digest: frozen_request
+                .founding_authorize_payload_digest
+                .clone(),
+            initial_session_request_digest: frozen_request.initial_session_request_digest.clone(),
+            genesis_unit_kinds: arkret_models_identity::PCR_GENESIS_UNIT_KINDS,
+            identity_creation_lease_id: frozen_request.identity_creation_lease_id.clone(),
+            lease_fence: frozen_request.lease_fence,
+            dpop_jkt: context.dpop_jkt.clone(),
+            audience_id: context.audience_id.clone(),
+            origin: context.origin.clone(),
+            trust_domain: context.trust_domain.clone(),
             issued_at: challenge.issued_at,
             expires_at: challenge.expires_at,
             verification_key_multibase: validated.root_public_key_multibase,
@@ -670,16 +694,16 @@ pub fn identity_creation_register_request(
     )
     .map_err(|error| protocol(error.to_string()))?;
     let request = AccountRegisterRequestBody {
-        principal_id: challenge.principal_id.clone(),
-        did: challenge.did.clone(),
+        principal_id: validated.principal_id,
+        did: did_operation.did.clone(),
         display_name,
         device_id: None,
         proof: None,
         identity_creation: Some(IdentityCreationRegistration {
-            identity_creation_lease_id: challenge.identity_creation_lease_id.clone(),
-            lease_fence: challenge.lease_fence,
-            did: challenge.did.clone(),
-            did_operation,
+            identity_creation_lease_id: frozen_request.identity_creation_lease_id.clone(),
+            lease_fence: frozen_request.lease_fence,
+            did: did_operation.did.clone(),
+            did_operation: did_operation.clone(),
             registration_did_evidence_draft,
             control_proof,
             pcr_genesis_unit,
