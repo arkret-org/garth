@@ -386,9 +386,10 @@ fn accepted_artifact(
         EventKind::MlsWelcome => {
             let payload: MlsWelcomePayload =
                 serde_json::from_value(serde_json::to_value(&event.payload)?)?;
+            let epoch = payload.epoch();
             (
                 payload.governance_binding,
-                payload.epoch,
+                epoch,
                 payload.commit_ref,
                 None,
                 AcceptedMlsApplication::Welcome,
@@ -399,7 +400,7 @@ fn accepted_artifact(
     let head = &outcome.transition_head;
     if binding != outcome.governance_binding
         || reference != head.transition_ref
-        || epoch != head.next_epoch
+        || epoch != binding.next_epoch()
         || transition_digest
             .as_ref()
             .is_some_and(|digest| digest != &head.mls_transition_digest)
@@ -415,7 +416,9 @@ fn accepted_artifact(
         group_id: request.mls_group_id.to_string(),
         epoch,
         winning_transition_ref: reference,
-        transition_head: head.clone(),
+        transition_head: head
+            .epoch_head(&binding)
+            .map_err(|error| Error::Protocol(error.to_string()))?,
         application,
     })
 }

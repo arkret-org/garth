@@ -76,9 +76,8 @@ pub fn mls_group_id_for_realm(realm_id: &str) -> Result<String, String> {
 
 /// True when a device-message value is an `ak.mls.welcome` for this Realm.
 ///
-/// The governance binding's effective scope is authoritative; a message that
-/// predates the binding is matched on the canonical group id instead, which is
-/// derived from the same scope.
+/// This routing filter uses only the governance binding's authoritative scope.
+/// Full payload validation remains required before applying a Welcome.
 pub fn mls_welcome_message_matches_realm(message: &Value, realm_id: &str) -> bool {
     if message
         .get("kind")
@@ -91,19 +90,15 @@ pub fn mls_welcome_message_matches_realm(message: &Value, realm_id: &str) -> boo
     let Some(content) = message.get("content") else {
         return false;
     };
-    if content
+    content
         .get("governance_binding")
         .and_then(|binding| binding.get("effective_scope"))
-        .and_then(|scope| scope.get("realm_id"))
-        .and_then(Value::as_str)
-        == Some(realm_id)
-    {
-        return true;
-    }
-    let Ok(expected_group_id) = mls_group_id_for_realm(realm_id) else {
-        return false;
-    };
-    content.get("mls_group_id").and_then(Value::as_str) == Some(expected_group_id.as_str())
+        .and_then(|scope| serde_json::from_value::<ScopeRef>(scope.clone()).ok())
+        .is_some_and(|scope| {
+            scope
+                .realm_id_opt()
+                .is_some_and(|id| id.as_str() == realm_id)
+        })
 }
 
 /// True when a non-empty device-message batch contains only Welcomes for this
@@ -276,7 +271,7 @@ mod tests {
             "sent_at": "2099-01-01T00:00:00.000Z",
             "expires_at": "2100-01-01T00:00:00.000Z",
             "content": {
-                "mls_group_id": mls_group_id_for_realm(realm_id).unwrap(),
+                "governance_binding": { "effective_scope": { "kind": "realm", "realm_id": realm_id } },
                 "ciphertext": "welcome-ciphertext"
             }
         })
@@ -299,6 +294,20 @@ mod tests {
                 "sha256:2222222222222222222222222222222222222222222222222222222222222222".to_owned(),
             content: json!({"ciphertext": "AQID"}),
         }
+    }
+
+    #[test]
+    fn retired_group_mirror_cannot_override_or_replace_governance_scope() {
+        let realm = "ak:realm:AcQV37Nr-Ulm-nqFSnugsZ9MU-I0QBLO7VHTvtcwYWns";
+        let other = "ak:realm:AVtcXI0sfnw9Pex-qynbBUykPtV8niszMj0Ko75SINJ2";
+        let mut message = durable_welcome("fixture", other);
+        message["content"]["mls_group_id"] = json!(mls_group_id_for_realm(realm).unwrap());
+        assert!(!mls_welcome_message_matches_realm(&message, realm));
+        message["content"]
+            .as_object_mut()
+            .unwrap()
+            .remove("governance_binding");
+        assert!(!mls_welcome_message_matches_realm(&message, realm));
     }
 
     #[test]
