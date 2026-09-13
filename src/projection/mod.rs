@@ -36,9 +36,10 @@ pub trait RealmEventProjector {
 
 /// Order-independent accepted Event set for one Realm projection mount.
 ///
-/// This type deliberately carries no resolved object winner. Registered cells
-/// are resolved by the SDK state-model registry, which preserves concurrent
-/// causal-register heads and exposes Bottom where the contract requires it.
+/// This type deliberately carries no resolved object value. `causal_heads`
+/// below is the Realm Event-DAG frontier, not a Cell-register projection;
+/// registered causal-register Cells are resolved by the SDK's deterministic
+/// `(depth, EventId)` rule.
 #[derive(Clone, Debug)]
 pub struct RealmProjectionState {
     pub realm_id: RealmId,
