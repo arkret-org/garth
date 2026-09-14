@@ -9,13 +9,14 @@ use std::collections::BTreeSet;
 use crate::protocol::{
     AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
     AccountRegisterOutcome, AccountRegisterRequestBody, Base64UrlString, DeviceId, Did, DidCoreId,
-    DidOperationSubmitRequestBody, Hash, IdentityBindingChallengeOutcome,
-    IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationCommandKind,
+    Hash, IdentityBindingChallengeOutcome, IdentityBindingChallengeRequestBody,
+    IdentityBindingPurpose, IdentityCreationCommandKind, IdentityCreationControlProofKind,
     IdentityCreationGoal, IdentityCreationLease, IdentityCreationLeaseState,
     IdentityCreationLocalArtifactKind, IdentityCreationRecoveryKeyState,
-    IdentityCreationRegistration, InitialSessionGrantIntent, PcrGenesisUnit, RequestId, Result,
-    UnsignedAccountHandoffAuthenticationProof, UnsignedAccountHandoffRequestBody,
-    UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
+    IdentityCreationRegistration, InitialSessionGrantIntent, PcrGenesisUnit,
+    PrincipalRegistrationAnchor, RequestId, Result, UnsignedAccountHandoffAuthenticationProof,
+    UnsignedAccountHandoffRequestBody, UnsignedIdentityCreationControlProof,
+    UnsignedIdentityCreationControlProofBody,
 };
 
 #[derive(Clone, Debug)]
@@ -562,30 +563,31 @@ pub fn oidc_account_handoff_request(
 pub fn identity_binding_challenge_request(
     request_id: RequestId,
     lease: &IdentityCreationLease,
-    did_operation: DidOperationSubmitRequestBody,
+    principal_registration_anchor: PrincipalRegistrationAnchor,
     pcr_genesis_unit: &PcrGenesisUnit,
     initial_session: &InitialSessionGrantIntent,
 ) -> Result<IdentityBindingChallengeRequestBody> {
-    let reserved =
-        crate::protocol::ReservedIdentityCreation::from_operation(did_operation.clone())?;
+    let reserved = crate::protocol::ReservedIdentityCreation::from_anchor(
+        principal_registration_anchor.clone(),
+    )?;
     if let Some(existing) = lease.reserved_identity.as_ref()
         && existing != &reserved
     {
         return Err(protocol(
-            "identity-creation lease is already reserved for a different operation",
+            "identity-creation lease is already reserved for a different registration anchor",
         ));
     }
     pcr_genesis_unit.validate_ordered_envelopes()?;
     initial_session.validate()?;
     let create = pcr_genesis_unit.create();
     let authorize = pcr_genesis_unit.founding_authorize();
-    let did = did_operation.did.clone();
+    let did = principal_registration_anchor.did().clone();
     let request = IdentityBindingChallengeRequestBody {
         request_id,
         identity_creation_lease_id: lease.identity_creation_lease_id.clone(),
         lease_fence: lease.fence,
         did,
-        did_operation,
+        principal_registration_anchor,
         pcr_realm_id: create.realm_id.clone(),
         realm_create_payload_digest: Hash::new(crate::protocol::canonical::canonical_sha256(
             &create.payload,
@@ -621,10 +623,16 @@ pub fn identity_creation_register_request(
     display_name: Option<String>,
 ) -> Result<AccountRegisterRequestBody> {
     frozen_request.canonical_request_digest()?;
-    let did_operation = &frozen_request.did_operation;
+    let principal_registration_anchor = &frozen_request.principal_registration_anchor;
     let validated =
-        crate::protocol::signatures::webvh::validate_principal_inception_operation(did_operation)
+        arkret_identity::validate_principal_registration_anchor(principal_registration_anchor)
             .map_err(|error| protocol(error.to_string()))?;
+    let did_operation = match principal_registration_anchor {
+        PrincipalRegistrationAnchor::WebvhRegistration {
+            registration_did_operation,
+            ..
+        } => registration_did_operation.as_ref(),
+    };
     if challenge.request_id != frozen_request.request_id
         || challenge.purpose != IdentityBindingPurpose::AccountBindingAndPcrGenesis
         || challenge.challenge_id.is_empty()
@@ -658,13 +666,14 @@ pub fn identity_creation_register_request(
         .map_err(|error| protocol(error.to_string()))?;
     let unsigned_control_proof =
         UnsignedIdentityCreationControlProof::new(UnsignedIdentityCreationControlProofBody {
+            proof_kind: IdentityCreationControlProofKind::DidWebvhInceptionUpdateKey,
             challenge_id: challenge.challenge_id.clone(),
             challenge: challenge.challenge.clone(),
             purpose: challenge.purpose,
             account_subject: context.account_subject.clone(),
             principal_id: validated.principal_id.clone(),
-            did: did_operation.did.clone(),
-            operation_digest: validated.operation_digest,
+            did: validated.did.clone(),
+            registration_anchor_digest: validated.registration_anchor_digest,
             did_version_id: validated.did_version_id,
             control_key_digest: validated.control_key_digest,
             pcr_realm_id: frozen_request.pcr_realm_id.clone(),
@@ -691,15 +700,15 @@ pub fn identity_creation_register_request(
     .map_err(|error| protocol(error.to_string()))?;
     let request = AccountRegisterRequestBody {
         principal_id: validated.principal_id,
-        did: did_operation.did.clone(),
+        did: validated.did.clone(),
         display_name,
         device_id: None,
         proof: None,
         identity_creation: Some(IdentityCreationRegistration {
             identity_creation_lease_id: frozen_request.identity_creation_lease_id.clone(),
             lease_fence: frozen_request.lease_fence,
-            did: did_operation.did.clone(),
-            did_operation: did_operation.clone(),
+            did: validated.did.clone(),
+            principal_registration_anchor: principal_registration_anchor.clone(),
             registration_did_evidence_draft,
             control_proof,
             pcr_genesis_unit,
@@ -730,7 +739,8 @@ pub fn validate_identity_creation_outcome(
         || receipt.identity_creation_lease_id.as_deref()
             != Some(registration.identity_creation_lease_id.as_str())
         || receipt.lease_fence != Some(registration.lease_fence)
-        || receipt.operation_digest != registration.control_proof.operation_digest
+        || receipt.registration_anchor_digest
+            != registration.control_proof.registration_anchor_digest
     {
         return Err(protocol(
             "account binding receipt does not match the accepted identity-creation request",
@@ -749,21 +759,40 @@ mod tests {
 
     use super::*;
 
+    fn webvh_anchor() -> PrincipalRegistrationAnchor {
+        let next_root_public_key_multibase =
+            arkret_canonical::ed25519_pubkey_to_did_key_multibase(
+                ed25519_dalek::SigningKey::from_bytes(&[8; 32])
+                    .verifying_key()
+                    .as_bytes(),
+            );
+        let endpoint = url::Url::parse("https://registration.example/").unwrap();
+        let inception =
+            crate::protocol::signatures::webvh::prepare_principal_inception(
+                &crate::protocol::signatures::webvh::PrincipalInceptionInput {
+                    provider_endpoint: &endpoint,
+                    principal_endpoint: &endpoint,
+                    local_id: "lease-fixture",
+                    also_known_as: &[],
+                    version_time: arkret_canonical::normalize_timestamp_canonical(Utc::now()),
+                    root_seed: &[7; 32],
+                    next_root_public_key_multibase: &next_root_public_key_multibase,
+                    witness_policy: None,
+                },
+            )
+            .unwrap();
+        PrincipalRegistrationAnchor::WebvhRegistration {
+            registration_did_operation: Box::new(inception.submit_body),
+            log_entries: vec![serde_json::from_value(inception.log_entry.clone()).unwrap()],
+            witness_records: Vec::new(),
+            normalized_did_document: serde_json::from_value(inception.log_entry["state"].clone())
+                .unwrap(),
+        }
+    }
+
     fn lease(state: IdentityCreationLeaseState) -> IdentityCreationLease {
         let reserved_identity = state.has_reserved_identity().then(|| {
-            let did = did("did:webvh:z6mkfixture:alice.example");
-            crate::protocol::ReservedIdentityCreation {
-                principal_id: core_id(did.as_str()),
-                did: did.clone(),
-                operation_digest: Hash::new(format!("sha256:{}", "a".repeat(64))).unwrap(),
-                did_operation: crate::protocol::DidOperationSubmitRequestBody {
-                    did,
-                    did_method: arkret_models_identity::DidMethodName::Webvh,
-                    seq: None,
-                    prev_event_digest: None,
-                    operation: std::collections::BTreeMap::new(),
-                },
-            }
+            crate::protocol::ReservedIdentityCreation::from_anchor(webvh_anchor()).unwrap()
         });
         IdentityCreationLease {
             identity_creation_lease_id: "lease-fixture".to_owned(),

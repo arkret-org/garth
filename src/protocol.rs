@@ -56,13 +56,14 @@ pub use arkret_models_discovery::{
 };
 pub(crate) use arkret_models_identity::{
     AccountDataRow, AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
-    DeviceVerificationState, DidOperationSubmitRequestBody, IdentityBindingChallengeOutcome,
-    IdentityBindingChallengeRequestBody, IdentityBindingPurpose, IdentityCreationCommandKind,
+    DeviceVerificationState, IdentityBindingChallengeOutcome, IdentityBindingChallengeRequestBody,
+    IdentityBindingPurpose, IdentityCreationCommandKind, IdentityCreationControlProofKind,
     IdentityCreationGoal, IdentityCreationLease, IdentityCreationLeaseState,
     IdentityCreationLocalArtifactKind, IdentityCreationRecoveryKeyState,
-    IdentityCreationRegistration, InitialSessionGrantIntent, ReservedIdentityCreation,
-    UnsignedAccountHandoffAuthenticationProof, UnsignedAccountHandoffRequestBody,
-    UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
+    IdentityCreationRegistration, InitialSessionGrantIntent, PrincipalRegistrationAnchor,
+    ReservedIdentityCreation, UnsignedAccountHandoffAuthenticationProof,
+    UnsignedAccountHandoffRequestBody, UnsignedIdentityCreationControlProof,
+    UnsignedIdentityCreationControlProofBody,
 };
 pub(crate) use arkret_wire::{
     AccountId, ActorId, Base64UrlString, DeviceId, Did, DidCoreId, DidUrl, Event, EventId,
