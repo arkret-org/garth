@@ -760,27 +760,25 @@ mod tests {
     use super::*;
 
     fn webvh_anchor() -> PrincipalRegistrationAnchor {
-        let next_root_public_key_multibase =
-            arkret_canonical::ed25519_pubkey_to_did_key_multibase(
-                ed25519_dalek::SigningKey::from_bytes(&[8; 32])
-                    .verifying_key()
-                    .as_bytes(),
-            );
+        let next_root_public_key_multibase = arkret_canonical::ed25519_pubkey_to_did_key_multibase(
+            ed25519_dalek::SigningKey::from_bytes(&[8; 32])
+                .verifying_key()
+                .as_bytes(),
+        );
         let endpoint = url::Url::parse("https://registration.example/").unwrap();
-        let inception =
-            crate::protocol::signatures::webvh::prepare_principal_inception(
-                &crate::protocol::signatures::webvh::PrincipalInceptionInput {
-                    provider_endpoint: &endpoint,
-                    principal_endpoint: &endpoint,
-                    local_id: "lease-fixture",
-                    also_known_as: &[],
-                    version_time: arkret_canonical::normalize_timestamp_canonical(Utc::now()),
-                    root_seed: &[7; 32],
-                    next_root_public_key_multibase: &next_root_public_key_multibase,
-                    witness_policy: None,
-                },
-            )
-            .unwrap();
+        let inception = crate::protocol::signatures::webvh::prepare_principal_inception(
+            &crate::protocol::signatures::webvh::PrincipalInceptionInput {
+                provider_endpoint: &endpoint,
+                principal_endpoint: &endpoint,
+                local_id: "lease-fixture",
+                also_known_as: &[],
+                version_time: arkret_canonical::normalize_timestamp_canonical(Utc::now()),
+                root_seed: &[7; 32],
+                next_root_public_key_multibase: &next_root_public_key_multibase,
+                witness_policy: None,
+            },
+        )
+        .unwrap();
         PrincipalRegistrationAnchor::WebvhRegistration {
             registration_did_operation: Box::new(inception.submit_body),
             log_entries: vec![serde_json::from_value(inception.log_entry.clone()).unwrap()],
