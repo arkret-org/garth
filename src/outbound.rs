@@ -253,6 +253,14 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
                     }
                 }
                 let Some(item) = queue.ready_batch(now, 1).into_iter().next() else {
+                    if let Some((item, at)) = queue
+                        .active_items()
+                        .into_iter()
+                        .filter_map(|item| item.next_retry_at.map(|at| (item, at)))
+                        .min_by_key(|(_, at)| *at)
+                    {
+                        return Ok(QueuePreflight::Waiting { item, at });
+                    }
                     return Ok(QueuePreflight::Idle);
                 };
                 queue.mark_sending(&item.transaction_id, now)?;
@@ -264,6 +272,9 @@ impl<S: OutboundQueueStore> OutboundEngine<S> {
             .await?;
         let item = match item {
             QueuePreflight::Idle => return Ok(OutboundEngineOutcome::Idle),
+            QueuePreflight::Waiting { item, at } => {
+                return Ok(OutboundEngineOutcome::RetryAt { item, at });
+            }
             QueuePreflight::Quarantined { item, reason } => {
                 return Ok(OutboundEngineOutcome::Quarantined { item, reason });
             }
@@ -441,8 +452,15 @@ fn local_retry_delay(transaction_id: &str, attempts: u32) -> Duration {
 
 enum QueuePreflight {
     Idle,
+    Waiting {
+        item: SendQueueItem,
+        at: DateTime<Utc>,
+    },
     Ready(SendQueueItem),
-    Quarantined { item: SendQueueItem, reason: String },
+    Quarantined {
+        item: SendQueueItem,
+        reason: String,
+    },
 }
 
 fn owned_item(queue: &SendQueue, id: &str) -> Result<SendQueueItem> {
@@ -716,6 +734,44 @@ mod tests {
         assert_eq!(item.status, crate::sync_client::SendQueueStatus::Failed);
         assert_eq!(item.attempts, 1);
         assert!(item.next_retry_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn scheduled_retry_is_reported_instead_of_becoming_idle() {
+        let engine = OutboundEngine::new(MemoryStore::new());
+        let now = Utc::now();
+        engine
+            .enqueue(
+                Some("txn-waiting".to_owned()),
+                realm_id(),
+                queued_record(&realm_id(), serde_json::json!({"body": "hello"})),
+                Vec::new(),
+                now,
+            )
+            .await
+            .unwrap();
+
+        let first = engine
+            .submit_next_with_fence(&FailingSubmitter, &NoopGenerationFence, now)
+            .await
+            .unwrap();
+        let (retry_at, attempts) = match first {
+            OutboundEngineOutcome::RetryAt { item, at } => (at, item.attempts),
+            other => panic!("expected scheduled retry, got {other:?}"),
+        };
+
+        let waiting = engine
+            .submit_next_with_fence(&FailingSubmitter, &NoopGenerationFence, now)
+            .await
+            .unwrap();
+        match waiting {
+            OutboundEngineOutcome::RetryAt { item, at } => {
+                assert_eq!(item.transaction_id, "txn-waiting");
+                assert_eq!(item.attempts, attempts);
+                assert_eq!(at, retry_at);
+            }
+            other => panic!("scheduled work must not disappear into Idle: {other:?}"),
+        }
     }
 
     #[tokio::test]
