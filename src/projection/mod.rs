@@ -10,8 +10,9 @@ mod sidecar;
 mod sidecar_exchange;
 
 pub use current_results::{
-    CurrentCoverageCleanup, CurrentInstallPlan, CurrentRealmProgress, plan_current_entry,
-    plan_current_install,
+    CurrentCoverageCleanup, CurrentInstallPlan, CurrentRealmProgress, TimelineSegmentInstall,
+    TimelineWindowLevel, TimelineWindowPlan, TimelineWindowProgress, plan_current_entry,
+    plan_current_install, plan_timeline_window,
 };
 pub use realm_merge::{RealmProjectionFrame, reconcile_realm_projection};
 pub use seal_view::LocalSealView;

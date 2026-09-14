@@ -128,10 +128,12 @@ pub use outbound::{
 pub use projection::{
     CurrentCoverageCleanup, CurrentInstallPlan, CurrentRealmProgress, LocalSealView,
     ProjectionMount, RealmEventProjector, RealmProjectionFrame, RealmProjectionState,
+    TimelineSegmentInstall, TimelineWindowLevel, TimelineWindowPlan, TimelineWindowProgress,
     encryption_profile_is_encrypted, plan_current_entry, plan_current_install,
-    realm_authority_root_controller_for_realm, realm_authority_root_value_for_realm,
-    realm_projection_is_encrypted, realm_projection_security_state, reconcile_realm_projection,
-    security_projection_for_scope_id, strand_projection_security_state,
+    plan_timeline_window, realm_authority_root_controller_for_realm,
+    realm_authority_root_value_for_realm, realm_projection_is_encrypted,
+    realm_projection_security_state, reconcile_realm_projection, security_projection_for_scope_id,
+    strand_projection_security_state,
 };
 /// The Signal plaintext family (`sync/signal.md` §1.1).
 ///

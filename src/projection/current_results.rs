@@ -210,6 +210,137 @@ pub fn plan_current_install(
     Ok(plan)
 }
 
+/// Window-level facts a frozen timeline window states once and repeats in
+/// every segment (`client-sync.md` 5.2). A producer that varies them per
+/// segment makes the window unreadable, so the client refuses the segment
+/// rather than picking a value.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TimelineWindowLevel {
+    pub limited: bool,
+    pub preview_only: Option<bool>,
+    pub prev_cursor: Option<String>,
+}
+
+/// Client-side progress of one Realm's frozen timeline window.
+///
+/// This is the client half of `realms[id].timeline_baseline`. It is small
+/// durable metadata: one generation, its ceiling, its window-level facts and a
+/// delivered count. It never grows with history.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TimelineWindowProgress {
+    pub generation: Option<Cursor>,
+    /// Immediately superseded generation. Segments naming it are late
+    /// responses to interest the client already replaced and must not resolve
+    /// or disturb the window it is now waiting on.
+    pub superseded_generation: Option<Cursor>,
+    pub window_limit: u32,
+    pub window_level: Option<TimelineWindowLevel>,
+    pub delivered: u32,
+    pub complete: bool,
+}
+
+impl TimelineWindowProgress {
+    /// Retire the tracked window. Interest replacement and Realm invalidation
+    /// both land here: the old completion stops being binding and the client
+    /// waits for the rebuilt window instead of showing a stale one as done.
+    pub fn supersede(&mut self) {
+        if let Some(generation) = self.generation.take() {
+            self.superseded_generation = Some(generation);
+        }
+        self.window_limit = 0;
+        self.window_level = None;
+        self.delivered = 0;
+        self.complete = false;
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum TimelineSegmentInstall {
+    /// Frozen-window content for the tracked generation.
+    Window,
+    /// Live increment: it installs content but never completes, reopens or
+    /// advances a frozen window.
+    Live,
+    /// A late segment of a superseded generation, or an entry with no timeline.
+    Discard,
+}
+
+#[derive(Clone, Debug)]
+pub struct TimelineWindowPlan {
+    pub progress: TimelineWindowProgress,
+    pub install: TimelineSegmentInstall,
+    /// The window finished in this frame. Delivery only: it proves nothing
+    /// about per-event authentication, decryption, display dependencies, full
+    /// history or any read/write permission.
+    pub completed_now: bool,
+}
+
+/// Preflight one Realm entry's timeline segment without changing host state.
+///
+/// `delivered_events` is the count of events the host will actually install
+/// from this segment after its own identity-based dedupe, so a retried segment
+/// cannot inflate the window past its ceiling.
+pub fn plan_timeline_window(
+    previous: &TimelineWindowProgress,
+    incoming: &RealmSyncEntry,
+    delivered_events: u32,
+) -> Result<TimelineWindowPlan> {
+    incoming.validate_demand()?;
+    let mut plan = TimelineWindowPlan {
+        progress: previous.clone(),
+        install: TimelineSegmentInstall::Discard,
+        completed_now: false,
+    };
+    if incoming.unavailable.is_some() {
+        // Unavailable is a third outcome: it ends the wait without completing
+        // the window and without becoming a successful empty result.
+        plan.progress.supersede();
+        return Ok(plan);
+    }
+    let Some(timeline) = &incoming.timeline else {
+        return Ok(plan);
+    };
+    let Some(segment) = &incoming.timeline_baseline else {
+        plan.install = TimelineSegmentInstall::Live;
+        return Ok(plan);
+    };
+    let window_level = TimelineWindowLevel {
+        limited: timeline.limited,
+        preview_only: timeline.preview_only,
+        prev_cursor: timeline.prev_cursor.clone(),
+    };
+    if previous.superseded_generation.as_ref() == Some(&segment.snapshot_cursor) {
+        return Ok(plan);
+    }
+    if previous.generation.as_ref() == Some(&segment.snapshot_cursor) {
+        if previous.window_limit != segment.window_limit {
+            return Err(invalid(
+                "timeline window limit changed inside one frozen generation",
+            ));
+        }
+        if previous.window_level.as_ref() != Some(&window_level) {
+            return Err(invalid(
+                "timeline window-level field changed inside one frozen generation",
+            ));
+        }
+    } else {
+        plan.progress.supersede();
+        plan.progress.generation = Some(segment.snapshot_cursor.clone());
+        plan.progress.window_limit = segment.window_limit;
+        plan.progress.window_level = Some(window_level);
+    }
+    plan.progress.delivered = plan.progress.delivered.saturating_add(delivered_events);
+    if plan.progress.delivered > segment.window_limit {
+        return Err(invalid("timeline window delivered more than its ceiling"));
+    }
+    plan.install = TimelineSegmentInstall::Window;
+    if segment.complete {
+        plan.completed_now = !plan.progress.complete;
+        plan.progress.complete = true;
+    }
+    Ok(plan)
+}
+
 #[cfg(test)]
 mod tests {
     use serde_json::json;
@@ -331,5 +462,174 @@ mod tests {
             plan_current_install(&previous, &frame(entry(11, false), None), &BTreeMap::new())
                 .unwrap();
         assert_eq!(plan.writes.len(), 1);
+    }
+
+    const GEN_A: &str = "ak:cursor:Z2VuZXJhdGlvbmE";
+    const GEN_B: &str = "ak:cursor:Z2VuZXJhdGlvbmI";
+
+    fn window_frame(
+        generation: Option<(&str, u32, bool)>,
+        limited: bool,
+        prev_cursor: Option<&str>,
+    ) -> RealmSyncEntry {
+        let mut timeline = json!({"events": [], "limited": limited});
+        if let Some(prev_cursor) = prev_cursor {
+            timeline["prev_cursor"] = json!(prev_cursor);
+        }
+        let mut value = json!({"timeline": timeline});
+        if let Some((cursor, window_limit, complete)) = generation {
+            value["timeline_baseline"] = json!({
+                "snapshot_cursor": cursor,
+                "window_limit": window_limit,
+                "complete": complete
+            });
+        }
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[test]
+    fn segmented_window_completes_only_after_its_last_segment() {
+        let progress = TimelineWindowProgress::default();
+        let first = plan_timeline_window(
+            &progress,
+            &window_frame(Some((GEN_A, 20, false)), false, None),
+            5,
+        )
+        .unwrap();
+        assert_eq!(first.install, TimelineSegmentInstall::Window);
+        assert!(!first.progress.complete);
+        assert_eq!(first.progress.delivered, 5);
+        let last = plan_timeline_window(
+            &first.progress,
+            &window_frame(Some((GEN_A, 20, true)), false, None),
+            3,
+        )
+        .unwrap();
+        assert!(last.progress.complete);
+        assert!(last.completed_now);
+        assert_eq!(last.progress.delivered, 8);
+    }
+
+    #[test]
+    fn live_segment_neither_completes_nor_advances_the_window() {
+        let seeded = plan_timeline_window(
+            &TimelineWindowProgress::default(),
+            &window_frame(Some((GEN_A, 20, false)), false, None),
+            4,
+        )
+        .unwrap()
+        .progress;
+        let live = plan_timeline_window(&seeded, &window_frame(None, false, None), 7).unwrap();
+        assert_eq!(live.install, TimelineSegmentInstall::Live);
+        assert_eq!(live.progress.delivered, 4);
+        assert!(!live.progress.complete);
+    }
+
+    #[test]
+    fn window_level_facts_and_ceiling_must_not_move_inside_one_generation() {
+        let seeded = plan_timeline_window(
+            &TimelineWindowProgress::default(),
+            &window_frame(Some((GEN_A, 20, false)), true, Some("ak:cursor:cHJldg")),
+            5,
+        )
+        .unwrap()
+        .progress;
+        assert!(
+            plan_timeline_window(
+                &seeded,
+                &window_frame(Some((GEN_A, 10, true)), true, Some("ak:cursor:cHJldg")),
+                1
+            )
+            .is_err()
+        );
+        assert!(
+            plan_timeline_window(
+                &seeded,
+                &window_frame(Some((GEN_A, 20, true)), false, None),
+                1
+            )
+            .is_err()
+        );
+        assert!(
+            plan_timeline_window(
+                &seeded,
+                &window_frame(Some((GEN_A, 20, true)), true, Some("ak:cursor:cHJldg")),
+                16
+            )
+            .is_err(),
+            "a window must not deliver past its own ceiling"
+        );
+    }
+
+    #[test]
+    fn a_superseded_generation_cannot_complete_the_window_the_client_waits_on() {
+        let first = plan_timeline_window(
+            &TimelineWindowProgress::default(),
+            &window_frame(Some((GEN_A, 20, false)), false, None),
+            5,
+        )
+        .unwrap()
+        .progress;
+        let rebuilt = plan_timeline_window(
+            &first,
+            &window_frame(Some((GEN_B, 50, false)), false, None),
+            0,
+        )
+        .unwrap();
+        assert_eq!(
+            rebuilt.progress.generation.as_ref().map(Cursor::as_str),
+            Some(GEN_B)
+        );
+        assert_eq!(rebuilt.progress.delivered, 0);
+        let stale = plan_timeline_window(
+            &rebuilt.progress,
+            &window_frame(Some((GEN_A, 20, true)), false, None),
+            5,
+        )
+        .unwrap();
+        assert_eq!(stale.install, TimelineSegmentInstall::Discard);
+        assert!(!stale.progress.complete);
+        assert_eq!(
+            stale.progress.generation.as_ref().map(Cursor::as_str),
+            Some(GEN_B)
+        );
+    }
+
+    #[test]
+    fn unavailable_ends_the_wait_without_completing_the_window() {
+        let seeded = plan_timeline_window(
+            &TimelineWindowProgress::default(),
+            &window_frame(Some((GEN_A, 20, false)), false, None),
+            3,
+        )
+        .unwrap()
+        .progress;
+        let entry: RealmSyncEntry = serde_json::from_value(
+            json!({"unavailable": {"error_code": "temporarily_unavailable"}}),
+        )
+        .unwrap();
+        let plan = plan_timeline_window(&seeded, &entry, 0).unwrap();
+        assert_eq!(plan.install, TimelineSegmentInstall::Discard);
+        assert!(!plan.progress.complete);
+        assert_eq!(
+            plan.progress
+                .superseded_generation
+                .as_ref()
+                .map(Cursor::as_str),
+            Some(GEN_A)
+        );
+    }
+
+    #[test]
+    fn a_zero_item_window_still_completes_explicitly() {
+        let plan = plan_timeline_window(
+            &TimelineWindowProgress::default(),
+            &window_frame(Some((GEN_A, 0, true)), false, None),
+            0,
+        )
+        .unwrap();
+        assert!(plan.progress.complete);
+        assert_eq!(plan.progress.delivered, 0);
+        assert_eq!(plan.progress.window_limit, 0);
     }
 }
