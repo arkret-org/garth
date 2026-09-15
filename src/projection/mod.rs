@@ -17,10 +17,11 @@ pub use current_results::{
 pub use realm_merge::{RealmProjectionFrame, reconcile_realm_projection};
 pub use seal_view::LocalSealView;
 pub use security_state::{
-    encryption_profile_is_encrypted, non_empty_string, projection_for_scope_id,
-    realm_authority_root_controller_for_realm, realm_authority_root_value_for_realm,
-    realm_projection_is_encrypted, realm_projection_security_state,
-    security_projection_for_scope_id, strand_projection_security_state, string_field,
+    encryption_profile_is_encrypted, installed_cell_value, non_empty_string,
+    projection_for_scope_id, realm_authority_root_controller_for_realm,
+    realm_authority_root_value_for_realm, realm_projection_is_encrypted,
+    realm_projection_security_state, security_projection_for_scope_id,
+    strand_projection_security_state, string_field,
 };
 pub use sidecar::{
     SidecarProjectionFold, SidecarTimelineEvent, SidecarTimelineItem, merge_sidecar_timeline,

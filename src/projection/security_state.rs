@@ -173,19 +173,38 @@ fn installed_realm_cell_value<'a>(
     realm_id: Option<&str>,
     cell_id: &str,
 ) -> Option<&'a Value> {
-    let entries = body.pointer("/current/entries")?.as_array()?;
-    let mut matches = entries.iter().filter(|entry| {
-        entry.pointer("/selector/cell_id").and_then(Value::as_str) == Some(cell_id)
-            && entry
-                .pointer("/selector/scope_ref/kind")
-                .and_then(Value::as_str)
-                == Some("realm")
+    installed_cell_value_where(body, cell_id, |entry| {
+        entry
+            .pointer("/selector/scope_ref/kind")
+            .and_then(Value::as_str)
+            == Some("realm")
             && realm_id.is_none_or(|id| {
                 entry
                     .pointer("/selector/scope_ref/realm_id")
                     .and_then(Value::as_str)
                     == Some(id)
             })
+    })
+}
+
+/// The one installed current value for `cell_id` in this projection.
+///
+/// The Station publishes exactly one `source`/`value` per selector, so a
+/// unique `value` entry is the whole answer. A missing, duplicated or
+/// non-`value` entry is unknown state, never an invitation to re-derive the
+/// cell from Events: the client keeps no MV heads and no raw-latest reduction.
+pub fn installed_cell_value<'a>(body: &'a Value, cell_id: &str) -> Option<&'a Value> {
+    installed_cell_value_where(body, cell_id, |_| true)
+}
+
+fn installed_cell_value_where<'a>(
+    body: &'a Value,
+    cell_id: &str,
+    accept: impl Fn(&Value) -> bool,
+) -> Option<&'a Value> {
+    let entries = body.pointer("/current/entries")?.as_array()?;
+    let mut matches = entries.iter().filter(|entry| {
+        entry.pointer("/selector/cell_id").and_then(Value::as_str) == Some(cell_id) && accept(entry)
     });
     let entry = matches.next()?;
     if matches.next().is_some()
