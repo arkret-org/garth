@@ -466,13 +466,12 @@ mod tests {
     }
 
     fn to_device_message(kind: &str) -> DeviceMessageEnvelope {
-        let content = if kind == "ak.key.verification.request" {
+        let content = if kind == "ak.secret.request" {
             json!({
-                "transaction_id": "txn-1",
+                "request_id": "request-1",
+                "secret_id": "example_mls_account_secret",
                 "from_device_id": "ak:device:0196419b-0000-7000-8000-000000000001",
-                "methods": ["ak.key.verification.sas_v1"],
-                "timestamp": "2026-07-15T00:00:00.000Z",
-                "expires_at": "2026-07-15T00:10:00.000Z"
+                "recipient_hpke_public_key": "9CKz3Ai9iQz0kHhZcH0H2jqvS-LcQ0YjvKq3aH9mQ0U"
             })
         } else {
             json!({"request_id": "request-1"})
@@ -603,11 +602,11 @@ mod tests {
             "ak.mls.welcome"
         )]));
         assert!(!to_device_batch_safe_for_ingest_ack(&[
-            to_device_message("ak.key.verification.request"),
+            to_device_message("ak.secret.request"),
             to_device_message("ak.mls.welcome"),
         ]));
         assert!(to_device_batch_safe_for_ingest_ack(&[to_device_message(
-            "ak.key.verification.request"
+            "ak.secret.request"
         )]));
     }
 
