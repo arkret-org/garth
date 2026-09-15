@@ -197,6 +197,23 @@ pub fn installed_cell_value<'a>(body: &'a Value, cell_id: &str) -> Option<&'a Va
     installed_cell_value_where(body, cell_id, |_| true)
 }
 
+/// The one installed current value for `cell_id` under exactly `effective_scope`.
+///
+/// A Realm projection carries its own scope plus the Circles it owns
+/// (`sync/current-results.md` §2), so a cell family that exists once per MLS
+/// group appears several times in one body. Matching the selector scope keeps
+/// a Circle group from reading the enclosing Realm's value.
+pub fn installed_scoped_cell_value<'a>(
+    body: &'a Value,
+    effective_scope: &arkret_wire::ScopeRef,
+    cell_id: &str,
+) -> Option<&'a Value> {
+    let scope = serde_json::to_value(effective_scope).ok()?;
+    installed_cell_value_where(body, cell_id, |entry| {
+        entry.pointer("/selector/scope_ref") == Some(&scope)
+    })
+}
+
 fn installed_cell_value_where<'a>(
     body: &'a Value,
     cell_id: &str,

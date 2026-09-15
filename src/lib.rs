@@ -131,11 +131,12 @@ pub use outbound::{
     OutboundSubmitOutcome, OutboundSubmitter,
 };
 pub use projection::{
-    CurrentCoverageCleanup, CurrentInstallPlan, CurrentRealmProgress, LocalSealView,
-    ProjectionMount, RealmEventProjector, RealmProjectionFrame, RealmProjectionState,
-    TimelineSegmentInstall, TimelineWindowLevel, TimelineWindowPlan, TimelineWindowProgress,
-    encryption_profile_is_encrypted, installed_cell_value, plan_current_entry,
-    plan_current_install, plan_timeline_window, realm_authority_root_controller_for_realm,
+    CurrentCoverageCleanup, CurrentInstallPlan, CurrentRealmProgress, InstalledMlsEpoch,
+    LocalSealView, ProjectionMount, RealmEventProjector, RealmProjectionFrame,
+    RealmProjectionState, TimelineSegmentInstall, TimelineWindowLevel, TimelineWindowPlan,
+    TimelineWindowProgress, encryption_profile_is_encrypted, installed_cell_value,
+    installed_mls_epoch, installed_scoped_cell_value, plan_current_entry, plan_current_install,
+    plan_timeline_window, realm_authority_root_controller_for_realm,
     realm_authority_root_value_for_realm, realm_projection_is_encrypted,
     realm_projection_security_state, reconcile_realm_projection, security_projection_for_scope_id,
     strand_projection_security_state,

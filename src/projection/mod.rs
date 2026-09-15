@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::protocol::{Event, EventId, RealmId, Result};
 
 mod current_results;
+mod mls_epoch;
 mod realm_merge;
 mod seal_view;
 mod security_state;
@@ -14,11 +15,12 @@ pub use current_results::{
     TimelineWindowLevel, TimelineWindowPlan, TimelineWindowProgress, plan_current_entry,
     plan_current_install, plan_timeline_window,
 };
+pub use mls_epoch::{InstalledMlsEpoch, installed_mls_epoch};
 pub use realm_merge::{RealmProjectionFrame, reconcile_realm_projection};
 pub use seal_view::LocalSealView;
 pub use security_state::{
-    encryption_profile_is_encrypted, installed_cell_value, non_empty_string,
-    projection_for_scope_id, realm_authority_root_controller_for_realm,
+    encryption_profile_is_encrypted, installed_cell_value, installed_scoped_cell_value,
+    non_empty_string, projection_for_scope_id, realm_authority_root_controller_for_realm,
     realm_authority_root_value_for_realm, realm_projection_is_encrypted,
     realm_projection_security_state, security_projection_for_scope_id,
     strand_projection_security_state, string_field,
