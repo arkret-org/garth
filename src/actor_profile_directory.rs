@@ -13,7 +13,9 @@
 //! the exact signed Event, the display projection and the requested actor are
 //! one subject. A row that fails that check is recorded as unavailable rather
 //! than displayed, because a projection the client cannot bind to an Event is
-//! not weaker evidence — it is none.
+//! not weaker evidence — it is none. That degradation is per actor on purpose:
+//! one row the client cannot bind does not cost it the rows that bound fine,
+//! which is what the operation's single-valued per-actor failure is for.
 //!
 //! The protocol declares no freshness lease for a profile, so the window that
 //! separates fresh from stale is a local display policy, not a wire fact. The
