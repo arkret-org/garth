@@ -9,7 +9,8 @@ use std::future::Future;
 use std::pin::Pin;
 
 use arkret_models_crypto::{
-    BackupSeriesEraseOutcome, BackupSeriesEraseRequestBody, SecurityTransactionContinueRequest,
+    BackupSeriesEraseOutcome, BackupSeriesEraseRequestBody, ClientStepAttestationArtifact,
+    SecurityTransactionContinueRequest,
 };
 use arkret_wire::{
     Hash, IssueRecoveryCompletionGrantOutcome, IssueRecoveryCompletionGrantRequest,
@@ -109,6 +110,15 @@ impl SecurityTransactionTransport for arkret_http_client::Client {
     }
 }
 
+/// One in-flight continuation, retained byte for byte.
+///
+/// `canonical_request` is the whole canonical
+/// `SecurityTransactionContinueRequest`, so for a recovery it already contains
+/// the complete `RecoveryTerminalCommit` — the signed first new-generation Seal
+/// and the recovery receipt — inside `client_attestation.artifact`. That is a
+/// requirement, not an accident: the Seal is signed once against a fenced
+/// signing slot, and a retry that re-derived it could never reproduce the same
+/// bytes.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingSecurityTransactionContinue {
     pub expected_accepted_step_count: u8,
@@ -224,7 +234,7 @@ fn reconcile_terminal_continue(
     let Some(attestation) = request.client_attestation.as_ref() else {
         return Ok(());
     };
-    if attestation.step != SecurityTransactionStep::IssueTerminalReceipt {
+    if attestation.step != SecurityTransactionStep::CommitRecoveryUnit {
         return Ok(());
     }
     let completion = resource
@@ -236,11 +246,23 @@ fn reconcile_terminal_continue(
                 "completed recovery transaction omitted its completion attestation".to_owned(),
             )
         })?;
+    let ClientStepAttestationArtifact::RecoveryTerminalCommit(commit) = &attestation.artifact
+    else {
+        return Err(Error::Protocol(
+            "recovery terminal continuation carries a non-recovery artifact".to_owned(),
+        ));
+    };
+    // The derived attestation digest is the terminal commit digest: one
+    // projection covers both the Seal signature and the receipt, so the
+    // authoritative attestation and the durable artifact are compared over the
+    // exact bytes the replacement device signed.
     if attestation.output_ref != completion.terminal_receipt_id.as_str()
-        || attestation.attestation_digest != completion.terminal_receipt_digest
+        || attestation.attestation_digest()? != completion.terminal_commit_digest
+        || commit.first_generation_seal.id != completion.first_generation_seal_id
     {
         return Err(Error::Protocol(
-            "authoritative terminal resource does not match the durable signed receipt".to_owned(),
+            "authoritative terminal resource does not match the durable signed terminal commit"
+                .to_owned(),
         ));
     }
     local.accepted_terminal_continue = Some(pending.canonical_request.clone());
@@ -374,7 +396,7 @@ where
             .client_attestation
             .as_ref()
             .is_some_and(|attestation| {
-                attestation.step == SecurityTransactionStep::IssueTerminalReceipt
+                attestation.step == SecurityTransactionStep::CommitRecoveryUnit
             })
             && resource.is_completed()
         {
@@ -405,9 +427,11 @@ where
                 "stored security transaction continuation is invalid: {error}"
             ))
         })?;
-        if request.expected_accepted_step_count != pending.expected_accepted_step_count {
+        if request.expected_accepted_step_count != pending.expected_accepted_step_count
+            || arkret_canonical::canonical_json_bytes(&request)? != pending.canonical_request
+        {
             return Err(Error::Protocol(
-                "stored security transaction continuation changed its accepted-step count"
+                "stored security transaction continuation is not byte-identical on replay"
                     .to_owned(),
             ));
         }

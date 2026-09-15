@@ -24,15 +24,13 @@ use std::pin::Pin;
 
 use arkret_canonical::DigestSuite;
 use arkret_models_collaboration::event_sync::RealmActorFrontierView;
-/// The closed authoring vocabulary a host builds its intent from.
-///
-/// It is republished here rather than reached for through a second path so the
-/// definitions an application fills in are the same ones this module verifies
-/// against.
-pub use arkret_models_collaboration::events_payloads::message::MessageTrackName;
-pub use arkret_models_collaboration::message_authoring::{
-    MESSAGE_PREPARE_TTL_SECONDS, MessageAuthoringContent, MessageAuthoringIntent,
-    MessageEncryptionContext, MessagePrepareOutcome, MessagePrepareRequestBody,
+// The closed authoring vocabulary a host builds its intent from is owned by the
+// SDK and published by its facade. This module consumes it like any other
+// caller: republishing it here would give an application a second import path
+// for one definition.
+use arkret_models_collaboration::message_authoring::{
+    MessageAuthoringContent, MessageAuthoringIntent, MessagePrepareOutcome,
+    MessagePrepareRequestBody,
 };
 use arkret_wire::{
     AccountId, AuthContext, AuthoredEvent, EventId, Hash, Hlc, RealmId, RequestId, ScopeRef,
