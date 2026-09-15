@@ -9,6 +9,7 @@ use arkret_models_collaboration::direct_conversation_ops::{
 use arkret_models_collaboration::events_payloads::RealmCreatePayload;
 use arkret_wire::{
     ActorId, AuthoredEvent, DidCoreId, Event, EventId, EventKind, Hash, MessageId, RealmId,
+    RequestId,
 };
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -145,6 +146,21 @@ pub struct ScheduledSendDispatchRecord {
     pub submission_state: ScheduledSendSubmissionState,
 }
 
+/// One ordinary message completed by the account's own Station.
+///
+/// A slot carrying this record is never re-authored locally. The unsigned Event
+/// it holds was produced by `ak.self.messages.command.prepare.v1` and signed as
+/// a proof-only addition, so there is no local answer for the fields a new
+/// attempt would have to change: a conflict means preparing again under a new
+/// request identity, reusing the identical body.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StationPreparedMessageRecord {
+    pub request_id: RequestId,
+    pub request_digest: Hash,
+    pub expires_at: DateTime<Utc>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct QueuedMlsLocalCheckpoint {
@@ -243,6 +259,8 @@ pub struct QueuedSdkEvent {
     pub post_accept: Option<QueuedPostAcceptAction>,
     #[serde(deserialize_with = "deserialize_required_nullable")]
     pub scheduled_dispatch: Option<ScheduledSendDispatchRecord>,
+    #[serde(deserialize_with = "deserialize_required_nullable")]
+    pub station_prepared: Option<StationPreparedMessageRecord>,
 }
 
 fn deserialize_required_nullable<'de, D, T>(
@@ -275,6 +293,7 @@ impl QueuedSdkEvent {
             authoring_generation,
             post_accept,
             scheduled_dispatch: None,
+            station_prepared: None,
         };
         queued.validate()?;
         Ok(queued)
@@ -313,6 +332,7 @@ impl QueuedSdkEvent {
             authoring_generation,
             post_accept,
             scheduled_dispatch: None,
+            station_prepared: None,
         };
         queued.validate()?;
         Ok(queued)
@@ -366,9 +386,76 @@ impl QueuedSdkEvent {
                 canonical_signed_event_bytes,
                 submission_state: ScheduledSendSubmissionState::Ready,
             }),
+            station_prepared: None,
         };
         queued.validate()?;
         Ok(queued)
+    }
+
+    /// An ordinary message whose unsigned Event came from the account's own
+    /// Station and was only signed here.
+    ///
+    /// The CBS basis is pinned rather than re-resolved: the authority closure in
+    /// this envelope is the one the Station verified for this exact preparation,
+    /// and a retry that swapped it would be signing a different authorization
+    /// than the user's proof covers.
+    pub fn station_prepared_message(
+        prepared: StationPreparedMessageRecord,
+        envelope: AuthoredEvent,
+        local_operation_id: String,
+        canonical_body_bytes: Vec<u8>,
+        authoring_generation: AuthoringGeneration,
+    ) -> Result<Self> {
+        if envelope.kind != EventKind::MessageCreate {
+            return Err(Error::Protocol(
+                "a Station-prepared message must contain ak.message.create".to_owned(),
+            ));
+        }
+        if envelope.proofs.is_empty() {
+            return Err(Error::Protocol(
+                "a Station-prepared message reaches the queue already signed".to_owned(),
+            ));
+        }
+        let auth_context = envelope.auth_context.clone().ok_or_else(|| {
+            Error::Protocol(
+                "a Station-prepared message carries the authorization it was prepared under"
+                    .to_owned(),
+            )
+        })?;
+        let intent = QueuedEventIntent::with_pinned_cbs_basis(
+            EventIntent::from_authored(envelope.event()).with_auth_context(auth_context),
+            envelope.digest_suite(),
+        );
+        let intent_digest = intent.digest()?;
+        let transport_idempotency_key = prepared.request_id.to_string();
+        let queued = Self {
+            intent,
+            intent_digest: intent_digest.clone(),
+            local_operation_id,
+            authoring_idempotency_key: transport_idempotency_key.clone(),
+            authored_attempt: Some(QueuedAuthoredEventAttempt {
+                intent_digest,
+                envelope,
+                transport_idempotency_key,
+                canonical_body_bytes,
+            }),
+            supersedes_event_id: None,
+            authoring_generation,
+            post_accept: None,
+            scheduled_dispatch: None,
+            station_prepared: Some(prepared),
+        };
+        queued.validate()?;
+        Ok(queued)
+    }
+
+    /// True when a rejected attempt cannot be re-authored from local state.
+    ///
+    /// A Station-prepared message and a scheduled dispatch both answer yes: the
+    /// signed bytes are the operation, so recovery is a new preparation, never a
+    /// silent local rewrite of what the user signed.
+    pub fn requires_new_preparation(&self) -> bool {
+        self.station_prepared.is_some() || self.scheduled_dispatch.is_some()
     }
 
     pub fn mark_scheduled_submission_uncertain(&mut self) -> bool {
@@ -451,6 +538,26 @@ impl QueuedSdkEvent {
             {
                 return Err(Error::Protocol(
                     "scheduled dispatch record does not match its immutable authored Event"
+                        .to_owned(),
+                ));
+            }
+        }
+        if let Some(prepared) = self.station_prepared.as_ref() {
+            let attempt = self.authored_attempt.as_ref().ok_or_else(|| {
+                Error::Protocol(
+                    "a Station-prepared message requires its frozen authored attempt".to_owned(),
+                )
+            })?;
+            if self.intent.kind() != &EventKind::MessageCreate
+                || self.scheduled_dispatch.is_some()
+                || self.post_accept.is_some()
+                || self.intent.auth_context().is_none()
+                || attempt.transport_idempotency_key != prepared.request_id.to_string()
+                || attempt.envelope.proofs.is_empty()
+            {
+                return Err(Error::Protocol(
+                    "a Station-prepared message keeps its pinned authorization, its preparation \
+                     identity and exactly one signed message Event"
                         .to_owned(),
                 ));
             }

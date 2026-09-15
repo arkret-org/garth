@@ -26,6 +26,7 @@ pub mod history_outbox;
 pub mod history_runtime;
 pub mod inbound;
 pub mod maybe_send;
+pub mod message_authoring;
 pub mod mls;
 pub mod orchestrator;
 pub mod outbound;
@@ -113,6 +114,11 @@ pub use history_runtime::{
 };
 pub use inbound::{DecodedInbound, DecodedMessage, InboundDecoder};
 pub use maybe_send::{MaybeSend, MaybeSendSync};
+pub use message_authoring::{
+    MessageAuthoringFailure, MessageAuthoringRecovery, MessageAuthoringSession,
+    MessageAuthoringTarget, MessagePrepareTransport, PreparedMessageSubmission,
+    classify_message_authoring_error,
+};
 pub use mls::{
     ACCOUNT_MLS_SECRET_CURRENT_VERSION, AEAD_VERSION_CHACHA20_POLY1305, AccountMlsSecretRotation,
     EnvelopeError, MLS_ENVELOPE_MAGIC, MlsLocalCheckpointEnvelope, MlsRuntimeError,
@@ -152,7 +158,7 @@ pub use queued_record::{
     AuthoringAuthorityModel, AuthoringGeneration, MlsAdmissionStage, QueuedAuthoredEventAttempt,
     QueuedEventIntent, QueuedMlsLocalCheckpoint, QueuedMlsWelcomes, QueuedPostAcceptAction,
     QueuedRealmBootstrap, QueuedRecord, QueuedSdkEvent, ScheduledSendDispatchRecord,
-    ScheduledSendSubmissionState,
+    ScheduledSendSubmissionState, StationPreparedMessageRecord,
 };
 pub use runtime_journey::{ParticipationAction, ParticipationAdmissionFacts};
 pub use security_transaction::{
