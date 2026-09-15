@@ -15,6 +15,7 @@ mod protocol;
 pub use error::{Error, Result};
 
 pub mod account_handoff;
+pub mod actor_profile_directory;
 pub mod crypto_state_store;
 pub mod direct_conversation;
 pub mod event;
@@ -54,6 +55,10 @@ pub use account_handoff::{
     classify_registration_checkpoint, identity_binding_challenge_request,
     identity_creation_register_request, normalize_local_evidence, oidc_account_handoff_request,
     reconcile_identity_creation, route_bound_session, validate_identity_creation_outcome,
+};
+pub use actor_profile_directory::{
+    ActorProfileDirectory, ActorProfileResolveTransport, ActorProfileUnavailableCause,
+    ActorProfileView, DEFAULT_ACTOR_PROFILE_FRESH_FOR_SECONDS,
 };
 pub use arkret_identity::{
     AuthorityDidHistoryResolver, AuthorityHistoryUnavailable, AuthorityHistoryVerificationError,
