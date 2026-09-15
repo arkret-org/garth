@@ -280,6 +280,12 @@ pub struct TimelineWindowPlan {
 /// `delivered_events` is the count of events the host will actually install
 /// from this segment after its own identity-based dedupe, so a retried segment
 /// cannot inflate the window past its ceiling.
+///
+/// The host MUST already have rejected late responses by session generation,
+/// request sequence and filter digest (`client-sync.md` 2.3): an unknown
+/// `snapshot_cursor` reaching here is read as the server rebuilding the window,
+/// and is adopted. `superseded_generation` only catches segments of the window
+/// this progress itself just replaced, which is one generation deep.
 pub fn plan_timeline_window(
     previous: &TimelineWindowProgress,
     incoming: &RealmSyncEntry,
