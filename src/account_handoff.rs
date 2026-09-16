@@ -6,23 +6,28 @@
 
 use std::collections::BTreeSet;
 
-use crate::protocol::{
+use arkret_models_collaboration::account_operations::{
+    AccountRegisterOutcome, AccountRegisterRequestBody,
+};
+use arkret_models_identity::{
     AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
-    AccountRegisterOutcome, AccountRegisterRequestBody, Base64UrlString, DeviceId, Did, DidCoreId,
-    Hash, IdentityBindingChallengeOutcome, IdentityBindingChallengeRequestBody,
-    IdentityBindingPurpose, IdentityCreationCommandKind, IdentityCreationControlProofKind,
+    IdentityBindingChallengeOutcome, IdentityBindingChallengeRequestBody, IdentityBindingPurpose,
+    IdentityCreationCommandKind, IdentityCreationControlProofKind, IdentityCreationEvents,
     IdentityCreationGoal, IdentityCreationLease, IdentityCreationLeaseState,
     IdentityCreationLocalArtifactKind, IdentityCreationRecoveryKeyState,
-    IdentityCreationRegistration, InitialSessionGrantIntent, PcrGenesisUnit,
-    PrincipalRegistrationAnchor, RequestId, Result, UnsignedAccountHandoffAuthenticationProof,
+    IdentityCreationRegistration, InitialSessionGrantIntent, PrincipalRegistrationAnchor,
+    ReservedIdentityCreation, UnsignedAccountHandoffAuthenticationProof,
     UnsignedAccountHandoffRequestBody, UnsignedIdentityCreationControlProof,
     UnsignedIdentityCreationControlProofBody,
 };
+use arkret_wire::{Base64UrlString, DeviceId, Did, DidCoreId, Hash, RequestId};
+
+use crate::{Error, Result};
 
 #[derive(Clone, Debug)]
 pub struct OidcAccountHandoffInput {
     pub request_id: RequestId,
-    pub audience_id: crate::protocol::DidCoreId,
+    pub audience_id: DidCoreId,
     pub issuer_uri: String,
     pub client_id: String,
     pub redirect_uri: String,
@@ -34,7 +39,7 @@ pub struct OidcAccountHandoffInput {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AccountHandoffDisposition {
-    IdentityCreationActive(IdentityCreationLease),
+    IdentityCreationActive(Box<IdentityCreationLease>),
     IdentityCreationBusy {
         retry_after_ms: u64,
         expires_at: chrono::DateTime<chrono::Utc>,
@@ -516,7 +521,9 @@ pub fn account_handoff_disposition(
     Ok(match &outcome.binding {
         AccountHandoffBinding::IdentityCreationActive {
             identity_creation_lease,
-        } => AccountHandoffDisposition::IdentityCreationActive(identity_creation_lease.clone()),
+        } => AccountHandoffDisposition::IdentityCreationActive(Box::new(
+            identity_creation_lease.clone(),
+        )),
         AccountHandoffBinding::IdentityCreationBusy {
             retry_after_ms,
             expires_at,
@@ -564,12 +571,10 @@ pub fn identity_binding_challenge_request(
     request_id: RequestId,
     lease: &IdentityCreationLease,
     principal_registration_anchor: PrincipalRegistrationAnchor,
-    pcr_genesis_unit: &PcrGenesisUnit,
+    creation_events: &IdentityCreationEvents,
     initial_session: &InitialSessionGrantIntent,
 ) -> Result<IdentityBindingChallengeRequestBody> {
-    let reserved = crate::protocol::ReservedIdentityCreation::from_anchor(
-        principal_registration_anchor.clone(),
-    )?;
+    let reserved = ReservedIdentityCreation::from_anchor(principal_registration_anchor.clone())?;
     if let Some(existing) = lease.reserved_identity.as_ref()
         && existing != &reserved
     {
@@ -577,10 +582,10 @@ pub fn identity_binding_challenge_request(
             "identity-creation lease is already reserved for a different registration anchor",
         ));
     }
-    pcr_genesis_unit.validate_ordered_envelopes()?;
+    creation_events.validate()?;
     initial_session.validate()?;
-    let create = pcr_genesis_unit.create();
-    let authorize = pcr_genesis_unit.founding_authorize();
+    let create = &creation_events.realm_create;
+    let authorize = &creation_events.founding_device_authorize;
     let did = principal_registration_anchor.did().clone();
     let request = IdentityBindingChallengeRequestBody {
         request_id,
@@ -589,12 +594,12 @@ pub fn identity_binding_challenge_request(
         did,
         principal_registration_anchor,
         pcr_realm_id: create.realm_id.clone(),
-        realm_create_payload_digest: Hash::new(crate::protocol::canonical::canonical_sha256(
+        realm_create_payload_digest: Hash::new(arkret_canonical::canonical_sha256(
             &create.payload,
         )?)?,
-        founding_authorize_payload_digest: Hash::new(
-            crate::protocol::canonical::canonical_sha256(&authorize.payload)?,
-        )?,
+        founding_authorize_payload_digest: Hash::new(arkret_canonical::canonical_sha256(
+            &authorize.payload,
+        )?)?,
         initial_session_request_digest: initial_session.canonical_request_digest()?,
     };
     request.canonical_request_digest()?;
@@ -617,7 +622,7 @@ pub fn identity_creation_register_request(
     challenge: &IdentityBindingChallengeOutcome,
     frozen_request: &IdentityBindingChallengeRequestBody,
     context: &IdentityCreationBindingContext,
-    pcr_genesis_unit: PcrGenesisUnit,
+    creation_events: IdentityCreationEvents,
     initial_session: InitialSessionGrantIntent,
     root_seed: &[u8; 32],
     display_name: Option<String>,
@@ -643,14 +648,14 @@ pub fn identity_creation_register_request(
         || initial_session.session_public_key.thumbprint_sha256()? != context.dpop_jkt
         || frozen_request.initial_session_request_digest
             != initial_session.canonical_request_digest()?
-        || frozen_request.pcr_realm_id != pcr_genesis_unit.create().realm_id
+        || frozen_request.pcr_realm_id != creation_events.realm_create.realm_id
         || frozen_request.realm_create_payload_digest
-            != Hash::new(crate::protocol::canonical::canonical_sha256(
-                &pcr_genesis_unit.create().payload,
+            != Hash::new(arkret_canonical::canonical_sha256(
+                &creation_events.realm_create.payload,
             )?)?
         || frozen_request.founding_authorize_payload_digest
-            != Hash::new(crate::protocol::canonical::canonical_sha256(
-                &pcr_genesis_unit.founding_authorize().payload,
+            != Hash::new(arkret_canonical::canonical_sha256(
+                &creation_events.founding_device_authorize.payload,
             )?)?
     {
         return Err(protocol(
@@ -658,7 +663,7 @@ pub fn identity_creation_register_request(
         ));
     }
     let registration_did_evidence_draft =
-        crate::protocol::signatures::webvh::sign_registration_did_evidence_draft(
+        arkret_signatures::webvh::sign_registration_did_evidence_draft(
             did_operation,
             challenge.issued_at,
             root_seed,
@@ -682,7 +687,7 @@ pub fn identity_creation_register_request(
                 .founding_authorize_payload_digest
                 .clone(),
             initial_session_request_digest: frozen_request.initial_session_request_digest.clone(),
-            genesis_unit_kinds: arkret_models_identity::PCR_GENESIS_UNIT_KINDS,
+            creation_event_kinds: arkret_models_identity::IDENTITY_CREATION_EVENT_KINDS,
             identity_creation_lease_id: frozen_request.identity_creation_lease_id.clone(),
             lease_fence: frozen_request.lease_fence,
             dpop_jkt: context.dpop_jkt.clone(),
@@ -693,7 +698,7 @@ pub fn identity_creation_register_request(
             expires_at: challenge.expires_at,
             verification_key_multibase: validated.root_public_key_multibase,
         })?;
-    let control_proof = crate::protocol::signatures::webvh::sign_identity_creation_control_proof(
+    let control_proof = arkret_signatures::webvh::sign_identity_creation_control_proof(
         unsigned_control_proof,
         root_seed,
     )
@@ -711,7 +716,7 @@ pub fn identity_creation_register_request(
             principal_registration_anchor: principal_registration_anchor.clone(),
             registration_did_evidence_draft,
             control_proof,
-            pcr_genesis_unit,
+            creation_events,
             initial_session,
         }),
         policy_evidence: None,
@@ -749,8 +754,8 @@ pub fn validate_identity_creation_outcome(
     Ok(())
 }
 
-fn protocol(message: impl Into<String>) -> crate::protocol::Error {
-    crate::protocol::Error::Protocol(message.into())
+fn protocol(message: impl Into<String>) -> Error {
+    Error::Protocol(message.into())
 }
 
 #[cfg(test)]
@@ -766,8 +771,8 @@ mod tests {
                 .as_bytes(),
         );
         let endpoint = url::Url::parse("https://registration.example/").unwrap();
-        let inception = crate::protocol::signatures::webvh::prepare_principal_inception(
-            &crate::protocol::signatures::webvh::PrincipalInceptionInput {
+        let inception = arkret_signatures::webvh::prepare_principal_inception(
+            &arkret_signatures::webvh::PrincipalInceptionInput {
                 provider_endpoint: &endpoint,
                 principal_endpoint: &endpoint,
                 local_id: "lease-fixture",
@@ -789,9 +794,9 @@ mod tests {
     }
 
     fn lease(state: IdentityCreationLeaseState) -> IdentityCreationLease {
-        let reserved_identity = state.has_reserved_identity().then(|| {
-            crate::protocol::ReservedIdentityCreation::from_anchor(webvh_anchor()).unwrap()
-        });
+        let reserved_identity = state
+            .has_reserved_identity()
+            .then(|| ReservedIdentityCreation::from_anchor(webvh_anchor()).unwrap());
         IdentityCreationLease {
             identity_creation_lease_id: "lease-fixture".to_owned(),
             fence: 1,
@@ -806,7 +811,7 @@ mod tests {
     }
 
     fn core_id(value: &str) -> DidCoreId {
-        crate::protocol::project_did_to_core_id(&did(value)).unwrap()
+        arkret_wire::project_did_to_core_id(&did(value)).unwrap()
     }
 
     fn device(value: &str) -> DeviceId {
@@ -1189,10 +1194,8 @@ mod tests {
                     "ak:request:01964137-0000-7000-8000-000000000001".to_owned(),
                 )
                 .unwrap(),
-                audience_id: crate::protocol::DidCoreId::new(
-                    "ak:did_core:webvh:z6mkfixture:service.example",
-                )
-                .unwrap(),
+                audience_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example")
+                    .unwrap(),
                 issuer_uri: "https://auth.example".to_owned(),
                 client_id: "inkson".to_owned(),
                 redirect_uri: "https://app.example/auth/callback".to_owned(),
@@ -1223,12 +1226,12 @@ mod tests {
                 "ak:request:01964137-0000-7000-8000-000000000001".to_owned(),
             )
             .unwrap(),
-            account_handle: crate::protocol::Handle::parse("alice:example.com").unwrap(),
+            account_handle: arkret_models_identity::Handle::parse("alice:example.com").unwrap(),
             account_subject: Hash::new(format!("sha256:{}", "a".repeat(64))).unwrap(),
             preferred_locale: None,
             account_handoff_grant: "g".repeat(32),
             expires_at: Utc::now(),
-            allowed_operations: crate::protocol::ACCOUNT_HANDOFF_ALLOWED_OPERATIONS,
+            allowed_operations: arkret_models_identity::ACCOUNT_HANDOFF_ALLOWED_OPERATIONS,
             binding: AccountHandoffBinding::Bound {
                 principal_id: core_id("did:webvh:z6mkfixture:alice.example"),
                 did: did("did:webvh:z6mkfixture:alice.example"),

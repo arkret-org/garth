@@ -1,12 +1,9 @@
 //! `#[cfg]`-gated `Send`/`Sync` markers for the wasm dual-target.
 //!
-//! garth's boxed futures already drop `Send` on `wasm32` (see
-//! [`BoxSessionFuture`](crate::session::SessionGrantTransport),
-//! [`BoxRealmStreamFuture`](crate::subscribe::BoxRealmStreamFuture) and
-//! [`BoxScanFuture`](crate::subscribe::EventsScanTransport)). Host-facing traits
-//! need the same treatment so a browser client can implement them with `!Send`
-//! values (Dioxus `!Send` signals, JS-interop futures) instead of the trait
-//! forcing a `Send + Sync` bound that is only meaningful on native.
+//! Garth's boxed session and socket futures already drop `Send` on `wasm32`.
+//! Host-facing traits need the same treatment so a browser client can implement
+//! them with `!Send` values (Dioxus signals, JS-interop futures) instead of the
+//! trait forcing a `Send + Sync` bound that is only meaningful on native.
 //!
 //! On native, [`MaybeSend`] / [`MaybeSendSync`] are blanket-implemented for
 //! every `Send` / `Send + Sync` type, so generic code that moves a value across

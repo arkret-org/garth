@@ -11,8 +11,8 @@ use std::pin::Pin;
 
 use arkret_wire::websocket_binding::WebSocketCloseCode;
 
+use crate::Result;
 use crate::maybe_send::MaybeSendSync;
-use crate::protocol::Result;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub type BoxSocketFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
@@ -24,8 +24,8 @@ pub type BoxSocketFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + 'a>>;
 ///
 /// Fragmentation is the host's problem: §4 lets an implementation reassemble,
 /// but the byte limit has to be enforced on the accumulated bytes before the
-/// JSON parser runs. [`WebSocketSocket::max_frame_bytes`] is how the host
-/// learns the ceiling to enforce while accumulating.
+/// JSON parser runs. Hosts obtain that ceiling from the selected SDK discovery
+/// binding.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WebSocketInbound {
     Text(String),
@@ -72,11 +72,8 @@ pub trait WebSocketConnector: MaybeSendSync {
     /// Open the socket against `base_url`, requesting the `arkret.v1`
     /// subprotocol. The host MUST fail the attempt — not silently continue —
     /// when the response is not `101` or the subprotocol was not selected;
-    /// those are [`WebSocketHandshakeFailure`] conditions, and §8.1 gives them
-    /// no WebSocket retry.
-    ///
-    /// [`WebSocketHandshakeFailure`]:
-    /// arkret_models_collaboration::sync_frames::websocket_session::WebSocketHandshakeFailure
+    /// the attempt must fail rather than silently continuing on another
+    /// subprotocol.
     fn connect<'a>(&'a self, base_url: &'a str) -> BoxSocketFuture<'a, Self::Socket>;
 
     /// The current session grant to authenticate with. Asked per attempt so a
@@ -141,5 +138,101 @@ impl WebSocketPacer for crate::executor::WasmExecutor {
             gloo_timers::future::sleep(CHANNEL_PACE).await;
             Ok(())
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::VecDeque;
+
+    use super::*;
+
+    #[derive(Debug, Default)]
+    struct FakeSocket {
+        inbound: VecDeque<WebSocketInbound>,
+        sent: Vec<String>,
+        closed: Vec<(WebSocketCloseCode, String)>,
+    }
+
+    impl WebSocketSocket for FakeSocket {
+        fn recv<'a>(&'a mut self) -> BoxSocketFuture<'a, Option<WebSocketInbound>> {
+            Box::pin(async move { Ok(self.inbound.pop_front()) })
+        }
+
+        fn send_text<'a>(&'a mut self, payload: String) -> BoxSocketFuture<'a, ()> {
+            Box::pin(async move {
+                self.sent.push(payload);
+                Ok(())
+            })
+        }
+
+        fn close<'a>(
+            &'a mut self,
+            code: WebSocketCloseCode,
+            reason: &'a str,
+        ) -> BoxSocketFuture<'a, ()> {
+            Box::pin(async move {
+                self.closed.push((code, reason.to_owned()));
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn raw_socket_preserves_control_relevant_inbound_kinds() {
+        let mut socket = FakeSocket {
+            inbound: VecDeque::from([
+                WebSocketInbound::Binary,
+                WebSocketInbound::TooLarge,
+                WebSocketInbound::Closed(Some(1001)),
+            ]),
+            ..FakeSocket::default()
+        };
+        assert_eq!(socket.recv().await.unwrap(), Some(WebSocketInbound::Binary));
+        assert_eq!(
+            socket.recv().await.unwrap(),
+            Some(WebSocketInbound::TooLarge)
+        );
+        assert_eq!(
+            socket.recv().await.unwrap(),
+            Some(WebSocketInbound::Closed(Some(1001)))
+        );
+        assert_eq!(socket.recv().await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn raw_socket_forwards_text_and_typed_close_code() {
+        let mut socket = FakeSocket::default();
+        socket
+            .send_text("{\"type\":\"ping\"}".to_owned())
+            .await
+            .unwrap();
+        socket
+            .close(WebSocketCloseCode::ProtocolError, "invalid_frame")
+            .await
+            .unwrap();
+        assert_eq!(socket.sent, ["{\"type\":\"ping\"}"]);
+        assert_eq!(
+            socket.closed,
+            [(
+                WebSocketCloseCode::ProtocolError,
+                "invalid_frame".to_owned()
+            )]
+        );
+    }
+
+    #[test]
+    fn auth_proof_request_keeps_fresh_attempt_inputs_separate() {
+        let first = AuthProofRequest {
+            base_url: "https://station.example".to_owned(),
+            session_grant: "grant-a".to_owned(),
+            nonce: "nonce-a".to_owned(),
+            jti: "jti-a".to_owned(),
+        };
+        let mut second = first.clone();
+        second.session_grant = "grant-b".to_owned();
+        second.nonce = "nonce-b".to_owned();
+        second.jti = "jti-b".to_owned();
+        assert_ne!(first, second);
     }
 }

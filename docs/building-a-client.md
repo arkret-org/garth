@@ -1,203 +1,95 @@
 # Building a client on garth
 
-garth is the runtime-neutral engine that Arkret clients (`inkson`, `savfox`, a
-future `applet`) build on. It currently owns event polling, cursor
-checkpointing, dedupe, drop/resync recovery, reconnect backoff and
-cancellation, durable inbox delivery, session-backed authenticated transport,
-and the generic outbound queue lifecycle.
+Garth provides a deliberately small boundary around the Arkret SDK. A host
+supplies an `AuthorityTransport` and storage, then owns application projection,
+credentials, cryptographic key material, and platform lifecycle.
 
-A projection-driven client provides at least three integration pieces:
+## 1. Construct the facade
 
-1. **Storage** — implement the store traits, or use a default.
-2. **A projector** — one async hook that turns engine output into your durable
-   client state.
-3. **A transport provider** — supplies an authenticated SDK transport and owns
-   the current session credentials.
-
-Then call one facade method. You should not hand-roll a poll loop or
-cursor/dedupe/reconnect mechanics; those are garth's job.
-For grant-backed clients, compose `SessionEngine` with
-`SessionTransportProvider`; the host factory supplies the platform HTTP client,
-secure signer and a freshly minted refresh proof for each rotation.
-
-## 1. Storage
-
-Implement `CursorStore` + `EventCacheStore` (durable cursor + dedupe) and
-`SecureKeyStore` (secrets), or use a default:
-
-- Native: `garth::FileStore` (single JSON file, atomic writes) +
-  `garth::MemorySecureKeyStore` (or a keyring-backed `SecureKeyStore`).
-- Web: back the traits with IndexedDB (see your host's adapter).
-- Tests: `garth::MemoryStore` implements both `CursorStore` and
-  `EventCacheStore`.
-
-The cursor advances only after your projector persists (see below), so your
-`CursorStore` and projector state stay consistent even across a crash.
-
-## 2. The projector
-
-`ClientProjector` is the single seam between garth and your client state:
+`arkret_http_client::Client` already implements `AuthorityTransport`:
 
 ```rust
-use garth::{ClientEvent, ClientProjector};
+use garth::{ArkretClient, MemoryStore};
 
-struct MyProjector { /* your Signals / db handle / state store */ }
-
-impl ClientProjector for MyProjector {
-    fn project(
-        &self,
-        batch: Vec<ClientEvent>,
-    ) -> impl std::future::Future<Output = garth::Result<()>> + '_ {
-        async move {
-            for event in batch {
-                match event {
-                    ClientEvent::AccountUpdates(updates) => { /* device lists, ack token, ... */ }
-                    ClientEvent::RealmDelta { realm_id, update } => { /* project realm timeline/state */ }
-                    ClientEvent::Message(message) => { /* decoded chat message */ }
-                    ClientEvent::Backfill { realm_id, outcome } => { /* catch-up after a drop */ }
-                    ClientEvent::Event(event) => { /* generic / encrypted / unknown kind */ }
-                    ClientEvent::Notification(_) | ClientEvent::ToDevice(_) => {}
-                }
-            }
-            // Persist durably BEFORE returning Ok. Contract: the cursor is
-            // checkpointed only after this returns Ok, so an error here leaves
-            // the cursor untouched and the batch is redelivered next round.
-            Ok(())
-        }
-    }
-}
+let client = ArkretClient::new(http_client, MemoryStore::new());
 ```
 
-`project` is `async`, so it may do real work in the loop (key prefetch,
-directory resolve, IndexedDB / Signal writes) — that is the whole reason it
-is the only event projection seam.
+Alternative transports implement the same five operations: submit, scan,
+resolve committed references, resolve the current authority bundle, and
+install an authority handoff.
 
-## 3. Run it
+## 2. Submit through the current authority
 
-```rust
-use garth::{ArkretClient, RunOptions, SyncLoopControl, TransportProvider};
+Construct `QueuedSubmission` from an SDK `AuthoritySubmitRequest`. The
+constructor validates the producer Event or MLS commit submission and records
+its stable Event ID. Calling `client.authority().submit(...)` validates the
+server outcome before changing the local state to `Committed` or `Rejected`.
 
-// A provider yields a ready-to-use SDK http-client with current credentials.
-// Refreshing credentials inside `provide` makes the loop recover across
-// restarts (the runner re-provides on the next start).
-struct MyTransport { /* base url + session */ }
-impl TransportProvider for MyTransport {
-    type Transport = arkret_http_client::Client;
-    fn provide(&self) -> impl std::future::Future<Output = garth::Result<Self::Transport>> + '_ {
-        async move { /* build/refresh -> Client */ }
-    }
-}
+Only a returned `RealmCommit` establishes finality. A producer Event carries
+no ordering pointer of its own.
 
-let client = ArkretClient::new(executor, cursor_store, event_cache_store);
-let control = SyncLoopControl::new();       // keep a clone; `control.cancel()` stops the loop
-let projector = MyProjector { /* ... */ };
-let provider = MyTransport { /* ... */ };
+## 3. Build a Realm replica
 
-// A UI whose projector is itself transactionally durable may project inline:
-client.run_realm(&provider, realm_id, &projector, &control, RunOptions::default()).await?;
-client.run_account(actor_id, device_id, &provider, &projector, &control, RunOptions::default()).await?;
+Create `RealmReplica` with the Realm ID. Install a verified current-authority
+bundle, then a signed `RealmStateSnapshot`. The snapshot supplies one visible
+head per independent stream. For every Realm, Circle, or Sidecar stream, issue
+a `StreamScanRequest` starting at that stream's head and pass the validated
+result to `apply_scan`.
 
-// The production default for a host with DurableInboxStore is decoupled
-// ingestion. Cursor + work are committed atomically; a separate dispatcher
-// reads pending(), applies the product projection, then ack()s it.
-client.run_realm_to_inbox(&provider, realm_id, &control, RunOptions::default()).await?;
-client.run_account_to_inbox(actor_id, device_id, None, &provider, &control, RunOptions::default()).await?;
-```
+Do not merge positions across streams. Positions are meaningful only within
+their `CommitStreamRef`.
 
-Both return `RunStopReason`:
+## 4. Consume account aggregate delivery
 
-- `RunStopReason::Cancelled` — `control.cancel()` was called.
-- `RunStopReason::LifecycleEnded` — the provider's route/profile/channel guard
-  became false.
-- `RunStopReason::Unauthorized { reason }` — refresh was unavailable or the
-  refreshed credential was still rejected.
+The `account_sync` module reexports the current account-subscribe DTOs. Its
+cursor checkpoints aggregate delivery; it does not confer stream finality.
+Validate each frame with `validate_account_frame`, project its contents, and
+persist the cursor only after the projection succeeds. Timeline items retain
+their own committed stream coordinates.
 
-The runtime facade does not store secrets. Compose it with
-`SessionTransportProvider`, whose factory receives current grant state and
-builds the authenticated SDK transport from host-owned signer/secure-store
-handles.
+## 5. Persist minimal client state
 
-## What garth does for you (don't re-implement)
+Implement `CursorStore` and `EventCacheStore`, or use `MemoryStore`. Native
+hosts may use `FileStore` for non-secret cursor and committed-Event metadata.
+Credentials and encryption/signing keys remain in a platform secure store and
+must not be written to `FileStore`.
 
-- Long-poll / subscribe loop and retry/backpressure.
-- Durable cursor checkpointing — **after** your projector persists.
-- Event dedupe via `EventCacheStore`.
-- Realm drop → `ak.self.events.read.scan.v1` catch-up → `Backfill` projection.
-- Resync (clear cursor + rebuild) and reconnect backoff.
-- Cancellation via `SyncLoopControl`.
-- Lifecycle invalidation via `TransportProvider::is_active`.
-- Durable inbox delivery and persisted outbound queue state.
+`CursorScope::CommitStream` keeps every authority stream checkpoint separate.
+`CursorScope::Account` and `CursorScope::DeviceMessages` cover aggregate and
+device-message delivery.
 
-## Engine-level API
+## 6. Author messages and coordinate recovery
 
-`ArkretClient::run_*` is the preferred host entry point. Lower-level
-`SubscriptionEngine` and `RealmEventsDriver` methods also take
-`ClientProjector`, so account and realm frames share the same
-project-then-checkpoint contract at every layer.
+Finalize a content-bound `AuthoredEvent`, then call `author_message` with the
+host signer. Garth attaches the producer proof and returns the exact
+`MessageSubmitRequestBody`; `queue_authored_message` freezes it for authority
+submission and byte-identical retry.
 
-## Durable workers, session transport and outbound
+`SecurityTransactionEngine` persists only canonical public requests and an
+opaque reference to host-held secret material. A completed PCR recovery is
+accepted only when the completion attestation names distinct consecutive
+commits in the same PCR Realm stream. The engine clears staged material only
+after observing a terminal authoritative resource.
 
-Agent/gateway consumers call `run_account_to_inbox` / `run_realm_to_inbox`.
-Cursor and delivery enter `DurableInboxStore` in one commit; dropped-cursor
-scan catch-up and a resync baseline use that same atomic boundary. The
-worker calls `ack` only after business dispatch succeeds and persists `retry`
-otherwise.
+## 7. Install and persist MLS state
 
-`SessionTransportProvider` performs due/401 refresh, shares the
-`SessionEngine` single-flight gate and rebuilds its cached authenticated
-transport when the grant rotates. `AuthenticatedTransportFactory::refresh_options`
-must mint short-lived proofs at call time; never cache a signed refresh proof.
-Secrets remain behind the host's `SecureKeyStore`/signer adapter.
+`MlsInstallQueue` accepts a Welcome or Commit only with its full
+`CommittedEventRef`. It invokes the host MLS provider, persists the returned
+provider-opaque checkpoint, and only then removes the queue item. Use
+`SecureMlsLocalStateStore` and `MlsDeviceSecretStore` with a platform secure
+store for checkpoints and device material.
 
-For writes, `OutboundEngine` persists the SDK `SendQueue` state machine. Enqueue
-the already stable transaction/prepared-event payload, then implement
-`OutboundSubmitter`; accepted and duplicate outcomes both finalize the same
-queue item, while retry deadlines survive restart. If acceptance must commit a
-host-owned durable side effect, implement `OutboundPostAcceptHook` and pass it
-to `submit_next_with_fence_and_hook`: Garth invokes it after accepted/duplicate
-but before
-marking the item sent. Hook failure leaves the item retryable, so a duplicate
-response after restart can idempotently finish the host commit. MLS encryption
-and snapshot semantics remain host-owned; Garth owns only this ordering gate.
+## 8. Run transient transports
 
-## Host wiring checklists
+`SignalReceiver` verifies the Station delivery authority and sender proof
+before host decryption, validates the plaintext binding, and enforces sequence
+high-water state. `WebSocketSocket` and `WebSocketConnector` keep platform
+socket I/O and fresh DPoP signing outside the runtime-neutral core; the
+selected binding and close-code vocabulary come from the SDK.
 
-### Rust native host
+## Platform notes
 
-1. Use `NativeExecutor` and one shared `FileStore` per account/client scope.
-2. Implement a platform `SecureKeyStore` adapter backed by Keychain, Keystore,
-   Credential Manager or another OS vault; never put grants or signing keys in
-   `FileStore`.
-3. Compose `SessionEngine` + `SessionTransportProvider` with a factory that
-   rebuilds the authenticated SDK client from the current grant.
-4. Provide a durable `ClientProjector` or `DurableInboxStore` worker, then run
-   `ArkretClient::run_account` / `run_realm` under lifecycle control.
-5. Queue ordinary writes through `OutboundEngine`; use
-   `OutboundPostAcceptHook` for idempotent domain commits.
-
-### Web host
-
-1. Use `WasmExecutor`; implement cursor, dedupe, inbox and outbound store
-   contracts with IndexedDB for production. Synchronous localStorage is not a
-   secret store and is not a multi-tab transaction boundary.
-2. Keep grants and signing material behind a non-extractable WebCrypto/
-   IndexedDB-backed `SecureKeyStore`; never serialize them into cursor or queue
-   JSON.
-3. Supply a `ClientProjector` whose IndexedDB transaction commits before it
-   returns `Ok`, and cancel runners when route/profile generation changes.
-4. Coordinate multiple tabs with one writer/lease or transactional IndexedDB
-   compare-and-swap so two queue workers cannot overwrite each other.
-
-### Swift / Kotlin host
-
-1. Keep Garth's async traits inside a Rust library boundary. Swift/Kotlin
-   should call a C/UniFFI-style command facade and receive serialized/typed
-   events; do not attempt to implement RPITIT Rust traits directly.
-2. The Rust wrapper owns the executor, `ArkretClient`, session provider and
-   queue workers. The platform supplies Keychain/Android Keystore callbacks,
-   lifecycle commands, and projection/event callbacks.
-3. Copy buffers at the FFI boundary, use opaque handles, provide explicit
-   cancel/free operations, and never expose an SDK HTTP client, Rust future,
-   trait object, grant JWT or private key across the boundary.
-4. Mobile shells must provide a small Rust-owned wrapper; the RPITIT API is not
-   itself claimed as a Swift/Kotlin ABI.
+- Native Rust hosts normally use `NativeExecutor` and a durable store.
+- Browser hosts implement storage with IndexedDB and may use `WasmExecutor`.
+- Swift and Kotlin shells should expose a small Rust-owned command facade;
+  async Rust traits are not a stable foreign-language ABI.

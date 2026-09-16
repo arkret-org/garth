@@ -4,7 +4,9 @@
 //! verified facts; none of the local fact wrappers serialize into a competing
 //! protocol DTO.
 
-use crate::protocol::{Error, ParticipationBits, Result};
+use arkret_models_collaboration::governance::agent_participation::ParticipationBits;
+
+use crate::{Error, Result};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParticipationAction {

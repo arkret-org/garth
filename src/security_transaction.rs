@@ -1,186 +1,60 @@
-//! Durable client coordination for Arkret security transactions.
+//! Durable coordination for current security transactions.
 //!
-//! The server resource is the only authoritative progress record. This module
-//! persists only public, byte-identical requests plus an opaque reference to
-//! separately encrypted staged material. Recovery secrets never enter this
-//! state.
+//! The service resource is the authoritative progress record. Garth stores
+//! only canonical public requests and an opaque reference to separately held
+//! secret material. A completed PCR recovery is accepted only when its two
+//! Events occupy consecutive coordinates in the same PCR Realm stream.
 
+use std::collections::BTreeMap;
 use std::future::Future;
-use std::pin::Pin;
+use std::sync::{Arc, Mutex};
 
-use arkret_models_crypto::{
-    BackupSeriesEraseOutcome, BackupSeriesEraseRequestBody, ClientStepAttestationArtifact,
-    SecurityTransactionContinueRequest,
+pub use arkret_models_crypto::{
+    ClientStepAttestation, PcrPolicyRecoveryPlan, RecoveryTerminalCommit,
+    RecoveryTransactionCreateRequest, SecurityTransaction, SecurityTransactionContinueRequest,
+    SecurityTransactionCreateRequest, SecurityTransactionPreparedPlan,
+    SecurityTransactionTerminalOutcome,
 };
-use arkret_wire::{
-    Hash, IssueRecoveryCompletionGrantOutcome, IssueRecoveryCompletionGrantRequest,
-    SecurityTransaction, SecurityTransactionCreateRequest, SecurityTransactionResultKind,
-    SecurityTransactionStep, TransactionId,
-};
-use chrono::{DateTime, Utc};
+use arkret_wire::{CommitStreamRef, CommittedEventRef, RealmId, TransactionId};
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, MaybeSendSync, Result};
+use crate::{Error, MaybeSend, MaybeSendSync, Result};
 
-#[cfg(not(target_arch = "wasm32"))]
-pub type BoxSecurityTransactionFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + Send + 'a>>;
-
-#[cfg(target_arch = "wasm32")]
-pub type BoxSecurityTransactionFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> + 'a>>;
-
+/// Host transport for the three current transaction operations.
 pub trait SecurityTransactionTransport: MaybeSendSync {
-    fn create_security_transaction<'a>(
+    fn create<'a>(
         &'a self,
         request: &'a SecurityTransactionCreateRequest,
-    ) -> BoxSecurityTransactionFuture<'a, SecurityTransaction>;
+    ) -> impl Future<Output = Result<SecurityTransaction>> + MaybeSend + 'a;
 
-    fn get_security_transaction<'a>(
+    fn get<'a>(
         &'a self,
         transaction_id: &'a TransactionId,
-    ) -> BoxSecurityTransactionFuture<'a, SecurityTransaction>;
+    ) -> impl Future<Output = Result<SecurityTransaction>> + MaybeSend + 'a;
 
-    fn continue_security_transaction<'a>(
+    fn continue_transaction<'a>(
         &'a self,
         transaction_id: &'a TransactionId,
         request: &'a SecurityTransactionContinueRequest,
-    ) -> BoxSecurityTransactionFuture<'a, SecurityTransaction>;
-
-    fn erase_backup_series<'a>(
-        &'a self,
-        request: &'a BackupSeriesEraseRequestBody,
-    ) -> BoxSecurityTransactionFuture<'a, BackupSeriesEraseOutcome>;
-
-    fn issue_recovery_completion_grant<'a>(
-        &'a self,
-        request: &'a IssueRecoveryCompletionGrantRequest,
-    ) -> BoxSecurityTransactionFuture<'a, IssueRecoveryCompletionGrantOutcome>;
+    ) -> impl Future<Output = Result<SecurityTransaction>> + MaybeSend + 'a;
 }
 
-impl SecurityTransactionTransport for arkret_http_client::Client {
-    fn create_security_transaction<'a>(
-        &'a self,
-        request: &'a SecurityTransactionCreateRequest,
-    ) -> BoxSecurityTransactionFuture<'a, SecurityTransaction> {
-        Box::pin(async move {
-            self.create_security_transaction(request)
-                .await
-                .map_err(Error::from)
-        })
-    }
-
-    fn get_security_transaction<'a>(
-        &'a self,
-        transaction_id: &'a TransactionId,
-    ) -> BoxSecurityTransactionFuture<'a, SecurityTransaction> {
-        Box::pin(async move {
-            self.get_security_transaction(transaction_id)
-                .await
-                .map_err(Error::from)
-        })
-    }
-
-    fn continue_security_transaction<'a>(
-        &'a self,
-        transaction_id: &'a TransactionId,
-        request: &'a SecurityTransactionContinueRequest,
-    ) -> BoxSecurityTransactionFuture<'a, SecurityTransaction> {
-        Box::pin(async move {
-            self.continue_security_transaction(transaction_id, request)
-                .await
-                .map_err(Error::from)
-        })
-    }
-
-    fn erase_backup_series<'a>(
-        &'a self,
-        request: &'a BackupSeriesEraseRequestBody,
-    ) -> BoxSecurityTransactionFuture<'a, BackupSeriesEraseOutcome> {
-        Box::pin(async move { self.erase_backup_series(request).await.map_err(Error::from) })
-    }
-
-    fn issue_recovery_completion_grant<'a>(
-        &'a self,
-        request: &'a IssueRecoveryCompletionGrantRequest,
-    ) -> BoxSecurityTransactionFuture<'a, IssueRecoveryCompletionGrantOutcome> {
-        Box::pin(async move {
-            self.issue_recovery_completion_grant(request)
-                .await
-                .map_err(Error::from)
-        })
-    }
-}
-
-/// One in-flight continuation, retained byte for byte.
-///
-/// `canonical_request` is the whole canonical
-/// `SecurityTransactionContinueRequest`, so for a recovery it already contains
-/// the complete `RecoveryTerminalCommit` — the signed first new-generation Seal
-/// and the recovery receipt — inside `client_attestation.artifact`. That is a
-/// requirement, not an accident: the Seal is signed once against a fenced
-/// signing slot, and a retry that re-derived it could never reproduce the same
-/// bytes.
+/// One continuation retained byte-for-byte until the service observes it.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PendingSecurityTransactionContinue {
-    pub expected_accepted_step_count: u8,
+    pub expected_accepted_step_count: u64,
     pub canonical_request: Vec<u8>,
 }
 
+/// Public durable state for one transaction.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DurableSecurityTransaction {
     pub transaction_id: TransactionId,
     pub canonical_create_request: Vec<u8>,
-    /// Reference into a host-owned encrypted store. Never plaintext material.
+    /// Opaque host-owned secret-store reference; never plaintext secret bytes.
     pub staged_secret_ref: Option<String>,
     pub pending_continue: Option<PendingSecurityTransactionContinue>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accepted_terminal_continue: Option<Vec<u8>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_erase_request: Option<Vec<u8>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pending_completion_grant_request: Option<Vec<u8>>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub accepted_completion_grant_request: Option<Vec<u8>>,
-    /// Cached UI projection only; GET remains authoritative.
     pub last_observed_resource: Option<SecurityTransaction>,
-}
-
-impl DurableSecurityTransaction {
-    pub fn create_request_digest(&self) -> Result<Hash> {
-        Hash::new(arkret_canonical::sha256_digest(
-            &self.canonical_create_request,
-        ))
-        .map_err(Error::from)
-    }
-
-    pub fn progress(&self) -> SecurityTransactionProgress {
-        self.last_observed_resource.as_ref().map_or(
-            SecurityTransactionProgress {
-                transaction_id: self.transaction_id.clone(),
-                terminal_kind: None,
-                next_required_step: None,
-                requires_device_attestation: false,
-                accepted_step_count: 0,
-            },
-            |resource| SecurityTransactionProgress {
-                transaction_id: resource.transaction_id.clone(),
-                terminal_kind: resource.terminal_kind(),
-                next_required_step: resource.next_required_step().ok().flatten(),
-                requires_device_attestation: resource
-                    .requires_device_attestation()
-                    .unwrap_or(false),
-                accepted_step_count: resource.accepted_steps.len(),
-            },
-        )
-    }
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SecurityTransactionProgress {
-    pub transaction_id: TransactionId,
-    pub terminal_kind: Option<SecurityTransactionResultKind>,
-    pub next_required_step: Option<SecurityTransactionStep>,
-    pub requires_device_attestation: bool,
-    pub accepted_step_count: usize,
 }
 
 pub trait SecurityTransactionStore: Clone + MaybeSendSync + 'static {
@@ -188,86 +62,118 @@ pub trait SecurityTransactionStore: Clone + MaybeSendSync + 'static {
     fn save<'a>(
         &'a self,
         state: &'a DurableSecurityTransaction,
-    ) -> impl Future<Output = Result<()>> + crate::MaybeSend + 'a;
-    /// Idempotently destroys host-owned staged secret material.
-    ///
-    /// The engine calls this before removing the opaque reference from durable
-    /// public state so a crash cannot leave an unreachable secret behind.
+    ) -> impl Future<Output = Result<()>> + MaybeSend + 'a;
     fn clear_staged_secret(&self, reference: &str) -> Result<()>;
     fn remove(&self, transaction_id: &TransactionId) -> Result<()>;
 }
 
-#[derive(Clone)]
-pub struct SecurityTransactionEngine<T, S> {
-    transport: T,
-    store: S,
+#[derive(Clone, Debug, Default)]
+pub struct MemorySecurityTransactionStore {
+    states: Arc<Mutex<BTreeMap<TransactionId, DurableSecurityTransaction>>>,
+    cleared_secret_refs: Arc<Mutex<Vec<String>>>,
 }
 
-fn clear_terminal_staged_secret<S: SecurityTransactionStore>(
-    store: &S,
-    local: &mut DurableSecurityTransaction,
-    terminal: bool,
-) -> Result<()> {
-    if terminal && let Some(reference) = local.staged_secret_ref.as_deref() {
-        store.clear_staged_secret(reference)?;
-        local.staged_secret_ref = None;
+impl MemorySecurityTransactionStore {
+    pub fn cleared_secret_refs(&self) -> Vec<String> {
+        self.cleared_secret_refs.lock().unwrap().clone()
     }
-    Ok(())
 }
 
-fn reconcile_terminal_continue(
-    local: &mut DurableSecurityTransaction,
-    resource: &SecurityTransaction,
+impl SecurityTransactionStore for MemorySecurityTransactionStore {
+    fn load(&self, transaction_id: &TransactionId) -> Result<Option<DurableSecurityTransaction>> {
+        Ok(self.states.lock().unwrap().get(transaction_id).cloned())
+    }
+
+    async fn save(&self, state: &DurableSecurityTransaction) -> Result<()> {
+        self.states
+            .lock()
+            .unwrap()
+            .insert(state.transaction_id.clone(), state.clone());
+        Ok(())
+    }
+
+    fn clear_staged_secret(&self, reference: &str) -> Result<()> {
+        self.cleared_secret_refs
+            .lock()
+            .unwrap()
+            .push(reference.to_owned());
+        Ok(())
+    }
+
+    fn remove(&self, transaction_id: &TransactionId) -> Result<()> {
+        self.states.lock().unwrap().remove(transaction_id);
+        Ok(())
+    }
+}
+
+/// Enforce the atomic PCR recovery completion boundary exposed to clients.
+pub fn validate_recovery_commit_boundary(
+    realm_id: &RealmId,
+    reanchor_ref: &CommittedEventRef,
+    device_authorization_ref: &CommittedEventRef,
 ) -> Result<()> {
-    if !resource.is_completed() {
-        return Ok(());
-    }
-    let Some(pending) = local.pending_continue.as_ref() else {
-        return Ok(());
+    let expected_stream = CommitStreamRef::Realm {
+        realm_id: realm_id.clone(),
     };
-    let request: SecurityTransactionContinueRequest = serde_json::from_value(
-        arkret_canonical::parse_canonical_json(&pending.canonical_request)?,
-    )
-    .map_err(|error| {
-        Error::Protocol(format!("stored terminal continuation is invalid: {error}"))
-    })?;
-    let Some(attestation) = request.client_attestation.as_ref() else {
-        return Ok(());
-    };
-    if attestation.step != SecurityTransactionStep::CommitRecoveryUnit {
-        return Ok(());
-    }
-    let completion = resource
-        .terminal_result
-        .as_ref()
-        .and_then(|result| result.completion_attestation.as_ref())
-        .ok_or_else(|| {
-            Error::Protocol(
-                "completed recovery transaction omitted its completion attestation".to_owned(),
-            )
-        })?;
-    let ClientStepAttestationArtifact::RecoveryTerminalCommit(commit) = &attestation.artifact
-    else {
-        return Err(Error::Protocol(
-            "recovery terminal continuation carries a non-recovery artifact".to_owned(),
-        ));
-    };
-    // The derived attestation digest is the terminal commit digest: one
-    // projection covers both the Seal signature and the receipt, so the
-    // authoritative attestation and the durable artifact are compared over the
-    // exact bytes the replacement device signed.
-    if attestation.output_ref != completion.terminal_receipt_id.as_str()
-        || attestation.attestation_digest()? != completion.terminal_commit_digest
-        || commit.first_generation_seal.id != completion.first_generation_seal_id
+    if reanchor_ref.stream_ref != expected_stream
+        || device_authorization_ref.stream_ref != expected_stream
+        || device_authorization_ref.stream_position
+            != reanchor_ref.stream_position.checked_add(1).ok_or_else(|| {
+                Error::Protocol("PCR recovery commit position overflow".to_owned())
+            })?
+        || reanchor_ref.commit_id == device_authorization_ref.commit_id
+        || reanchor_ref.event_id == device_authorization_ref.event_id
     {
         return Err(Error::Protocol(
-            "authoritative terminal resource does not match the durable signed terminal commit"
+            "PCR recovery completion requires distinct consecutive commits in its Realm stream"
                 .to_owned(),
         ));
     }
-    local.accepted_terminal_continue = Some(pending.canonical_request.clone());
-    local.pending_continue = None;
     Ok(())
+}
+
+fn validate_observed_resource(
+    local: &DurableSecurityTransaction,
+    resource: &SecurityTransaction,
+) -> Result<()> {
+    resource.validate_structural()?;
+    if resource.transaction_id != local.transaction_id {
+        return Err(Error::Protocol(
+            "security transaction response changed transaction_id".to_owned(),
+        ));
+    }
+    let expected_request_digest = arkret_wire::Hash::new(arkret_canonical::sha256_digest(
+        &local.canonical_create_request,
+    ))?;
+    if resource.request_digest != expected_request_digest {
+        return Err(Error::Protocol(
+            "security transaction response changed the canonical create request".to_owned(),
+        ));
+    }
+
+    if let Some(SecurityTransactionTerminalOutcome::Completed {
+        completion_attestation: Some(attestation),
+        ..
+    }) = &resource.terminal_result
+    {
+        let plan = resource.recovery_plan().ok_or_else(|| {
+            Error::Protocol(
+                "only a PCR recovery may carry a recovery completion attestation".to_owned(),
+            )
+        })?;
+        validate_recovery_commit_boundary(
+            &plan.reanchor_commit_intent.realm_id,
+            &attestation.reanchor_ref,
+            &attestation.device_authorization_ref,
+        )?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Debug)]
+pub struct SecurityTransactionEngine<T, S> {
+    transport: T,
+    store: S,
 }
 
 impl<T, S> SecurityTransactionEngine<T, S>
@@ -286,14 +192,17 @@ where
         self.store.load(transaction_id)
     }
 
-    async fn observe_resource(
+    async fn observe(
         &self,
         local: &mut DurableSecurityTransaction,
         resource: SecurityTransaction,
     ) -> Result<SecurityTransaction> {
-        validate_resource_binding(local, &resource)?;
-        reconcile_terminal_continue(local, &resource)?;
-        clear_terminal_staged_secret(&self.store, local, resource.is_terminal())?;
+        validate_observed_resource(local, &resource)?;
+        if resource.terminal_result.is_some()
+            && let Some(reference) = local.staged_secret_ref.take()
+        {
+            self.store.clear_staged_secret(&reference)?;
+        }
         local.last_observed_resource = Some(resource.clone());
         self.store.save(local).await?;
         Ok(resource)
@@ -304,16 +213,21 @@ where
         request: &SecurityTransactionCreateRequest,
         staged_secret_ref: Option<String>,
     ) -> Result<SecurityTransaction> {
-        validate_staged_secret_ref(staged_secret_ref.as_deref())?;
-        let transaction_id = create_request_transaction_id(request);
+        request.validate()?;
+        if staged_secret_ref.as_deref().is_some_and(str::is_empty) {
+            return Err(Error::Protocol(
+                "staged security-transaction reference must not be empty".to_owned(),
+            ));
+        }
         let canonical_request = arkret_canonical::canonical_json_bytes(request)?;
+        let transaction_id = request.transaction_id();
         let mut local = match self.store.load(transaction_id)? {
             Some(existing) => {
                 if existing.canonical_create_request != canonical_request
                     || existing.staged_secret_ref != staged_secret_ref
                 {
-                    return Err(Error::IdempotencyConflict(
-                        transaction_id.as_str().to_owned(),
+                    return Err(Error::Protocol(
+                        "security transaction idempotency conflict".to_owned(),
                     ));
                 }
                 existing
@@ -324,10 +238,6 @@ where
                     canonical_create_request: canonical_request,
                     staged_secret_ref,
                     pending_continue: None,
-                    accepted_terminal_continue: None,
-                    pending_erase_request: None,
-                    pending_completion_grant_request: None,
-                    accepted_completion_grant_request: None,
                     last_observed_resource: None,
                 };
                 self.store.save(&state).await?;
@@ -335,27 +245,19 @@ where
             }
         };
         let resource = if local.last_observed_resource.is_some() {
-            self.transport
-                .get_security_transaction(transaction_id)
-                .await?
+            self.transport.get(transaction_id).await?
         } else {
-            self.transport.create_security_transaction(request).await?
+            self.transport.create(request).await?
         };
-        self.observe_resource(&mut local, resource).await
+        self.observe(&mut local, resource).await
     }
 
     pub async fn refresh(&self, transaction_id: &TransactionId) -> Result<SecurityTransaction> {
         let mut local = self.store.load(transaction_id)?.ok_or_else(|| {
-            Error::Protocol(format!(
-                "security transaction {} has no local public plan",
-                transaction_id.as_str()
-            ))
+            Error::Protocol("security transaction has no local public plan".to_owned())
         })?;
-        let resource = self
-            .transport
-            .get_security_transaction(transaction_id)
-            .await?;
-        self.observe_resource(&mut local, resource).await
+        let resource = self.transport.get(transaction_id).await?;
+        self.observe(&mut local, resource).await
     }
 
     pub async fn continue_transaction(
@@ -364,46 +266,36 @@ where
         request: &SecurityTransactionContinueRequest,
     ) -> Result<SecurityTransaction> {
         let mut local = self.store.load(transaction_id)?.ok_or_else(|| {
-            Error::Protocol(format!(
-                "security transaction {} has no local public plan",
-                transaction_id.as_str()
-            ))
+            Error::Protocol("security transaction has no local public plan".to_owned())
         })?;
+        let observed = local.last_observed_resource.as_ref().ok_or_else(|| {
+            Error::Protocol("security transaction has no observed service resource".to_owned())
+        })?;
+        request.validate_for_transaction(observed)?;
         let canonical_request = arkret_canonical::canonical_json_bytes(request)?;
         let pending = PendingSecurityTransactionContinue {
             expected_accepted_step_count: request.expected_accepted_step_count,
-            canonical_request: canonical_request.clone(),
+            canonical_request,
         };
         if local
             .pending_continue
             .as_ref()
             .is_some_and(|existing| existing != &pending)
         {
-            return Err(Error::IdempotencyConflict(format!(
-                "{}:{}",
-                transaction_id.as_str(),
-                request.expected_accepted_step_count
-            )));
+            return Err(Error::Protocol(
+                "security transaction continuation idempotency conflict".to_owned(),
+            ));
         }
         local.pending_continue = Some(pending);
         self.store.save(&local).await?;
 
         let resource = self
             .transport
-            .continue_security_transaction(transaction_id, request)
+            .continue_transaction(transaction_id, request)
             .await?;
-        if request
-            .client_attestation
-            .as_ref()
-            .is_some_and(|attestation| {
-                attestation.step == SecurityTransactionStep::CommitRecoveryUnit
-            })
-            && resource.is_completed()
-        {
-            local.accepted_terminal_continue = Some(canonical_request);
-        }
+        validate_observed_resource(&local, &resource)?;
         local.pending_continue = None;
-        self.observe_resource(&mut local, resource).await
+        self.observe(&mut local, resource).await
     }
 
     pub async fn retry_pending(
@@ -411,378 +303,123 @@ where
         transaction_id: &TransactionId,
     ) -> Result<Option<SecurityTransaction>> {
         let local = self.store.load(transaction_id)?.ok_or_else(|| {
-            Error::Protocol(format!(
-                "security transaction {} has no local public plan",
-                transaction_id.as_str()
-            ))
+            Error::Protocol("security transaction has no local public plan".to_owned())
         })?;
         let Some(pending) = local.pending_continue else {
             return Ok(None);
         };
-        let request: SecurityTransactionContinueRequest = serde_json::from_value(
-            arkret_canonical::parse_canonical_json(&pending.canonical_request)?,
-        )
-        .map_err(|error| {
-            Error::Protocol(format!(
-                "stored security transaction continuation is invalid: {error}"
-            ))
-        })?;
+        let request: SecurityTransactionContinueRequest =
+            serde_json::from_slice(&pending.canonical_request)?;
         if request.expected_accepted_step_count != pending.expected_accepted_step_count
             || arkret_canonical::canonical_json_bytes(&request)? != pending.canonical_request
         {
             return Err(Error::Protocol(
-                "stored security transaction continuation is not byte-identical on replay"
-                    .to_owned(),
+                "stored security transaction continuation is not canonical".to_owned(),
             ));
         }
         self.continue_transaction(transaction_id, &request)
             .await
             .map(Some)
     }
-
-    pub async fn erase_backup_series(
-        &self,
-        transaction_id: &TransactionId,
-        request: &BackupSeriesEraseRequestBody,
-    ) -> Result<BackupSeriesEraseOutcome> {
-        let mut local = self.store.load(transaction_id)?.ok_or_else(|| {
-            Error::Protocol(format!(
-                "security transaction {} has no local public plan",
-                transaction_id.as_str()
-            ))
-        })?;
-        if &request.transaction_id != transaction_id {
-            return Err(Error::Protocol(
-                "backup-series erase request belongs to a different transaction".to_owned(),
-            ));
-        }
-        let canonical = arkret_canonical::canonical_json_bytes(request)?;
-        if local
-            .pending_erase_request
-            .as_ref()
-            .is_some_and(|existing| existing != &canonical)
-        {
-            return Err(Error::IdempotencyConflict(format!(
-                "{}:erase_old_material",
-                transaction_id.as_str()
-            )));
-        }
-        local.pending_erase_request = Some(canonical);
-        self.store.save(&local).await?;
-        let outcome = self.transport.erase_backup_series(request).await?;
-        outcome.validate_for_request(request).map_err(Error::from)?;
-        if outcome.status == arkret_models_crypto::BackupSeriesEraseStatus::Complete {
-            local.pending_erase_request = None;
-            let resource = self
-                .transport
-                .get_security_transaction(transaction_id)
-                .await?;
-            self.observe_resource(&mut local, resource).await?;
-        }
-        Ok(outcome)
-    }
-
-    pub async fn retry_pending_erase(
-        &self,
-        transaction_id: &TransactionId,
-    ) -> Result<Option<BackupSeriesEraseOutcome>> {
-        let local = self.store.load(transaction_id)?.ok_or_else(|| {
-            Error::Protocol(format!(
-                "security transaction {} has no local public plan",
-                transaction_id.as_str()
-            ))
-        })?;
-        let Some(canonical) = local.pending_erase_request else {
-            return Ok(None);
-        };
-        let request: BackupSeriesEraseRequestBody = serde_json::from_value(
-            arkret_canonical::parse_canonical_json(&canonical)?,
-        )
-        .map_err(|error| {
-            Error::Protocol(format!(
-                "stored backup-series erase request is invalid: {error}"
-            ))
-        })?;
-        self.erase_backup_series(transaction_id, &request)
-            .await
-            .map(Some)
-    }
-
-    pub async fn issue_recovery_completion_grant(
-        &self,
-        transaction_id: &TransactionId,
-        request: &IssueRecoveryCompletionGrantRequest,
-        now: DateTime<Utc>,
-    ) -> Result<IssueRecoveryCompletionGrantOutcome> {
-        let mut local = self.store.load(transaction_id)?.ok_or_else(|| {
-            Error::Protocol(format!(
-                "security transaction {} has no local public plan",
-                transaction_id.as_str()
-            ))
-        })?;
-        if &request.transaction_id != transaction_id {
-            return Err(Error::Protocol(
-                "recovery completion grant belongs to a different transaction".to_owned(),
-            ));
-        }
-        let resource = local.last_observed_resource.as_ref().ok_or_else(|| {
-            Error::Protocol(
-                "recovery completion grant requires an authoritative terminal resource".to_owned(),
-            )
-        })?;
-        if !resource.is_completed()
-            || resource
-                .terminal_result
-                .as_ref()
-                .and_then(|result| result.completion_attestation.as_ref())
-                != Some(&request.completion_attestation)
-        {
-            return Err(Error::Protocol(
-                "recovery completion grant does not match the completed transaction attestation"
-                    .to_owned(),
-            ));
-        }
-        request.validate_structural().map_err(Error::from)?;
-        let canonical = arkret_canonical::canonical_json_bytes(request)?;
-        if local
-            .pending_completion_grant_request
-            .as_ref()
-            .into_iter()
-            .chain(local.accepted_completion_grant_request.as_ref())
-            .any(|existing| existing != &canonical)
-        {
-            return Err(Error::IdempotencyConflict(format!(
-                "{}:issue_recovery_completion_grant",
-                transaction_id.as_str()
-            )));
-        }
-        local.pending_completion_grant_request = Some(canonical.clone());
-        self.store.save(&local).await?;
-        let outcome = self
-            .transport
-            .issue_recovery_completion_grant(request)
-            .await?;
-        if outcome.transaction_id != *transaction_id {
-            return Err(Error::Protocol(
-                "recovery completion grant outcome changed its transaction binding".to_owned(),
-            ));
-        }
-        let initial_session: arkret_models_identity::InitialSessionGrantIntent =
-            serde_json::from_value(request.initial_session.clone()).map_err(|error| {
-                Error::Protocol(format!(
-                    "recovery completion initial_session is invalid: {error}"
-                ))
-            })?;
-        let session_grant_outcome: crate::protocol::SessionGrantOutcome =
-            serde_json::from_value(outcome.session_grant_outcome.clone()).map_err(|error| {
-                Error::Protocol(format!(
-                    "recovery completion session grant is invalid: {error}"
-                ))
-            })?;
-        crate::SessionGrantState::from_initial_registration_outcome(
-            &initial_session,
-            session_grant_outcome,
-            now,
-        )?;
-        local.pending_completion_grant_request = None;
-        local.accepted_completion_grant_request = Some(canonical);
-        self.store.save(&local).await?;
-        Ok(outcome)
-    }
-
-    pub async fn retry_durable_completion_grant(
-        &self,
-        transaction_id: &TransactionId,
-        now: DateTime<Utc>,
-    ) -> Result<Option<IssueRecoveryCompletionGrantOutcome>> {
-        let local = self.store.load(transaction_id)?.ok_or_else(|| {
-            Error::Protocol(format!(
-                "security transaction {} has no local public plan",
-                transaction_id.as_str()
-            ))
-        })?;
-        let Some(canonical) = local
-            .pending_completion_grant_request
-            .or(local.accepted_completion_grant_request)
-        else {
-            return Ok(None);
-        };
-        let request: IssueRecoveryCompletionGrantRequest = serde_json::from_value(
-            arkret_canonical::parse_canonical_json(&canonical)?,
-        )
-        .map_err(|error| {
-            Error::Protocol(format!(
-                "stored recovery completion grant request is invalid: {error}"
-            ))
-        })?;
-        self.issue_recovery_completion_grant(transaction_id, &request, now)
-            .await
-            .map(Some)
-    }
-}
-
-fn validate_staged_secret_ref(reference: Option<&str>) -> Result<()> {
-    let Some(reference) = reference else {
-        return Ok(());
-    };
-    if !reference.starts_with("secure-store://")
-        || reference.len() > 512
-        || reference.chars().any(char::is_whitespace)
-        || reference.contains('?')
-        || reference.contains('#')
-    {
-        return Err(Error::Protocol(
-            "staged_secret_ref must be an opaque secure-store reference without query or fragment"
-                .to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-fn create_request_transaction_id(request: &SecurityTransactionCreateRequest) -> &TransactionId {
-    match request {
-        SecurityTransactionCreateRequest::Recovery(request) => &request.transaction_id,
-        SecurityTransactionCreateRequest::SecurityRotation(request) => &request.transaction_id,
-    }
-}
-
-fn validate_resource_binding(
-    local: &DurableSecurityTransaction,
-    resource: &SecurityTransaction,
-) -> Result<()> {
-    resource.validate_structural().map_err(Error::from)?;
-    if resource.transaction_id != local.transaction_id
-        || resource.request_digest != local.create_request_digest()?
-    {
-        return Err(Error::Protocol(
-            "security transaction resource changed the durable create binding".to_owned(),
-        ));
-    }
-    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{Arc, Mutex};
+    use arkret_wire::{EventId, RealmCommitId};
 
     use super::*;
 
-    fn transaction_id() -> TransactionId {
-        TransactionId::new("ak:transaction:01904100-0000-7000-8000-abcdefabcdef").unwrap()
+    fn realm(seed: u8) -> RealmId {
+        RealmId::from_event_id(&EventId::from_digest(
+            arkret_canonical::DigestSuite::Sha256,
+            [seed; 32],
+        ))
     }
 
-    /// Records `clear_staged_secret` calls so tests can observe the engine's
-    /// destroy-before-clear ordering without a real store implementation.
-    #[derive(Clone, Default)]
-    struct SpySecurityTransactionStore {
-        cleared_staged_secret_refs: Arc<Mutex<Vec<String>>>,
-    }
-
-    impl SecurityTransactionStore for SpySecurityTransactionStore {
-        fn load(
-            &self,
-            _transaction_id: &TransactionId,
-        ) -> Result<Option<DurableSecurityTransaction>> {
-            Ok(None)
-        }
-
-        fn save<'a>(
-            &'a self,
-            _state: &'a DurableSecurityTransaction,
-        ) -> impl Future<Output = Result<()>> + crate::MaybeSend + 'a {
-            async move { Ok(()) }
-        }
-
-        fn clear_staged_secret(&self, reference: &str) -> Result<()> {
-            self.cleared_staged_secret_refs
-                .lock()
-                .unwrap()
-                .push(reference.to_owned());
-            Ok(())
-        }
-
-        fn remove(&self, _transaction_id: &TransactionId) -> Result<()> {
-            Ok(())
+    fn committed_ref(realm_id: RealmId, seed: u8, position: u64) -> CommittedEventRef {
+        CommittedEventRef {
+            event_id: EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [seed; 32]),
+            commit_id: RealmCommitId::from_digest([seed.wrapping_add(1); 32]),
+            stream_ref: CommitStreamRef::Realm { realm_id },
+            stream_position: position,
         }
     }
 
-    #[test]
-    fn durable_state_serializes_only_public_coordination_state() {
-        let state = DurableSecurityTransaction {
-            transaction_id: transaction_id(),
-            canonical_create_request: br#"{"public_plan":true}"#.to_vec(),
-            staged_secret_ref: Some("secure-store://recovery/staged-1".to_owned()),
-            pending_continue: None,
-            accepted_terminal_continue: None,
-            pending_erase_request: None,
-            pending_completion_grant_request: None,
-            accepted_completion_grant_request: None,
+    fn durable_state() -> DurableSecurityTransaction {
+        DurableSecurityTransaction {
+            transaction_id: TransactionId::new(
+                "ak:transaction:0196419b-0000-7000-8000-000000000001",
+            )
+            .unwrap(),
+            canonical_create_request: br#"{"kind":"recovery"}"#.to_vec(),
+            staged_secret_ref: Some("secure/recovery/1".to_owned()),
+            pending_continue: Some(PendingSecurityTransactionContinue {
+                expected_accepted_step_count: 0,
+                canonical_request: br#"{"expected_accepted_step_count":0}"#.to_vec(),
+            }),
             last_observed_resource: None,
-        };
-        assert!(
-            !serde_json::to_vec(&state)
-                .unwrap()
-                .windows("recovery secret".len())
-                .any(|window| window == b"recovery secret")
-        );
-    }
-
-    #[test]
-    fn progress_without_server_resource_does_not_infer_completion() {
-        let state = DurableSecurityTransaction {
-            transaction_id: transaction_id(),
-            canonical_create_request: Vec::new(),
-            staged_secret_ref: None,
-            pending_continue: None,
-            accepted_terminal_continue: None,
-            pending_erase_request: None,
-            pending_completion_grant_request: None,
-            accepted_completion_grant_request: None,
-            last_observed_resource: None,
-        };
-        let progress = state.progress();
-        assert_eq!(progress.terminal_kind, None);
-        assert_eq!(progress.next_required_step, None);
-        assert!(!progress.requires_device_attestation);
-        assert_eq!(progress.accepted_step_count, 0);
-    }
-
-    #[test]
-    fn staged_secret_reference_cannot_embed_secret_material() {
-        assert!(validate_staged_secret_ref(Some("secure-store://recovery/staged-1")).is_ok());
-        for invalid in [
-            "recovery phrase words",
-            "secure-store://recovery/staged-1?mnemonic=secret",
-            "secure-store://recovery/staged-1#private-key",
-        ] {
-            assert!(validate_staged_secret_ref(Some(invalid)).is_err());
         }
     }
 
     #[test]
-    fn terminal_observation_destroys_staged_secret_before_clearing_reference() {
-        let store = SpySecurityTransactionStore::default();
-        let mut state = DurableSecurityTransaction {
-            transaction_id: transaction_id(),
-            canonical_create_request: br#"{"public_plan":true}"#.to_vec(),
-            staged_secret_ref: Some("secure-store://recovery/staged-1".to_owned()),
-            pending_continue: None,
-            accepted_terminal_continue: None,
-            pending_erase_request: None,
-            pending_completion_grant_request: None,
-            accepted_completion_grant_request: None,
-            last_observed_resource: None,
+    fn recovery_boundary_accepts_consecutive_realm_commits() {
+        let realm_id = realm(1);
+        let first = committed_ref(realm_id.clone(), 2, 8);
+        let second = committed_ref(realm_id.clone(), 4, 9);
+        validate_recovery_commit_boundary(&realm_id, &first, &second).unwrap();
+    }
+
+    #[test]
+    fn recovery_boundary_rejects_a_gap() {
+        let realm_id = realm(1);
+        let first = committed_ref(realm_id.clone(), 2, 8);
+        let second = committed_ref(realm_id.clone(), 4, 10);
+        assert!(validate_recovery_commit_boundary(&realm_id, &first, &second).is_err());
+    }
+
+    #[test]
+    fn recovery_boundary_rejects_another_realm() {
+        let realm_id = realm(1);
+        let first = committed_ref(realm_id.clone(), 2, 8);
+        let second = committed_ref(realm(9), 4, 9);
+        assert!(validate_recovery_commit_boundary(&realm_id, &first, &second).is_err());
+    }
+
+    #[test]
+    fn recovery_boundary_rejects_non_realm_streams() {
+        let realm_id = realm(1);
+        let first = committed_ref(realm_id.clone(), 2, 8);
+        let mut second = committed_ref(realm_id.clone(), 4, 9);
+        second.stream_ref = CommitStreamRef::Sidecar {
+            realm_id: realm_id.clone(),
+            sidecar_id: arkret_wire::SidecarId::from_event_id(&EventId::from_digest(
+                arkret_canonical::DigestSuite::Sha256,
+                [7; 32],
+            )),
         };
+        assert!(validate_recovery_commit_boundary(&realm_id, &first, &second).is_err());
+    }
 
-        clear_terminal_staged_secret(&store, &mut state, false).unwrap();
-        assert!(state.staged_secret_ref.is_some());
-        assert!(store.cleared_staged_secret_refs.lock().unwrap().is_empty());
-
-        clear_terminal_staged_secret(&store, &mut state, true).unwrap();
-        assert!(state.staged_secret_ref.is_none());
+    #[tokio::test]
+    async fn memory_store_preserves_exact_pending_request_bytes() {
+        let store = MemorySecurityTransactionStore::default();
+        let state = durable_state();
+        store.save(&state).await.unwrap();
+        let restored = store.load(&state.transaction_id).unwrap().unwrap();
         assert_eq!(
-            store.cleared_staged_secret_refs.lock().unwrap().as_slice(),
-            ["secure-store://recovery/staged-1"]
+            restored.pending_continue.unwrap().canonical_request,
+            br#"{"expected_accepted_step_count":0}"#
         );
+    }
+
+    #[tokio::test]
+    async fn memory_store_tracks_secret_clear_and_removal_independently() {
+        let store = MemorySecurityTransactionStore::default();
+        let state = durable_state();
+        store.save(&state).await.unwrap();
+        store.clear_staged_secret("secure/recovery/1").unwrap();
+        assert_eq!(store.cleared_secret_refs(), ["secure/recovery/1"]);
+        store.remove(&state.transaction_id).unwrap();
+        assert!(store.load(&state.transaction_id).unwrap().is_none());
     }
 }

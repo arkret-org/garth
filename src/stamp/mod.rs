@@ -5,10 +5,6 @@
 //! backward could reissue an `hlc` tuple. `encoding.md` §7 forbids reusing an
 //! emitted HLC tuple, so this module keeps a durable HLC floor.
 //!
-//! Actor sequence allocation deliberately does not live here. A host derives
-//! `actor_seq` and `prev_refs` from the typed `(realm_id, actor_id)` frontier (or
-//! the previous event in the same authoring transaction). Burning a local actor
-//! sequence before acceptance would create an unfillable chain gap.
 //! - `hlc` is a per-`(realm, device)` generator. The physical component is unix milliseconds; the
 //!   durable floor makes it monotonic across restarts and immune to a backward wall clock. The
 //!   `node_id` segment is the SDK's Realm-scoped pseudonymous derivation (`encoding.md` §7).
@@ -20,15 +16,15 @@
 
 use std::future::Future;
 
+use arkret_wire::{DeviceId, DidCoreId, Hlc, RealmId};
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{DeviceId, DidCoreId, Error, Hlc, RealmId, Result};
-use crate::{HostClock, MaybeSendSync};
+use crate::{Error, HostClock, MaybeSendSync, Result};
 
 /// 16-bit logical counter ceiling (`encoding.md` §7: 4 lowercase hex digits).
-const MAX_LOGICAL: u32 = crate::protocol::hlc::HLC_MAX_LOGICAL;
+const MAX_LOGICAL: u32 = arkret_identifiers::hlc::HLC_MAX_LOGICAL;
 /// 48-bit physical millisecond ceiling (`encoding.md` §7: 12 lowercase hex).
-const MAX_PHYSICAL: u64 = crate::protocol::hlc::HLC_MAX_PHYSICAL_MS;
+const MAX_PHYSICAL: u64 = arkret_identifiers::hlc::HLC_MAX_PHYSICAL_MS;
 
 /// Identity of one Realm/device HLC chain under an optional service and actor
 /// scope. The actor is part of the storage partition for host isolation only;
@@ -234,7 +230,7 @@ fn host_now_ms<E: HostClock>(clock: &E) -> u64 {
 }
 
 fn hlc_parts(hlc: &Hlc) -> Result<(u64, u32)> {
-    let parts = crate::protocol::hlc::parse_hlc(hlc.as_str())?;
+    let parts = arkret_identifiers::hlc::parse_hlc(hlc.as_str())?;
     Ok((parts.physical_ms, parts.logical))
 }
 
@@ -243,13 +239,9 @@ fn hlc_parts(hlc: &Hlc) -> Result<(u64, u32)> {
 /// the system clock and panic on wasm, but `with_initial_time(..).current()`
 /// only formats the seeded state, so it is clock-free and wasm-safe.
 fn derive_node_id(realm_id: &str, device_id: &str, local_node_secret: &[u8]) -> String {
-    let probe = crate::protocol::hlc::HlcGenerator::with_initial_time(
-        realm_id,
-        device_id,
-        local_node_secret,
-        0,
-    )
-    .current();
+    let probe =
+        arkret_hlc::HlcGenerator::with_initial_time(realm_id, device_id, local_node_secret, 0)
+            .current();
     // `probe` is `000000000000-0000-<node_id>`; the node segment is the last 8.
     probe.as_str()[18..26].to_owned()
 }
@@ -321,8 +313,8 @@ mod hlc_only_tests {
     }
 
     #[test]
-    fn persisted_floor_has_no_actor_sequence_field() {
+    fn persisted_floor_contains_only_hlc_coordinates() {
         let encoded = serde_json::to_value(StampFloor::default()).unwrap();
-        assert!(encoded.get("actor_seq").is_none());
+        assert_eq!(encoded.as_object().unwrap().len(), 2);
     }
 }

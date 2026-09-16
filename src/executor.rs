@@ -8,24 +8,6 @@ pub trait Executor: Clone + 'static {
     fn sleep(&self, dur: Duration) -> impl Future<Output = ()> + '_;
 }
 
-pub(crate) async fn wait_cancellable<E: Executor>(
-    executor: &E,
-    duration: Duration,
-    mut is_cancelled: impl FnMut() -> bool,
-) -> bool {
-    const QUANTUM: Duration = Duration::from_millis(50);
-    let mut remaining = duration;
-    while !remaining.is_zero() {
-        if is_cancelled() {
-            return true;
-        }
-        let step = remaining.min(QUANTUM);
-        executor.sleep(step).await;
-        remaining = remaining.saturating_sub(step);
-    }
-    is_cancelled()
-}
-
 /// Host wall clock used for protocol expiry decisions.
 pub trait HostClock: Clone + 'static {
     fn now(&self) -> DateTime<Utc>;

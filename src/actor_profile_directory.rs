@@ -7,10 +7,9 @@
 //! validation, and the fresh / stale / unavailable classification a UI needs in
 //! order to decide what it is allowed to claim about a peer's name.
 //!
-//! Ordinary profile state carries no covering Seal, so nothing here waits for
-//! one. What a row does prove is checked by
+//! What a row proves is checked by
 //! [`arkret_models_collaboration::actor_profile_resolution::validate_resolved_actor_profile`]:
-//! the exact signed Event, the display projection and the requested actor are
+//! the exact committed Event, the display projection and the requested actor are
 //! one subject. A row that fails that check is recorded as unavailable rather
 //! than displayed, because a projection the client cannot bind to an Event is
 //! not weaker evidence — it is none. That degradation is per actor on purpose:
@@ -378,7 +377,7 @@ mod tests {
     use arkret_models_identity::actor_profile_operations::{
         ActorProfileResolveFailure, ActorProfileResolveFailureReason,
     };
-    use arkret_wire::{ActorProfileId, DidCoreId, Hlc, ScopeRef};
+    use arkret_wire::{ActorProfileId, DidCoreId, ScopeRef};
     use serde_json::json;
 
     use super::*;
@@ -405,8 +404,6 @@ mod tests {
             },
             DidCoreId::new(PEER).unwrap(),
             DidCoreId::new(STATION).unwrap(),
-            3,
-            Hlc::new("01970e589d21-0004-a13f9c2e").unwrap(),
             json!({"object": profile_value(None, display_name)}),
             instant(0),
         )

@@ -1,51 +1,75 @@
 #![cfg(all(feature = "native", not(target_arch = "wasm32")))]
 
-use std::time::Duration;
+use arkret_wire::{CommitStreamRef, EventId, RealmId};
+use garth::{CursorScope, CursorStore, EventCacheStore, FileStore};
 
-use arkret_wire::{DeviceId, DidCoreId, EventId};
-use garth::{
-    CursorScope, CursorStore, DurableInboxStore, EventCacheStore, FileStore, OutboundQueueStore,
-};
-
-fn account_scope() -> CursorScope {
-    CursorScope::Account {
+fn scope() -> CursorScope {
+    CursorScope::CommitStream {
         service_id: None,
-        actor_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
-        device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
+        stream_ref: CommitStreamRef::Realm {
+            realm_id: RealmId::new("ak:realm:AdkQ-RmB1a8zyc52yl9GWAsodQ_EUle1WAVZqbO7pc19")
+                .unwrap(),
+        },
     }
 }
 
 #[tokio::test]
-async fn idle_mutations_leave_the_file_untouched() {
-    let path = std::env::temp_dir().join(format!(
-        "garth-filestore-integration-noop-{}.json",
-        std::process::id()
-    ));
-    let _ = std::fs::remove_file(&path);
+async fn identical_cursor_save_is_a_file_noop() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("garth.json");
     let store = FileStore::open(&path).unwrap();
-    let scope = account_scope();
-    let cursor = "ak:cursor:stable".to_owned();
-    let event = EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [0x77; 32]);
-
-    store.save(scope.clone(), cursor.clone()).await.unwrap();
-    store.remember(event.clone()).await.unwrap();
-    let before_bytes = std::fs::read(&path).unwrap();
-    let before_modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-
-    tokio::time::sleep(Duration::from_millis(25)).await;
-    store.save(scope.clone(), cursor.clone()).await.unwrap();
-    store.commit(scope, Some(cursor), Vec::new()).await.unwrap();
-    store.remember(event).await.unwrap();
     store
-        .mutate_outbound(|_| Ok::<_, garth::Error>(()))
+        .save(scope(), "ak:cursor:same".to_owned())
         .await
         .unwrap();
+    let before = std::fs::read(&path).unwrap();
+    store
+        .save(scope(), "ak:cursor:same".to_owned())
+        .await
+        .unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+}
 
-    assert_eq!(std::fs::read(&path).unwrap(), before_bytes);
+#[tokio::test]
+async fn file_store_reopens_durable_cursor() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("garth.json");
+    FileStore::open(&path)
+        .unwrap()
+        .save(scope(), "ak:cursor:durable".to_owned())
+        .await
+        .unwrap();
+    let reopened = FileStore::open(&path).unwrap();
     assert_eq!(
-        std::fs::metadata(&path).unwrap().modified().unwrap(),
-        before_modified
+        reopened.load(scope()).await.unwrap().as_deref(),
+        Some("ak:cursor:durable")
     );
-    assert!(!store.has_active_outbound().unwrap());
-    let _ = std::fs::remove_file(&path);
+}
+
+#[tokio::test]
+async fn duplicate_event_remember_is_idempotent() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("garth.json");
+    let store = FileStore::open(&path).unwrap();
+    let event_id = EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [7; 32]);
+    store.remember(event_id.clone()).await.unwrap();
+    let before = std::fs::read(&path).unwrap();
+    store.remember(event_id.clone()).await.unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert!(store.seen(event_id).await.unwrap());
+}
+
+#[tokio::test]
+async fn clear_missing_cursor_is_idempotent() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("garth.json");
+    let store = FileStore::open(&path).unwrap();
+    store
+        .save(scope(), "ak:cursor:present".to_owned())
+        .await
+        .unwrap();
+    store.clear(scope()).await.unwrap();
+    let before = std::fs::read(&path).unwrap();
+    store.clear(scope()).await.unwrap();
+    assert_eq!(std::fs::read(&path).unwrap(), before);
 }

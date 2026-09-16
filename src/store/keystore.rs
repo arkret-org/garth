@@ -4,10 +4,10 @@ use std::pin::Pin;
 use std::str;
 use std::sync::{Arc, Mutex, PoisonError};
 
+use arkret_keystore::{KeyBytes, KeyStore, KeyStoreError};
 use thiserror::Error;
 
-use crate::MaybeSendSync;
-use crate::protocol::{Error, KeyBytes, KeyStore, KeyStoreError};
+use crate::{Error as GarthError, MaybeSendSync};
 
 /// Character-safe storage namespace for an account authority pair.
 ///
@@ -108,9 +108,9 @@ pub enum SecureKeyStoreError {
     Unsupported(&'static str),
 }
 
-impl From<SecureKeyStoreError> for Error {
+impl From<SecureKeyStoreError> for GarthError {
     fn from(value: SecureKeyStoreError) -> Self {
-        Error::Protocol(value.to_string())
+        GarthError::Protocol(value.to_string())
     }
 }
 

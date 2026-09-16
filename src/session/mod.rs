@@ -6,8 +6,8 @@ pub mod refresh;
 mod store;
 
 pub use engine::{
-    BoxSessionFuture, REFRESH_SUCCESS_COOLDOWN_SECS, SessionEngine, SessionGrantState,
-    SessionGrantTransport, SessionRefreshOptions,
+    BoxSessionFuture, SessionEngine, SessionGrantState, SessionGrantTransport,
+    SessionRefreshOptions,
 };
 pub use login::{AgentKeyProofLogin, LoginKind};
 pub use provider::{AuthenticatedTransportFactory, SessionTransportProvider};
