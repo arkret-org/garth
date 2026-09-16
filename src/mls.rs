@@ -1,11 +1,41 @@
 //! Host-neutral MLS installation queue and provider-opaque local state.
 
+#[path = "mls/backup_selection.rs"]
+pub mod backup_selection;
+#[path = "mls/backup_series.rs"]
+pub mod backup_series;
+#[path = "mls/key_package.rs"]
+pub mod key_package;
+#[path = "mls/self_preservation.rs"]
+pub mod self_preservation;
+#[path = "mls/status.rs"]
+pub mod status;
+#[path = "mls/welcome_admission.rs"]
+pub mod welcome_admission;
+
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use arkret_models_crypto::{MlsCommitEnvelope, MlsGroupStateRecord, MlsWelcomeEnvelope};
 use arkret_wire::{CommittedEventRef, DeviceId};
+pub use backup_selection::{
+    active_series_id, carries_item_kind, recovery_public_key_backup_present,
+    recovery_setup_prompt_required, select_active_series_tail,
+    select_active_series_tail_for_recipient_method, summaries_in_active_series,
+};
+pub use backup_series::{fresh_backup_id, series_supersedes_digest, verify_series_chain};
+pub use key_package::{KEY_PACKAGE_LOW_WATER, MlsKeyPackageInventoryStore, key_package_deficit};
+pub use self_preservation::{
+    SELF_PRESERVATION_JITTER_SLOTS, SELF_PRESERVATION_MAX_EPOCH_AGE_DAYS,
+    SELF_PRESERVATION_MAX_EPOCH_APP_MESSAGES, idle_self_update_jitter_passed,
+    should_force_epoch_advance,
+};
+pub use status::{InstalledMlsEpoch, MlsRuntimeError, MlsRuntimeStatus, installed_mls_epoch};
+pub use welcome_admission::{
+    LocalMlsEndpoint, admit_welcome, mls_group_id_for_realm, mls_group_id_for_scope,
+    retain_admissible_welcomes, welcome_matches_endpoint,
+};
 use zeroize::Zeroizing;
 
 use crate::{

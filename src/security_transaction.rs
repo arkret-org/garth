@@ -163,8 +163,8 @@ fn validate_observed_resource(
         })?;
         validate_recovery_commit_boundary(
             &plan.reanchor_commit_intent.realm_id,
-            &attestation.reanchor_ref,
-            &attestation.device_authorization_ref,
+            &attestation.reanchor_event_ref,
+            &attestation.device_authorization_event_ref,
         )?;
     }
     Ok(())

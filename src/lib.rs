@@ -18,18 +18,25 @@ pub mod facade;
 pub mod maybe_send;
 pub mod message_authoring;
 pub mod mls;
+pub mod outbound;
+pub mod projection;
 pub mod replica;
+pub mod run;
 pub mod runtime_journey;
 pub mod security_transaction;
 pub mod service_route;
 pub mod service_route_material;
 pub mod session;
 pub mod signal;
+pub mod signal_message_stream;
 pub mod stamp;
 pub mod store;
 pub mod submission_queue;
 pub mod subscription;
 pub mod websocket;
+
+#[cfg(test)]
+mod test_fixtures;
 
 pub use account_handoff::*;
 pub use account_sync::*;
@@ -37,6 +44,13 @@ pub use actor_profile_directory::{
     ActorProfileDirectory, ActorProfileResolveTransport, ActorProfileUnavailableCause,
     ActorProfileView, DEFAULT_ACTOR_PROFILE_FRESH_FOR_SECONDS,
 };
+pub use arkret_models_collaboration::signal_plaintext::{
+    MAX_SIGNAL_PLAINTEXT_TTL_MS, SignalPlaintext, SignalPlaintextKind, SignalPlaintextProfile,
+    SignalSequence, SignalSequenceDecision, SignalSequenceDomain, SignalSequenceEndpoint,
+    SignalSequenceHighWater, open_signal_plaintext, seal_signal_plaintext,
+    validate_signal_plaintext,
+};
+pub use arkret_retry::{RetryPolicy, RetrySchedule};
 pub use arkret_wire::{
     AuthorityBundleRequest, AuthorityHandoffRequest, AuthoritySubmitOutcome,
     AuthoritySubmitRequest, CommitStreamHead, CommitStreamRef, CommittedEventRef,
@@ -55,14 +69,33 @@ pub use executor::{Executor, HostClock, SystemClock};
 pub use facade::ArkretClient;
 pub use maybe_send::{MaybeSend, MaybeSendSync};
 pub use message_authoring::{
-    MessageAuthoringContent, MessageAuthoringIntent, MessageEncryptionContext,
-    MessageSubmitRequestBody, author_message, queue_authored_message,
+    MessageAuthoringContent, MessageAuthoringFailure, MessageAuthoringIntent,
+    MessageAuthoringRecovery, MessageEncryptionContext, MessageSubmitRequestBody, author_message,
+    classify_authority_rejection, classify_message_authoring_error, queue_authored_message,
 };
 pub use mls::{
-    AcceptedMlsArtifact, MemoryMlsLocalStateStore, MlsDeviceSecretStore, MlsInstallQueue,
-    MlsInstaller, MlsLocalStateStore, QueuedMlsInstall, SecureMlsLocalStateStore,
+    AcceptedMlsArtifact, InstalledMlsEpoch, LocalMlsEndpoint, MemoryMlsLocalStateStore,
+    MlsDeviceSecretStore, MlsInstallQueue, MlsInstaller, MlsKeyPackageInventoryStore,
+    MlsLocalStateStore, MlsRuntimeError, MlsRuntimeStatus, QueuedMlsInstall,
+    SecureMlsLocalStateStore, admit_welcome, installed_mls_epoch, key_package_deficit,
+    mls_group_id_for_realm, mls_group_id_for_scope, retain_admissible_welcomes,
+    select_active_series_tail, select_active_series_tail_for_recipient_method,
+    should_force_epoch_advance, verify_series_chain,
+};
+pub use outbound::{
+    MemoryOutboundQueueStore, OutboundEngine, OutboundEngineOutcome, OutboundQueueStore, SendQueue,
+    SendQueueItem, SendQueueSnapshot, SendQueueStatus,
+};
+pub use projection::{
+    AccountUpdateContext, ClientEvent, ClientProjector, CommittedDelta, DecodedInbound,
+    DecodedMessage, InboundDecoder, RealmProjectionFrame, RealmProjectionState,
+    account_batch_to_client_events, account_frame_to_client_events, reconcile_realm_projection,
 };
 pub use replica::{RealmReplica, StreamReplica};
+pub use run::{
+    AccountRunner, RunError, RunErrorClass, RunEvent, RunOptions, RunResult, RunStopReason,
+    SyncLoopControl, TransportProvider, classify_error,
+};
 pub use runtime_journey::{ParticipationAction, ParticipationAdmissionFacts};
 pub use security_transaction::{
     ClientStepAttestation, DurableSecurityTransaction, MemorySecurityTransactionStore,
@@ -91,6 +124,13 @@ pub use signal::{
     SignalDecryptor, SignalFrameSource, SignalReceiveOutcome, SignalReceiver, SignalSink,
     SignalStreamStopReason,
 };
+pub use signal_message_stream::{
+    MAX_MESSAGE_STREAM_LIFETIME_SECONDS, MAX_MESSAGE_STREAM_PREVIEW_BYTES,
+    MAX_MESSAGE_STREAMS_PER_DEVICE, MESSAGE_STREAM_KIND, MESSAGE_STREAM_STALLED_AFTER_SECONDS,
+    MessageStreamApplyOutcome, MessageStreamAuthorizer, MessageStreamFrame,
+    MessageStreamIgnoreReason, MessageStreamPreview, MessageStreamPreviewStatus,
+    MessageStreamProjection,
+};
 pub use stamp::{
     MonotonicStampStore, RemoteStamp, SigningStamp, SigningStampAllocator, StampFloor,
     StampFloorUpdate, StampScope, hlc_from_floor,
@@ -98,12 +138,12 @@ pub use stamp::{
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use store::FileStore;
 pub use store::{
-    BoundedSeenWindow, CursorScope, CursorStore, DEFAULT_SEEN_EVENTS_CAPACITY, DeliveryId,
-    DurableInboxStore, EventCacheStore, MAX_PENDING_DELIVERIES, MAX_PENDING_READ, MemoryInboxStore,
-    MemorySecureKeyStore, MemoryStore, OpaqueCursor, PendingDelivery, PutSecretOptions,
-    SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter, SecretClass, SecretDurability, SecureKeyStore,
-    SecureKeyStoreBackendInfo, SecureKeyStoreError, SecureKeyStoreResult,
-    account_id_storage_digest, device_storage_digest,
+    BoundedSeenWindow, CursorScope, CursorStore, DEFAULT_SEEN_EVENTS_CAPACITY, DeliveryErrorClass,
+    DeliveryId, DurableInboxStore, EventCacheStore, MAX_DELIVERY_ERROR_BYTES,
+    MAX_PENDING_DELIVERIES, MAX_PENDING_READ, MemoryInboxStore, MemorySecureKeyStore, MemoryStore,
+    OpaqueCursor, PendingDelivery, PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter,
+    SecretClass, SecretDurability, SecureKeyStore, SecureKeyStoreBackendInfo, SecureKeyStoreError,
+    SecureKeyStoreResult, account_id_storage_digest, device_storage_digest,
 };
 pub use submission_queue::{MemorySubmissionQueueStore, SubmissionQueueStore, SubmissionWorker};
 pub use subscription::{

@@ -687,7 +687,7 @@ pub fn identity_creation_register_request(
                 .founding_authorize_payload_digest
                 .clone(),
             initial_session_request_digest: frozen_request.initial_session_request_digest.clone(),
-            creation_event_kinds: arkret_models_identity::IDENTITY_CREATION_EVENT_KINDS,
+            genesis_unit_kinds: arkret_models_identity::PCR_GENESIS_UNIT_KINDS,
             identity_creation_lease_id: frozen_request.identity_creation_lease_id.clone(),
             lease_fence: frozen_request.lease_fence,
             dpop_jkt: context.dpop_jkt.clone(),

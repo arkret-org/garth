@@ -9,8 +9,10 @@ fi
 
 cd "$(dirname "$0")/.."
 
-echo "==> cargo fmt --all -- --check"
-cargo fmt --all -- --check
+# Scoped to this package on purpose. The SDK is a sibling path dependency, and
+# `cargo fmt --all` reaches into that repository and rewrites it.
+echo "==> cargo fmt -- --check"
+cargo fmt -- --check
 
 echo "==> cargo check --workspace --all-features"
 cargo check --workspace --all-features

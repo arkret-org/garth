@@ -141,18 +141,17 @@ impl<S: ServiceRouteStateStore> ServiceRouteEvaluator<S> {
         if durable.quarantine.is_some() {
             return Err(Error::Protocol("service_route_fork_quarantined".into()));
         }
-        if let Some(cached) = self.cache.get(&key) {
-            if cached.route.is_routable_at(now)
-                && durable.method_state.as_ref().is_some_and(|state| {
-                    state.method_history_head == cached.route.method_history_head()
-                        && state.version_id == cached.route.version_id()
-                        && &state.did == cached.route.did()
-                })
-            {
-                let mut result = cached.clone();
-                result.source = RouteCandidateSource::FreshCache;
-                return Ok(result);
-            }
+        if let Some(cached) = self.cache.get(&key)
+            && cached.route.is_routable_at(now)
+            && durable.method_state.as_ref().is_some_and(|state| {
+                state.method_history_head == cached.route.method_history_head()
+                    && state.version_id == cached.route.version_id()
+                    && &state.did == cached.route.did()
+            })
+        {
+            let mut result = cached.clone();
+            result.source = RouteCandidateSource::FreshCache;
+            return Ok(result);
         }
         self.cache.remove(&key);
         let candidate = source
@@ -171,17 +170,16 @@ impl<S: ServiceRouteStateStore> ServiceRouteEvaluator<S> {
             now,
         )
         .map_err(|e| Error::Protocol(e.to_string()))?;
-        if let Some(state) = &durable.method_state {
-            if let Err(error) =
+        if let Some(state) = &durable.method_state
+            && let Err(error) =
                 arkret_identity::verify_service_resolution_floor(&candidate.resolution, state)
-            {
-                durable.quarantine = Some(RouteForkQuarantine {
-                    reason: error.to_string(),
-                    quarantined_at: now,
-                });
-                self.store.save_route_state(&durable)?;
-                return Err(Error::Protocol(error.to_string()));
-            }
+        {
+            durable.quarantine = Some(RouteForkQuarantine {
+                reason: error.to_string(),
+                quarantined_at: now,
+            });
+            self.store.save_route_state(&durable)?;
+            return Err(Error::Protocol(error.to_string()));
         }
         let describe = source.describe(&projection.base_url)?;
         if describe.service_id != *id

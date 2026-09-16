@@ -43,9 +43,35 @@ their `CommitStreamRef`.
 
 The `account_sync` module reexports the current account-subscribe DTOs. Its
 cursor checkpoints aggregate delivery; it does not confer stream finality.
-Validate each frame with `validate_account_frame`, project its contents, and
-persist the cursor only after the projection succeeds. Timeline items retain
-their own committed stream coordinates.
+Timeline items retain their own committed stream coordinates.
+
+Implement `ClientProjector` and hand it to `AccountRunner::run`. The runner
+re-acquires an authenticated transport through your `TransportProvider` on
+every restart, fans each delivered frame into an ordered `ClientEvent` batch
+with `account_frame_to_client_events`, awaits your projector, and only then
+persists the cursor. A projector error stops the loop without advancing the
+cursor, so the unit is redelivered.
+
+`ClientEvent::Committed` carries a `CommittedDelta` with the exact
+`CommitStreamRef` and `stream_position` the Station assigned. Index on that.
+`RealmProjectionState` keeps one independent tail per visible stream and
+refuses a gap on any one of them; it never builds a Realm-wide sequence.
+
+`RunOptions` carries the reconnect cadence, `RunEvent` reports every lifecycle
+transition, and `SyncLoopControl::cancel` stops the loop explicitly. An
+`unauthorized` outcome is routed to `TransportProvider::recover_unauthorized`
+before the loop gives up; an expired cursor clears the checkpoint and resumes
+from catch-up.
+
+## 4b. Queue producer submissions durably
+
+`OutboundEngine` is the durable side of authoring. `enqueue` records a frozen
+`QueuedSubmission`; `submit_next` claims the oldest due item, marks it
+`Forwarding`, and records the authority outcome as `Committed` (with its
+`RealmCommit`) or `Rejected` (with its reason code). A retryable transport
+fault requeues the same frozen bytes behind a spec backoff delay; a protocol
+violation fails the item instead of looping. An item that is already in flight
+cannot be withdrawn, because its outcome is still authoritative.
 
 ## 5. Persist minimal client state
 
@@ -79,11 +105,34 @@ provider-opaque checkpoint, and only then removes the queue item. Use
 `SecureMlsLocalStateStore` and `MlsDeviceSecretStore` with a platform secure
 store for checkpoints and device material.
 
+A Welcome arrives as a producer-signed `MlsWelcomeDelivery` alongside its
+accepted Commit, never as an Event. Pass it through `admit_welcome` with your
+`LocalMlsEndpoint` and the accepted Commit Event ID before handing it to the
+provider; anything addressed elsewhere or bound to another Commit fails closed.
+
+`installed_mls_epoch` reports three distinct answers: installed at an epoch, an
+authoritative "no accepted genesis" (so this scope is still plaintext), and
+"not delivered yet". Never collapse the last two. `MlsRuntimeStatus` maps the
+client-side failure taxonomy onto user-facing readiness.
+
+`MlsKeyPackageInventoryStore` persists what this endpoint published and
+`key_package_deficit` says how many fresh single-use packages to publish.
+KeyPackages ride their own dedicated ledger, not a commit stream.
+
+`verify_series_chain` walks a key-backup series back to genesis before a
+restore trusts the tail, and `select_active_series_tail_for_recipient_method`
+picks the envelope the local recovery path can actually open.
+`should_force_epoch_advance` is the shared self-preservation commit policy.
+
 ## 8. Run transient transports
 
 `SignalReceiver` verifies the Station delivery authority and sender proof
 before host decryption, validates the plaintext binding, and enforces sequence
-high-water state. `WebSocketSocket` and `WebSocketConnector` keep platform
+high-water state. An accepted outcome carries the verified
+`SignalSequenceDomain` alongside the plaintext, so downstream projections key
+on the same sender/endpoint/scope the sequence was enforced against.
+`MessageStreamProjection` consumes that to build transient `ak.message.stream`
+previews; they are never durable and never touch a commit stream. `WebSocketSocket` and `WebSocketConnector` keep platform
 socket I/O and fresh DPoP signing outside the runtime-neutral core; the
 selected binding and close-code vocabulary come from the SDK.
 

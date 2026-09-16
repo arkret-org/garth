@@ -47,6 +47,21 @@ pub enum CursorScope {
 
 pub const MAX_PENDING_DELIVERIES: usize = 4096;
 pub const MAX_PENDING_READ: usize = 1024;
+/// Recorded delivery failure text is truncated to this many bytes, so one
+/// pathological error can never grow the durable inbox without bound.
+pub const MAX_DELIVERY_ERROR_BYTES: usize = 2048;
+
+/// Why a durable delivery has not been acknowledged yet. The class decides
+/// whether a worker retries, waits for credentials, or stops.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeliveryErrorClass {
+    RetryableTransport,
+    RateLimited,
+    Unauthorized,
+    Processing,
+    Store,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct DeliveryId(u64);
@@ -65,6 +80,7 @@ pub struct PendingDelivery<T> {
     pub payload: T,
     pub attempts: u32,
     pub next_attempt_at_ms: Option<i64>,
+    pub error_class: Option<DeliveryErrorClass>,
     pub last_error: Option<String>,
 }
 
@@ -84,6 +100,7 @@ where
         &self,
         id: DeliveryId,
         next_attempt_at_ms: Option<i64>,
+        error_class: DeliveryErrorClass,
         error: String,
     ) -> impl Future<Output = Result<bool>> + '_;
 }
@@ -151,6 +168,7 @@ where
                 payload,
                 attempts: 0,
                 next_attempt_at_ms: None,
+                error_class: None,
                 last_error: None,
             },
         );
@@ -177,15 +195,17 @@ where
         &self,
         id: DeliveryId,
         next_attempt_at_ms: Option<i64>,
+        error_class: DeliveryErrorClass,
         mut error: String,
     ) -> Result<bool> {
-        error.truncate(error.floor_char_boundary(2048));
+        error.truncate(error.floor_char_boundary(MAX_DELIVERY_ERROR_BYTES));
         let mut state = self.state.lock().unwrap();
         let Some(delivery) = state.pending.get_mut(&id) else {
             return Ok(false);
         };
         delivery.attempts = delivery.attempts.saturating_add(1);
         delivery.next_attempt_at_ms = next_attempt_at_ms;
+        delivery.error_class = Some(error_class);
         delivery.last_error = Some(error);
         Ok(true)
     }
@@ -495,7 +515,12 @@ mod tests {
             .await
             .unwrap();
         inbox
-            .retry(id, Some(500), "temporary".to_owned())
+            .retry(
+                id,
+                Some(500),
+                DeliveryErrorClass::RetryableTransport,
+                "temporary".to_owned(),
+            )
             .await
             .unwrap();
         let pending = inbox.pending(10).await.unwrap();
@@ -504,6 +529,10 @@ mod tests {
         assert_eq!(pending[0].attempts, 1);
         assert_eq!(pending[0].next_attempt_at_ms, Some(500));
         assert_eq!(pending[0].last_error.as_deref(), Some("temporary"));
+        assert_eq!(
+            pending[0].error_class,
+            Some(DeliveryErrorClass::RetryableTransport)
+        );
         assert!(inbox.ack(id).await.unwrap());
         assert!(inbox.pending(10).await.unwrap().is_empty());
     }
@@ -514,7 +543,12 @@ mod tests {
         let missing = DeliveryId(99);
         assert!(
             !inbox
-                .retry(missing, None, "not found".to_owned())
+                .retry(
+                    missing,
+                    None,
+                    DeliveryErrorClass::Store,
+                    "not found".to_owned()
+                )
                 .await
                 .unwrap()
         );

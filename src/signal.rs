@@ -42,6 +42,10 @@ pub trait SignalSink: MaybeSendSync {
 #[derive(Clone, Debug, PartialEq)]
 pub enum SignalReceiveOutcome {
     Accepted {
+        /// The verified sender actor, endpoint and scope the sequence
+        /// high-water was enforced against. Downstream projections key on this
+        /// rather than re-deriving sender facts from the plaintext.
+        domain: Box<SignalSequenceDomain>,
         plaintext: SignalPlaintext,
         effective_expires_at: DateTime<Utc>,
     },
@@ -112,6 +116,7 @@ impl SignalReceiver {
         let effective_expires_at =
             plaintext.effective_expires_at(envelope.sent_at, envelope.expires_at);
         Ok(SignalReceiveOutcome::Accepted {
+            domain: Box::new(domain),
             plaintext,
             effective_expires_at,
         })

@@ -4,11 +4,12 @@ Runtime-neutral client primitives for the current Arkret authority-commit
 protocol.
 
 Garth sits above `arkret-http-client` and the protocol model crates. It exposes
-governance-authority operations, queued-to-committed submission state, account
-aggregate delivery, independent commit-stream replicas, producer message
-authoring, SecurityTransaction recovery coordination, MLS installation,
-session/DPoP management, Signal/WebSocket host seams, and durable local-store
-interfaces.
+governance-authority operations, a durable producer-submission engine, account
+aggregate delivery with a resilient run loop and a typed host projection seam,
+independent commit-stream replicas, producer message authoring,
+SecurityTransaction recovery coordination, MLS installation and key-backup
+restore policy, session/DPoP management, Signal/WebSocket host seams, and
+durable local-store interfaces.
 
 Producer Events do not carry predecessor links. A Realm, each Circle, and each
 Sidecar has its own ordered `RealmCommit` stream. Clients learn the current
