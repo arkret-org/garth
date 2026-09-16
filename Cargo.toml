@@ -30,6 +30,7 @@ unimplemented = "deny"
 [features]
 default = []
 native = ["dep:tokio"]
+route-material-test-support = []
 wasm = ["dep:gloo-timers"]
 
 [dependencies]

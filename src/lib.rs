@@ -21,6 +21,8 @@ pub mod mls;
 pub mod replica;
 pub mod runtime_journey;
 pub mod security_transaction;
+pub mod service_route;
+pub mod service_route_material;
 pub mod session;
 pub mod signal;
 pub mod stamp;
@@ -69,6 +71,14 @@ pub use security_transaction::{
     SecurityTransactionCreateRequest, SecurityTransactionEngine, SecurityTransactionPreparedPlan,
     SecurityTransactionStore, SecurityTransactionTerminalOutcome, SecurityTransactionTransport,
     validate_recovery_commit_boundary,
+};
+pub use service_route::{
+    MemoryServiceRouteStateStore, RouteCandidateSource, RouteForkQuarantine, RouteResolution,
+    ServiceDescribeBinding, ServiceRouteCandidate, ServiceRouteDurableSnapshot,
+    ServiceRouteEvaluator, ServiceRouteSource, ServiceRouteStateStore,
+};
+pub use service_route_material::{
+    PrefetchedRouteSource, authenticate_fetched_resolution, describe_route_binding,
 };
 pub use session::{
     AgentKeyProofLogin, AuthenticatedTransportFactory, BoxSessionFuture, GRANT_ROTATION_SKEW_SECS,
