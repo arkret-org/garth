@@ -1,13 +1,15 @@
 //! Account-aggregate delivery over independently committed authority streams.
 
 pub use arkret_models_collaboration::sync_frames::account_subscribe::{
-    AccountBaselineSegment, AccountDataContainer, AccountStreamInterrupt, AccountSubscribeBatch,
+    AccountDataContainer, AccountStreamInterrupt, AccountSubscribeBatch,
     AccountSubscribeDeviceListChanges, AccountSubscribeFrame, AccountSubscribeFrameKind,
     AccountSubscribeRealms, DeviceMessageContainer, EventContainer, NotificationContainer,
-    NotificationDelta, NotificationDeltaAction, RealmInvalidation, RealmListChanges, RealmListPage,
-    RealmListRequest, RealmSyncEntry, RealmTimeline, StationCasAccountDataContainer,
-    StationCasAccountDataRemoval, StreamTraceError, StreamTraceValidator, SyncFilter,
-    SyncRequestBody,
+    NotificationDelta, NotificationDeltaAction, RealmListRequest, RealmSyncEntry, RealmTimeline,
+    StationCasAccountDataContainer, StationCasAccountDataRemoval, StreamTraceError,
+    StreamTraceValidator, SyncFilter, SyncRequestBody,
+};
+pub use arkret_models_collaboration::sync_frames::demand_sync::{
+    AccountBaselineSegment, RealmInvalidation, RealmListChanges, RealmListPage,
 };
 
 /// Validate one aggregate frame without treating its cursor as stream finality.

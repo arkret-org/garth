@@ -12,7 +12,7 @@ use arkret_models_collaboration::account_operations::{
 use arkret_models_identity::{
     AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
     IdentityBindingChallengeOutcome, IdentityBindingChallengeRequestBody, IdentityBindingPurpose,
-    IdentityCreationCommandKind, IdentityCreationControlProofKind, IdentityCreationEvents,
+    IdentityCreationCommandKind, IdentityCreationControlProofKind,
     IdentityCreationGoal, IdentityCreationLease, IdentityCreationLeaseState,
     IdentityCreationLocalArtifactKind, IdentityCreationRecoveryKeyState,
     IdentityCreationRegistration, InitialSessionGrantIntent, PrincipalRegistrationAnchor,
@@ -20,7 +20,7 @@ use arkret_models_identity::{
     UnsignedAccountHandoffRequestBody, UnsignedIdentityCreationControlProof,
     UnsignedIdentityCreationControlProofBody,
 };
-use arkret_wire::{Base64UrlString, DeviceId, Did, DidCoreId, Hash, RequestId};
+use arkret_wire::{Base64UrlString, DeviceId, Did, DidCoreId, Hash, PcrGenesisUnit, RequestId};
 
 use crate::{Error, Result};
 
@@ -571,7 +571,7 @@ pub fn identity_binding_challenge_request(
     request_id: RequestId,
     lease: &IdentityCreationLease,
     principal_registration_anchor: PrincipalRegistrationAnchor,
-    creation_events: &IdentityCreationEvents,
+    creation_events: &PcrGenesisUnit,
     initial_session: &InitialSessionGrantIntent,
 ) -> Result<IdentityBindingChallengeRequestBody> {
     let reserved = ReservedIdentityCreation::from_anchor(principal_registration_anchor.clone())?;
@@ -582,10 +582,10 @@ pub fn identity_binding_challenge_request(
             "identity-creation lease is already reserved for a different registration anchor",
         ));
     }
-    creation_events.validate()?;
+    creation_events.validate_ordered_envelopes()?;
     initial_session.validate()?;
-    let create = &creation_events.realm_create;
-    let authorize = &creation_events.founding_device_authorize;
+    let create = creation_events.create();
+    let authorize = creation_events.founding_authorize();
     let did = principal_registration_anchor.did().clone();
     let request = IdentityBindingChallengeRequestBody {
         request_id,
@@ -622,7 +622,7 @@ pub fn identity_creation_register_request(
     challenge: &IdentityBindingChallengeOutcome,
     frozen_request: &IdentityBindingChallengeRequestBody,
     context: &IdentityCreationBindingContext,
-    creation_events: IdentityCreationEvents,
+    creation_events: PcrGenesisUnit,
     initial_session: InitialSessionGrantIntent,
     root_seed: &[u8; 32],
     display_name: Option<String>,
@@ -648,14 +648,14 @@ pub fn identity_creation_register_request(
         || initial_session.session_public_key.thumbprint_sha256()? != context.dpop_jkt
         || frozen_request.initial_session_request_digest
             != initial_session.canonical_request_digest()?
-        || frozen_request.pcr_realm_id != creation_events.realm_create.realm_id
+        || frozen_request.pcr_realm_id != creation_events.create().realm_id
         || frozen_request.realm_create_payload_digest
             != Hash::new(arkret_canonical::canonical_sha256(
-                &creation_events.realm_create.payload,
+                &creation_events.create().payload,
             )?)?
         || frozen_request.founding_authorize_payload_digest
             != Hash::new(arkret_canonical::canonical_sha256(
-                &creation_events.founding_device_authorize.payload,
+                &creation_events.founding_authorize().payload,
             )?)?
     {
         return Err(protocol(
@@ -716,7 +716,7 @@ pub fn identity_creation_register_request(
             principal_registration_anchor: principal_registration_anchor.clone(),
             registration_did_evidence_draft,
             control_proof,
-            creation_events,
+            pcr_genesis_unit: creation_events,
             initial_session,
         }),
         policy_evidence: None,

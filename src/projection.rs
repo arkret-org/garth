@@ -10,10 +10,12 @@
 use std::collections::BTreeMap;
 
 use arkret_event_draft::{EventPayloadExt, MessageEventPayload};
+use arkret_models_collaboration::device_messages::DeviceMessageEnvelope;
 use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountSubscribeBatch, AccountSubscribeDeviceListChanges, AccountSubscribeFrame,
     AccountSubscribeFrameKind, NotificationDelta, RealmSyncEntry, StationCasAccountDataContainer,
 };
+use arkret_models_collaboration::sync_frames::current_results::AccountCurrentResult;
 use arkret_wire::{
     CommitStreamRef, CommittedEventRef, Event, EventKind, RealmCommit, RealmId, RealmStateSnapshot,
     StreamItem,
@@ -83,11 +85,12 @@ pub enum ClientEvent {
     Message(Box<DecodedMessage>),
     /// An Event the engine did not decode further.
     Event(Box<Event>),
-    /// A Realm product projection frame, full or incremental.
+    /// A Realm current-state frame, full or incremental. The Station selected
+    /// and signed every entry; this is not a locally reduced view.
     RealmProjection {
         realm_id: RealmId,
         incremental: bool,
-        value: Box<Value>,
+        value: Box<AccountCurrentResult>,
     },
     /// The current signed typed snapshot the Station published for a Realm.
     RealmSnapshot(Box<RealmStateSnapshot>),
@@ -98,7 +101,7 @@ pub enum ClientEvent {
     },
     Notification(NotificationDelta),
     /// An ephemeral per-device queue item; never part of a commit stream.
-    ToDevice(Box<Value>),
+    ToDevice(Box<DeviceMessageEnvelope>),
 }
 
 /// Account-subscribe batch metadata that is not emitted as a granular event.

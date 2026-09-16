@@ -3,7 +3,7 @@ use arkret_models_collaboration::agent_scope::AgentRequestedScopeDisclosure;
 use arkret_models_collaboration::session_grants::{
     SessionGrantAgentScopeRequest, SessionGrantDpopBindingProof, SessionGrantRequestBody,
 };
-use arkret_wire::{DeviceId, DidCoreId, DidUrl};
+use arkret_wire::{DeviceId, DidCoreId, DidUrl, EventId};
 use chrono::{DateTime, Utc};
 
 use crate::Result;
@@ -13,7 +13,9 @@ pub struct AgentKeyProofLogin {
     pub principal_id: DidCoreId,
     pub device_id: DeviceId,
     pub requested_scope: Vec<String>,
-    pub agent_key_authorization_ref: String,
+    /// The accepted `ak.agent.key.authorize` Event, as a typed id: a bare
+    /// string here would let an unvalidated ref reach the grant request.
+    pub agent_key_authorization_ref: EventId,
     pub agent_scope_request: SessionGrantAgentScopeRequest,
     pub requested_scope_disclosure: Option<AgentRequestedScopeDisclosure>,
     pub dpop_binding_proof: SessionGrantDpopBindingProof,
