@@ -18,7 +18,7 @@ use arkret_models_collaboration::sync_frames::account_subscribe::{
 use arkret_models_collaboration::sync_frames::current_results::AccountCurrentResult;
 use arkret_wire::{
     CommitStreamRef, CommittedEventRef, Event, EventKind, RealmCommit, RealmId, RealmStateSnapshot,
-    StreamItem,
+    StreamRow,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -36,7 +36,7 @@ pub struct CommittedDelta {
 impl CommittedDelta {
     /// Build one delta from a timeline item, rejecting a commit that does not
     /// bind the Event it is delivered with.
-    pub fn from_stream_item(realm_id: RealmId, item: StreamItem) -> Result<Self> {
+    pub fn from_stream_row(realm_id: RealmId, item: StreamRow) -> Result<Self> {
         item.commit.validate_shape()?;
         if item.commit.event_ref != item.event.event_id {
             return Err(Error::Protocol(
@@ -373,7 +373,7 @@ fn realm_entry_to_client_events(
     }
     if let Some(timeline) = &entry.timeline {
         for item in &timeline.commits {
-            let delta = CommittedDelta::from_stream_item(realm_id.clone(), item.clone())?;
+            let delta = CommittedDelta::from_stream_row(realm_id.clone(), item.clone())?;
             match decoder.decode_event((*delta.event).clone()) {
                 DecodedInbound::Message(message) => batch.push(ClientEvent::Message(message)),
                 DecodedInbound::Event(_) => {}
@@ -452,11 +452,11 @@ mod tests {
     fn a_commit_that_does_not_bind_its_event_is_refused() {
         let first = message_event();
         let second = event(4, EventKind::ReactionAdd, json!({}));
-        let item = StreamItem {
+        let item = StreamRow {
             commit: commit(7, &first, realm_stream(), 1),
             event: second,
         };
-        assert!(CommittedDelta::from_stream_item(realm_id(), item).is_err());
+        assert!(CommittedDelta::from_stream_row(realm_id(), item).is_err());
     }
 
     #[test]
@@ -539,7 +539,7 @@ mod tests {
                     realm_id().to_string(),
                     RealmSyncEntry {
                         timeline: Some(RealmTimeline {
-                            commits: vec![StreamItem {
+                            commits: vec![StreamRow {
                                 commit: commit(7, &event, realm_stream(), 1),
                                 event: event.clone(),
                             }],

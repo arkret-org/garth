@@ -55,7 +55,7 @@ pub use arkret_wire::{
     AuthorityBundleRequest, AuthorityHandoffRequest, AuthoritySubmitOutcome,
     AuthoritySubmitRequest, CommitStreamHead, CommitStreamRef, CommittedEventRef,
     CommittedEventResolveOutcome, CommittedEventResolveRequest, EventCommitSubmission,
-    RealmAuthorityBundle, RealmAuthorityHandoff, RealmCommit, RealmStateSnapshot, StreamItem,
+    RealmAuthorityBundle, RealmAuthorityHandoff, RealmCommit, RealmStateSnapshot, StreamRow,
     StreamScanOutcome, StreamScanRequest,
 };
 pub use authority::{AuthorityClient, AuthorityTransport, QueuedSubmission, SubmissionState};

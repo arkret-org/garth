@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use arkret_wire::{
     CommitStreamHead, CommitStreamRef, RealmAuthorityBundle, RealmId, RealmStateSnapshot,
-    StreamItem, StreamScanOutcome, StreamScanRequest,
+    StreamRow, StreamScanOutcome, StreamScanRequest,
 };
 
 use crate::{Error, Result};
@@ -12,7 +12,7 @@ use crate::{Error, Result};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StreamReplica {
     pub head: Option<CommitStreamHead>,
-    pub items: Vec<StreamItem>,
+    pub items: Vec<StreamRow>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

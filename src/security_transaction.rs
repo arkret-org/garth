@@ -154,7 +154,7 @@ fn validate_observed_resource(
     if let Some(SecurityTransactionTerminalOutcome::Completed {
         completion_attestation: Some(attestation),
         ..
-    }) = &resource.terminal_result
+    }) = &resource.terminal_outcome
     {
         let plan = resource.recovery_plan().ok_or_else(|| {
             Error::Protocol(
@@ -198,7 +198,7 @@ where
         resource: SecurityTransaction,
     ) -> Result<SecurityTransaction> {
         validate_observed_resource(local, &resource)?;
-        if resource.terminal_result.is_some()
+        if resource.terminal_outcome.is_some()
             && let Some(reference) = local.staged_secret_ref.take()
         {
             self.store.clear_staged_secret(&reference)?;

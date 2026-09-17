@@ -12,13 +12,12 @@ use arkret_models_collaboration::account_operations::{
 use arkret_models_identity::{
     AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
     IdentityBindingChallengeOutcome, IdentityBindingChallengeRequestBody, IdentityBindingPurpose,
-    IdentityCreationCommandKind, IdentityCreationControlProofKind,
-    IdentityCreationGoal, IdentityCreationLease, IdentityCreationLeaseState,
-    IdentityCreationLocalArtifactKind, IdentityCreationRecoveryKeyState,
-    IdentityCreationRegistration, InitialSessionGrantIntent, PrincipalRegistrationAnchor,
-    ReservedIdentityCreation, UnsignedAccountHandoffAuthenticationProof,
-    UnsignedAccountHandoffRequestBody, UnsignedIdentityCreationControlProof,
-    UnsignedIdentityCreationControlProofBody,
+    IdentityCreationCommandKind, IdentityCreationControlProofKind, IdentityCreationGoal,
+    IdentityCreationLease, IdentityCreationLeaseState, IdentityCreationLocalArtifactKind,
+    IdentityCreationRecoveryKeyState, IdentityCreationRegistration, InitialSessionGrantIntent,
+    PrincipalRegistrationAnchor, ReservedIdentityCreation,
+    UnsignedAccountHandoffAuthenticationProof, UnsignedAccountHandoffRequestBody,
+    UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
 };
 use arkret_wire::{Base64UrlString, DeviceId, Did, DidCoreId, Hash, PcrGenesisUnit, RequestId};
 
