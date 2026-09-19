@@ -8,8 +8,8 @@
 //! answers it identically.
 
 use arkret_wire::{
-    ActorId, DeviceId, DidUrl, EventId, MlsWelcomeDelivery, MlsWelcomeRecipientEndpoint, RealmId,
-    ScopeRef,
+    ActorId, DeviceId, DidUrl, EventId, MlsGroupId, MlsWelcomeDelivery,
+    MlsWelcomeRecipientEndpoint, RealmId, ScopeRef,
 };
 
 use crate::{Error, Result};
@@ -48,12 +48,12 @@ impl LocalMlsEndpoint {
 
 /// The canonical MLS group id of a scope. A Welcome never carries a group id
 /// of its own: the group is a function of the effective scope.
-pub fn mls_group_id_for_scope(scope: &ScopeRef) -> Result<String> {
+pub fn mls_group_id_for_scope(scope: &ScopeRef) -> Result<MlsGroupId> {
     scope.canonical_mls_group_id().map_err(Error::from)
 }
 
 /// The canonical MLS group id of a Realm's default scope.
-pub fn mls_group_id_for_realm(realm_id: &RealmId) -> Result<String> {
+pub fn mls_group_id_for_realm(realm_id: &RealmId) -> Result<MlsGroupId> {
     mls_group_id_for_scope(&ScopeRef::Realm {
         realm_id: realm_id.clone(),
     })

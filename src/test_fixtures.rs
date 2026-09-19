@@ -60,7 +60,7 @@ pub fn commit(seed: u8, event: &Event, stream_ref: CommitStreamRef, position: u6
         previous_commit_ref: (position > 0)
             .then(|| RealmCommitId::from_digest([seed.wrapping_sub(1); 32])),
         event_ref: event.event_id.clone(),
-        authority_generation: 0,
+        governance_generation: 0,
         authority_ref: RealmCommitAuthorityRef::GenesisOrChangeEvent(EventId::from_digest(
             DigestSuite::Sha256,
             [9; 32],

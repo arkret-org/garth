@@ -19,7 +19,10 @@ use arkret_models_identity::{
     UnsignedAccountHandoffAuthenticationProof, UnsignedAccountHandoffRequestBody,
     UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
 };
-use arkret_wire::{Base64UrlString, DeviceId, Did, DidCoreId, Hash, PcrGenesisUnit, RequestId};
+use arkret_wire::{
+    Base64UrlString, DetachedSignatureAlgorithm, DeviceId, Did, DidCoreId, Hash, PcrGenesisUnit,
+    RequestId,
+};
 
 use crate::{Error, Result};
 
@@ -696,6 +699,7 @@ pub fn identity_creation_register_request(
             issued_at: challenge.issued_at,
             expires_at: challenge.expires_at,
             verification_key_multibase: validated.root_public_key_multibase,
+            signature_algorithm: DetachedSignatureAlgorithm::Ed25519,
         })?;
     let control_proof = arkret_signatures::webvh::sign_identity_creation_control_proof(
         unsigned_control_proof,

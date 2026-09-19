@@ -105,7 +105,7 @@ impl MlsLocalStateStore for MemoryMlsLocalStateStore {
         self.states
             .lock()
             .unwrap()
-            .insert(state.group_id.clone(), state);
+            .insert(state.group_id.as_str().to_owned(), state);
         Ok(())
     }
 
@@ -280,7 +280,9 @@ impl MlsInstallQueue {
             return Ok(None);
         };
         let state = installer.install(queued).await?;
-        if state.group_id != queued.artifact.group_id() || state.epoch < queued.artifact.epoch() {
+        if state.group_id.as_str() != queued.artifact.group_id()
+            || state.epoch < queued.artifact.epoch()
+        {
             return Err(crate::Error::Protocol(
                 "MLS installer returned state for a different group or older epoch".to_owned(),
             ));
@@ -294,10 +296,14 @@ impl MlsInstallQueue {
 #[cfg(test)]
 mod tests {
     use arkret_models_crypto::MlsEndpointIdentity;
-    use arkret_wire::{CommitStreamRef, DidCoreId, EventId, Hash, RealmCommitId, RealmId};
+    use arkret_wire::{
+        CommitStreamRef, DidCoreId, EventId, Hash, MlsGroupId, RealmCommitId, RealmId,
+    };
     use chrono::TimeZone;
 
     use super::*;
+
+    const GROUP_ID: &str = "QjKOSorlqs3IquY7OikTUTy_Z0mMiL0X2mK4jAOT4R4";
 
     fn device_id() -> DeviceId {
         DeviceId::new("ak:device:0196419b-0000-7000-8000-000000000001").unwrap()
@@ -305,7 +311,7 @@ mod tests {
 
     fn state(group_id: &str, epoch: u64) -> MlsGroupStateRecord {
         MlsGroupStateRecord {
-            group_id: group_id.to_owned(),
+            group_id: MlsGroupId::new(group_id.to_owned()).unwrap(),
             endpoint: MlsEndpointIdentity::human_device(
                 DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
                 device_id(),
@@ -330,7 +336,7 @@ mod tests {
 
     fn welcome(group_id: &str, epoch: u64) -> AcceptedMlsArtifact {
         AcceptedMlsArtifact::Welcome(MlsWelcomeEnvelope {
-            group_id: group_id.to_owned(),
+            group_id: MlsGroupId::new(group_id.to_owned()).unwrap(),
             epoch,
             recipient: MlsEndpointIdentity::human_device(
                 DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
@@ -359,11 +365,11 @@ mod tests {
     async fn secure_local_checkpoint_round_trips_provider_state() {
         let secure = crate::MemorySecureKeyStore::new();
         let store = SecureMlsLocalStateStore::new(secure, "mls-test");
-        let expected = state("group-a", 4);
+        let expected = state(GROUP_ID, 4);
         store.save(expected.clone()).await.unwrap();
-        assert_eq!(store.load("group-a").await.unwrap(), Some(expected));
-        store.remove("group-a").await.unwrap();
-        assert!(store.load("group-a").await.unwrap().is_none());
+        assert_eq!(store.load(GROUP_ID).await.unwrap(), Some(expected));
+        store.remove(GROUP_ID).await.unwrap();
+        assert!(store.load(GROUP_ID).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -385,7 +391,7 @@ mod tests {
         queue
             .enqueue(QueuedMlsInstall {
                 accepted_ref: accepted_ref(3),
-                artifact: welcome("group-a", 4),
+                artifact: welcome(GROUP_ID, 4),
             })
             .unwrap();
         let installer = Installer { result: None };
@@ -404,10 +410,10 @@ mod tests {
         queue
             .enqueue(QueuedMlsInstall {
                 accepted_ref: accepted_ref(3),
-                artifact: welcome("group-a", 4),
+                artifact: welcome(GROUP_ID, 4),
             })
             .unwrap();
-        let expected = state("group-a", 4);
+        let expected = state(GROUP_ID, 4);
         let installer = Installer {
             result: Some(expected.clone()),
         };
@@ -416,7 +422,7 @@ mod tests {
             queue.install_next(&installer, &store).await.unwrap(),
             Some(expected.clone())
         );
-        assert_eq!(store.load("group-a").await.unwrap(), Some(expected));
+        assert_eq!(store.load(GROUP_ID).await.unwrap(), Some(expected));
         assert_eq!(queue.pending().count(), 0);
     }
 
@@ -426,11 +432,11 @@ mod tests {
         queue
             .enqueue(QueuedMlsInstall {
                 accepted_ref: accepted_ref(3),
-                artifact: welcome("group-a", 4),
+                artifact: welcome(GROUP_ID, 4),
             })
             .unwrap();
         let installer = Installer {
-            result: Some(state("group-a", 3)),
+            result: Some(state(GROUP_ID, 3)),
         };
         assert!(
             queue

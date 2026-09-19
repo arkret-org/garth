@@ -47,7 +47,7 @@ pub fn installed_mls_epoch(
 ) -> InstalledMlsEpoch {
     match (local_state, genesis_accepted) {
         (Some(state), _) => InstalledMlsEpoch::Installed {
-            group_id: state.group_id.clone(),
+            group_id: state.group_id.as_str().to_owned(),
             epoch: state.epoch,
         },
         (None, Some(false)) => InstalledMlsEpoch::NoAcceptedGenesis,
@@ -143,14 +143,16 @@ impl MlsRuntimeError {
 #[cfg(test)]
 mod tests {
     use arkret_models_crypto::MlsEndpointIdentity;
-    use arkret_wire::DidCoreId;
+    use arkret_wire::{DidCoreId, MlsGroupId};
 
     use super::*;
     use crate::test_fixtures::{at, device_id};
 
+    const GROUP_ID: &str = "QjKOSorlqs3IquY7OikTUTy_Z0mMiL0X2mK4jAOT4R4";
+
     fn state(epoch: u64) -> MlsGroupStateRecord {
         MlsGroupStateRecord {
-            group_id: "group-a".to_owned(),
+            group_id: MlsGroupId::new(GROUP_ID).unwrap(),
             endpoint: MlsEndpointIdentity::human_device(
                 DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
                 device_id(),
@@ -166,7 +168,7 @@ mod tests {
         assert_eq!(
             installed_mls_epoch(Some(&state(7)), None),
             InstalledMlsEpoch::Installed {
-                group_id: "group-a".to_owned(),
+                group_id: GROUP_ID.to_owned(),
                 epoch: 7
             }
         );
