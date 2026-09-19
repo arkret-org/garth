@@ -1,6 +1,6 @@
 //! Small runtime-neutral cursor and committed-Event cache.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
@@ -9,20 +9,22 @@ use serde::{Deserialize, Serialize};
 
 use crate::{MaybeSendSync, Result};
 
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+#[path = "store/file.rs"]
+mod file;
 #[path = "store/keystore.rs"]
 mod keystore;
 #[path = "store/seen_window.rs"]
 mod seen_window;
 
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+pub use file::FileStore;
 pub use keystore::{
     MemorySecureKeyStore, PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter,
     SecretClass, SecretDurability, SecureKeyStore, SecureKeyStoreBackendInfo, SecureKeyStoreError,
     SecureKeyStoreResult, account_id_storage_digest, device_storage_digest,
 };
 pub use seen_window::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
-
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-use crate::Error;
 
 pub type OpaqueCursor = String;
 
@@ -229,7 +231,7 @@ pub trait EventCacheStore: Clone + MaybeSendSync + 'static {
 #[derive(Clone, Debug, Default)]
 struct StoreState {
     cursors: BTreeMap<CursorScope, OpaqueCursor>,
-    committed_events: BTreeSet<EventId>,
+    committed_events: VecDeque<EventId>,
     stamp_floors: BTreeMap<crate::StampScope, crate::StampFloor>,
 }
 
@@ -240,7 +242,7 @@ struct StoredState {
     #[serde(default)]
     cursors: Vec<(CursorScope, OpaqueCursor)>,
     #[serde(default)]
-    committed_events: BTreeSet<EventId>,
+    committed_events: VecDeque<EventId>,
     #[serde(default)]
     stamp_floors: Vec<(crate::StampScope, crate::StampFloor)>,
 }
@@ -319,7 +321,14 @@ impl EventCacheStore for MemoryStore {
     }
 
     async fn remember(&self, event_id: EventId) -> Result<()> {
-        self.state.lock().unwrap().committed_events.insert(event_id);
+        let mut state = self.state.lock().unwrap();
+        if state.committed_events.contains(&event_id) {
+            return Ok(());
+        }
+        state.committed_events.push_back(event_id);
+        while state.committed_events.len() > DEFAULT_SEEN_EVENTS_CAPACITY {
+            state.committed_events.pop_front();
+        }
         Ok(())
     }
 }
@@ -342,118 +351,6 @@ impl crate::MonotonicStampStore for MemoryStore {
             .unwrap_or_default()
             .apply(update)?;
         state.stamp_floors.insert(scope, next);
-        Ok(next)
-    }
-}
-
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-#[derive(Clone, Debug)]
-pub struct FileStore {
-    path: Arc<std::path::PathBuf>,
-    state: Arc<Mutex<StoreState>>,
-}
-
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-impl FileStore {
-    pub fn open(path: impl Into<std::path::PathBuf>) -> Result<Self> {
-        let path = path.into();
-        let state = if path.exists() {
-            let bytes = std::fs::read(&path)
-                .map_err(|error| Error::Storage(format!("read {}: {error}", path.display())))?;
-            serde_json::from_slice(&bytes).map_err(Error::CanonicalJson)?
-        } else {
-            StoreState::default()
-        };
-        Ok(Self {
-            path: Arc::new(path),
-            state: Arc::new(Mutex::new(state)),
-        })
-    }
-
-    fn mutate(&self, mutation: impl FnOnce(&mut StoreState) -> bool) -> Result<()> {
-        let mut state = self.state.lock().unwrap();
-        if !mutation(&mut state) {
-            return Ok(());
-        }
-        let bytes = serde_json::to_vec(&*state)?;
-        if let Some(parent) = self.path.parent() {
-            std::fs::create_dir_all(parent)
-                .map_err(|error| Error::Storage(format!("create {}: {error}", parent.display())))?;
-        }
-        std::fs::write(self.path.as_ref(), bytes)
-            .map_err(|error| Error::Storage(format!("write {}: {error}", self.path.display())))
-    }
-}
-
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-impl CursorStore for FileStore {
-    async fn load(&self, scope: CursorScope) -> Result<Option<OpaqueCursor>> {
-        Ok(self.state.lock().unwrap().cursors.get(&scope).cloned())
-    }
-
-    async fn save(&self, scope: CursorScope, cursor: OpaqueCursor) -> Result<()> {
-        self.mutate(|state| {
-            if state.cursors.get(&scope) == Some(&cursor) {
-                false
-            } else {
-                state.cursors.insert(scope, cursor);
-                true
-            }
-        })
-    }
-
-    async fn clear(&self, scope: CursorScope) -> Result<()> {
-        self.mutate(|state| state.cursors.remove(&scope).is_some())
-    }
-}
-
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-impl EventCacheStore for FileStore {
-    async fn seen(&self, event_id: EventId) -> Result<bool> {
-        Ok(self
-            .state
-            .lock()
-            .unwrap()
-            .committed_events
-            .contains(&event_id))
-    }
-
-    async fn remember(&self, event_id: EventId) -> Result<()> {
-        self.mutate(|state| state.committed_events.insert(event_id))
-    }
-}
-
-#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-impl crate::MonotonicStampStore for FileStore {
-    async fn load_floor(&self, scope: crate::StampScope) -> Result<Option<crate::StampFloor>> {
-        Ok(self.state.lock().unwrap().stamp_floors.get(&scope).copied())
-    }
-
-    async fn advance_floor(
-        &self,
-        scope: crate::StampScope,
-        update: crate::StampFloorUpdate,
-    ) -> Result<crate::StampFloor> {
-        let next = {
-            let mut state = self.state.lock().unwrap();
-            let next = state
-                .stamp_floors
-                .get(&scope)
-                .copied()
-                .unwrap_or_default()
-                .apply(update)?;
-            state.stamp_floors.insert(scope, next);
-            let bytes = serde_json::to_vec(&*state)?;
-            if let Some(parent) = self.path.parent() {
-                std::fs::create_dir_all(parent).map_err(|error| {
-                    Error::Storage(format!("create {}: {error}", parent.display()))
-                })?;
-            }
-            std::fs::write(self.path.as_ref(), bytes).map_err(|error| {
-                Error::Storage(format!("write {}: {error}", self.path.display()))
-            })?;
-            next
-        };
         Ok(next)
     }
 }
