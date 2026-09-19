@@ -153,7 +153,8 @@ pub use subscription::{
     SubscriptionStopReason,
 };
 pub use websocket::{
-    AuthProofRequest, BoxSocketFuture, WebSocketConnector, WebSocketInbound, WebSocketPacer,
-    WebSocketSocket, select_websocket_binding, validate_websocket_transport,
-    websocket_operations_reachable,
+    AuthProofRequest, BoxSocketFuture, ChannelFrame, PumpOutcome, SharedCell,
+    WebSocketChannelState, WebSocketConnection, WebSocketConnector, WebSocketInbound,
+    WebSocketPacer, WebSocketSocket, connect_websocket, select_websocket_binding,
+    validate_websocket_transport, websocket_operations_reachable,
 };
