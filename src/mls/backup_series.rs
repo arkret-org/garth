@@ -102,8 +102,9 @@ mod tests {
     use arkret_models_crypto::{
         BackupKind, KeyBackupAead, KeyBackupAeadName, KeyBackupAuthData, KeyBackupDomainSeparation,
         KeyBackupEncryption, KeyBackupRecipientMethod, KeyBackupSignatureAlgorithm,
+        KeyBackupSourceCommitRef,
     };
-    use arkret_wire::{BackupSeriesId, Base64UrlString, DidUrl, EventId};
+    use arkret_wire::{BackupSeriesId, Base64UrlString, DidUrl, EventId, RealmCommitId};
 
     use super::*;
     use crate::test_fixtures::{actor_id, at, device_id};
@@ -169,7 +170,12 @@ mod tests {
             series_seq: seq,
             supersedes_id: None,
             supersedes_digest: None,
-            source_ref: None,
+            source_commit_ref: Some(KeyBackupSourceCommitRef {
+                realm_commit_id: RealmCommitId::from_digest(
+                    [u8::try_from(seq).unwrap().wrapping_add(10); 32],
+                ),
+                device_generation_ref: seq + 1,
+            }),
             extra: Default::default(),
         };
         if let Some(previous) = previous {
@@ -185,6 +191,19 @@ mod tests {
         let second = backup(1, Some(&genesis));
         let third = backup(2, Some(&second));
         verify_series_chain(&third, &[genesis, second, third.clone()]).unwrap();
+    }
+
+    #[test]
+    fn source_commit_provenance_is_independent_of_the_backup_predecessor_chain() {
+        let genesis = backup(0, None);
+        let second = backup(1, Some(&genesis));
+        let source = second.source_commit_ref.as_ref().unwrap();
+        assert_eq!(source.device_generation_ref, 2);
+        assert_ne!(
+            source.realm_commit_id.to_string(),
+            second.supersedes_id.as_ref().unwrap().to_string()
+        );
+        verify_series_chain(&second, &[genesis, second.clone()]).unwrap();
     }
 
     #[test]
