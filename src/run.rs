@@ -532,6 +532,7 @@ mod tests {
             to_device: None,
             device_lists: None,
             account_data: None,
+            agent_draft_pending_intents: None,
             notifications: None,
             partial: None,
             priority: None,

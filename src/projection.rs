@@ -13,7 +13,8 @@ use arkret_event_draft::{EventPayloadExt, MessageEventPayload};
 use arkret_models_collaboration::device_messages::DeviceMessageEnvelope;
 use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountSubscribeBatch, AccountSubscribeDeviceListChanges, AccountSubscribeFrame,
-    AccountSubscribeFrameKind, NotificationDelta, RealmSyncEntry, StationCasAccountDataContainer,
+    AccountSubscribeFrameKind, AgentDraftPendingIntentContainer, NotificationDelta, RealmSyncEntry,
+    StationCasAccountDataContainer,
 };
 use arkret_models_collaboration::sync_frames::current_results::AccountCurrentResult;
 use arkret_wire::{
@@ -129,6 +130,10 @@ pub struct AccountUpdateContext {
     /// Cursor-covered Station-CAS Account Data baseline and deltas.
     #[serde(default)]
     pub station_cas_account_data: Vec<StationCasAccountDataContainer>,
+    /// Dedicated controller-private pending-intent carrier, including its own
+    /// delta or baseline paging coordinates.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_draft_pending_intents: Option<AgentDraftPendingIntentContainer>,
     pub partial: bool,
     /// True for a `catchup_complete` frame: the catch-up window has been
     /// fully delivered and later frames are live deltas.
@@ -324,6 +329,7 @@ pub fn account_frame_to_client_events(
             context.station_cas_account_data.push(station_cas.clone());
         }
     }
+    context.agent_draft_pending_intents = frame.agent_draft_pending_intents.clone();
 
     let mut realm_events = Vec::new();
     if let Some(realms) = &frame.realms {
@@ -554,6 +560,7 @@ mod tests {
             to_device: None,
             device_lists: None,
             account_data: None,
+            agent_draft_pending_intents: None,
             notifications: None,
             partial: None,
             priority: None,

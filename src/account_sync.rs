@@ -3,10 +3,12 @@
 pub use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountDataContainer, AccountStreamInterrupt, AccountSubscribeBatch,
     AccountSubscribeDeviceListChanges, AccountSubscribeFrame, AccountSubscribeFrameKind,
-    AccountSubscribeRealms, DeviceMessageContainer, EventContainer, NotificationContainer,
-    NotificationDelta, NotificationDeltaAction, RealmListRequest, RealmSyncEntry, RealmTimeline,
-    StationCasAccountDataContainer, StationCasAccountDataRemoval, StreamTraceError,
-    StreamTraceValidator, SyncFilter, SyncRequestBody,
+    AccountSubscribeRealms, AgentDraftPendingIntent, AgentDraftPendingIntentChange,
+    AgentDraftPendingIntentContainer, AgentDraftPendingIntentKey, AgentDraftPendingIntentRemoval,
+    AgentDraftPendingIntentTerminalRedacted, DeviceMessageContainer, EventContainer,
+    NotificationContainer, NotificationDelta, NotificationDeltaAction, RealmListRequest,
+    RealmSyncEntry, RealmTimeline, StationCasAccountDataContainer, StationCasAccountDataRemoval,
+    StreamTraceError, StreamTraceValidator, SyncFilter, SyncRequestBody,
 };
 pub use arkret_models_collaboration::sync_frames::demand_sync::{
     AccountBaselineSegment, RealmInvalidation, RealmListChanges, RealmListPage,
