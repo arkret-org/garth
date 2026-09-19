@@ -143,7 +143,7 @@ impl MlsRuntimeError {
 #[cfg(test)]
 mod tests {
     use arkret_models_crypto::MlsEndpointIdentity;
-    use arkret_wire::{DidCoreId, MlsGroupId};
+    use arkret_wire::{AccountId, ActorId, DidCoreId, MlsGroupId};
 
     use super::*;
     use crate::test_fixtures::{at, device_id};
@@ -151,12 +151,14 @@ mod tests {
     const GROUP_ID: &str = "QjKOSorlqs3IquY7OikTUTy_Z0mMiL0X2mK4jAOT4R4";
 
     fn state(epoch: u64) -> MlsGroupStateRecord {
+        let principal_id = DidCoreId::new("ak:did_core:web:alice.example").unwrap();
         MlsGroupStateRecord {
             group_id: MlsGroupId::new(GROUP_ID).unwrap(),
-            endpoint: MlsEndpointIdentity::human_device(
-                DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
-                device_id(),
-            ),
+            actor_id: ActorId::account(AccountId::new(
+                principal_id.clone(),
+                DidCoreId::new("ak:did_core:web:station.example").unwrap(),
+            )),
+            endpoint: MlsEndpointIdentity::human_device(principal_id, device_id()),
             epoch,
             serialized_state: vec![1, 2, 3],
             updated_at: at(0),

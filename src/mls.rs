@@ -297,7 +297,8 @@ impl MlsInstallQueue {
 mod tests {
     use arkret_models_crypto::MlsEndpointIdentity;
     use arkret_wire::{
-        CommitStreamRef, DidCoreId, EventId, Hash, MlsGroupId, RealmCommitId, RealmId,
+        AccountId, ActorId, CommitStreamRef, DidCoreId, EventId, Hash, MlsGroupId, RealmCommitId,
+        RealmId,
     };
     use chrono::TimeZone;
 
@@ -310,12 +311,14 @@ mod tests {
     }
 
     fn state(group_id: &str, epoch: u64) -> MlsGroupStateRecord {
+        let principal_id = DidCoreId::new("ak:did_core:web:alice.example").unwrap();
         MlsGroupStateRecord {
             group_id: MlsGroupId::new(group_id.to_owned()).unwrap(),
-            endpoint: MlsEndpointIdentity::human_device(
-                DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
-                device_id(),
-            ),
+            actor_id: ActorId::account(AccountId::new(
+                principal_id.clone(),
+                DidCoreId::new("ak:did_core:web:station.example").unwrap(),
+            )),
+            endpoint: MlsEndpointIdentity::human_device(principal_id, device_id()),
             epoch,
             serialized_state: vec![1, 2, 3, u8::try_from(epoch).unwrap()],
             updated_at: chrono::Utc.with_ymd_and_hms(2026, 9, 16, 0, 0, 0).unwrap(),

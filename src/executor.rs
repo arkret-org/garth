@@ -9,7 +9,7 @@ pub trait Executor: Clone + 'static {
 }
 
 /// Host wall clock used for protocol expiry decisions.
-pub trait HostClock: Clone + 'static {
+pub trait HostClock: Clone + crate::MaybeSendSync + 'static {
     fn now(&self) -> DateTime<Utc>;
 }
 
