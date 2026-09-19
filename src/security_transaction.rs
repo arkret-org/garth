@@ -9,8 +9,9 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
+use arkret_models_crypto::ClientStepAttestationArtifact;
 pub use arkret_models_crypto::{
-    ClientStepAttestation, PcrPolicyRecoveryPlan, RecoveryTerminalCommit,
+    ClientStepAttestation, PcrPolicyRecoveryPlan, RecoveryReceipt, RecoveryTerminalCommit,
     RecoveryTransactionCreateRequest, SecurityTransaction, SecurityTransactionContinueRequest,
     SecurityTransactionCreateRequest, SecurityTransactionPreparedPlan,
     SecurityTransactionTerminalOutcome,
@@ -46,6 +47,35 @@ pub struct PendingSecurityTransactionContinue {
     pub canonical_request: Vec<u8>,
 }
 
+/// The exact canonical terminal receipt retained after a recovery completes.
+///
+/// Keeping the canonical bytes makes recovery-grant issuance restart-safe
+/// without retaining a broader continuation request or any secret material.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DurableCompletedRecoveryReceipt {
+    canonical_receipt: Vec<u8>,
+}
+
+impl DurableCompletedRecoveryReceipt {
+    fn from_receipt(receipt: &RecoveryReceipt) -> Result<Self> {
+        receipt.validate()?;
+        Ok(Self {
+            canonical_receipt: arkret_canonical::canonical_json_bytes(receipt)?,
+        })
+    }
+
+    pub fn receipt(&self) -> Result<RecoveryReceipt> {
+        let receipt: RecoveryReceipt = serde_json::from_slice(&self.canonical_receipt)?;
+        receipt.validate()?;
+        if arkret_canonical::canonical_json_bytes(&receipt)? != self.canonical_receipt {
+            return Err(Error::Protocol(
+                "stored completed recovery receipt is not canonical".to_owned(),
+            ));
+        }
+        Ok(receipt)
+    }
+}
+
 /// Public durable state for one transaction.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct DurableSecurityTransaction {
@@ -54,7 +84,25 @@ pub struct DurableSecurityTransaction {
     /// Opaque host-owned secret-store reference; never plaintext secret bytes.
     pub staged_secret_ref: Option<String>,
     pub pending_continue: Option<PendingSecurityTransactionContinue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completed_recovery_receipt: Option<DurableCompletedRecoveryReceipt>,
     pub last_observed_resource: Option<SecurityTransaction>,
+}
+
+impl DurableSecurityTransaction {
+    /// Return the exact signed receipt retained for a completed recovery.
+    pub fn completed_recovery_receipt(&self) -> Result<Option<RecoveryReceipt>> {
+        let Some(stored) = &self.completed_recovery_receipt else {
+            return Ok(None);
+        };
+        let receipt = stored.receipt()?;
+        if receipt.transaction_id != self.transaction_id {
+            return Err(Error::Protocol(
+                "stored completed recovery receipt changed transaction_id".to_owned(),
+            ));
+        }
+        Ok(Some(receipt))
+    }
 }
 
 pub trait SecurityTransactionStore: Clone + MaybeSendSync + 'static {
@@ -170,6 +218,24 @@ fn validate_observed_resource(
     Ok(())
 }
 
+fn retain_completed_recovery_receipt(
+    local: &mut DurableSecurityTransaction,
+    receipt: &RecoveryReceipt,
+) -> Result<()> {
+    let stored = DurableCompletedRecoveryReceipt::from_receipt(receipt)?;
+    if local
+        .completed_recovery_receipt
+        .as_ref()
+        .is_some_and(|existing| existing != &stored)
+    {
+        return Err(Error::Protocol(
+            "completed recovery receipt idempotency conflict".to_owned(),
+        ));
+    }
+    local.completed_recovery_receipt = Some(stored);
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct SecurityTransactionEngine<T, S> {
     transport: T,
@@ -238,6 +304,7 @@ where
                     canonical_create_request: canonical_request,
                     staged_secret_ref,
                     pending_continue: None,
+                    completed_recovery_receipt: None,
                     last_observed_resource: None,
                 };
                 self.store.save(&state).await?;
@@ -294,6 +361,35 @@ where
             .continue_transaction(transaction_id, request)
             .await?;
         validate_observed_resource(&local, &resource)?;
+        if matches!(
+            resource.terminal_outcome,
+            Some(SecurityTransactionTerminalOutcome::Completed { .. })
+        ) && resource.recovery_plan().is_some()
+        {
+            let ClientStepAttestationArtifact::Recovery(artifact) =
+                &request.client_attestation.artifact
+            else {
+                return Err(Error::Protocol(
+                    "completed recovery omitted its terminal receipt".to_owned(),
+                ));
+            };
+            let expected_terminal_digest = request.client_attestation.attestation_digest()?;
+            let Some(SecurityTransactionTerminalOutcome::Completed {
+                completion_attestation: Some(completion_attestation),
+                ..
+            }) = &resource.terminal_outcome
+            else {
+                return Err(Error::Protocol(
+                    "completed recovery omitted its completion attestation".to_owned(),
+                ));
+            };
+            if completion_attestation.terminal_receipt_digest != expected_terminal_digest {
+                return Err(Error::Protocol(
+                    "completed recovery accepted a different terminal receipt".to_owned(),
+                ));
+            }
+            retain_completed_recovery_receipt(&mut local, &artifact.recovery_receipt)?;
+        }
         local.pending_continue = None;
         self.observe(&mut local, resource).await
     }
@@ -326,6 +422,7 @@ where
 #[cfg(test)]
 mod tests {
     use arkret_wire::{EventId, RealmCommitId};
+    use serde_json::json;
 
     use super::*;
 
@@ -357,8 +454,49 @@ mod tests {
                 expected_accepted_step_count: 0,
                 canonical_request: br#"{"expected_accepted_step_count":0}"#.to_vec(),
             }),
+            completed_recovery_receipt: None,
             last_observed_resource: None,
         }
+    }
+
+    fn completed_recovery_receipt() -> RecoveryReceipt {
+        serde_json::from_value(json!({
+            "schema": "ak.schema.recovery_receipt.v1",
+            "receipt_id": "ak:receipt:0196419b-0000-7000-8000-000000000002",
+            "transaction_id": "ak:transaction:0196419b-0000-7000-8000-000000000001",
+            "transaction_request_digest": format!("sha256:{}", "1".repeat(64)),
+            "prepared_plan_digest": format!("sha256:{}", "2".repeat(64)),
+            "account_id": {
+                "principal_id": "ak:did_core:webvh:z6mkfixtureprincipalexample",
+                "station_id": "ak:did_core:webvh:z6mkfixtureserviceexample"
+            },
+            "recovery_session_id": "ak:recovery_session:0196419b-0000-7000-8000-000000000003",
+            "policy_id": "ak:policy:0196419b-0000-7000-8000-000000000004",
+            "policy_version": 1,
+            "trust_domain": "ak:trust_domain:fixture.example",
+            "new_device_id": "ak:device:0196419b-0000-7000-8000-000000000005",
+            "identity_model": "pcr_policy",
+            "recovery_authority_kind": "pcr_policy",
+            "previous_model_generation_ref": 7,
+            "result_model_generation_ref": 8,
+            "authorization_event_id": "ak:event:AWKDhmQTc5zyfilaLwPF3xnhoZAjxSha7Z-6grioN9aW",
+            "reanchor_event_id": "ak:event:AR8bu-n-kOOB3nRUvYuIEglCX5B-JpFaNTex9gxs_cWY",
+            "proof_summary": {
+                "kind": "recovery_unlock",
+                "proof_digest": format!("sha256:{}", "3".repeat(64))
+            },
+            "unlocked_backups": [],
+            "welcome_count": 0,
+            "outcome": "completed",
+            "started_at": "2026-09-19T10:00:00.000Z",
+            "completed_at": "2026-09-19T10:00:01.000Z",
+            "auth_data": {
+                "verification_method": "did:web:alice.example#device-1",
+                "signature_algorithm": "Ed25519",
+                "signature": "AA"
+            }
+        }))
+        .unwrap()
     }
 
     #[test]
@@ -421,5 +559,67 @@ mod tests {
         assert_eq!(store.cleared_secret_refs(), ["secure/recovery/1"]);
         store.remove(&state.transaction_id).unwrap();
         assert!(store.load(&state.transaction_id).unwrap().is_none());
+    }
+
+    #[test]
+    fn completed_recovery_receipt_survives_restart_byte_identically() {
+        let receipt = completed_recovery_receipt();
+        receipt.validate().unwrap();
+        let mut state = durable_state();
+        let stored = DurableCompletedRecoveryReceipt::from_receipt(&receipt).unwrap();
+        let exact_bytes = stored.canonical_receipt.clone();
+        state.completed_recovery_receipt = Some(stored);
+
+        let persisted = serde_json::to_vec(&state).unwrap();
+        let restored: DurableSecurityTransaction = serde_json::from_slice(&persisted).unwrap();
+
+        assert_eq!(
+            restored
+                .completed_recovery_receipt
+                .as_ref()
+                .unwrap()
+                .canonical_receipt,
+            exact_bytes
+        );
+        assert_eq!(
+            restored.completed_recovery_receipt().unwrap(),
+            Some(receipt)
+        );
+    }
+
+    #[test]
+    fn completed_recovery_receipt_rejects_noncanonical_persisted_bytes() {
+        let receipt = completed_recovery_receipt();
+        let mut state = durable_state();
+        state.completed_recovery_receipt = Some(DurableCompletedRecoveryReceipt {
+            canonical_receipt: serde_json::to_vec_pretty(&receipt).unwrap(),
+        });
+
+        assert!(state.completed_recovery_receipt().is_err());
+    }
+
+    #[test]
+    fn completed_recovery_receipt_exact_replay_is_idempotent() {
+        let receipt = completed_recovery_receipt();
+        let mut state = durable_state();
+
+        retain_completed_recovery_receipt(&mut state, &receipt).unwrap();
+        let first = state.completed_recovery_receipt.clone().unwrap();
+        retain_completed_recovery_receipt(&mut state, &receipt).unwrap();
+
+        assert_eq!(state.completed_recovery_receipt.unwrap(), first);
+    }
+
+    #[test]
+    fn completed_recovery_receipt_conflicting_replay_is_rejected() {
+        let receipt = completed_recovery_receipt();
+        let mut conflicting = receipt.clone();
+        conflicting.auth_data.signature =
+            serde_json::from_value(serde_json::Value::String("AQ".to_owned())).unwrap();
+        let mut state = durable_state();
+
+        retain_completed_recovery_receipt(&mut state, &receipt).unwrap();
+
+        assert!(retain_completed_recovery_receipt(&mut state, &conflicting).is_err());
     }
 }

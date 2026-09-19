@@ -100,11 +100,12 @@ pub use run::{
 };
 pub use runtime_journey::{ParticipationAction, ParticipationAdmissionFacts};
 pub use security_transaction::{
-    ClientStepAttestation, DurableSecurityTransaction, MemorySecurityTransactionStore,
-    PcrPolicyRecoveryPlan, PendingSecurityTransactionContinue, RecoveryTerminalCommit,
-    RecoveryTransactionCreateRequest, SecurityTransaction, SecurityTransactionContinueRequest,
-    SecurityTransactionCreateRequest, SecurityTransactionEngine, SecurityTransactionPreparedPlan,
-    SecurityTransactionStore, SecurityTransactionTerminalOutcome, SecurityTransactionTransport,
+    ClientStepAttestation, DurableCompletedRecoveryReceipt, DurableSecurityTransaction,
+    MemorySecurityTransactionStore, PcrPolicyRecoveryPlan, PendingSecurityTransactionContinue,
+    RecoveryReceipt, RecoveryTerminalCommit, RecoveryTransactionCreateRequest, SecurityTransaction,
+    SecurityTransactionContinueRequest, SecurityTransactionCreateRequest,
+    SecurityTransactionEngine, SecurityTransactionPreparedPlan, SecurityTransactionStore,
+    SecurityTransactionTerminalOutcome, SecurityTransactionTransport,
     validate_recovery_commit_boundary,
 };
 pub use service_route::{
