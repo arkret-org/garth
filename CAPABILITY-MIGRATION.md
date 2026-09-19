@@ -27,9 +27,10 @@ successor that did not exist. The corrections are:
 | `src/signal_message_stream.rs` → `src/signal.rs` | `signal.rs` admits and decrypts Signals. The `ak.message.stream` preview projection had no successor, and `SignalPlaintext` was not even re-exported from the crate root | `src/signal_message_stream.rs`, plus the `signal_plaintext` re-exports in `src/lib.rs` |
 | `src/message_authoring.rs` → "Rewritten `src/message_authoring.rs`" | The rewrite kept authoring and dropped the typed failure taxonomy that tells an interface *why* a send did not land. `MessageAuthoringFailure` had 32 call sites downstream and no successor | `src/message_authoring.rs` — `MessageAuthoringFailure`, `MessageAuthoringRecovery`, `classify_message_authoring_error`, `classify_authority_rejection` |
 | `src/store/inbox.rs` → `src/store.rs` | The durable inbox came back with a free-text `last_error` but no `DeliveryErrorClass`, so a worker could no longer tell a retryable transport fault from a store failure, and the error-size ceiling was an unexported literal | `src/store.rs` — `DeliveryErrorClass`, `MAX_DELIVERY_ERROR_BYTES` |
+| `src/session/engine.rs`, `src/session/provider.rs`, `src/session/store.rs` → simplified replacements | The replacement dropped refresh-successor binding checks, forced refresh, concurrent single-flight, refresh cooldown, transport caching, durable restore and invalidation. This made the types compile while removing the Session/DPoP runtime behavior Inkson depends on. | Restored the protocol-independent session runtime in the same modules and adapted it to the current SDK-owned types. |
 
 The rows the first pass got right — `message_authoring`, `security_transaction`,
-the store layer, `service_route*`, `session/*`, `websocket/*`, `stamp/*`,
+the store layer, `service_route*`, `websocket/*`, `stamp/*`,
 `account_handoff`, `actor_profile_directory`, `direct_conversation`,
 `runtime_journey`, and the MLS device-secret and local-checkpoint stores — are
 unchanged and are listed in the capability table below.
@@ -52,7 +53,7 @@ unchanged and are listed in the capability table below.
 | Outbound withdrawal, duplicate refusal, terminal compaction and durable snapshot round trip | `src/outbound.rs` — `SendQueue`, `SendQueueSnapshot` | `an_in_flight_item_cannot_be_cancelled`, `a_queued_item_can_be_withdrawn_before_it_is_forwarded`, `the_same_event_is_never_queued_twice`, `terminal_items_are_compacted_only_after_the_cutoff`, `the_queue_snapshot_round_trips_through_serialization` |
 | SecurityTransaction create/get/continue, byte-identical continuation replay, opaque staged-secret reference and terminal secret erasure | `src/security_transaction.rs` | same-stream adjacency, gap, cross-Realm and wrong-stream refusal tests |
 | PCR recovery completion binding as two consecutive `CommittedEventRef` values in one PCR Realm stream | `src/security_transaction.rs` — `validate_recovery_commit_boundary` | recovery completion boundary tests |
-| Session-grant issue/refresh, DPoP helpers, authenticated transport provider and secure grant persistence | `src/session/*` | login, refresh decision, secure persistence, provider and no-op store tests |
+| Session-grant issue/refresh, DPoP helpers, authenticated transport provider and secure grant persistence | `src/session/*` | 27 session tests cover login validation, refresh successor binding, DPoP continuity, single-flight refresh, cancellation recovery, cooldown, forced refresh, cache invalidation and secure persistence |
 | Secure-key-store host seam and SDK key-store adapters | `src/store/keystore.rs` | key-store adapter tests, `tests/file_store_noop.rs` |
 | Durable cursor and committed-Event cache, bounded dedupe, generic durable inbox, native file-backed state | `src/store.rs`, `src/store/seen_window.rs` | `memory_store_round_trips_opaque_cursor`, `memory_event_cache_is_idempotent`, `durable_inbox_retries_then_acknowledges_one_delivery`, `durable_inbox_missing_delivery_mutations_are_noops` |
 | Durable submission queue seam used by the worker | `src/submission_queue.rs` | `memory_queue_preserves_fifo_submission_order`, `replacing_an_empty_queue_fails_closed` |
