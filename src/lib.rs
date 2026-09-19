@@ -18,6 +18,7 @@ pub mod facade;
 pub mod maybe_send;
 pub mod message_authoring;
 pub mod mls;
+pub mod notification_projection;
 pub mod outbound;
 pub mod projection;
 pub mod replica;
@@ -82,6 +83,7 @@ pub use mls::{
     select_active_series_tail, select_active_series_tail_for_recipient_method,
     should_force_epoch_advance, verify_series_chain,
 };
+pub use notification_projection::{NotificationProjection, NotificationProjectionUpdate};
 pub use outbound::{
     MemoryOutboundQueueStore, OutboundEngine, OutboundEngineOutcome, OutboundQueueStore, SendQueue,
     SendQueueItem, SendQueueSnapshot, SendQueueStatus,
