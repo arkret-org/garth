@@ -3,6 +3,9 @@
 use std::future::Future;
 
 use arkret_http_client::{Client, ClientRequestOptions};
+use arkret_models_collaboration::authority_commit::{
+    SelfAuthoritySubmitOutcome, SelfAuthoritySubmitRequest,
+};
 use arkret_wire::{
     AuthorityBundleRequest, AuthorityCommitStatus, AuthorityHandoffRequest,
     AuthorityRejectionStatus, AuthoritySubmitOutcome, AuthoritySubmitRequest,
@@ -49,7 +52,20 @@ impl AuthorityTransport for Client {
         request: &AuthoritySubmitRequest,
         options: &ClientRequestOptions,
     ) -> Result<AuthoritySubmitOutcome> {
-        Ok(self.submit_to_realm_authority(request, options).await?)
+        let request = match request {
+            AuthoritySubmitRequest::Event(value) => {
+                SelfAuthoritySubmitRequest::Event(value.clone())
+            }
+            AuthoritySubmitRequest::MlsCommit(value) => {
+                SelfAuthoritySubmitRequest::MlsCommit(value.clone())
+            }
+        };
+        match self.submit_to_realm_authority(&request, options).await? {
+            SelfAuthoritySubmitOutcome::Ordinary(outcome) => Ok(outcome),
+            _ => Err(crate::Error::Protocol(
+                "ordinary queued submission returned an aggregate outcome".to_owned(),
+            )),
+        }
     }
 
     async fn scan(&self, request: &StreamScanRequest) -> Result<StreamScanOutcome> {

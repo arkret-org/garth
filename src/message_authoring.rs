@@ -25,9 +25,7 @@ pub fn author_message<S: EventSigner + ?Sized>(
     }
     sign_event(&mut event, signer, options).map_err(|error| Error::Protocol(error.to_string()))?;
     let request = MessageSubmitRequestBody {
-        submission: EventCommitSubmission {
-            event: event.into_event(),
-        },
+        submission: EventCommitSubmission::new(event.into_event()),
     };
     request.validate()?;
     request.submission.event.validate_for_submit_structural()?;
