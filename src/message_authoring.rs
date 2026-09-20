@@ -196,10 +196,7 @@ fn classify_authoring_reason_code(
         ReasonCode::DUPLICATE_CONFLICT => MessageAuthoringFailure::DuplicateConflict { detail },
         ReasonCode::RATE_LIMITED
         | ReasonCode::EXTERNAL_RATE_LIMITED
-        | ReasonCode::BACKEND_UNAVAILABLE
-        | ReasonCode::REALM_UNAVAILABLE
-        | ReasonCode::SCOPE_UNAVAILABLE
-        | ReasonCode::RECIPIENT_UNAVAILABLE => {
+        | ReasonCode::BACKEND_UNAVAILABLE => {
             MessageAuthoringFailure::DependencyUnavailable { detail }
         }
         ReasonCode::SIGNAL_PLAINTEXT_FORBIDDEN | ReasonCode::SERVICE_NOT_PLAINTEXT_VISIBLE => {

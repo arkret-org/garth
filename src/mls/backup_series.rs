@@ -128,6 +128,7 @@ mod tests {
             backup_kind: BackupKind::SecretStorage,
             mixed_secret_storage: false,
             backup_version: "kb_1".to_owned(),
+            recovery_policy_ref: None,
             created_at: at(0),
             updated_at: None,
             expires_at: None,
