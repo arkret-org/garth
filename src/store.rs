@@ -28,6 +28,12 @@ pub use seen_window::{BoundedSeenWindow, DEFAULT_SEEN_EVENTS_CAPACITY};
 
 pub type OpaqueCursor = String;
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountCursorCheckpoint {
+    pub cursor: OpaqueCursor,
+    pub station_cas: crate::StationCasProjection,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CursorScope {
@@ -221,6 +227,15 @@ pub trait CursorStore: Clone + MaybeSendSync + 'static {
         cursor: OpaqueCursor,
     ) -> impl Future<Output = Result<()>> + '_;
     fn clear(&self, scope: CursorScope) -> impl Future<Output = Result<()>> + '_;
+    fn load_account_checkpoint(
+        &self,
+        scope: CursorScope,
+    ) -> impl Future<Output = Result<Option<AccountCursorCheckpoint>>> + '_;
+    fn save_account_checkpoint(
+        &self,
+        scope: CursorScope,
+        checkpoint: AccountCursorCheckpoint,
+    ) -> impl Future<Output = Result<()>> + '_;
 }
 
 pub trait EventCacheStore: Clone + MaybeSendSync + 'static {
@@ -231,6 +246,7 @@ pub trait EventCacheStore: Clone + MaybeSendSync + 'static {
 #[derive(Clone, Debug, Default)]
 struct StoreState {
     cursors: BTreeMap<CursorScope, OpaqueCursor>,
+    account_checkpoints: BTreeMap<CursorScope, AccountCursorCheckpoint>,
     committed_events: VecDeque<EventId>,
     stamp_floors: BTreeMap<crate::StampScope, crate::StampFloor>,
 }
@@ -241,6 +257,8 @@ struct StoreState {
 struct StoredState {
     #[serde(default)]
     cursors: Vec<(CursorScope, OpaqueCursor)>,
+    #[serde(default)]
+    account_checkpoints: Vec<(CursorScope, AccountCursorCheckpoint)>,
     #[serde(default)]
     committed_events: VecDeque<EventId>,
     #[serde(default)]
@@ -257,6 +275,11 @@ impl Serialize for StoreState {
                 .cursors
                 .iter()
                 .map(|(scope, cursor)| (scope.clone(), cursor.clone()))
+                .collect(),
+            account_checkpoints: self
+                .account_checkpoints
+                .iter()
+                .map(|(scope, checkpoint)| (scope.clone(), checkpoint.clone()))
                 .collect(),
             committed_events: self.committed_events.clone(),
             stamp_floors: self
@@ -277,6 +300,7 @@ impl<'de> Deserialize<'de> for StoreState {
         let stored = StoredState::deserialize(deserializer)?;
         Ok(Self {
             cursors: stored.cursors.into_iter().collect(),
+            account_checkpoints: stored.account_checkpoints.into_iter().collect(),
             committed_events: stored.committed_events,
             stamp_floors: stored.stamp_floors.into_iter().collect(),
         })
@@ -300,12 +324,42 @@ impl CursorStore for MemoryStore {
     }
 
     async fn save(&self, scope: CursorScope, cursor: OpaqueCursor) -> Result<()> {
-        self.state.lock().unwrap().cursors.insert(scope, cursor);
+        let mut state = self.state.lock().unwrap();
+        state.account_checkpoints.remove(&scope);
+        state.cursors.insert(scope, cursor);
         Ok(())
     }
 
     async fn clear(&self, scope: CursorScope) -> Result<()> {
-        self.state.lock().unwrap().cursors.remove(&scope);
+        let mut state = self.state.lock().unwrap();
+        state.cursors.remove(&scope);
+        state.account_checkpoints.remove(&scope);
+        Ok(())
+    }
+
+    async fn load_account_checkpoint(
+        &self,
+        scope: CursorScope,
+    ) -> Result<Option<AccountCursorCheckpoint>> {
+        Ok(self
+            .state
+            .lock()
+            .unwrap()
+            .account_checkpoints
+            .get(&scope)
+            .cloned())
+    }
+
+    async fn save_account_checkpoint(
+        &self,
+        scope: CursorScope,
+        checkpoint: AccountCursorCheckpoint,
+    ) -> Result<()> {
+        let mut state = self.state.lock().unwrap();
+        state
+            .cursors
+            .insert(scope.clone(), checkpoint.cursor.clone());
+        state.account_checkpoints.insert(scope, checkpoint);
         Ok(())
     }
 }

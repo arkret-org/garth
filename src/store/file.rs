@@ -8,8 +8,8 @@ use std::sync::Arc;
 use arkret_wire::EventId;
 
 use super::{
-    CursorScope, CursorStore, DEFAULT_SEEN_EVENTS_CAPACITY, EventCacheStore, OpaqueCursor,
-    StoreState,
+    AccountCursorCheckpoint, CursorScope, CursorStore, DEFAULT_SEEN_EVENTS_CAPACITY,
+    EventCacheStore, OpaqueCursor, StoreState,
 };
 use crate::{Error, Result};
 
@@ -68,7 +68,8 @@ impl CursorStore for FileStore {
 
     async fn save(&self, scope: CursorScope, cursor: OpaqueCursor) -> Result<()> {
         self.mutate(|state| {
-            if state.cursors.get(&scope) == Some(&cursor) {
+            let checkpoint_removed = state.account_checkpoints.remove(&scope).is_some();
+            if state.cursors.get(&scope) == Some(&cursor) && !checkpoint_removed {
                 Ok(((), false))
             } else {
                 state.cursors.insert(scope, cursor);
@@ -78,7 +79,34 @@ impl CursorStore for FileStore {
     }
 
     async fn clear(&self, scope: CursorScope) -> Result<()> {
-        self.mutate(|state| Ok(((), state.cursors.remove(&scope).is_some())))
+        self.mutate(|state| {
+            let cursor = state.cursors.remove(&scope).is_some();
+            let checkpoint = state.account_checkpoints.remove(&scope).is_some();
+            Ok(((), cursor || checkpoint))
+        })
+    }
+
+    async fn load_account_checkpoint(
+        &self,
+        scope: CursorScope,
+    ) -> Result<Option<AccountCursorCheckpoint>> {
+        self.read(|state| state.account_checkpoints.get(&scope).cloned())
+    }
+
+    async fn save_account_checkpoint(
+        &self,
+        scope: CursorScope,
+        checkpoint: AccountCursorCheckpoint,
+    ) -> Result<()> {
+        self.mutate(|state| {
+            let changed = state.cursors.get(&scope) != Some(&checkpoint.cursor)
+                || state.account_checkpoints.get(&scope) != Some(&checkpoint);
+            state
+                .cursors
+                .insert(scope.clone(), checkpoint.cursor.clone());
+            state.account_checkpoints.insert(scope, checkpoint);
+            Ok(((), changed))
+        })
     }
 }
 

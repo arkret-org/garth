@@ -10,7 +10,9 @@ use arkret_models_collaboration::sync_frames::account_subscribe::{
 };
 use arkret_wire::{ActorId, DeviceId, DidCoreId};
 
-use crate::{CursorScope, CursorStore, Executor, MaybeSend, MaybeSendSync, Result};
+use crate::{
+    AccountCursorCheckpoint, CursorScope, CursorStore, Executor, MaybeSend, MaybeSendSync, Result,
+};
 
 pub trait AccountSubscribeTransport: MaybeSendSync {
     fn subscribe<'a>(
@@ -121,16 +123,47 @@ where
             actor_id,
             device_id,
         };
-        request.after = self.cursors.load(scope.clone()).await?;
-        request.catchup = Some(true);
+        let checkpoint = self.cursors.load_account_checkpoint(scope.clone()).await?;
+        let mut station_cas = checkpoint
+            .as_ref()
+            .map_or_else(crate::StationCasProjection::default, |checkpoint| {
+                checkpoint.station_cas.clone()
+            });
+        request.after = checkpoint.map(|checkpoint| checkpoint.cursor);
+        request.catchup = Some(request.after.is_none());
 
         while !self.control.is_cancelled() {
             match transport.subscribe(&request).await? {
                 AccountSubscribeSnapshotResult::Batch(batch) => {
+                    let mut next_station_cas = station_cas.clone();
+                    if request.after.is_none() {
+                        next_station_cas.reset_for_initial_sync();
+                    }
+                    if let Err(error) = batch
+                        .frames
+                        .iter()
+                        .try_for_each(|frame| next_station_cas.apply_frame(frame).map(|_| ()))
+                    {
+                        if crate::station_cas_projection::is_revision_integrity_error(&error) {
+                            self.cursors.clear(scope.clone()).await?;
+                            station_cas.reset_for_initial_sync();
+                            request.after = None;
+                            request.catchup = Some(true);
+                            continue;
+                        }
+                        return Err(error);
+                    }
                     projector.project(&batch).await?;
                     self.cursors
-                        .save(scope.clone(), batch.cursor.clone())
+                        .save_account_checkpoint(
+                            scope.clone(),
+                            AccountCursorCheckpoint {
+                                cursor: batch.cursor.clone(),
+                                station_cas: next_station_cas.clone(),
+                            },
+                        )
                         .await?;
+                    station_cas = next_station_cas;
                     request.after = Some(batch.cursor);
                     request.catchup = Some(false);
                 }
@@ -142,10 +175,19 @@ where
                 } => {
                     if reset_cursor {
                         self.cursors.clear(scope.clone()).await?;
+                        station_cas.reset_for_initial_sync();
                         request.after = None;
                         request.catchup = Some(true);
                     } else if let Some(cursor) = reconnect_cursor {
-                        self.cursors.save(scope.clone(), cursor.clone()).await?;
+                        self.cursors
+                            .save_account_checkpoint(
+                                scope.clone(),
+                                AccountCursorCheckpoint {
+                                    cursor: cursor.clone(),
+                                    station_cas: station_cas.clone(),
+                                },
+                            )
+                            .await?;
                         request.after = Some(cursor);
                     }
                     self.executor

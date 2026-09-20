@@ -32,6 +32,7 @@ pub mod session;
 pub mod signal;
 pub mod signal_message_stream;
 pub mod stamp;
+pub mod station_cas_projection;
 pub mod store;
 pub mod submission_queue;
 pub mod subscription;
@@ -142,15 +143,17 @@ pub use stamp::{
     MonotonicStampStore, RemoteStamp, SigningStamp, SigningStampAllocator, StampFloor,
     StampFloorUpdate, StampScope, hlc_from_floor,
 };
+pub use station_cas_projection::{StationCasProjection, StationCasProjectionUpdate};
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub use store::FileStore;
 pub use store::{
-    BoundedSeenWindow, CursorScope, CursorStore, DEFAULT_SEEN_EVENTS_CAPACITY, DeliveryErrorClass,
-    DeliveryId, DurableInboxStore, EventCacheStore, MAX_DELIVERY_ERROR_BYTES,
-    MAX_PENDING_DELIVERIES, MAX_PENDING_READ, MemoryInboxStore, MemorySecureKeyStore, MemoryStore,
-    OpaqueCursor, PendingDelivery, PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter,
-    SecretClass, SecretDurability, SecureKeyStore, SecureKeyStoreBackendInfo, SecureKeyStoreError,
-    SecureKeyStoreResult, account_id_storage_digest, device_storage_digest,
+    AccountCursorCheckpoint, BoundedSeenWindow, CursorScope, CursorStore,
+    DEFAULT_SEEN_EVENTS_CAPACITY, DeliveryErrorClass, DeliveryId, DurableInboxStore,
+    EventCacheStore, MAX_DELIVERY_ERROR_BYTES, MAX_PENDING_DELIVERIES, MAX_PENDING_READ,
+    MemoryInboxStore, MemorySecureKeyStore, MemoryStore, OpaqueCursor, PendingDelivery,
+    PutSecretOptions, SdkKeyStoreAdapter, SdkKeyStoreSecureAdapter, SecretClass, SecretDurability,
+    SecureKeyStore, SecureKeyStoreBackendInfo, SecureKeyStoreError, SecureKeyStoreResult,
+    account_id_storage_digest, device_storage_digest,
 };
 pub use submission_queue::{MemorySubmissionQueueStore, SubmissionQueueStore, SubmissionWorker};
 pub use subscription::{

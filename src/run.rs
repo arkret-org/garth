@@ -18,8 +18,8 @@ use arkret_models_collaboration::sync_frames::account_subscribe::{
 use arkret_retry::RetrySchedule;
 
 use crate::{
-    AccountSubscribeTransport, ClientProjector, CursorScope, CursorStore, Error, Executor,
-    MaybeSend, Result, account_batch_to_client_events,
+    AccountCursorCheckpoint, AccountSubscribeTransport, ClientProjector, CursorScope, CursorStore,
+    Error, Executor, MaybeSend, Result, account_batch_to_client_events,
 };
 
 /// Host seam that yields a ready-to-use transport with current credentials.
@@ -237,11 +237,15 @@ where
     {
         let mut backoff = RetrySchedule::new(options.min_backoff, options.max_backoff)
             .with_jitter(options.jitter_ratio, options.jitter_seed);
-        let mut after = self
+        let checkpoint = self
             .cursors
-            .load(scope.clone())
+            .load_account_checkpoint(scope.clone())
             .await
             .map_err(|error| fail(provider, RunErrorClass::StoreFailure, error))?;
+        let (mut after, mut station_cas) = checkpoint.map_or_else(
+            || (None, crate::StationCasProjection::default()),
+            |checkpoint| (Some(checkpoint.cursor), checkpoint.station_cas),
+        );
 
         loop {
             if self.control.is_cancelled() {
@@ -276,6 +280,26 @@ where
 
             match transport.subscribe(&request).await {
                 Ok(AccountSubscribeSnapshotResult::Batch(batch)) => {
+                    let mut next_station_cas = station_cas.clone();
+                    if initial_catchup {
+                        next_station_cas.reset_for_initial_sync();
+                    }
+                    if let Err(error) = batch
+                        .frames
+                        .iter()
+                        .try_for_each(|frame| next_station_cas.apply_frame(frame).map(|_| ()))
+                    {
+                        if crate::station_cas_projection::is_revision_integrity_error(&error) {
+                            provider.observe(RunEvent::CursorReset);
+                            self.cursors.clear(scope.clone()).await.map_err(|error| {
+                                fail(provider, RunErrorClass::StoreFailure, error)
+                            })?;
+                            after = None;
+                            station_cas.reset_for_initial_sync();
+                            continue;
+                        }
+                        return Err(fail(provider, RunErrorClass::ProtocolViolation, error));
+                    }
                     let events = account_batch_to_client_events(&batch, initial_catchup)
                         .map_err(|error| fail(provider, RunErrorClass::ProtocolViolation, error))?;
                     if !events.is_empty() {
@@ -284,10 +308,17 @@ where
                         })?;
                     }
                     self.cursors
-                        .save(scope.clone(), batch.cursor.clone())
+                        .save_account_checkpoint(
+                            scope.clone(),
+                            AccountCursorCheckpoint {
+                                cursor: batch.cursor.clone(),
+                                station_cas: next_station_cas.clone(),
+                            },
+                        )
                         .await
                         .map_err(|error| fail(provider, RunErrorClass::StoreFailure, error))?;
                     provider.observe(RunEvent::Checkpointed);
+                    station_cas = next_station_cas;
                     after = Some(batch.cursor);
                     if let Some(reason) = self.wait(provider, options.beat).await {
                         return Ok(stop(provider, reason));
@@ -306,9 +337,16 @@ where
                             .await
                             .map_err(|error| fail(provider, RunErrorClass::StoreFailure, error))?;
                         after = None;
+                        station_cas.reset_for_initial_sync();
                     } else if let Some(cursor) = reconnect_cursor {
                         self.cursors
-                            .save(scope.clone(), cursor.clone())
+                            .save_account_checkpoint(
+                                scope.clone(),
+                                AccountCursorCheckpoint {
+                                    cursor: cursor.clone(),
+                                    station_cas: station_cas.clone(),
+                                },
+                            )
                             .await
                             .map_err(|error| fail(provider, RunErrorClass::StoreFailure, error))?;
                         after = Some(cursor);
@@ -399,6 +437,7 @@ mod tests {
         AccountSubscribeBatch, AccountSubscribeFrame, AccountSubscribeFrameKind,
     };
     use arkret_wire::Problem;
+    use serde_json::json;
 
     use super::*;
     use crate::{ClientEvent, MemoryStore};
@@ -553,6 +592,67 @@ mod tests {
         ))
     }
 
+    fn station_cas_batch(
+        cursor: &str,
+        revision: u64,
+        removal: bool,
+        baseline: bool,
+    ) -> Result<AccountSubscribeSnapshotResult> {
+        let station_cas = if removal {
+            json!({
+                "upserts": [],
+                "removals": [{
+                    "account_data_key": "ak.account.invite_delivery",
+                    "revision": revision,
+                    "updated_at": "2026-09-20T01:00:00.000Z"
+                }]
+            })
+        } else {
+            json!({
+                "upserts": [{
+                    "account_data_key": "ak.account.invite_delivery",
+                    "revision": revision,
+                    "content": {"revision": revision},
+                    "updated_at": "2026-09-20T01:00:00.000Z"
+                }],
+                "removals": []
+            })
+        };
+        let mut frame = json!({
+            "kind": "delta",
+            "cursor": cursor,
+            "account_data": {"events": [], "station_cas": station_cas}
+        });
+        if baseline {
+            frame["baseline"] = json!({
+                "snapshot_cursor": "ak:cursor:YmFzZWxpbmU",
+                "channels": ["station_cas"],
+                "completed_channels": ["station_cas"]
+            });
+        }
+        Ok(AccountSubscribeSnapshotResult::Batch(
+            AccountSubscribeBatch {
+                frames: vec![serde_json::from_value(frame).unwrap()],
+                cursor: cursor.to_owned(),
+            },
+        ))
+    }
+
+    fn lost_batch(cursor: &str) -> Result<AccountSubscribeSnapshotResult> {
+        let frame = serde_json::from_value(json!({
+            "kind": "delta",
+            "cursor": cursor,
+            "to_device": {"messages": [], "lost": true}
+        }))
+        .unwrap();
+        Ok(AccountSubscribeSnapshotResult::Batch(
+            AccountSubscribeBatch {
+                frames: vec![frame],
+                cursor: cursor.to_owned(),
+            },
+        ))
+    }
+
     #[tokio::test]
     async fn cancellation_before_connect_performs_no_network_call() {
         let runner = AccountRunner::new(ImmediateExecutor, MemoryStore::new());
@@ -590,6 +690,82 @@ mod tests {
             Some("ak:cursor:next")
         );
         assert!(provider.events().contains(&RunEvent::Checkpointed));
+    }
+
+    #[tokio::test]
+    async fn station_cas_conflict_clears_cursor_and_restarts_from_initial_baseline() {
+        let store = MemoryStore::new();
+        let AccountSubscribeSnapshotResult::Batch(seed) =
+            station_cas_batch("ak:cursor:bGl2ZS0y", 2, false, true).unwrap()
+        else {
+            unreachable!()
+        };
+        let mut station_cas = crate::StationCasProjection::default();
+        for frame in &seed.frames {
+            station_cas.apply_frame(frame).unwrap();
+        }
+        store
+            .save_account_checkpoint(
+                scope(),
+                AccountCursorCheckpoint {
+                    cursor: seed.cursor,
+                    station_cas,
+                },
+            )
+            .await
+            .unwrap();
+        let runner = AccountRunner::new(ImmediateExecutor, store.clone());
+        let provider = Provider::new(
+            runner.control(),
+            vec![
+                station_cas_batch("ak:cursor:Y29uZmxpY3Q", 2, true, false),
+                station_cas_batch("ak:cursor:YmFzZWxpbmUtMQ", 1, false, true),
+            ],
+        );
+        let projector = Projector::default();
+
+        assert_eq!(
+            runner
+                .run(&provider, &projector, scope(), RunOptions::default())
+                .await
+                .unwrap(),
+            RunStopReason::Cancelled
+        );
+        assert_eq!(
+            projector.projected(),
+            1,
+            "conflicting frame is never projected"
+        );
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ak:cursor:YmFzZWxpbmUtMQ")
+        );
+        assert!(provider.events().contains(&RunEvent::CursorReset));
+    }
+
+    #[tokio::test]
+    async fn to_device_loss_is_projected_before_its_cursor_is_checkpointed() {
+        let store = MemoryStore::new();
+        let runner = AccountRunner::new(ImmediateExecutor, store.clone());
+        let provider = Provider::new(runner.control(), vec![lost_batch("ak:cursor:bG9zdC0x")]);
+        let projector = Projector::default();
+
+        runner
+            .run(&provider, &projector, scope(), RunOptions::default())
+            .await
+            .unwrap();
+        let batches = projector.batches.lock().unwrap();
+        assert!(matches!(
+            batches.as_slice(),
+            [events] if matches!(
+                events.as_slice(),
+                [ClientEvent::AccountUpdates(context)] if context.to_device_lost
+            )
+        ));
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ak:cursor:bG9zdC0x")
+        );
     }
 
     #[tokio::test]

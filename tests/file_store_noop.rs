@@ -1,7 +1,10 @@
 #![cfg(all(feature = "native", not(target_arch = "wasm32")))]
 
 use arkret_wire::{CommitStreamRef, EventId, RealmId};
-use garth::{CursorScope, CursorStore, EventCacheStore, FileStore};
+use garth::{
+    AccountCursorCheckpoint, CursorScope, CursorStore, EventCacheStore, FileStore,
+    StationCasProjection,
+};
 
 fn scope() -> CursorScope {
     CursorScope::CommitStream {
@@ -43,6 +46,27 @@ async fn file_store_reopens_durable_cursor() {
     assert_eq!(
         reopened.load(scope()).await.unwrap().as_deref(),
         Some("ak:cursor:durable")
+    );
+}
+
+#[tokio::test]
+async fn file_store_reopens_atomic_account_checkpoint() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("garth.json");
+    let checkpoint = AccountCursorCheckpoint {
+        cursor: "ak:cursor:YWNjb3VudA".to_owned(),
+        station_cas: StationCasProjection::default(),
+    };
+    FileStore::open(&path)
+        .unwrap()
+        .save_account_checkpoint(scope(), checkpoint.clone())
+        .await
+        .unwrap();
+
+    let reopened = FileStore::open(&path).unwrap();
+    assert_eq!(
+        reopened.load_account_checkpoint(scope()).await.unwrap(),
+        Some(checkpoint)
     );
 }
 
