@@ -333,6 +333,24 @@ impl MemoryStore {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// Advance the same atomic floor used by the async store trait from a
+    /// synchronous local authoring boundary.
+    pub fn advance_floor_sync(
+        &self,
+        scope: crate::StampScope,
+        update: crate::StampFloorUpdate,
+    ) -> Result<crate::StampFloor> {
+        let mut state = self.state.lock().unwrap();
+        let next = state
+            .stamp_floors
+            .get(&scope)
+            .copied()
+            .unwrap_or_default()
+            .apply(update)?;
+        state.stamp_floors.insert(scope, next);
+        Ok(next)
+    }
 }
 
 impl CursorStore for MemoryStore {
@@ -414,21 +432,87 @@ impl crate::MonotonicStampStore for MemoryStore {
         scope: crate::StampScope,
         update: crate::StampFloorUpdate,
     ) -> Result<crate::StampFloor> {
-        let mut state = self.state.lock().unwrap();
-        let next = state
-            .stamp_floors
-            .get(&scope)
-            .copied()
-            .unwrap_or_default()
-            .apply(update)?;
-        state.stamp_floors.insert(scope, next);
-        Ok(next)
+        self.advance_floor_sync(scope, update)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn stamp_scope() -> crate::StampScope {
+        crate::StampScope {
+            service_id: None,
+            actor_id: arkret_wire::DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
+            device_id: arkret_wire::DeviceId::new("ak:device:01964137-0000-7000-8000-000000000001")
+                .unwrap(),
+            realm_id: arkret_wire::RealmId::new(
+                "ak:realm:AdkQ-RmB1a8zyc52yl9GWAsodQ_EUle1WAVZqbO7pc19",
+            )
+            .unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn synchronous_memory_floor_shares_the_async_monotonic_sequence() {
+        use crate::MonotonicStampStore as _;
+
+        let store = MemoryStore::new();
+        let scope = stamp_scope();
+        let first = store
+            .advance_floor_sync(
+                scope.clone(),
+                crate::StampFloorUpdate::IssueHlc { now_ms: 100 },
+            )
+            .unwrap();
+        let second = store
+            .advance_floor(
+                scope.clone(),
+                crate::StampFloorUpdate::IssueHlc { now_ms: 100 },
+            )
+            .await
+            .unwrap();
+        assert!(second.hlc_logical > first.hlc_logical);
+        assert_eq!(store.load_floor(scope).await.unwrap(), Some(second));
+    }
+
+    #[cfg(feature = "native")]
+    #[tokio::test]
+    async fn synchronous_file_floor_survives_reopen_and_async_advance() {
+        use crate::MonotonicStampStore as _;
+
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("stamp-floor.json");
+        let scope = stamp_scope();
+        let first = FileStore::open(&path)
+            .unwrap()
+            .advance_floor_sync(
+                scope.clone(),
+                crate::StampFloorUpdate::IssueHlc { now_ms: 100 },
+            )
+            .unwrap();
+        let reopened = FileStore::open(&path).unwrap();
+        assert_eq!(
+            reopened.load_floor(scope.clone()).await.unwrap(),
+            Some(first)
+        );
+        let second = reopened
+            .advance_floor(
+                scope.clone(),
+                crate::StampFloorUpdate::IssueHlc { now_ms: 100 },
+            )
+            .await
+            .unwrap();
+        assert!(second.hlc_logical > first.hlc_logical);
+        assert_eq!(
+            FileStore::open(&path)
+                .unwrap()
+                .load_floor(scope)
+                .await
+                .unwrap(),
+            Some(second)
+        );
+    }
 
     #[tokio::test]
     async fn memory_store_round_trips_opaque_cursor() {

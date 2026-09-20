@@ -59,6 +59,26 @@ impl FileStore {
         }
         Ok(value)
     }
+
+    /// Advance and durably commit an HLC floor under the cross-process lock
+    /// for synchronous local authoring paths.
+    pub fn advance_floor_sync(
+        &self,
+        scope: crate::StampScope,
+        update: crate::StampFloorUpdate,
+    ) -> Result<crate::StampFloor> {
+        self.mutate(|state| {
+            let next = state
+                .stamp_floors
+                .get(&scope)
+                .copied()
+                .unwrap_or_default()
+                .apply(update)?;
+            let changed = state.stamp_floors.get(&scope).copied() != Some(next);
+            state.stamp_floors.insert(scope, next);
+            Ok((next, changed))
+        })
+    }
 }
 
 impl CursorStore for FileStore {
@@ -157,17 +177,7 @@ impl crate::MonotonicStampStore for FileStore {
         scope: crate::StampScope,
         update: crate::StampFloorUpdate,
     ) -> Result<crate::StampFloor> {
-        self.mutate(|state| {
-            let next = state
-                .stamp_floors
-                .get(&scope)
-                .copied()
-                .unwrap_or_default()
-                .apply(update)?;
-            let changed = state.stamp_floors.get(&scope).copied() != Some(next);
-            state.stamp_floors.insert(scope, next);
-            Ok((next, changed))
-        })
+        self.advance_floor_sync(scope, update)
     }
 }
 
