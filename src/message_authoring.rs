@@ -6,12 +6,26 @@
 
 pub use arkret_models_collaboration::message_authoring::{
     MessageAuthoringContent, MessageAuthoringIntent, MessageEncryptionContext,
-    MessageSubmitRequestBody,
+    MessagePrepareOutcome, MessagePrepareRequestBody, MessageSubmitRequestBody,
 };
 use arkret_signatures::{EventSigner, SignEventOptions, sign_event};
 use arkret_wire::{AuthoredEvent, AuthoritySubmitRequest, EventCommitSubmission, EventKind};
 
 use crate::{Error, QueuedSubmission, Result};
+
+/// Accept an optional Station-prepared draft only after the SDK proves that it
+/// binds the exact frozen request. The returned Event is still unsigned; the
+/// host must pass it to [`author_message`] with its own signer.
+pub fn verify_prepared_message(
+    request: &MessagePrepareRequestBody,
+    outcome: &MessagePrepareOutcome,
+) -> Result<AuthoredEvent> {
+    outcome.validate_against_request(request)?;
+    outcome
+        .draft
+        .unsigned_event_for_kind(arkret_wire::event_kind_str::MESSAGE_CREATE)
+        .map_err(Into::into)
+}
 
 pub fn author_message<S: EventSigner + ?Sized>(
     mut event: AuthoredEvent,
