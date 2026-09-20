@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use arkret_wire::{
-    CommitStreamHead, CommitStreamRef, RealmAuthorityBundle, RealmId, RealmStateSnapshot,
-    StreamRow, StreamScanOutcome, StreamScanRequest,
+    CommitStreamHead, CommitStreamRef, CommittedEventView, RealmAuthorityBundle, RealmId,
+    RealmStateSnapshot, StreamScanOutcome, StreamScanRequest,
 };
 
 use crate::{Error, Result};
@@ -12,7 +12,7 @@ use crate::{Error, Result};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StreamReplica {
     pub head: Option<CommitStreamHead>,
-    pub items: Vec<StreamRow>,
+    pub items: Vec<CommittedEventView>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -79,14 +79,15 @@ impl RealmReplica {
                 "stream tail must resume exactly after the installed head".to_owned(),
             ));
         }
-        if let Some(last) = outcome.commits.last() {
+        if let Some(last) = outcome.committed_events.last() {
+            let commit = last.commit();
             replica.head = Some(CommitStreamHead {
-                stream_ref: last.commit.stream_ref.clone(),
-                stream_position: last.commit.stream_position,
-                commit_id: last.commit.commit_id.clone(),
+                stream_ref: commit.stream_ref.clone(),
+                stream_position: commit.stream_position,
+                commit_id: commit.commit_id.clone(),
             });
         }
-        replica.items.extend(outcome.commits);
+        replica.items.extend(outcome.committed_events);
         Ok(())
     }
 }

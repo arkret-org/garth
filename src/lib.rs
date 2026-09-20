@@ -58,9 +58,9 @@ pub use arkret_models_collaboration::signal_plaintext::{
 pub use arkret_retry::{RetryPolicy, RetrySchedule};
 pub use arkret_wire::{
     AuthorityBundleRequest, AuthorityHandoffRequest, AuthoritySubmitOutcome,
-    AuthoritySubmitRequest, CommitStreamHead, CommitStreamRef, CommittedEventRef,
-    CommittedEventResolveOutcome, CommittedEventResolveRequest, EventCommitSubmission,
-    RealmAuthorityBundle, RealmAuthorityHandoff, RealmCommit, RealmStateSnapshot, StreamRow,
+    AuthoritySubmitRequest, CommitStreamHead, CommitStreamRef, CommittedEventFullView,
+    CommittedEventRef, CommittedEventView, CommittedEventWithheldView, EventCommitSubmission,
+    RealmAuthorityBundle, RealmAuthorityHandoff, RealmCommit, RealmStateSnapshot,
     StreamScanOutcome, StreamScanRequest,
 };
 pub use authority::{AuthorityClient, AuthorityTransport, QueuedSubmission, SubmissionState};

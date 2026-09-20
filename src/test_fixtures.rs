@@ -45,7 +45,7 @@ pub fn event(seed: u8, kind: EventKind, payload: Value) -> Event {
         applet_id: None,
         external_ref: None,
         created_at: at(0),
-        refs: Vec::new(),
+        semantic_refs: Vec::new(),
         payload: serde_json::from_value(payload).unwrap(),
         producer_proof: None,
     }

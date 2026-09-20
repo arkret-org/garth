@@ -462,8 +462,7 @@ mod tests {
     use arkret_wire::{
         ActorId, AuthoredEvent, AuthorityBundleRequest, AuthorityCommitStatus,
         AuthorityHandoffRequest, AuthorityRejectionStatus, AuthoritySubmitOutcome,
-        AuthoritySubmitRequest, CommitStreamRef, CommittedEventResolveOutcome,
-        CommittedEventResolveRequest, DidCoreId, Event, EventId, EventKind, Problem,
+        AuthoritySubmitRequest, CommitStreamRef, DidCoreId, Event, EventId, EventKind, Problem,
         RealmAuthorityBundle, RealmAuthorityHandoff, RealmId, ScopeRef, StreamScanOutcome,
         StreamScanRequest,
     };
@@ -500,7 +499,7 @@ mod tests {
                 applet_id: None,
                 external_ref: None,
                 created_at: crate::test_fixtures::at(0),
-                refs: Vec::new(),
+                semantic_refs: Vec::new(),
                 payload: BTreeMap::from([("seed".to_owned(), serde_json::json!(seed))]),
                 producer_proof: None,
             },
@@ -572,13 +571,6 @@ mod tests {
 
         async fn scan(&self, _request: &StreamScanRequest) -> Result<StreamScanOutcome> {
             unreachable!("the outbound engine never scans")
-        }
-
-        async fn resolve(
-            &self,
-            _request: &CommittedEventResolveRequest,
-        ) -> Result<CommittedEventResolveOutcome> {
-            unreachable!("the outbound engine never resolves")
         }
 
         async fn authority_bundle(

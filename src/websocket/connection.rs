@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 
 use arkret_models_collaboration::sync_frames::account_subscribe::AccountSubscribeFrame;
-use arkret_models_collaboration::sync_frames::events_subscribe::EventsSubscribeFrame;
+use arkret_models_collaboration::sync_frames::committed_event_subscribe::CommittedEventSubscribeFrame;
 use arkret_models_collaboration::sync_frames::websocket::{
     WebSocketChannelControlPayload, WebSocketClientFrame, WebSocketCloseReason,
     WebSocketConnectionLimits, WebSocketConnectionState, WebSocketDataPayload,
@@ -92,7 +92,9 @@ impl WebSocketChannelState {
         }
         let operation_id = match &parameters {
             WebSocketOpenParameters::Account(_) => WebSocketOperationId::AccountStreamSubscribe,
-            WebSocketOpenParameters::Events(_) => WebSocketOperationId::EventsStreamSubscribe,
+            WebSocketOpenParameters::Events(_) => {
+                WebSocketOperationId::CommittedEventStreamSubscribe
+            }
             WebSocketOpenParameters::Signal(_) => WebSocketOperationId::SignalStreamSubscribe,
         };
         self.channel_sequence = self
@@ -101,7 +103,7 @@ impl WebSocketChannelState {
             .ok_or_else(|| Error::Protocol("WebSocket channel sequence overflow".to_owned()))?;
         let prefix = match operation_id {
             WebSocketOperationId::AccountStreamSubscribe => "account",
-            WebSocketOperationId::EventsStreamSubscribe => "events",
+            WebSocketOperationId::CommittedEventStreamSubscribe => "events",
             WebSocketOperationId::SignalStreamSubscribe => "signal",
         };
         let channel_id = format!("{prefix}-{}", self.channel_sequence);
@@ -316,9 +318,9 @@ impl WebSocketChannelState {
                             AccountSubscribeFrame,
                         >(payload)?))
                     }
-                    WebSocketOperationId::EventsStreamSubscribe => {
+                    WebSocketOperationId::CommittedEventStreamSubscribe => {
                         WebSocketDataPayload::Events(Box::new(serde_json::from_value::<
-                            EventsSubscribeFrame,
+                            CommittedEventSubscribeFrame,
                         >(payload)?))
                     }
                     WebSocketOperationId::SignalStreamSubscribe => {
@@ -336,9 +338,9 @@ impl WebSocketChannelState {
                                 serde_json::from_value::<AccountSubscribeFrame>(payload)?,
                             ))
                         }
-                        WebSocketOperationId::EventsStreamSubscribe => {
+                        WebSocketOperationId::CommittedEventStreamSubscribe => {
                             WebSocketChannelControlPayload::Events(Box::new(
-                                serde_json::from_value::<EventsSubscribeFrame>(payload)?,
+                                serde_json::from_value::<CommittedEventSubscribeFrame>(payload)?,
                             ))
                         }
                         WebSocketOperationId::SignalStreamSubscribe => {

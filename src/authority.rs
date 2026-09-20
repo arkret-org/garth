@@ -8,15 +8,14 @@ use arkret_models_collaboration::authority_commit::{
 };
 use arkret_wire::{
     AuthorityBundleRequest, AuthorityCommitStatus, AuthorityHandoffRequest,
-    AuthorityRejectionStatus, AuthoritySubmitOutcome, AuthoritySubmitRequest,
-    CommittedEventResolveOutcome, CommittedEventResolveRequest, EventId, RealmAuthorityBundle,
-    RealmAuthorityHandoff, RealmCommit, StreamScanOutcome, StreamScanRequest,
+    AuthorityRejectionStatus, AuthoritySubmitOutcome, AuthoritySubmitRequest, EventId,
+    RealmAuthorityBundle, RealmAuthorityHandoff, RealmCommit, StreamScanOutcome, StreamScanRequest,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{MaybeSend, MaybeSendSync, Result};
 
-/// Runtime-neutral boundary over the five current authority operations.
+/// Runtime-neutral boundary over the four current authority operations.
 pub trait AuthorityTransport: MaybeSendSync {
     fn submit<'a>(
         &'a self,
@@ -28,11 +27,6 @@ pub trait AuthorityTransport: MaybeSendSync {
         &'a self,
         request: &'a StreamScanRequest,
     ) -> impl Future<Output = Result<StreamScanOutcome>> + MaybeSend + 'a;
-
-    fn resolve<'a>(
-        &'a self,
-        request: &'a CommittedEventResolveRequest,
-    ) -> impl Future<Output = Result<CommittedEventResolveOutcome>> + MaybeSend + 'a;
 
     fn authority_bundle<'a>(
         &'a self,
@@ -70,13 +64,6 @@ impl AuthorityTransport for Client {
 
     async fn scan(&self, request: &StreamScanRequest) -> Result<StreamScanOutcome> {
         Ok(self.scan_commit_stream(request).await?)
-    }
-
-    async fn resolve(
-        &self,
-        request: &CommittedEventResolveRequest,
-    ) -> Result<CommittedEventResolveOutcome> {
-        Ok(self.resolve_committed_events(request).await?)
     }
 
     async fn authority_bundle(
@@ -179,16 +166,6 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
     pub async fn scan(&self, request: &StreamScanRequest) -> Result<StreamScanOutcome> {
         request.validate()?;
         let outcome = self.transport.scan(request).await?;
-        outcome.validate_for_request(request)?;
-        Ok(outcome)
-    }
-
-    pub async fn resolve(
-        &self,
-        request: &CommittedEventResolveRequest,
-    ) -> Result<CommittedEventResolveOutcome> {
-        request.validate()?;
-        let outcome = self.transport.resolve(request).await?;
         outcome.validate_for_request(request)?;
         Ok(outcome)
     }

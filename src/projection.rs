@@ -18,58 +18,56 @@ use arkret_models_collaboration::sync_frames::account_subscribe::{
 };
 use arkret_models_collaboration::sync_frames::current_results::AccountCurrentResult;
 use arkret_wire::{
-    CommitStreamRef, CommittedEventRef, Event, EventKind, RealmCommit, RealmId, RealmStateSnapshot,
-    StreamRow,
+    CommitStreamRef, CommittedEventRef, CommittedEventView, Event, EventKind, RealmCommit, RealmId,
+    RealmStateSnapshot,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::{Error, MaybeSend, Result};
 
-/// One Station-committed Event with its exact stream coordinate.
+/// One Station commit with its exact stream coordinate and disclosure view.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct CommittedDelta {
     pub realm_id: RealmId,
-    pub commit: Box<RealmCommit>,
-    pub event: Box<Event>,
+    pub view: CommittedEventView,
 }
 
 impl CommittedDelta {
-    /// Build one delta from a timeline item, rejecting a commit that does not
-    /// bind the Event it is delivered with.
-    pub fn from_stream_row(realm_id: RealmId, item: StreamRow) -> Result<Self> {
-        item.commit.validate_shape()?;
-        if item.commit.event_ref != item.event.event_id {
-            return Err(Error::Protocol(
-                "timeline commit does not bind its Event".to_owned(),
-            ));
-        }
-        if item.commit.stream_ref.realm_id() != &realm_id || item.event.realm_id != realm_id {
+    /// Build one delta from a committed-event view, preserving withheld Events.
+    pub fn from_committed_event_view(realm_id: RealmId, view: CommittedEventView) -> Result<Self> {
+        view.validate_shape()?;
+        if view.commit().stream_ref.realm_id() != &realm_id {
             return Err(Error::Protocol(
                 "timeline item belongs to another Realm".to_owned(),
             ));
         }
-        Ok(Self {
-            realm_id,
-            commit: Box::new(item.commit),
-            event: Box::new(item.event),
-        })
+        Ok(Self { realm_id, view })
+    }
+
+    pub fn commit(&self) -> &RealmCommit {
+        self.view.commit()
+    }
+
+    pub fn event(&self) -> Option<&Event> {
+        self.view.reducer_input()
     }
 
     pub fn stream_ref(&self) -> &CommitStreamRef {
-        &self.commit.stream_ref
+        &self.commit().stream_ref
     }
 
     pub fn stream_position(&self) -> u64 {
-        self.commit.stream_position
+        self.commit().stream_position
     }
 
     pub fn committed_ref(&self) -> CommittedEventRef {
+        let commit = self.commit();
         CommittedEventRef {
-            event_id: self.event.event_id.clone(),
-            commit_id: self.commit.commit_id.clone(),
-            stream_ref: self.commit.stream_ref.clone(),
-            stream_position: self.commit.stream_position,
+            event_id: commit.event_ref.clone(),
+            commit_id: commit.commit_id.clone(),
+            stream_ref: commit.stream_ref.clone(),
+            stream_position: commit.stream_position,
         }
     }
 }
@@ -80,7 +78,7 @@ impl CommittedDelta {
 pub enum ClientEvent {
     /// Batch-level context that is never repeated by a granular variant.
     AccountUpdates(AccountUpdateContext),
-    /// One Station-committed Event on one independent stream.
+    /// One Station commit on one independent stream. Its Event can be withheld.
     Committed(CommittedDelta),
     /// A decoded message-family Event with its parsed payload.
     Message(Box<DecodedMessage>),
@@ -377,12 +375,14 @@ fn realm_entry_to_client_events(
             value: Box::new(current.clone()),
         });
     }
-    if let Some(timeline) = &entry.timeline {
-        for item in &timeline.commits {
-            let delta = CommittedDelta::from_stream_row(realm_id.clone(), item.clone())?;
-            match decoder.decode_event((*delta.event).clone()) {
-                DecodedInbound::Message(message) => batch.push(ClientEvent::Message(message)),
-                DecodedInbound::Event(_) => {}
+    if let Some(committed_events) = &entry.committed_events {
+        for item in committed_events {
+            let delta = CommittedDelta::from_committed_event_view(realm_id.clone(), item.clone())?;
+            if let Some(event) = delta.event() {
+                match decoder.decode_event(event.clone()) {
+                    DecodedInbound::Message(message) => batch.push(ClientEvent::Message(message)),
+                    DecodedInbound::Event(_) => {}
+                }
             }
             batch.push(ClientEvent::Committed(delta));
         }
@@ -412,10 +412,11 @@ pub fn account_batch_to_client_events(
 #[cfg(test)]
 mod tests {
     use arkret_canonical::DigestSuite;
-    use arkret_models_collaboration::sync_frames::account_subscribe::{
-        AccountSubscribeRealms, RealmTimeline,
+    use arkret_models_collaboration::sync_frames::account_subscribe::AccountSubscribeRealms;
+    use arkret_wire::{
+        CircleId, CommittedEventFullView, CommittedEventWithheldView, EventDisclosure,
+        EventDisclosureStatus, EventId, ScopeRef, StrandId,
     };
-    use arkret_wire::{CircleId, EventId, StrandId};
     use serde_json::json;
 
     use super::*;
@@ -443,6 +444,14 @@ mod tests {
         }
     }
 
+    fn full_view(commit: RealmCommit, event: Event) -> CommittedEventView {
+        CommittedEventView::Full(CommittedEventFullView { commit, event })
+    }
+
+    fn delta(event: Event, commit: RealmCommit) -> CommittedDelta {
+        CommittedDelta::from_committed_event_view(realm_id(), full_view(commit, event)).unwrap()
+    }
+
     #[test]
     fn decoder_parses_a_message_payload() {
         let decoded = InboundDecoder::new()
@@ -458,11 +467,28 @@ mod tests {
     fn a_commit_that_does_not_bind_its_event_is_refused() {
         let first = message_event();
         let second = event(4, EventKind::ReactionAdd, json!({}));
-        let item = StreamRow {
-            commit: commit(7, &first, realm_stream(), 1),
-            event: second,
-        };
-        assert!(CommittedDelta::from_stream_row(realm_id(), item).is_err());
+        let item = full_view(commit(7, &first, realm_stream(), 1), second);
+        assert!(CommittedDelta::from_committed_event_view(realm_id(), item).is_err());
+    }
+
+    #[test]
+    fn a_withheld_event_preserves_its_commit_coordinate() {
+        let event = message_event();
+        let commit = commit(7, &event, realm_stream(), 1);
+        let expected_event_id = commit.event_ref.clone();
+        let item = CommittedEventView::Withheld(CommittedEventWithheldView {
+            commit,
+            event_disclosure: EventDisclosure {
+                status: EventDisclosureStatus::Withheld,
+            },
+        });
+
+        let delta = CommittedDelta::from_committed_event_view(realm_id(), item).unwrap();
+
+        assert!(delta.event().is_none());
+        assert_eq!(delta.stream_ref(), &realm_stream());
+        assert_eq!(delta.stream_position(), 1);
+        assert_eq!(delta.committed_ref().event_id, expected_event_id);
     }
 
     #[test]
@@ -470,24 +496,31 @@ mod tests {
         let mut state = RealmProjectionState::default();
         let realm_event = message_event();
         state
-            .apply(&CommittedDelta {
-                realm_id: realm_id(),
-                commit: Box::new(commit(7, &realm_event, realm_stream(), 1)),
-                event: Box::new(realm_event.clone()),
-            })
+            .apply(&delta(
+                realm_event.clone(),
+                commit(7, &realm_event, realm_stream(), 1),
+            ))
             .unwrap();
 
         // A Circle stream starts at its own position 1 while the Realm stream
         // is already at 1; no global counter is consulted.
+        let circle_stream = circle_stream();
+        let CommitStreamRef::Circle { circle_id, .. } = &circle_stream else {
+            unreachable!("the fixture constructs a Circle stream")
+        };
+        let mut circle_event = realm_event.clone();
+        circle_event.scope_ref = ScopeRef::Circle {
+            realm_id: realm_id(),
+            circle_id: circle_id.clone(),
+        };
         state
-            .apply(&CommittedDelta {
-                realm_id: realm_id(),
-                commit: Box::new(commit(8, &realm_event, circle_stream(), 1)),
-                event: Box::new(realm_event),
-            })
+            .apply(&delta(
+                circle_event.clone(),
+                commit(8, &circle_event, circle_stream.clone(), 1),
+            ))
             .unwrap();
         assert_eq!(state.tail(&realm_stream()), Some(1));
-        assert_eq!(state.tail(&circle_stream()), Some(1));
+        assert_eq!(state.tail(&circle_stream), Some(1));
     }
 
     #[test]
@@ -495,19 +528,17 @@ mod tests {
         let mut state = RealmProjectionState::default();
         let realm_event = message_event();
         state
-            .apply(&CommittedDelta {
-                realm_id: realm_id(),
-                commit: Box::new(commit(7, &realm_event, realm_stream(), 1)),
-                event: Box::new(realm_event.clone()),
-            })
+            .apply(&delta(
+                realm_event.clone(),
+                commit(7, &realm_event, realm_stream(), 1),
+            ))
             .unwrap();
         assert!(
             state
-                .apply(&CommittedDelta {
-                    realm_id: realm_id(),
-                    commit: Box::new(commit(9, &realm_event, realm_stream(), 3)),
-                    event: Box::new(realm_event),
-                })
+                .apply(&delta(
+                    realm_event.clone(),
+                    commit(9, &realm_event, realm_stream(), 3),
+                ))
                 .is_err()
         );
     }
@@ -544,15 +575,10 @@ mod tests {
                 entries: BTreeMap::from([(
                     realm_id().to_string(),
                     RealmSyncEntry {
-                        timeline: Some(RealmTimeline {
-                            commits: vec![StreamRow {
-                                commit: commit(7, &event, realm_stream(), 1),
-                                event: event.clone(),
-                            }],
-                            limited: false,
-                            prev_cursor: None,
-                            preview_only: None,
-                        }),
+                        committed_events: Some(vec![full_view(
+                            commit(7, &event, realm_stream(), 1),
+                            event.clone(),
+                        )]),
                         ..RealmSyncEntry::default()
                     },
                 )]),

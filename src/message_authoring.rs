@@ -242,7 +242,7 @@ mod tests {
             applet_id: None,
             external_ref: None,
             created_at: chrono::Utc.with_ymd_and_hms(2026, 9, 16, 0, 0, 0).unwrap(),
-            refs: Vec::new(),
+            semantic_refs: Vec::new(),
             payload: BTreeMap::from([("body".to_owned(), json!("hello"))]),
             producer_proof: None,
         };
