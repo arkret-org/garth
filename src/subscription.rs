@@ -55,11 +55,18 @@ impl AccountSubscribeTransport for arkret_http_client::Client {
     }
 }
 
-pub trait AccountBatchProjector: MaybeSendSync {
+/// Synchronous-in-order projection lane for a caller-owned executor.
+///
+/// `AccountSubscription::run` awaits this projection before durably advancing
+/// the cursor and never spawns the projector across threads. A native caller
+/// that does move the whole runner onto a multithreaded executor must still
+/// satisfy that executor's `Send` bound at the spawn site; local UI state may
+/// instead remain on its single-thread executor without an unsafe wrapper.
+pub trait AccountBatchProjector {
     fn project<'a>(
         &'a self,
         batch: &'a AccountSubscribeBatch,
-    ) -> impl Future<Output = Result<()>> + MaybeSend + 'a;
+    ) -> impl Future<Output = Result<()>> + 'a;
 }
 
 #[derive(Clone, Debug, Default)]
@@ -202,7 +209,9 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::collections::VecDeque;
+    use std::rc::Rc;
     use std::sync::Mutex;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -289,6 +298,19 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+    }
+
+    struct LocalProjector {
+        calls: Rc<Cell<usize>>,
+        control: SubscriptionControl,
+    }
+
+    impl AccountBatchProjector for LocalProjector {
+        async fn project(&self, _batch: &AccountSubscribeBatch) -> Result<()> {
+            self.calls.set(self.calls.get() + 1);
+            self.control.cancel();
+            Ok(())
         }
     }
 
@@ -416,6 +438,36 @@ mod tests {
             store.load(scope()).await.unwrap().as_deref(),
             Some("ak:cursor:next")
         );
+    }
+
+    #[tokio::test]
+    async fn local_non_send_projector_is_checkpointed_after_projection() {
+        let store = crate::MemoryStore::new();
+        let subscription = AccountSubscription::new(ImmediateExecutor, store.clone());
+        let calls = Rc::new(Cell::new(0));
+        let projector = LocalProjector {
+            calls: calls.clone(),
+            control: subscription.control(),
+        };
+        let transport = ScriptedTransport::new(vec![AccountSubscribeSnapshotResult::Batch(
+            AccountSubscribeBatch {
+                frames: Vec::new(),
+                cursor: "ak:cursor:local".to_owned(),
+            },
+        )]);
+        subscription
+            .run(
+                &transport,
+                &projector,
+                None,
+                actor_id(),
+                device_id(),
+                SyncRequestBody::default(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(calls.get(), 1);
+        assert_eq!(store.load(scope()).await.unwrap().as_deref(), Some("ak:cursor:local"));
     }
 
     #[tokio::test]
