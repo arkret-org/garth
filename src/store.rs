@@ -75,6 +75,18 @@ pub enum DeliveryErrorClass {
 pub struct DeliveryId(u64);
 
 impl DeliveryId {
+    /// Reconstruct a durable inbox identity from local storage. The in-memory
+    /// allocator starts at 1 and cannot issue `u64::MAX` because it must
+    /// advance the counter before completing a commit.
+    pub fn from_stored_u64(value: u64) -> Result<Self> {
+        if value == 0 || value == u64::MAX {
+            return Err(crate::Error::Storage(
+                "stored delivery id is outside the allocator range".to_owned(),
+            ));
+        }
+        Ok(Self(value))
+    }
+
     pub const fn get(self) -> u64 {
         self.0
     }
@@ -509,5 +521,14 @@ mod tests {
                 .unwrap()
         );
         assert!(!inbox.ack(missing).await.unwrap());
+    }
+
+    #[test]
+    fn persisted_delivery_id_round_trips_with_allocator_bounds() {
+        for value in [1, 42, u64::MAX - 1] {
+            assert_eq!(DeliveryId::from_stored_u64(value).unwrap().get(), value);
+        }
+        assert!(DeliveryId::from_stored_u64(0).is_err());
+        assert!(DeliveryId::from_stored_u64(u64::MAX).is_err());
     }
 }
