@@ -127,6 +127,26 @@ impl EventCacheStore for FileStore {
     }
 }
 
+impl crate::OutboundQueueStore for FileStore {
+    fn mutate_outbound<'a, R>(
+        &'a self,
+        mutation: impl FnOnce(&mut crate::SendQueue) -> Result<R> + crate::MaybeSend + 'a,
+    ) -> crate::outbound::BoxOutboundFuture<'a, R>
+    where
+        R: crate::MaybeSend + 'a,
+    {
+        Box::pin(async move {
+            self.mutate(|state| {
+                let mut queue =
+                    crate::SendQueue::from_snapshot(std::mem::take(&mut state.outbound));
+                let value = mutation(&mut queue)?;
+                state.outbound = queue.snapshot();
+                Ok((value, true))
+            })
+        })
+    }
+}
+
 impl crate::MonotonicStampStore for FileStore {
     async fn load_floor(&self, scope: crate::StampScope) -> Result<Option<crate::StampFloor>> {
         self.read(|state| state.stamp_floors.get(&scope).copied())

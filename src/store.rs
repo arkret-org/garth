@@ -249,6 +249,7 @@ struct StoreState {
     account_checkpoints: BTreeMap<CursorScope, AccountCursorCheckpoint>,
     committed_events: VecDeque<EventId>,
     stamp_floors: BTreeMap<crate::StampScope, crate::StampFloor>,
+    outbound: crate::outbound::SendQueueSnapshot,
 }
 
 /// JSON objects require string keys. Persist typed map keys as sorted entry
@@ -263,6 +264,8 @@ struct StoredState {
     committed_events: VecDeque<EventId>,
     #[serde(default)]
     stamp_floors: Vec<(crate::StampScope, crate::StampFloor)>,
+    #[serde(default)]
+    outbound: crate::outbound::SendQueueSnapshot,
 }
 
 impl Serialize for StoreState {
@@ -287,6 +290,7 @@ impl Serialize for StoreState {
                 .iter()
                 .map(|(scope, floor)| (scope.clone(), *floor))
                 .collect(),
+            outbound: self.outbound.clone(),
         }
         .serialize(serializer)
     }
@@ -303,6 +307,7 @@ impl<'de> Deserialize<'de> for StoreState {
             account_checkpoints: stored.account_checkpoints.into_iter().collect(),
             committed_events: stored.committed_events,
             stamp_floors: stored.stamp_floors.into_iter().collect(),
+            outbound: stored.outbound,
         })
     }
 }

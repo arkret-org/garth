@@ -102,9 +102,13 @@ pub struct SendQueue {
 
 impl SendQueue {
     pub fn from_snapshot(snapshot: SendQueueSnapshot) -> Self {
-        Self {
-            items: snapshot.items,
+        let mut items = snapshot.items;
+        for item in &mut items {
+            if item.status == SendQueueStatus::Forwarding {
+                item.status = SendQueueStatus::Queued;
+            }
         }
+        Self { items }
     }
 
     pub fn snapshot(&self) -> SendQueueSnapshot {
@@ -131,6 +135,19 @@ impl SendQueue {
         if self.get(&submission.event_id).is_some() {
             return Err(Error::Protocol(
                 "this Event is already queued for authority submission".to_owned(),
+            ));
+        }
+        let submitted_event = submission_event(&submission.request);
+        if submitted_event.kind == arkret_wire::EventKind::MlsGenesis
+            && self.items.iter().any(|item| {
+                !item.status.is_terminal()
+                    && submission_event(item.request()).kind == arkret_wire::EventKind::MlsGenesis
+                    && submission_event(item.request()).scope_ref == submitted_event.scope_ref
+            })
+        {
+            return Err(Error::Protocol(
+                "this local authoring vault already has an active MLS genesis for the effective scope"
+                    .to_owned(),
             ));
         }
         self.items.push(SendQueueItem {
@@ -214,6 +231,13 @@ impl SendQueue {
             !item.status.is_terminal() || item.settled_at.is_none_or(|at| at >= cutoff)
         });
         before - self.items.len()
+    }
+}
+
+fn submission_event(request: &AuthoritySubmitRequest) -> &arkret_wire::Event {
+    match request {
+        AuthoritySubmitRequest::Event(submission) => &submission.event,
+        AuthoritySubmitRequest::MlsCommit(submission) => &submission.commit_event,
     }
 }
 
@@ -458,13 +482,13 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use arkret_canonical::DigestSuite;
-    use arkret_signatures::{Ed25519DetachedJwsSigner, SignEventOptions};
+    use arkret_signatures::{Ed25519DetachedJwsSigner, SignEventOptions, sign_event};
     use arkret_wire::{
         ActorId, AuthoredEvent, AuthorityBundleRequest, AuthorityCommitStatus,
         AuthorityHandoffRequest, AuthorityRejectionStatus, AuthoritySubmitOutcome,
-        AuthoritySubmitRequest, CommitStreamRef, DidCoreId, Event, EventId, EventKind, Problem,
-        RealmAuthorityBundle, RealmAuthorityHandoff, RealmId, ScopeRef, StreamScanOutcome,
-        StreamScanRequest,
+        AuthoritySubmitRequest, CommitStreamRef, DidCoreId, Event, EventCommitSubmission, EventId,
+        EventKind, Problem, RealmAuthorityBundle, RealmAuthorityHandoff, RealmId, ScopeRef,
+        StreamScanOutcome, StreamScanRequest,
     };
 
     use super::*;
@@ -512,6 +536,41 @@ mod tests {
         );
         let request = crate::author_message(authored, &signer, SignEventOptions::new()).unwrap();
         crate::queue_authored_message(request).unwrap()
+    }
+
+    fn genesis_submission(seed: u8, realm_seed: u8) -> QueuedSubmission {
+        let realm_id =
+            RealmId::from_event_id(&EventId::from_digest(DigestSuite::Sha256, [realm_seed; 32]));
+        let mut authored = AuthoredEvent::finalize_with_digest_suite(
+            Event {
+                event_id: EventId::from_digest(DigestSuite::Sha256, [seed; 32]),
+                kind: EventKind::MlsGenesis,
+                realm_id: realm_id.clone(),
+                scope_ref: ScopeRef::Realm { realm_id },
+                actor_id: ActorId::service(
+                    DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
+                ),
+                executed_by: None,
+                authorization_ref: None,
+                applet_id: None,
+                external_ref: None,
+                created_at: crate::test_fixtures::at(0),
+                semantic_refs: Vec::new(),
+                payload: BTreeMap::from([("seed".to_owned(), serde_json::json!(seed))]),
+                producer_proof: None,
+            },
+            DigestSuite::Sha256,
+        )
+        .unwrap();
+        let signer = Ed25519DetachedJwsSigner::new(
+            ed25519_dalek::SigningKey::from_bytes(&[9; 32]),
+            "did:web:alice.example#key-1",
+        );
+        sign_event(&mut authored, &signer, SignEventOptions::new()).unwrap();
+        QueuedSubmission::new(AuthoritySubmitRequest::Event(EventCommitSubmission::new(
+            authored.into_event(),
+        )))
+        .unwrap()
     }
 
     enum Scripted {
@@ -685,6 +744,80 @@ mod tests {
         let engine = engine();
         engine.enqueue(submission(3)).await.unwrap();
         assert!(engine.enqueue(submission(3)).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn only_one_active_genesis_exists_per_effective_scope() {
+        let engine = engine();
+        engine.enqueue(genesis_submission(3, 7)).await.unwrap();
+        let error = engine.enqueue(genesis_submission(4, 7)).await.unwrap_err();
+        assert!(error.to_string().contains("active MLS genesis"));
+        engine.enqueue(genesis_submission(5, 8)).await.unwrap();
+    }
+
+    #[cfg(feature = "native")]
+    #[tokio::test]
+    async fn native_store_reopens_with_the_exact_frozen_submission() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("garth-state.json");
+        let queued = genesis_submission(3, 7);
+        let expected = arkret_canonical::canonical_json_bytes(&queued.request).unwrap();
+
+        let first = OutboundEngine::new(crate::FileStore::open(&path).unwrap(), FixedClock);
+        first.enqueue(queued).await.unwrap();
+        drop(first);
+
+        let reopened = OutboundEngine::new(crate::FileStore::open(&path).unwrap(), FixedClock);
+        let snapshot = reopened.snapshot().await.unwrap();
+        assert_eq!(snapshot.items.len(), 1);
+        assert_eq!(
+            arkret_canonical::canonical_json_bytes(snapshot.items[0].request()).unwrap(),
+            expected
+        );
+    }
+
+    #[cfg(feature = "native")]
+    #[tokio::test]
+    async fn native_store_serializes_genesis_cas_across_independent_handles() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("garth-state.json");
+        let first = OutboundEngine::new(crate::FileStore::open(&path).unwrap(), FixedClock);
+        let second = OutboundEngine::new(crate::FileStore::open(&path).unwrap(), FixedClock);
+
+        first.enqueue(genesis_submission(3, 7)).await.unwrap();
+        let error = second.enqueue(genesis_submission(4, 7)).await.unwrap_err();
+        assert!(error.to_string().contains("active MLS genesis"));
+        assert_eq!(first.snapshot().await.unwrap().items.len(), 1);
+    }
+
+    #[cfg(feature = "native")]
+    #[tokio::test]
+    async fn native_store_requeues_an_unknown_in_flight_outcome_after_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("garth-state.json");
+        let store = crate::FileStore::open(&path).unwrap();
+        let engine = OutboundEngine::new(store.clone(), FixedClock);
+        let queued = submission(3);
+        let expected = arkret_canonical::canonical_json_bytes(&queued.request).unwrap();
+        engine.enqueue(queued).await.unwrap();
+        store
+            .mutate_outbound(|queue| {
+                assert!(queue.claim_due(FixedClock.now()).is_some());
+                Ok(())
+            })
+            .await
+            .unwrap();
+        drop(engine);
+        drop(store);
+
+        let reopened = OutboundEngine::new(crate::FileStore::open(&path).unwrap(), FixedClock);
+        let snapshot = reopened.snapshot().await.unwrap();
+        assert_eq!(snapshot.items[0].status, SendQueueStatus::Queued);
+        assert_eq!(snapshot.items[0].attempts, 1);
+        assert_eq!(
+            arkret_canonical::canonical_json_bytes(snapshot.items[0].request()).unwrap(),
+            expected
+        );
     }
 
     #[tokio::test]
