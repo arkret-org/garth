@@ -502,7 +502,7 @@ mod tests {
                 created_at: crate::test_fixtures::at(0),
                 refs: Vec::new(),
                 payload: BTreeMap::from([("seed".to_owned(), serde_json::json!(seed))]),
-                proofs: Vec::new(),
+                producer_proof: None,
             },
             DigestSuite::Sha256,
         )

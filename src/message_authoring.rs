@@ -244,7 +244,7 @@ mod tests {
             created_at: chrono::Utc.with_ymd_and_hms(2026, 9, 16, 0, 0, 0).unwrap(),
             refs: Vec::new(),
             payload: BTreeMap::from([("body".to_owned(), json!("hello"))]),
-            proofs: Vec::new(),
+            producer_proof: None,
         };
         AuthoredEvent::finalize_with_digest_suite(event, DigestSuite::Sha256).unwrap()
     }
@@ -264,7 +264,7 @@ mod tests {
             SignEventOptions::new(),
         )
         .unwrap();
-        assert_eq!(request.submission.event.proofs.len(), 1);
+        assert!(request.submission.event.producer_proof.is_some());
         let expected_id = request.submission.event.event_id.clone();
         let queued = queue_authored_message(request).unwrap();
         assert_eq!(queued.event_id, expected_id);

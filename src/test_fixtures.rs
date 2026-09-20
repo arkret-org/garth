@@ -47,7 +47,7 @@ pub fn event(seed: u8, kind: EventKind, payload: Value) -> Event {
         created_at: at(0),
         refs: Vec::new(),
         payload: serde_json::from_value(payload).unwrap(),
-        proofs: Vec::new(),
+        producer_proof: None,
     }
 }
 

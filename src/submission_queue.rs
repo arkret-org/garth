@@ -119,7 +119,7 @@ mod tests {
                 created_at: chrono::Utc.with_ymd_and_hms(2026, 9, 16, 0, 0, 0).unwrap(),
                 refs: Vec::new(),
                 payload: BTreeMap::from([("seed".to_owned(), serde_json::json!(seed))]),
-                proofs: Vec::new(),
+                producer_proof: None,
             },
             DigestSuite::Sha256,
         )
