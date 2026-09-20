@@ -5,8 +5,6 @@
 //! the caller reads those facts and asks these functions what to do, which
 //! makes the policy identical in every client rather than per host.
 
-use arkret_policy::minimal_metadata_epoch_overdue;
-
 /// Deterministic per-member jitter window (whole hours) over which a large
 /// group spreads its self-preservation commits. Each eligible committer maps to
 /// a stable slot in `[0, JITTER_SLOTS)` derived from
@@ -35,31 +33,25 @@ pub fn idle_self_update_jitter_passed(
     now.signed_duration_since(epoch_started_at) >= chrono::Duration::hours(slot as i64)
 }
 
-/// Normal-Realm self-preservation commit trigger: the epoch has observed at
+/// Self-preservation commit trigger: the epoch has observed at
 /// least this many application messages.
 pub const SELF_PRESERVATION_MAX_EPOCH_APP_MESSAGES: u64 = 1000;
-/// Normal-Realm self-preservation commit trigger: the epoch is at least this
+/// Self-preservation commit trigger: the epoch is at least this
 /// many days old.
 pub const SELF_PRESERVATION_MAX_EPOCH_AGE_DAYS: i64 = 7;
 
 /// Should a send force-advance the MLS epoch before riding the current one?
 ///
-/// For a minimal-metadata Realm the epoch lifetime is a hard ceiling, delegated
-/// to the SDK's [`minimal_metadata_epoch_overdue`], which never reports clock
-/// skew as overdue. For a normal Realm a self-update Commit is due once the
-/// current epoch observed enough application messages or lived long enough.
+/// A self-update Commit is due once the current epoch observed enough
+/// application messages or lived long enough. Clock skew does not count as age.
 /// When a commit for this scope is already in flight, a new self-preservation
 /// commit MUST NOT start: the pending commit achieves the same epoch advance.
 pub fn should_force_epoch_advance(
-    is_minimal_metadata: bool,
     epoch_started_at: chrono::DateTime<chrono::Utc>,
     now: chrono::DateTime<chrono::Utc>,
     app_messages_observed: u64,
     has_pending_commit: bool,
 ) -> bool {
-    if is_minimal_metadata {
-        return minimal_metadata_epoch_overdue(epoch_started_at, now);
-    }
     if has_pending_commit {
         return false;
     }
@@ -81,26 +73,14 @@ mod tests {
     fn a_pending_commit_suppresses_a_new_self_preservation_commit() {
         let started = at(0);
         let now = started + Duration::days(30);
-        assert!(should_force_epoch_advance(
-            false, started, now, 5_000, false
-        ));
-        assert!(!should_force_epoch_advance(
-            false, started, now, 5_000, true
-        ));
+        assert!(should_force_epoch_advance(started, now, 5_000, false));
+        assert!(!should_force_epoch_advance(started, now, 5_000, true));
     }
 
     #[test]
     fn clock_skew_never_reads_as_overdue() {
         let started = at(0);
         assert!(!should_force_epoch_advance(
-            false,
-            started,
-            started - Duration::days(1),
-            0,
-            false
-        ));
-        assert!(!should_force_epoch_advance(
-            true,
             started,
             started - Duration::days(1),
             0,
@@ -112,10 +92,26 @@ mod tests {
     fn the_message_count_trigger_is_independent_of_epoch_age() {
         let started = at(0);
         assert!(should_force_epoch_advance(
-            false,
             started,
             started + Duration::minutes(1),
             SELF_PRESERVATION_MAX_EPOCH_APP_MESSAGES,
+            false
+        ));
+    }
+
+    #[test]
+    fn retired_one_hour_profile_cap_is_not_a_generic_trigger() {
+        let started = at(0);
+        assert!(!should_force_epoch_advance(
+            started,
+            started + Duration::hours(2),
+            0,
+            false
+        ));
+        assert!(should_force_epoch_advance(
+            started,
+            started + Duration::days(SELF_PRESERVATION_MAX_EPOCH_AGE_DAYS),
+            0,
             false
         ));
     }
