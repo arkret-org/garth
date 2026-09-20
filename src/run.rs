@@ -429,7 +429,9 @@ fn fail<TP: TransportProvider>(provider: &TP, class: RunErrorClass, source: Erro
 
 #[cfg(test)]
 mod tests {
+    use std::cell::Cell;
     use std::collections::VecDeque;
+    use std::rc::Rc;
     use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
 
@@ -552,6 +554,17 @@ mod tests {
             } else {
                 Ok(())
             }
+        }
+    }
+
+    struct LocalProjector {
+        calls: Rc<Cell<usize>>,
+    }
+
+    impl ClientProjector for LocalProjector {
+        async fn project(&self, _batch: Vec<ClientEvent>) -> Result<()> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(())
         }
     }
 
@@ -690,6 +703,30 @@ mod tests {
             Some("ak:cursor:next")
         );
         assert!(provider.events().contains(&RunEvent::Checkpointed));
+    }
+
+    #[tokio::test]
+    async fn local_non_send_projector_is_checkpointed_after_projection() {
+        let store = MemoryStore::new();
+        let runner = AccountRunner::new(ImmediateExecutor, store.clone());
+        let provider = Provider::new(runner.control(), vec![batch("ak:cursor:local")]);
+        let calls = Rc::new(Cell::new(0));
+        let projector = LocalProjector {
+            calls: calls.clone(),
+        };
+
+        assert_eq!(
+            runner
+                .run(&provider, &projector, scope(), RunOptions::default())
+                .await
+                .unwrap(),
+            RunStopReason::Cancelled
+        );
+        assert_eq!(calls.get(), 1);
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ak:cursor:local")
+        );
     }
 
     #[tokio::test]

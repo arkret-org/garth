@@ -24,7 +24,7 @@ use arkret_wire::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{Error, MaybeSend, Result};
+use crate::{Error, Result};
 
 /// One Station commit with its exact stream coordinate and disclosure view.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -145,11 +145,15 @@ pub struct AccountUpdateContext {
 /// the durable cursor ONLY after it returns `Ok`. The projector's durable write
 /// therefore gates cursor advance. A `project` error stops the loop without
 /// advancing the cursor, so the unit is redelivered.
+/// The runner awaits the caller-owned projector in place and never spawns it.
+/// A caller that spawns the whole runner onto a multithreaded executor must
+/// satisfy that executor's `Send` bound at the spawn site; a local UI executor
+/// can project through `!Send` state without manufacturing thread safety.
 pub trait ClientProjector {
     fn project(
         &self,
         batch: Vec<ClientEvent>,
-    ) -> impl std::future::Future<Output = Result<()>> + MaybeSend + '_;
+    ) -> impl std::future::Future<Output = Result<()>> + '_;
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
