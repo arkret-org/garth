@@ -1,7 +1,8 @@
 //! Runtime-only next actions for Direct Conversation resolution.
 
 use arkret_models_collaboration::direct_conversation::{
-    DirectConversationCoordinates, DirectConversationResolveOutcome, DirectConversationSendBlocker,
+    DirectConversationCoordinates, DirectConversationFoundingInput,
+    DirectConversationResolveOutcome, DirectConversationSendBlocker,
 };
 
 /// Product action after resolving the pair against current authority state.
@@ -10,7 +11,7 @@ pub enum DirectConversationAction {
     /// Author the profile's creation Events and submit them through the
     /// governance authority transport.
     SubmitCreation {
-        expected_contact_revision: u64,
+        next_founding_input: DirectConversationFoundingInput,
     },
     /// Creation cannot be authored yet; surface the blockers to the holder.
     Blocked {
@@ -18,10 +19,6 @@ pub enum DirectConversationAction {
     },
     /// The founding participant has not yet authored the pair.
     AwaitFounder {
-        retry_after_ms: Option<u64>,
-    },
-    /// The current authority is materializing or committing creation.
-    AwaitAuthority {
         retry_after_ms: Option<u64>,
     },
     Existing(DirectConversationCoordinates),
@@ -36,9 +33,9 @@ pub fn direct_conversation_action(
 ) -> DirectConversationAction {
     match outcome {
         DirectConversationResolveOutcome::CreationRequired {
-            expected_contact_revision,
+            next_founding_input,
         } => DirectConversationAction::SubmitCreation {
-            expected_contact_revision: *expected_contact_revision,
+            next_founding_input: next_founding_input.clone(),
         },
         DirectConversationResolveOutcome::CreationBlocked { blockers } => {
             DirectConversationAction::Blocked {
@@ -50,12 +47,7 @@ pub fn direct_conversation_action(
                 retry_after_ms: *retry_after_ms,
             }
         }
-        DirectConversationResolveOutcome::AwaitingAuthority { retry_after_ms } => {
-            DirectConversationAction::AwaitAuthority {
-                retry_after_ms: *retry_after_ms,
-            }
-        }
-        DirectConversationResolveOutcome::ProvisionallyCommitted { coordinates, .. }
+        DirectConversationResolveOutcome::Provisional { coordinates, .. }
         | DirectConversationResolveOutcome::Found { coordinates, .. }
         | DirectConversationResolveOutcome::Suspended { coordinates, .. } => {
             DirectConversationAction::Existing(coordinates.clone())
