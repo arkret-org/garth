@@ -467,7 +467,10 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(calls.get(), 1);
-        assert_eq!(store.load(scope()).await.unwrap().as_deref(), Some("ak:cursor:local"));
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ak:cursor:local")
+        );
     }
 
     #[tokio::test]
