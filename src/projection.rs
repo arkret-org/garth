@@ -505,6 +505,19 @@ fn validate_realm_entry_bindings(realm_id: &RealmId, entry: &RealmSyncEntry) -> 
                             .to_owned(),
                     ));
                 }
+                let expected_next_position =
+                    head.stream_position.checked_add(1).ok_or_else(|| {
+                        Error::Protocol(
+                            "typed current stream head cannot advance beyond the maximum position"
+                                .to_owned(),
+                        )
+                    })?;
+                if stream.next_position != expected_next_position {
+                    return Err(Error::Protocol(
+                        "timeline window next position does not follow its typed current head"
+                            .to_owned(),
+                    ));
+                }
             }
         }
     }
@@ -754,7 +767,7 @@ mod tests {
             streams: Some(vec![RealmStreamWindow {
                 stream_ref: head.stream_ref.clone(),
                 head_commit_ref: head.commit_id.clone(),
-                next_position: 1,
+                next_position: 2,
                 limited: false,
                 window_limit: 100,
                 complete: true,
@@ -774,13 +787,58 @@ mod tests {
     }
 
     #[test]
+    fn timeline_next_position_must_follow_the_typed_current_head() {
+        let head = stream_head(7);
+        let entry = RealmSyncEntry {
+            streams: Some(vec![RealmStreamWindow {
+                stream_ref: head.stream_ref.clone(),
+                head_commit_ref: head.commit_id.clone(),
+                next_position: head.stream_position,
+                limited: false,
+                window_limit: 100,
+                complete: true,
+                preview_only: Some(true),
+                window_start_basis: None,
+                e2ee_epoch: None,
+            }]),
+            current: Some(current(vec![head])),
+            ..RealmSyncEntry::default()
+        };
+
+        assert!(realm_entry_to_client_events(&realm_id(), &entry).is_err());
+    }
+
+    #[test]
+    fn maximum_typed_current_position_cannot_wrap_a_timeline_window() {
+        let mut head = stream_head(7);
+        head.stream_position = u64::MAX;
+        let entry = RealmSyncEntry {
+            streams: Some(vec![RealmStreamWindow {
+                stream_ref: head.stream_ref.clone(),
+                head_commit_ref: head.commit_id.clone(),
+                next_position: 0,
+                limited: false,
+                window_limit: 100,
+                complete: true,
+                preview_only: Some(true),
+                window_start_basis: None,
+                e2ee_epoch: None,
+            }]),
+            current: Some(current(vec![head])),
+            ..RealmSyncEntry::default()
+        };
+
+        assert!(realm_entry_to_client_events(&realm_id(), &entry).is_err());
+    }
+
+    #[test]
     fn timeline_snapshot_generation_must_match_typed_current() {
         let head = stream_head(7);
         let entry = RealmSyncEntry {
             streams: Some(vec![RealmStreamWindow {
                 stream_ref: head.stream_ref.clone(),
                 head_commit_ref: head.commit_id.clone(),
-                next_position: 1,
+                next_position: 2,
                 limited: false,
                 window_limit: 100,
                 complete: true,
