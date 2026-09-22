@@ -18,8 +18,8 @@ use arkret_models_collaboration::sync_frames::account_subscribe::{
 };
 use arkret_models_collaboration::sync_frames::current_results::AccountCurrentResult;
 use arkret_wire::{
-    CommitStreamRef, CommittedEventRef, CommittedEventView, Event, EventKind, RealmCommit, RealmId,
-    RealmStateSnapshot,
+    CommitStreamHead, CommitStreamRef, CommittedEventRef, CommittedEventView, Event, EventKind,
+    RealmCommit, RealmId, RealmStateSnapshot,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -370,6 +370,7 @@ fn realm_entry_to_client_events(
     realm_id: &RealmId,
     entry: &RealmSyncEntry,
 ) -> Result<Vec<ClientEvent>> {
+    validate_realm_entry_bindings(realm_id, entry)?;
     let decoder = InboundDecoder::new();
     let mut batch = Vec::new();
     if let Some(current) = &entry.current {
@@ -401,6 +402,122 @@ fn realm_entry_to_client_events(
     Ok(batch)
 }
 
+/// Fail closed before a Station current/timeline projection crosses the host
+/// boundary. SDK shape validation closes each individual object; these checks
+/// bind the nested objects to the Realm map key and to one frozen set of
+/// independently advancing stream heads.
+fn validate_realm_entry_bindings(realm_id: &RealmId, entry: &RealmSyncEntry) -> Result<()> {
+    let heads_belong_to_realm = |heads: &[CommitStreamHead]| {
+        heads
+            .iter()
+            .all(|head| head.stream_ref.realm_id() == realm_id)
+    };
+
+    if let Some(current) = &entry.current
+        && (&current.realm_id != realm_id || !heads_belong_to_realm(&current.stream_heads))
+    {
+        return Err(Error::Protocol(
+            "typed current result is not bound to its Realm bucket".to_owned(),
+        ));
+    }
+
+    if let Some(baseline) = &entry.baseline {
+        if &baseline.coverage.realm_id != realm_id
+            || !heads_belong_to_realm(&baseline.coverage.stream_heads)
+            || baseline.complete != baseline.coverage.complete_for_authorized_streams
+        {
+            return Err(Error::Protocol(
+                "typed current baseline coverage is not bound to its Realm bucket".to_owned(),
+            ));
+        }
+        if let Some(current) = &entry.current
+            && !same_stream_heads(&current.stream_heads, &baseline.coverage.stream_heads)
+        {
+            return Err(Error::Protocol(
+                "typed current result and baseline cover different stream heads".to_owned(),
+            ));
+        }
+    }
+
+    if let Some(streams) = &entry.streams {
+        let frozen_heads = entry
+            .current
+            .as_ref()
+            .map(|current| &current.stream_heads)
+            .or_else(|| {
+                entry
+                    .baseline
+                    .as_ref()
+                    .map(|baseline| &baseline.coverage.stream_heads)
+            });
+        let mut snapshot_generation = None;
+        for stream in streams {
+            if stream.stream_ref.realm_id() != realm_id {
+                return Err(Error::Protocol(
+                    "timeline window is not bound to its Realm bucket".to_owned(),
+                ));
+            }
+            match (
+                stream.preview_only == Some(true),
+                &stream.window_start_basis,
+            ) {
+                (true, Some(_)) => {
+                    return Err(Error::Protocol(
+                        "preview timeline window cannot also claim a snapshot basis".to_owned(),
+                    ));
+                }
+                (false, None) => {
+                    return Err(Error::Protocol(
+                        "non-preview timeline window requires a signed snapshot basis".to_owned(),
+                    ));
+                }
+                _ => {}
+            }
+            if let Some(basis) = &stream.window_start_basis {
+                if snapshot_generation
+                    .replace(basis.governance_generation)
+                    .is_some_and(|generation| generation != basis.governance_generation)
+                {
+                    return Err(Error::Protocol(
+                        "timeline windows mix governance generations".to_owned(),
+                    ));
+                }
+                if entry.current.as_ref().is_some_and(|current| {
+                    basis.governance_generation != current.governance_generation
+                }) {
+                    return Err(Error::Protocol(
+                        "timeline snapshot basis uses another governance generation".to_owned(),
+                    ));
+                }
+            }
+            if let Some(frozen_heads) = frozen_heads {
+                let Some(head) = frozen_heads
+                    .iter()
+                    .find(|head| head.stream_ref == stream.stream_ref)
+                else {
+                    return Err(Error::Protocol(
+                        "timeline window stream is absent from typed current heads".to_owned(),
+                    ));
+                };
+                if head.commit_id != stream.head_commit_ref {
+                    return Err(Error::Protocol(
+                        "timeline window and typed current disagree on the frozen stream head"
+                            .to_owned(),
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn same_stream_heads(left: &[CommitStreamHead], right: &[CommitStreamHead]) -> bool {
+    left.len() == right.len()
+        && left
+            .iter()
+            .all(|head| right.iter().any(|candidate| candidate == head))
+}
+
 /// Fan a whole validated batch, preserving frame order.
 pub fn account_batch_to_client_events(
     batch: &AccountSubscribeBatch,
@@ -416,10 +533,16 @@ pub fn account_batch_to_client_events(
 #[cfg(test)]
 mod tests {
     use arkret_canonical::DigestSuite;
-    use arkret_models_collaboration::sync_frames::account_subscribe::AccountSubscribeRealms;
+    use arkret_models_collaboration::sync_frames::account_subscribe::{
+        AccountSubscribeRealms, RealmDetailBaseline,
+    };
+    use arkret_models_collaboration::sync_frames::account_sync::{
+        RealmStreamWindow, StreamWindowAnchorKind, StreamWindowStartBasis,
+    };
+    use arkret_models_collaboration::sync_frames::current_results::AccountCurrentCoverage;
     use arkret_wire::{
         CircleId, CommittedEventFullView, CommittedEventWithheldView, EventDisclosure,
-        EventDisclosureStatus, EventId, ScopeRef, StrandId,
+        EventDisclosureStatus, EventId, RealmSnapshotId, ScopeRef, StrandId,
     };
     use serde_json::json;
 
@@ -454,6 +577,25 @@ mod tests {
 
     fn delta(event: Event, commit: RealmCommit) -> CommittedDelta {
         CommittedDelta::from_committed_event_view(realm_id(), full_view(commit, event)).unwrap()
+    }
+
+    fn stream_head(seed: u8) -> CommitStreamHead {
+        let event = message_event();
+        let commit = commit(seed, &event, realm_stream(), 1);
+        CommitStreamHead {
+            stream_ref: commit.stream_ref,
+            stream_position: commit.stream_position,
+            commit_id: commit.commit_id,
+        }
+    }
+
+    fn current(heads: Vec<CommitStreamHead>) -> AccountCurrentResult {
+        AccountCurrentResult {
+            realm_id: realm_id(),
+            governance_generation: 7,
+            stream_heads: heads,
+            entries: Vec::new(),
+        }
     }
 
     #[test]
@@ -545,6 +687,119 @@ mod tests {
                 ))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_current_result_from_another_realm_is_refused_before_host_projection() {
+        let foreign_realm =
+            RealmId::from_event_id(&EventId::from_digest(DigestSuite::Sha256, [0x66; 32]));
+        let entry = RealmSyncEntry {
+            current: Some(AccountCurrentResult {
+                realm_id: foreign_realm,
+                governance_generation: 7,
+                stream_heads: Vec::new(),
+                entries: Vec::new(),
+            }),
+            ..RealmSyncEntry::default()
+        };
+
+        assert!(realm_entry_to_client_events(&realm_id(), &entry).is_err());
+    }
+
+    #[test]
+    fn current_and_complete_baseline_must_name_the_same_stream_heads() {
+        let entry = RealmSyncEntry {
+            current: Some(current(vec![stream_head(7)])),
+            baseline: Some(RealmDetailBaseline {
+                snapshot_cursor: "ak:cursor:current-baseline".to_owned(),
+                cut_revision: 1,
+                coverage: AccountCurrentCoverage {
+                    realm_id: realm_id(),
+                    stream_heads: vec![stream_head(8)],
+                    complete_for_authorized_streams: true,
+                },
+                complete: true,
+            }),
+            ..RealmSyncEntry::default()
+        };
+
+        assert!(realm_entry_to_client_events(&realm_id(), &entry).is_err());
+    }
+
+    #[test]
+    fn non_preview_timeline_window_requires_a_snapshot_basis() {
+        let head = stream_head(7);
+        let entry = RealmSyncEntry {
+            streams: Some(vec![RealmStreamWindow {
+                stream_ref: head.stream_ref.clone(),
+                head_commit_ref: head.commit_id,
+                next_position: 1,
+                limited: false,
+                window_limit: 100,
+                complete: true,
+                preview_only: None,
+                window_start_basis: None,
+                e2ee_epoch: None,
+            }]),
+            ..RealmSyncEntry::default()
+        };
+
+        assert!(realm_entry_to_client_events(&realm_id(), &entry).is_err());
+    }
+
+    #[test]
+    fn preview_window_and_bound_current_result_reach_the_host_together() {
+        let head = stream_head(7);
+        let entry = RealmSyncEntry {
+            streams: Some(vec![RealmStreamWindow {
+                stream_ref: head.stream_ref.clone(),
+                head_commit_ref: head.commit_id.clone(),
+                next_position: 1,
+                limited: false,
+                window_limit: 100,
+                complete: true,
+                preview_only: Some(true),
+                window_start_basis: None,
+                e2ee_epoch: None,
+            }]),
+            current: Some(current(vec![head])),
+            ..RealmSyncEntry::default()
+        };
+
+        let projected = realm_entry_to_client_events(&realm_id(), &entry).unwrap();
+        assert!(matches!(
+            projected.as_slice(),
+            [ClientEvent::RealmProjection { .. }]
+        ));
+    }
+
+    #[test]
+    fn timeline_snapshot_generation_must_match_typed_current() {
+        let head = stream_head(7);
+        let entry = RealmSyncEntry {
+            streams: Some(vec![RealmStreamWindow {
+                stream_ref: head.stream_ref.clone(),
+                head_commit_ref: head.commit_id.clone(),
+                next_position: 1,
+                limited: false,
+                window_limit: 100,
+                complete: true,
+                preview_only: None,
+                window_start_basis: Some(StreamWindowStartBasis {
+                    anchor_kind: StreamWindowAnchorKind::StreamGenesis,
+                    anchor_position: None,
+                    anchor_commit_ref: None,
+                    snapshot_ref: RealmSnapshotId::from_digest([0x77; 32]),
+                    governance_generation: 8,
+                    accepted_dependency_refs: None,
+                }),
+                e2ee_epoch: None,
+            }]),
+            current: Some(current(vec![head])),
+            ..RealmSyncEntry::default()
+        };
+
+        assert!(realm_entry_to_client_events(&realm_id(), &entry).is_err());
     }
 
     #[test]
