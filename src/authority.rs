@@ -3,6 +3,9 @@
 use std::future::Future;
 
 use arkret_http_client::{Client, ClientRequestOptions};
+use arkret_identity::{
+    RealmAuthorityFreshness, RealmAuthorityKeyDirectory, verify_realm_authority_bundle,
+};
 use arkret_models_collaboration::authority_commit::{
     SelfAuthoritySubmitOutcome, SelfAuthoritySubmitRequest,
 };
@@ -13,7 +16,7 @@ use arkret_wire::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::{MaybeSend, MaybeSendSync, Result};
+use crate::{Error, MaybeSend, MaybeSendSync, Result};
 
 /// Runtime-neutral boundary over the four current authority operations.
 pub trait AuthorityTransport: MaybeSendSync {
@@ -163,6 +166,8 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
         queued.apply_outcome(outcome)
     }
 
+    /// Fetch a shape-checked but unverified scan page. Consumers MUST pass it
+    /// through [`crate::RealmReplica::apply_verified_scan`] before projection.
     pub async fn scan(&self, request: &StreamScanRequest) -> Result<StreamScanOutcome> {
         request.validate()?;
         let outcome = self.transport.scan(request).await?;
@@ -170,6 +175,8 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
         Ok(outcome)
     }
 
+    /// Fetch a shape-checked bundle only. Use
+    /// [`Self::resolve_verified_authority`] before any authority decision.
     pub async fn resolve_authority(
         &self,
         request: &AuthorityBundleRequest,
@@ -177,6 +184,26 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
         request.validate()?;
         let bundle = self.transport.authority_bundle(request).await?;
         bundle.validate_for_request(request, chrono::Utc::now())?;
+        Ok(bundle)
+    }
+
+    /// Fetch a nonce-bound bundle and verify its complete authority chain,
+    /// current route, signatures, and caller-supplied freshness before it can
+    /// be installed in a replica or used to authenticate scan rows.
+    pub async fn resolve_verified_authority(
+        &self,
+        request: &AuthorityBundleRequest,
+        freshness: &RealmAuthorityFreshness,
+        keys: &dyn RealmAuthorityKeyDirectory,
+    ) -> Result<RealmAuthorityBundle> {
+        if freshness.expected_nonce != request.nonce {
+            return Err(Error::Protocol(
+                "authority freshness does not bind the issued request nonce".to_owned(),
+            ));
+        }
+        let bundle = self.resolve_authority(request).await?;
+        verify_realm_authority_bundle(&bundle, freshness, keys)
+            .map_err(|error| Error::Protocol(error.to_string()))?;
         Ok(bundle)
     }
 
