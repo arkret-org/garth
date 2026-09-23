@@ -10,7 +10,7 @@
 use std::collections::BTreeMap;
 
 use arkret_event_draft::{EventPayloadExt, MessageEventPayload};
-use arkret_models_collaboration::device_messages::DeviceMessageEnvelope;
+use arkret_models_collaboration::device_messages::{DeviceMessageEnvelope, RecipientDelivery};
 use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountSubscribeBatch, AccountSubscribeDeviceListChanges, AccountSubscribeFrame,
     AccountSubscribeFrameKind, AgentDraftPendingIntentContainer, NotificationDelta, RealmSyncEntry,
@@ -101,6 +101,9 @@ pub enum ClientEvent {
     Notification(NotificationDelta),
     /// An ephemeral per-device queue item; never part of a commit stream.
     ToDevice(Box<DeviceMessageEnvelope>),
+    /// Producer-signed MLS Welcome from the shared recipient queue. Hosts must
+    /// verify and durably admit it before acknowledging the account cursor.
+    MlsWelcome(Box<arkret_wire::MlsWelcomeDelivery>),
 }
 
 /// Account-subscribe batch metadata that is not emitted as a granular event.
@@ -154,6 +157,23 @@ pub trait ClientProjector {
         &self,
         batch: Vec<ClientEvent>,
     ) -> impl std::future::Future<Output = Result<()>> + '_;
+
+    /// Hosts with a transactional inbox may persist the projection and cursor
+    /// together. Return true when the checkpoint was committed atomically;
+    /// the runner then does not write it a second time.
+    fn project_checkpointed(
+        &self,
+        batch: Vec<ClientEvent>,
+        _scope: crate::CursorScope,
+        _checkpoint: crate::AccountCursorCheckpoint,
+    ) -> impl std::future::Future<Output = Result<bool>> + '_ {
+        async move {
+            if !batch.is_empty() {
+                self.project(batch).await?;
+            }
+            Ok(false)
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -354,8 +374,15 @@ pub fn account_frame_to_client_events(
         });
     }
     if let Some(to_device) = &frame.to_device {
-        for message in &to_device.messages {
-            batch.push(ClientEvent::ToDevice(Box::new(message.clone())));
+        for delivery in &to_device.deliveries {
+            match delivery {
+                RecipientDelivery::DeviceMessage { device_message } => {
+                    batch.push(ClientEvent::ToDevice(Box::new(device_message.clone())));
+                }
+                RecipientDelivery::MlsWelcome { mls_welcome } => {
+                    batch.push(ClientEvent::MlsWelcome(Box::new(mls_welcome.clone())));
+                }
+            }
         }
     }
     if let Some(notifications) = &frame.notifications {

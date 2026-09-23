@@ -5,10 +5,10 @@ pub use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountSubscribeDeviceListChanges, AccountSubscribeFrame, AccountSubscribeFrameKind,
     AccountSubscribeRealms, AgentDraftPendingIntent, AgentDraftPendingIntentChange,
     AgentDraftPendingIntentContainer, AgentDraftPendingIntentKey, AgentDraftPendingIntentRemoval,
-    AgentDraftPendingIntentTerminalRedacted, DeviceMessageContainer, EventContainer,
-    NotificationContainer, NotificationDelta, NotificationDeltaAction, RealmListRequest,
-    RealmSyncEntry, StationCasAccountDataContainer, StationCasAccountDataRemoval, StreamTraceError,
-    StreamTraceValidator, SyncFilter, SyncRequestBody,
+    AgentDraftPendingIntentTerminalRedacted, EventContainer, NotificationContainer,
+    NotificationDelta, NotificationDeltaAction, RealmListRequest, RealmSyncEntry,
+    RecipientDeliveryContainer, StationCasAccountDataContainer, StationCasAccountDataRemoval,
+    StreamTraceError, StreamTraceValidator, SyncFilter, SyncRequestBody,
 };
 pub use arkret_models_collaboration::sync_frames::account_sync::RealmStreamWindow;
 pub use arkret_models_collaboration::sync_frames::demand_sync::{

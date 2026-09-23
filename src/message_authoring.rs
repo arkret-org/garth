@@ -9,7 +9,7 @@ pub use arkret_models_collaboration::message_authoring::{
     MessagePrepareOutcome, MessagePrepareRequestBody, MessageSubmitRequestBody,
 };
 use arkret_signatures::{EventSigner, SignEventOptions, sign_event};
-use arkret_wire::{AuthoredEvent, AuthoritySubmitRequest, EventCommitSubmission, EventKind};
+use arkret_wire::{AuthoredEvent, AuthoritySubmitRequest, EventAdmissionSubmission, EventKind};
 
 use crate::{Error, QueuedSubmission, Result};
 
@@ -39,7 +39,7 @@ pub fn author_message<S: EventSigner + ?Sized>(
     }
     sign_event(&mut event, signer, options).map_err(|error| Error::Protocol(error.to_string()))?;
     let request = MessageSubmitRequestBody {
-        submission: EventCommitSubmission::new(event.into_event()),
+        submission: EventAdmissionSubmission::new(event.into_event()),
     };
     request.validate()?;
     request.submission.event.validate_for_submit_structural()?;

@@ -92,7 +92,7 @@ impl DeliveryId {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct PendingDelivery<T> {
     pub id: DeliveryId,
     pub scope: CursorScope,
@@ -262,6 +262,8 @@ struct StoreState {
     committed_events: VecDeque<EventId>,
     stamp_floors: BTreeMap<crate::StampScope, crate::StampFloor>,
     outbound: crate::outbound::SendQueueSnapshot,
+    inbox_next_id: u64,
+    inbox: BTreeMap<DeliveryId, PendingDelivery<Vec<crate::ClientEvent>>>,
 }
 
 /// JSON objects require string keys. Persist typed map keys as sorted entry
@@ -278,6 +280,14 @@ struct StoredState {
     stamp_floors: Vec<(crate::StampScope, crate::StampFloor)>,
     #[serde(default)]
     outbound: crate::outbound::SendQueueSnapshot,
+    #[serde(default = "initial_inbox_next_id")]
+    inbox_next_id: u64,
+    #[serde(default)]
+    inbox: Vec<PendingDelivery<Vec<crate::ClientEvent>>>,
+}
+
+const fn initial_inbox_next_id() -> u64 {
+    1
 }
 
 impl Serialize for StoreState {
@@ -303,6 +313,8 @@ impl Serialize for StoreState {
                 .map(|(scope, floor)| (scope.clone(), *floor))
                 .collect(),
             outbound: self.outbound.clone(),
+            inbox_next_id: self.inbox_next_id.max(1),
+            inbox: self.inbox.values().cloned().collect(),
         }
         .serialize(serializer)
     }
@@ -320,6 +332,12 @@ impl<'de> Deserialize<'de> for StoreState {
             committed_events: stored.committed_events,
             stamp_floors: stored.stamp_floors.into_iter().collect(),
             outbound: stored.outbound,
+            inbox_next_id: stored.inbox_next_id.max(1),
+            inbox: stored
+                .inbox
+                .into_iter()
+                .map(|item| (item.id, item))
+                .collect(),
         })
     }
 }

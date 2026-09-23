@@ -21,6 +21,7 @@ pub mod message_authoring;
 pub mod mls;
 pub mod notification_projection;
 pub mod outbound;
+pub mod presence;
 pub mod projection;
 pub mod replica;
 pub mod run;
@@ -60,7 +61,7 @@ pub use arkret_retry::{RetryPolicy, RetrySchedule};
 pub use arkret_wire::{
     AuthorityBundleRequest, AuthorityHandoffRequest, AuthoritySubmitOutcome,
     AuthoritySubmitRequest, CommitStreamHead, CommitStreamRef, CommittedEventFullView,
-    CommittedEventRef, CommittedEventView, CommittedEventWithheldView, EventCommitSubmission,
+    CommittedEventRef, CommittedEventView, CommittedEventWithheldView, EventAdmissionSubmission,
     RealmAuthorityBundle, RealmAuthorityHandoff, RealmCommit, RealmStateSnapshot,
     StreamScanOutcome, StreamScanRequest,
 };

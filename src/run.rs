@@ -302,21 +302,20 @@ where
                     }
                     let events = account_batch_to_client_events(&batch, initial_catchup)
                         .map_err(|error| fail(provider, RunErrorClass::ProtocolViolation, error))?;
-                    if !events.is_empty() {
-                        projector.project(events).await.map_err(|error| {
-                            fail(provider, RunErrorClass::ProjectorFailure, error)
-                        })?;
-                    }
-                    self.cursors
-                        .save_account_checkpoint(
-                            scope.clone(),
-                            AccountCursorCheckpoint {
-                                cursor: batch.cursor.clone(),
-                                station_cas: next_station_cas.clone(),
-                            },
-                        )
+                    let checkpoint = AccountCursorCheckpoint {
+                        cursor: batch.cursor.clone(),
+                        station_cas: next_station_cas.clone(),
+                    };
+                    let checkpointed = projector
+                        .project_checkpointed(events, scope.clone(), checkpoint.clone())
                         .await
-                        .map_err(|error| fail(provider, RunErrorClass::StoreFailure, error))?;
+                        .map_err(|error| fail(provider, RunErrorClass::ProjectorFailure, error))?;
+                    if !checkpointed {
+                        self.cursors
+                            .save_account_checkpoint(scope.clone(), checkpoint)
+                            .await
+                            .map_err(|error| fail(provider, RunErrorClass::StoreFailure, error))?;
+                    }
                     provider.observe(RunEvent::Checkpointed);
                     station_cas = next_station_cas;
                     after = Some(batch.cursor);

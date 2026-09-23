@@ -440,8 +440,12 @@ mod tests {
                 AgentSessionGrantRefreshRequest {
                     grant_jwt: "grant-1".to_owned(),
                     audience_id: Some(audience),
-                    device_id: DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001")
+                    principal_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example")
                         .unwrap(),
+                    agent_key_authorization_ref: arkret_wire::EventId::from_digest(
+                        arkret_canonical::DigestSuite::Sha256,
+                        [2; 32],
+                    ),
                     agent_session_refresh_proof: proof,
                 },
             )),

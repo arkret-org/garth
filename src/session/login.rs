@@ -3,7 +3,7 @@ use arkret_models_collaboration::agent_scope::AgentRequestedScopeDisclosure;
 use arkret_models_collaboration::session_grants::{
     SessionGrantAgentScopeRequest, SessionGrantDpopBindingProof, SessionGrantRequestBody,
 };
-use arkret_wire::{DeviceId, DidCoreId, DidUrl, EventId};
+use arkret_wire::{DidCoreId, DidUrl, EventId};
 use chrono::{DateTime, Utc};
 
 use crate::Result;
@@ -11,7 +11,6 @@ use crate::Result;
 #[derive(Clone, Debug)]
 pub struct AgentKeyProofLogin {
     pub principal_id: DidCoreId,
-    pub device_id: DeviceId,
     pub requested_scope: Vec<String>,
     pub agent_key_authorization_ref: EventId,
     pub agent_scope_request: SessionGrantAgentScopeRequest,
@@ -29,7 +28,6 @@ impl AgentKeyProofLogin {
     pub fn into_session_grant_request(self) -> Result<SessionGrantRequestBody> {
         Ok(agent_key_proof_session_grant_request(
             self.principal_id,
-            self.device_id,
             self.requested_scope,
             self.agent_key_authorization_ref,
             self.agent_scope_request,
@@ -68,10 +66,6 @@ mod tests {
         DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap()
     }
 
-    fn device_id() -> DeviceId {
-        DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap()
-    }
-
     fn expires_at() -> DateTime<Utc> {
         "2026-07-08T10:05:00.000Z".parse().unwrap()
     }
@@ -84,7 +78,6 @@ mod tests {
     fn agent_key_proof_login_builds_bound_request() {
         let request = LoginKind::AgentKeyProof(AgentKeyProofLogin {
             principal_id: principal_id(),
-            device_id: device_id(),
             requested_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             agent_key_authorization_ref: agent_key_authorization_ref(),
             agent_scope_request: SessionGrantAgentScopeRequest {
@@ -116,7 +109,6 @@ mod tests {
             request.agent_key_authorization_ref,
             agent_key_authorization_ref()
         );
-        assert_eq!(request.device_id, device_id());
         assert_eq!(request.dpop_binding_proof.proof_jwt, "dpop-proof");
         assert_eq!(request.proof.signature, "agent-signature");
         assert_eq!(

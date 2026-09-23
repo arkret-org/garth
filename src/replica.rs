@@ -6,9 +6,9 @@ use arkret_identity::{
     RealmAuthorityFreshness, RealmAuthorityKeyDirectory, verify_realm_authority_bundle,
 };
 use arkret_wire::{
-    AuthorityBundleRequest, CommitStreamHead, CommitStreamRef, CommittedEventView, ReadableFloor,
-    ReadableFloorReason, RealmAuthorityBundle, RealmId, RealmStateSnapshot, StreamScanDirection,
-    StreamScanOutcome, StreamScanRequest,
+    AuthorityBundleRequest, CommitStreamHead, CommitStreamRef, CommittedEventView,
+    RealmAuthorityBundle, RealmId, RealmStateSnapshot, StreamScanDirection, StreamScanOutcome,
+    StreamScanRequest,
 };
 
 use crate::{Error, Result};
@@ -291,6 +291,7 @@ mod tests {
         RealmAuthorityCurrentAssertion, RealmCommit, RealmCommitAuthorityRef, ScopeRef,
         project_did_to_core_id,
     };
+    use arkret_wire::{ReadableFloor, ReadableFloorReason};
     use chrono::{Duration, Utc};
     use ed25519_dalek::SigningKey;
 
