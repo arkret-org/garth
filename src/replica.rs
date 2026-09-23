@@ -287,11 +287,10 @@ mod tests {
     use arkret_signatures::PublicKeyMaterial;
     use arkret_signatures::detached_object::sign_detached_object;
     use arkret_wire::{
-        CommittedEventFullView, DetachedSignatureContext, Did, DidUrl, EventKind,
-        RealmAuthorityCurrentAssertion, RealmCommit, RealmCommitAuthorityRef, ScopeRef,
-        project_did_to_core_id,
+        CommittedEventFullView, DetachedSignatureContext, Did, DidUrl, EventKind, ReadableFloor,
+        ReadableFloorReason, RealmAuthorityCurrentAssertion, RealmCommit, RealmCommitAuthorityRef,
+        ScopeRef, project_did_to_core_id,
     };
-    use arkret_wire::{ReadableFloor, ReadableFloorReason};
     use chrono::{Duration, Utc};
     use ed25519_dalek::SigningKey;
 
