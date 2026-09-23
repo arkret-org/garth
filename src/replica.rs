@@ -6,8 +6,9 @@ use arkret_identity::{
     RealmAuthorityFreshness, RealmAuthorityKeyDirectory, verify_realm_authority_bundle,
 };
 use arkret_wire::{
-    AuthorityBundleRequest, CommitStreamHead, CommitStreamRef, CommittedEventView,
-    RealmAuthorityBundle, RealmId, RealmStateSnapshot, StreamScanOutcome, StreamScanRequest,
+    AuthorityBundleRequest, CommitStreamHead, CommitStreamRef, CommittedEventView, ReadableFloor,
+    ReadableFloorReason, RealmAuthorityBundle, RealmId, RealmStateSnapshot, StreamScanDirection,
+    StreamScanOutcome, StreamScanRequest,
 };
 
 use crate::{Error, Result};
@@ -130,9 +131,14 @@ impl RealmReplica {
                 "stream scan belongs to another Realm".to_owned(),
             ));
         }
+        let StreamScanDirection::After(after_position) = request.direction else {
+            return Err(Error::Protocol(
+                "replica tail staging requires a forward scan".to_owned(),
+            ));
+        };
         let replica = self.streams.entry(request.stream_ref.clone()).or_default();
         if let Some(existing) = &replica.head
-            && request.after_position != Some(existing.stream_position)
+            && after_position != Some(existing.stream_position)
         {
             return Err(Error::Protocol(
                 "stream tail must resume exactly after the installed head".to_owned(),
@@ -191,11 +197,16 @@ impl RealmReplica {
                 }
             }
         }
+        let StreamScanDirection::After(after_position) = request.direction else {
+            return Err(Error::Protocol(
+                "verified replica tail requires a forward scan".to_owned(),
+            ));
+        };
         let existing = self
             .verified_streams
             .get(&request.stream_ref)
             .and_then(|stream| stream.head.as_ref());
-        match (existing, request.after_position) {
+        match (existing, after_position) {
             (Some(head), Some(position)) if head.stream_position == position => {
                 if let Some(first) = outcome.committed_events.first()
                     && first.commit().previous_commit_ref.as_ref() != Some(&head.commit_id)
@@ -299,17 +310,23 @@ mod tests {
             }),
         );
         let commit = crate::test_fixtures::commit(21, &event, stream_ref.clone(), 0);
+        let floor_commit_id = commit.commit_id.clone();
         let outcome = StreamScanOutcome {
             committed_events: vec![CommittedEventView::Full(CommittedEventFullView {
                 commit,
                 event,
             })],
+            readable_floor: Some(ReadableFloor {
+                oldest_position: 0,
+                floor_commit_id,
+                floor_reason: ReadableFloorReason::StreamStart,
+            }),
             truncated: false,
         };
         let request = StreamScanRequest {
             realm_id: realm_id.clone(),
             stream_ref,
-            after_position: None,
+            direction: StreamScanDirection::After(None),
             limit: 1,
         };
         let freshness = RealmAuthorityFreshness::new(
@@ -442,9 +459,10 @@ mod tests {
         let request = StreamScanRequest {
             realm_id,
             stream_ref: stream_ref.clone(),
-            after_position: None,
+            direction: StreamScanDirection::After(None),
             limit: 2,
         };
+        let floor_commit_id = genesis_commit.commit_id.clone();
         let outcome = StreamScanOutcome {
             committed_events: vec![
                 CommittedEventView::Full(CommittedEventFullView {
@@ -456,6 +474,11 @@ mod tests {
                     event: ordinary,
                 }),
             ],
+            readable_floor: Some(ReadableFloor {
+                oldest_position: 0,
+                floor_commit_id,
+                floor_reason: ReadableFloorReason::StreamStart,
+            }),
             truncated: false,
         };
         let mut forged = outcome.clone();
