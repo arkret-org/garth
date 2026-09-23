@@ -59,6 +59,9 @@ pub enum MessageAuthoringRecovery {
     /// The frozen MLS binding is stale: encrypt the body again for the current
     /// epoch before authoring a new Event.
     ReEncrypt,
+    /// Stop this attempt until a covering MLS Commit is accepted, then
+    /// encrypt a new body against the resulting current epoch.
+    WaitForEpochCommit,
     /// The submit left the device but its outcome is unknown. Replay the exact
     /// same bytes so the Station's idempotency record answers instead of
     /// authoring a second message.
@@ -89,6 +92,9 @@ pub enum MessageAuthoringFailure {
     /// The frozen MLS governance binding no longer matches the installed group
     /// state, so the body has to be encrypted again.
     EncryptionContextChanged { detail: String },
+    /// A pending MLS membership or key-access change needs a covering Commit
+    /// before this scope can accept another encrypted application Event.
+    EpochCommitPending { detail: String },
     /// This request identity already carries different bytes.
     DuplicateConflict { detail: String },
     /// Transport failed after the request left, so the commit outcome for this
@@ -105,6 +111,7 @@ impl MessageAuthoringFailure {
                 MessageAuthoringRecovery::RetrySameRequest
             }
             Self::EncryptionContextChanged { .. } => MessageAuthoringRecovery::ReEncrypt,
+            Self::EpochCommitPending { .. } => MessageAuthoringRecovery::WaitForEpochCommit,
             Self::SubmissionOutcomeUnknown { .. } => {
                 MessageAuthoringRecovery::ReplayExactSubmission
             }
@@ -118,7 +125,9 @@ impl MessageAuthoringFailure {
     pub fn is_not_ready(&self) -> bool {
         matches!(
             self,
-            Self::AuthorizationPending { .. } | Self::DependencyUnavailable { .. }
+            Self::AuthorizationPending { .. }
+                | Self::DependencyUnavailable { .. }
+                | Self::EpochCommitPending { .. }
         )
     }
 
@@ -128,6 +137,7 @@ impl MessageAuthoringFailure {
             | Self::DependencyUnavailable { detail }
             | Self::PlaintextRefused { detail }
             | Self::EncryptionContextChanged { detail }
+            | Self::EpochCommitPending { detail }
             | Self::DuplicateConflict { detail }
             | Self::SubmissionOutcomeUnknown { detail }
             | Self::Refused { detail, .. } => detail,
@@ -153,6 +163,10 @@ impl std::fmt::Display for MessageAuthoringFailure {
             Self::EncryptionContextChanged { detail } => write!(
                 formatter,
                 "the frozen encryption context no longer applies: {detail}"
+            ),
+            Self::EpochCommitPending { detail } => write!(
+                formatter,
+                "this scope needs a covering MLS Commit before sending: {detail}"
             ),
             Self::DuplicateConflict { detail } => write!(
                 formatter,
@@ -204,9 +218,10 @@ fn classify_authoring_reason_code(
 ) -> MessageAuthoringFailure {
     use arkret_wire::ReasonCode;
     match reason {
-        ReasonCode::MLS_GOVERNANCE_BINDING_STALE => {
+        arkret_wire::ErrorCode::EPOCH_MISMATCH => {
             MessageAuthoringFailure::EncryptionContextChanged { detail }
         }
+        ReasonCode::EPOCH_UPDATE_REQUIRED => MessageAuthoringFailure::EpochCommitPending { detail },
         ReasonCode::DUPLICATE_CONFLICT => MessageAuthoringFailure::DuplicateConflict { detail },
         ReasonCode::RATE_LIMITED
         | ReasonCode::EXTERNAL_RATE_LIMITED
@@ -312,7 +327,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stale_governance_binding_asks_for_re_encryption() {
+    fn a_key_access_binding_refusal_does_not_reencrypt() {
         let failure = classify_message_authoring_error(&Error::Api {
             status: 409,
             error: Box::new(problem_with_reason(
@@ -320,8 +335,31 @@ mod tests {
                 arkret_wire::ReasonCode::MLS_GOVERNANCE_BINDING_STALE,
             )),
         });
+        assert_eq!(failure.recovery(), MessageAuthoringRecovery::FailClosed);
+    }
+
+    #[test]
+    fn a_stale_epoch_asks_for_re_encryption() {
+        let failure = classify_message_authoring_error(&Error::Api {
+            status: 409,
+            error: Box::new(arkret_wire::Problem::new(
+                "epoch_mismatch",
+                409,
+                "stale epoch",
+            )),
+        });
         assert_eq!(failure.recovery(), MessageAuthoringRecovery::ReEncrypt);
         assert!(!failure.is_not_ready());
+    }
+
+    #[test]
+    fn an_uncovered_epoch_waits_for_commit_without_retrying_frozen_bytes() {
+        let failure = classify_authority_rejection(arkret_wire::ReasonCode::EPOCH_UPDATE_REQUIRED);
+        assert_eq!(
+            failure.recovery(),
+            MessageAuthoringRecovery::WaitForEpochCommit
+        );
+        assert!(failure.is_not_ready());
     }
 
     #[test]
