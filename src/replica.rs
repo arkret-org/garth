@@ -273,8 +273,15 @@ fn validate_snapshot(snapshot: &RealmStateSnapshot, realm_id: &RealmId) -> Resul
 #[cfg(test)]
 mod tests {
     use arkret_identity::{RealmAuthorityFreshness, RealmAuthorityKeyMap};
-    use arkret_wire::{CommittedEventFullView, EventKind};
-    use chrono::Duration;
+    use arkret_signatures::PublicKeyMaterial;
+    use arkret_signatures::detached_object::sign_detached_object;
+    use arkret_wire::{
+        CommittedEventFullView, DetachedSignatureContext, Did, DidUrl, EventKind,
+        RealmAuthorityCurrentAssertion, RealmCommit, RealmCommitAuthorityRef, ScopeRef,
+        project_did_to_core_id,
+    };
+    use chrono::{Duration, Utc};
+    use ed25519_dalek::SigningKey;
 
     use super::*;
 
@@ -320,5 +327,159 @@ mod tests {
                 .is_err()
         );
         assert_eq!(replica, before);
+    }
+
+    #[test]
+    fn verified_scan_rejects_bad_late_commit_atomically_then_accepts_signed_page() {
+        let route = crate::service_route_material::test_fixture::current_web_route_fixture(
+            "station-a.example",
+            "station",
+            0xA1,
+        );
+        let now = Utc::now();
+        let realm_id = crate::test_fixtures::realm_id();
+        let stream_ref = crate::test_fixtures::realm_stream();
+        let method = DidUrl::new("did:web:station-a.example#signing-1").unwrap();
+        let station =
+            project_did_to_core_id(&Did::new("did:web:station-a.example").unwrap()).unwrap();
+        let keys = RealmAuthorityKeyMap::new().with_key(
+            &method,
+            PublicKeyMaterial::Ed25519Raw {
+                bytes: route.signing_key.verifying_key().to_bytes().to_vec(),
+            },
+        );
+        let scope = ScopeRef::Realm {
+            realm_id: realm_id.clone(),
+        };
+        let genesis = arkret_wire::test_support::raw_event_at(
+            EventKind::RealmCreate.as_str(),
+            scope.clone(),
+            arkret_wire::DidCoreId::new("ak:did_core:web:founder.example").unwrap(),
+            station.clone(),
+            serde_json::json!({}),
+            now - Duration::seconds(2),
+        )
+        .unwrap();
+        let ordinary = arkret_wire::test_support::raw_event_at(
+            EventKind::MessageCreate.as_str(),
+            scope,
+            arkret_wire::DidCoreId::new("ak:did_core:web:founder.example").unwrap(),
+            station.clone(),
+            serde_json::json!({}),
+            now - Duration::seconds(1),
+        )
+        .unwrap();
+        let seal = |mut commit: RealmCommit, key: &SigningKey| {
+            let unsigned =
+                arkret_canonical::canonical::unsigned_value(&commit, &["signature"]).unwrap();
+            commit.signature = sign_detached_object(
+                &unsigned,
+                DetachedSignatureContext::RealmCommit,
+                method.clone(),
+                now,
+                key,
+            )
+            .unwrap();
+            commit
+        };
+        let mut genesis_commit = crate::test_fixtures::commit(1, &genesis, stream_ref.clone(), 0);
+        genesis_commit.authority_ref =
+            RealmCommitAuthorityRef::GenesisOrChangeEvent(genesis.event_id.clone());
+        let genesis_commit = seal(genesis_commit, &route.signing_key);
+        let mut ordinary_commit = crate::test_fixtures::commit(2, &ordinary, stream_ref.clone(), 1);
+        ordinary_commit.authority_ref =
+            RealmCommitAuthorityRef::GenesisOrChangeEvent(genesis.event_id.clone());
+        let ordinary_commit = seal(ordinary_commit, &route.signing_key);
+        let head = CommitStreamHead {
+            stream_ref: stream_ref.clone(),
+            stream_position: 1,
+            commit_id: ordinary_commit.commit_id.clone(),
+        };
+        let nonce = arkret_wire::Base64UrlString::new("BBBBBBBBBBBBBBBBBBBBBB").unwrap();
+        let mut assertion = RealmAuthorityCurrentAssertion {
+            realm_id: realm_id.clone(),
+            current_generation: 0,
+            current_service_id: station.clone(),
+            last_handoff_ref: None,
+            realm_stream_head: head.clone(),
+            nonce: nonce.clone(),
+            expires_at: now + Duration::minutes(5),
+            signature: crate::test_fixtures::detached_signature(
+                DetachedSignatureContext::RealmAuthorityCurrentAssertion,
+            ),
+        };
+        let unsigned =
+            arkret_canonical::canonical::unsigned_value(&assertion, &["signature"]).unwrap();
+        assertion.signature = sign_detached_object(
+            &unsigned,
+            DetachedSignatureContext::RealmAuthorityCurrentAssertion,
+            method.clone(),
+            now,
+            &route.signing_key,
+        )
+        .unwrap();
+        let bundle = RealmAuthorityBundle {
+            realm_id: realm_id.clone(),
+            genesis_event: genesis.clone(),
+            genesis_commit: genesis_commit.clone(),
+            authority_transitions: vec![],
+            current_generation: 0,
+            current_service_id: station,
+            current_route_record: serde_json::to_value(&route.resolution).unwrap(),
+            realm_stream_head: head,
+            bundle_issued_at: now,
+            current_assertion: assertion,
+        };
+        let authority_request = AuthorityBundleRequest {
+            realm_id: realm_id.clone(),
+            nonce: nonce.clone(),
+        };
+        let freshness = RealmAuthorityFreshness::new(now, nonce, Duration::minutes(5)).unwrap();
+        let mut replica = RealmReplica::new(realm_id.clone());
+        replica
+            .install_verified_authority(&authority_request, bundle, &freshness, &keys)
+            .unwrap();
+        let request = StreamScanRequest {
+            realm_id,
+            stream_ref: stream_ref.clone(),
+            after_position: None,
+            limit: 2,
+        };
+        let outcome = StreamScanOutcome {
+            committed_events: vec![
+                CommittedEventView::Full(CommittedEventFullView {
+                    commit: genesis_commit,
+                    event: genesis,
+                }),
+                CommittedEventView::Full(CommittedEventFullView {
+                    commit: ordinary_commit,
+                    event: ordinary,
+                }),
+            ],
+            truncated: false,
+        };
+        let mut forged = outcome.clone();
+        let CommittedEventView::Full(second) = &mut forged.committed_events[1] else {
+            unreachable!()
+        };
+        second.commit.signature.signed_digest =
+            arkret_wire::Hash::new(format!("sha256:{}", "f".repeat(64))).unwrap();
+        let before = replica.clone();
+        assert!(
+            replica
+                .apply_verified_scan(&request, forged, &freshness, &keys)
+                .is_err()
+        );
+        assert_eq!(replica, before);
+        assert!(replica.verified_head(&stream_ref).is_none());
+
+        let accepted = replica
+            .apply_verified_scan(&request, outcome, &freshness, &keys)
+            .unwrap();
+        assert_eq!(accepted.rows().len(), 2);
+        assert_eq!(
+            replica.verified_head(&stream_ref).unwrap().stream_position,
+            1
+        );
     }
 }
