@@ -9,7 +9,8 @@ use arkret_wire::EventId;
 
 use super::{
     AccountCursorCheckpoint, CursorScope, CursorStore, DEFAULT_SEEN_EVENTS_CAPACITY,
-    EventCacheStore, OpaqueCursor, StoreState,
+    DeliveryErrorClass, DeliveryId, DurableInboxStore, EventCacheStore, MAX_DELIVERY_ERROR_BYTES,
+    MAX_PENDING_DELIVERIES, MAX_PENDING_READ, OpaqueCursor, PendingDelivery, StoreState,
 };
 use crate::{Error, Result};
 
@@ -60,6 +61,56 @@ impl FileStore {
         Ok(value)
     }
 
+    /// Persist one projected account batch and its cursor checkpoint under one
+    /// file lock and one atomic replace. A replay of the same cursor does not
+    /// append a second delivery.
+    pub fn commit_account_batch(
+        &self,
+        scope: CursorScope,
+        checkpoint: AccountCursorCheckpoint,
+        events: Vec<crate::ClientEvent>,
+    ) -> Result<()> {
+        self.mutate(|state| {
+            if state.account_checkpoints.get(&scope) == Some(&checkpoint) {
+                return Ok(((), false));
+            }
+            if !events.is_empty() {
+                if state.inbox.len() >= MAX_PENDING_DELIVERIES {
+                    return Err(Error::Storage("durable account inbox is full".to_owned()));
+                }
+                let id = next_inbox_id(state)?;
+                state.inbox.insert(
+                    id,
+                    PendingDelivery {
+                        id,
+                        scope: scope.clone(),
+                        cursor: Some(checkpoint.cursor.clone()),
+                        payload: events,
+                        attempts: 0,
+                        next_attempt_at_ms: None,
+                        error_class: None,
+                        last_error: None,
+                    },
+                );
+            }
+            state
+                .cursors
+                .insert(scope.clone(), checkpoint.cursor.clone());
+            state.account_checkpoints.insert(scope, checkpoint);
+            Ok(((), true))
+        })
+    }
+
+    pub fn has_active_outbound(&self) -> Result<bool> {
+        self.read(|state| {
+            state
+                .outbound
+                .items
+                .iter()
+                .any(|item| !item.status.is_terminal())
+        })
+    }
+
     /// Advance and durably commit an HLC floor under the cross-process lock
     /// for synchronous local authoring paths.
     pub fn advance_floor_sync(
@@ -77,6 +128,86 @@ impl FileStore {
             let changed = state.stamp_floors.get(&scope).copied() != Some(next);
             state.stamp_floors.insert(scope, next);
             Ok((next, changed))
+        })
+    }
+}
+
+fn next_inbox_id(state: &mut StoreState) -> Result<DeliveryId> {
+    let next = state.inbox_next_id.max(1);
+    let id = DeliveryId::from_stored_u64(next)?;
+    state.inbox_next_id = next
+        .checked_add(1)
+        .ok_or_else(|| Error::Storage("durable account inbox id overflow".to_owned()))?;
+    Ok(id)
+}
+
+impl DurableInboxStore<Vec<crate::ClientEvent>> for FileStore {
+    async fn commit(
+        &self,
+        scope: CursorScope,
+        cursor: Option<OpaqueCursor>,
+        payload: Vec<crate::ClientEvent>,
+    ) -> Result<DeliveryId> {
+        self.mutate(|state| {
+            if state.inbox.len() >= MAX_PENDING_DELIVERIES {
+                return Err(Error::Storage("durable account inbox is full".to_owned()));
+            }
+            let id = next_inbox_id(state)?;
+            if let Some(ref value) = cursor {
+                state.cursors.insert(scope.clone(), value.clone());
+            }
+            state.inbox.insert(
+                id,
+                PendingDelivery {
+                    id,
+                    scope,
+                    cursor,
+                    payload,
+                    attempts: 0,
+                    next_attempt_at_ms: None,
+                    error_class: None,
+                    last_error: None,
+                },
+            );
+            Ok((id, true))
+        })
+    }
+
+    async fn pending(&self, limit: usize) -> Result<Vec<PendingDelivery<Vec<crate::ClientEvent>>>> {
+        self.read(|state| {
+            state
+                .inbox
+                .values()
+                .take(limit.clamp(1, MAX_PENDING_READ))
+                .cloned()
+                .collect()
+        })
+    }
+
+    async fn ack(&self, id: DeliveryId) -> Result<bool> {
+        self.mutate(|state| {
+            let removed = state.inbox.remove(&id).is_some();
+            Ok((removed, removed))
+        })
+    }
+
+    async fn retry(
+        &self,
+        id: DeliveryId,
+        next_attempt_at_ms: Option<i64>,
+        error_class: DeliveryErrorClass,
+        mut error: String,
+    ) -> Result<bool> {
+        error.truncate(error.floor_char_boundary(MAX_DELIVERY_ERROR_BYTES));
+        self.mutate(|state| {
+            let Some(delivery) = state.inbox.get_mut(&id) else {
+                return Ok((false, false));
+            };
+            delivery.attempts = delivery.attempts.saturating_add(1);
+            delivery.next_attempt_at_ms = next_attempt_at_ms;
+            delivery.error_class = Some(error_class);
+            delivery.last_error = Some(error);
+            Ok((true, true))
         })
     }
 }
@@ -236,14 +367,82 @@ fn persist(path: &Path, state: &StoreState) -> Result<()> {
             .map_err(|error| Error::Storage(format!("create {}: {error}", parent.display())))?;
     }
     let bytes = serde_json::to_vec(state)?;
+    let temporary_path = path.with_extension("garth-tmp");
     let mut file = OpenOptions::new()
         .create(true)
         .write(true)
         .truncate(true)
-        .open(path)
-        .map_err(|error| Error::Storage(format!("open {}: {error}", path.display())))?;
+        .open(&temporary_path)
+        .map_err(|error| Error::Storage(format!("open {}: {error}", temporary_path.display())))?;
     file.write_all(&bytes)
         .map_err(|error| Error::Storage(format!("write {}: {error}", path.display())))?;
     file.sync_all()
-        .map_err(|error| Error::Storage(format!("sync {}: {error}", path.display())))
+        .map_err(|error| Error::Storage(format!("sync {}: {error}", temporary_path.display())))?;
+    drop(file);
+    std::fs::rename(&temporary_path, path).map_err(|error| {
+        Error::Storage(format!(
+            "replace {} from {}: {error}",
+            path.display(),
+            temporary_path.display()
+        ))
+    })
+}
+
+#[cfg(test)]
+mod inbox_tests {
+    use arkret_wire::{AccountId, ActorId, DeviceId, DidCoreId};
+
+    use super::*;
+
+    fn scope() -> CursorScope {
+        let principal = DidCoreId::new("ak:did_core:web:agent.example").unwrap();
+        let station = DidCoreId::new("ak:did_core:web:station.example").unwrap();
+        CursorScope::Account {
+            service_id: Some(station.clone()),
+            actor_id: ActorId::account(AccountId::new(principal, station)),
+            device_id: DeviceId::new("ak:device:01964139-0000-7000-8000-000000000001").unwrap(),
+        }
+    }
+
+    #[tokio::test]
+    async fn account_batch_and_cursor_survive_reopen_without_replay_duplication() {
+        let home = tempfile::tempdir().unwrap();
+        let path = home.path().join("account.json");
+        let checkpoint = AccountCursorCheckpoint {
+            cursor: "cursor-one".to_owned(),
+            station_cas: crate::StationCasProjection::default(),
+        };
+        let batch = vec![crate::ClientEvent::AccountUpdates(Default::default())];
+        FileStore::open(&path)
+            .unwrap()
+            .commit_account_batch(scope(), checkpoint.clone(), batch)
+            .unwrap();
+
+        let reopened = FileStore::open(&path).unwrap();
+        assert_eq!(
+            reopened.load_account_checkpoint(scope()).await.unwrap(),
+            Some(checkpoint.clone())
+        );
+        let pending = reopened.pending(32).await.unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].payload.len(), 1);
+
+        reopened
+            .commit_account_batch(
+                scope(),
+                checkpoint,
+                vec![crate::ClientEvent::AccountUpdates(Default::default())],
+            )
+            .unwrap();
+        assert_eq!(reopened.pending(32).await.unwrap().len(), 1);
+        assert!(reopened.ack(pending[0].id).await.unwrap());
+        assert!(
+            FileStore::open(&path)
+                .unwrap()
+                .pending(32)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
 }

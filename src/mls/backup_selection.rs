@@ -93,7 +93,7 @@ pub fn recovery_setup_prompt_required(account_recovery_configured: Option<bool>)
 #[cfg(test)]
 mod tests {
     use arkret_models_crypto::{BackupActiveSeriesPointer, BackupKind, KeyBackupSummaryEncryption};
-    use arkret_wire::{AccountId, BackupId, DidCoreId, Hash};
+    use arkret_wire::{AccountId, BackupId, DidCoreId, Hash, RealmCommitId};
 
     use super::*;
     use crate::test_fixtures::{actor_id, at, device_id, realm_id};
@@ -141,7 +141,7 @@ mod tests {
                     DidCoreId::new("ak:did_core:web:station.example").unwrap(),
                 ),
                 control_realm_id: realm_id(),
-                source_commit_ref: None,
+                authority_commit_id: RealmCommitId::from_digest([0x44; 32]),
                 secret_storage: pointer,
             },
             next_cursor: None,

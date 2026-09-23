@@ -30,6 +30,7 @@ pub mod service_route;
 pub mod service_route_material;
 pub mod session;
 pub mod signal;
+pub mod presence;
 pub mod signal_message_stream;
 pub mod stamp;
 pub mod station_cas_projection;
@@ -60,7 +61,7 @@ pub use arkret_retry::{RetryPolicy, RetrySchedule};
 pub use arkret_wire::{
     AuthorityBundleRequest, AuthorityHandoffRequest, AuthoritySubmitOutcome,
     AuthoritySubmitRequest, CommitStreamHead, CommitStreamRef, CommittedEventFullView,
-    CommittedEventRef, CommittedEventView, CommittedEventWithheldView, EventCommitSubmission,
+    CommittedEventRef, CommittedEventView, CommittedEventWithheldView, EventAdmissionSubmission,
     RealmAuthorityBundle, RealmAuthorityHandoff, RealmCommit, RealmStateSnapshot,
     StreamScanOutcome, StreamScanRequest,
 };

@@ -1,6 +1,6 @@
 //! Durable producer-submission engine over the governance-authority seam.
 //!
-//! Every queued item is one `EventCommitSubmission { event }` (or the MLS
+//! Every queued item is one `EventAdmissionSubmission { event }` (or the MLS
 //! commit submission that carries its Welcome deliveries). The queue owns the
 //! lifecycle — queued, forwarding, committed, rejected — and the authority
 //! outcome is the only thing that moves an item out of `Forwarding`. A
@@ -486,9 +486,9 @@ mod tests {
     use arkret_wire::{
         ActorId, AuthoredEvent, AuthorityBundleRequest, AuthorityCommitStatus,
         AuthorityHandoffRequest, AuthorityRejectionStatus, AuthoritySubmitOutcome,
-        AuthoritySubmitRequest, CommitStreamRef, DidCoreId, Event, EventCommitSubmission, EventId,
-        EventKind, Problem, RealmAuthorityBundle, RealmAuthorityHandoff, RealmId, ScopeRef,
-        StreamScanOutcome, StreamScanRequest,
+        AuthoritySubmitRequest, CommitStreamRef, DidCoreId, Event, EventAdmissionSubmission,
+        EventId, EventKind, Problem, RealmAuthorityBundle, RealmAuthorityHandoff, RealmId,
+        ScopeRef, StreamScanOutcome, StreamScanRequest,
     };
 
     use super::*;
@@ -567,9 +567,9 @@ mod tests {
             "did:web:alice.example#key-1",
         );
         sign_event(&mut authored, &signer, SignEventOptions::new()).unwrap();
-        QueuedSubmission::new(AuthoritySubmitRequest::Event(EventCommitSubmission::new(
-            authored.into_event(),
-        )))
+        QueuedSubmission::new(AuthoritySubmitRequest::Event(
+            EventAdmissionSubmission::new(authored.into_event()),
+        ))
         .unwrap()
     }
 

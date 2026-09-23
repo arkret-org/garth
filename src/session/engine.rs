@@ -365,26 +365,27 @@ fn refresh_request(
     if current.grant_jwt.trim().is_empty() {
         return Err(protocol("active session grant JWT is empty"));
     }
-    let (grant_jwt, audience, device_id) = match &request {
-        SessionGrantRefreshRequestBody::Human(request) => (
-            request.grant_jwt.as_str(),
-            request.audience_id.as_ref(),
-            &request.device_id,
-        ),
-        SessionGrantRefreshRequestBody::Agent(request) => (
-            request.grant_jwt.as_str(),
-            request.audience_id.as_ref(),
-            &request.device_id,
-        ),
+    let (grant_jwt, audience) = match &request {
+        SessionGrantRefreshRequestBody::Human(request) => {
+            if current.device_id.as_ref() != Some(&request.device_id) {
+                return Err(protocol("session refresh device changed"));
+            }
+            (request.grant_jwt.as_str(), request.audience_id.as_ref())
+        }
+        SessionGrantRefreshRequestBody::Agent(request) => {
+            if current.device_id.is_some()
+                || request.principal_id != current.account_id.principal_id
+            {
+                return Err(protocol("session refresh Agent holder changed"));
+            }
+            (request.grant_jwt.as_str(), request.audience_id.as_ref())
+        }
     };
     if grant_jwt != current.grant_jwt {
         return Err(protocol("session refresh predecessor JWT changed"));
     }
     if audience != Some(&current.audience_id) {
         return Err(protocol("session refresh audience changed"));
-    }
-    if current.device_id.as_ref() != Some(device_id) {
-        return Err(protocol("session refresh device changed"));
     }
     if let Some(current_dpop_jkt) = current.dpop_jkt.as_deref()
         && current_dpop_jkt != expected_dpop_jkt
@@ -420,11 +421,9 @@ fn state_from_issue_outcome(
             Some(&request.device_id),
             &request.audience_id,
         ),
-        SessionGrantRequestBody::Agent(request) => (
-            &request.principal_id,
-            Some(&request.device_id),
-            &request.proof.audience_id,
-        ),
+        SessionGrantRequestBody::Agent(request) => {
+            (&request.principal_id, None, &request.proof.audience_id)
+        }
         // The accepted device authorizes issuance, but the pairwise endpoint
         // is the holder of the resulting grant and has no device binding.
         SessionGrantRequestBody::PairwiseEndpoint(request) => {
@@ -498,12 +497,24 @@ fn state_from_refresh_outcome(
     if outcome_dpop_jkt != expected_dpop_jkt {
         return Err(protocol("refreshed session grant DPoP key changed"));
     }
-    let (request_audience, request_device_id) = match request {
+    let request_audience = match request {
         SessionGrantRefreshRequestBody::Human(request) => {
-            (request.audience_id.as_ref(), &request.device_id)
+            if current.device_id.as_ref() != Some(&request.device_id) {
+                return Err(protocol(
+                    "refreshed session grant device mismatched request",
+                ));
+            }
+            request.audience_id.as_ref()
         }
         SessionGrantRefreshRequestBody::Agent(request) => {
-            (request.audience_id.as_ref(), &request.device_id)
+            if current.device_id.is_some()
+                || request.principal_id != current.account_id.principal_id
+            {
+                return Err(protocol(
+                    "refreshed session grant Agent holder mismatched request",
+                ));
+            }
+            request.audience_id.as_ref()
         }
     };
     if request_audience != Some(&outcome.audience_id) {
@@ -511,14 +522,7 @@ fn state_from_refresh_outcome(
             "refreshed session grant audience mismatched request",
         ));
     }
-    if current.device_id.as_ref() != Some(request_device_id) {
-        return Err(protocol(
-            "refreshed session grant device mismatched request",
-        ));
-    }
-    // The issuer echoes the bound device on every successor, so an absent
-    // `device_id` is a missing echo rather than a claim of "no device binding";
-    // `state_from_issue_outcome` fails closed on exactly the same shape.
+    // Human successors echo their bound device; Agent successors omit one.
     if outcome.device_id.as_ref() != current.device_id.as_ref() {
         return Err(protocol("refreshed session grant device changed"));
     }
@@ -678,7 +682,6 @@ mod tests {
     fn agent_login() -> LoginKind {
         LoginKind::AgentKeyProof(AgentKeyProofLogin {
             principal_id: principal_id(),
-            device_id: device_id(),
             requested_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             agent_key_authorization_ref: agent_key_authorization_ref(),
             agent_scope_request: SessionGrantAgentScopeRequest {
@@ -724,7 +727,7 @@ mod tests {
     fn active_state() -> SessionGrantState {
         SessionGrantState {
             account_id: AccountId::new(principal_id(), audience()),
-            device_id: Some(device_id()),
+            device_id: None,
             grant_id: grant_id(1),
             grant_jwt: "grant-1".to_owned(),
             expires_at: now() + Duration::minutes(20),
@@ -767,7 +770,8 @@ mod tests {
                 AgentSessionGrantRefreshRequest {
                     grant_jwt: grant_jwt.to_owned(),
                     audience_id: Some(audience()),
-                    device_id: device_id(),
+                    principal_id: principal_id(),
+                    agent_key_authorization_ref: agent_key_authorization_ref(),
                     agent_session_refresh_proof: proof,
                 },
             )),
@@ -783,7 +787,7 @@ mod tests {
         SessionGrantOutcome {
             session_grant_id: grant,
             account_id: AccountId::new(principal_id(), audience()),
-            device_id: Some(device_id()),
+            device_id: None,
             session_grant: token.to_owned(),
             session_public_key: session_public_jwk(),
             expires_at: now() + Duration::hours(1),
@@ -799,7 +803,7 @@ mod tests {
             "grant-agent",
             grant_id(10),
             principal_id(),
-            Some(device_id()),
+            None,
         ))]);
         let engine = SessionEngine::new(transport.clone());
 
@@ -817,7 +821,7 @@ mod tests {
             "grant-authored",
             grant_id(14),
             principal_id(),
-            Some(device_id()),
+            None,
         ))]);
         let engine = SessionEngine::new(transport.clone());
         let request = agent_login().into_session_grant_request().unwrap();
@@ -965,9 +969,6 @@ mod tests {
         let mut wrong_device = refresh_outcome("grant-wrong-device", grant_id(37));
         wrong_device.device_id = Some(other_device_id());
 
-        let mut unechoed_device = refresh_outcome("grant-unechoed-device", grant_id(38));
-        unechoed_device.device_id = None;
-
         for (outcome, expected_error) in [
             (wrong_audience, "refreshed session grant audience changed"),
             (wrong_previous, "refreshed session grant chain changed"),
@@ -978,7 +979,6 @@ mod tests {
             (narrowed_scope, "refreshed session grant scope changed"),
             (substituted_scope, "refreshed session grant scope changed"),
             (wrong_device, "refreshed session grant device changed"),
-            (unechoed_device, "refreshed session grant device changed"),
         ] {
             let transport = MockSessionTransport::with_refresh_responses(vec![Ok(outcome)]);
             let engine = SessionEngine::with_state(transport, active_state());
