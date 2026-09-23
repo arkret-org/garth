@@ -412,29 +412,24 @@ fn state_from_issue_outcome(
     let (principal_id, device_id, request_audience) = match request {
         SessionGrantRequestBody::Human(request) => (
             &request.principal_id,
-            Some(&request.device_id),
+            &request.device_id,
             &request.audience_id,
         ),
         SessionGrantRequestBody::Recovery(request) => (
             &request.principal_id,
-            Some(&request.device_id),
+            &request.device_id,
             &request.audience_id,
         ),
         SessionGrantRequestBody::Agent(request) => (
             &request.principal_id,
-            Some(&request.device_id),
+            &request.device_id,
             &request.proof.audience_id,
         ),
-        // The accepted device authorizes issuance, but the pairwise endpoint
-        // is the holder of the resulting grant and has no device binding.
-        SessionGrantRequestBody::PairwiseEndpoint(request) => {
-            (&request.principal_id, None, &request.audience_id)
-        }
     };
     if &outcome.account_id.principal_id != principal_id {
         return Err(protocol("issued session grant principal changed"));
     }
-    if device_id != outcome.device_id.as_ref() {
+    if outcome.device_id.as_ref() != Some(device_id) {
         return Err(protocol("issued session grant device changed"));
     }
     let audience = outcome.audience_id;
@@ -811,6 +806,77 @@ mod tests {
         assert!(matches!(requests[0], SessionGrantRequestBody::Agent(_)));
     }
 
+    #[test]
+    fn recovery_issue_keeps_device_binding() {
+        let wire = serde_json::json!({
+            "credential_class": "recovery_session",
+            "request_id": "ak:request:01970000-0000-7000-8000-000000000021",
+            "principal_id": principal_id(),
+            "device_id": device_id(),
+            "audience_id": audience(),
+        });
+        let request: SessionGrantRequestBody = serde_json::from_value(wire.clone()).unwrap();
+        assert!(matches!(request, SessionGrantRequestBody::Recovery(_)));
+        let state = state_from_issue_outcome(
+            &request,
+            issue_outcome(
+                "grant-recovery",
+                grant_id(11),
+                principal_id(),
+                Some(device_id()),
+            ),
+            now(),
+        )
+        .unwrap();
+        assert_eq!(state.device_id, Some(device_id()));
+    }
+
+    #[test]
+    fn retired_pairwise_issue_wire_has_no_branch() {
+        let request_id = "ak:request:01970000-0000-7000-8000-000000000021";
+        let account_id = AccountId::new(principal_id(), audience());
+        let digest = format!("sha256:{}", "0".repeat(64));
+        let signature = arkret_canonical::base64url_encode([0u8; 64]);
+        let accepted = serde_json::json!({
+            "context": "ak.session_grant_accepted_device_possession_proof.v1",
+            "purpose": "session_grant_issue",
+            "request_id": request_id,
+            "account_subject": digest,
+            "account_handoff_grant_digest": digest,
+            "account_id": account_id,
+            "device_id": device_id(),
+            "audience_id": audience(),
+            "holder_jkt": "A".repeat(43),
+            "session_intent_digest": digest,
+            "issued_at": "2026-07-08T00:00:00.000Z",
+            "expires_at": "2026-07-08T00:05:00.000Z",
+            "verification_method": "did:webvh:z6mkfixture:agent.example#runtime-key-1",
+            "signature": signature,
+        });
+        let pairwise = serde_json::json!({
+            "request_id": request_id,
+            "principal_id": principal_id(),
+            "device_id": device_id(),
+            "audience_id": audience(),
+            "accepted_device_possession_proof": accepted,
+            "pairwise_endpoint_possession_proof": {
+                "context": "ak.session_grant_pairwise_endpoint_possession_proof.v1",
+                "request_id": request_id,
+                "account_id": account_id,
+                "realm_id": "ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO",
+                "actor_id": arkret_wire::ActorId::account(account_id),
+                "audience_id": audience(),
+                "holder_jkt": "A".repeat(43),
+                "session_intent_digest": digest,
+                "issued_at": "2026-07-08T00:00:00.000Z",
+                "expires_at": "2026-07-08T00:05:00.000Z",
+                "verification_method": "did:webvh:z6mkfixture:agent.example#runtime-key-1",
+                "signature": signature,
+            }
+        });
+        assert!(serde_json::from_value::<SessionGrantRequestBody>(pairwise).is_err());
+    }
+
     #[tokio::test]
     async fn authored_request_uses_the_same_issue_validation_path() {
         let transport = MockSessionTransport::with_issue_responses(vec![Ok(issue_outcome(
@@ -854,6 +920,7 @@ mod tests {
                 principal_id(),
                 Some(other_device_id()),
             ),
+            issue_outcome("grant-missing-device", grant_id(24), principal_id(), None),
         ];
 
         for outcome in cases {
