@@ -1,6 +1,6 @@
 //! Client-side state for independent Realm, Circle, and Sidecar commit streams.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use arkret_identity::{
     RealmAuthorityFreshness, RealmAuthorityKeyDirectory, verify_realm_authority_bundle,
@@ -435,6 +435,67 @@ fn validate_snapshot(snapshot: &RealmStateSnapshot, realm_id: &RealmId) -> Resul
                 .to_owned(),
         ));
     }
+    // The signed cut names exactly the visible streams. A floor for another
+    // stream (or a repeated/missing floor) cannot be a predecessor for any
+    // of these heads, even when the Station signature is valid.
+    let mut floors = BTreeMap::new();
+    for floor in &snapshot.retention_and_history_floor.stream_floors {
+        if floor.stream_ref.realm_id() != realm_id
+            || floors
+                .insert(&floor.stream_ref, floor.oldest_position)
+                .is_some()
+        {
+            return Err(Error::Protocol(
+                "Realm snapshot has a foreign or repeated stream floor".to_owned(),
+            ));
+        }
+    }
+    if floors.len() != snapshot.visible_stream_heads.len()
+        || snapshot.visible_stream_heads.iter().any(|head| {
+            floors
+                .get(&head.stream_ref)
+                .is_none_or(|oldest| *oldest > head.stream_position)
+        })
+    {
+        return Err(Error::Protocol(
+            "Realm snapshot floors do not cover its visible heads".to_owned(),
+        ));
+    }
+    let mut subjects = BTreeSet::new();
+    for row in &snapshot.current_state_entries {
+        let (selector, source_stream_ref, revision) = match row {
+            arkret_wire::TypedCurrentResult::Value {
+                selector,
+                source_stream_ref,
+                revision,
+                ..
+            }
+            | arkret_wire::TypedCurrentResult::MessageReactions {
+                selector,
+                source_stream_ref,
+                revision,
+                ..
+            } => (selector, source_stream_ref, revision),
+        };
+        if source_stream_ref.realm_id() != realm_id
+            || snapshot
+                .visible_stream_heads
+                .iter()
+                .find(|head| &head.stream_ref == source_stream_ref)
+                .is_none_or(|head| revision.stream_position > head.stream_position)
+        {
+            return Err(Error::Protocol(
+                "Realm snapshot current row has no visible covering stream head".to_owned(),
+            ));
+        }
+        let bytes = arkret_canonical::canonical_json_bytes(selector)
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+        if !subjects.insert(bytes) {
+            return Err(Error::Protocol(
+                "Realm snapshot repeats a typed current subject".to_owned(),
+            ));
+        }
+    }
     Ok(())
 }
 
@@ -646,6 +707,97 @@ mod tests {
             &route.signing_key,
         )
         .unwrap();
+        let sign_snapshot = |snapshot: &mut RealmStateSnapshot| {
+            let mut identity = serde_json::to_value(&*snapshot).unwrap();
+            identity.as_object_mut().unwrap().remove("signature");
+            identity.as_object_mut().unwrap().remove("snapshot_id");
+            snapshot.snapshot_id = RealmSnapshotId::from_digest(arkret_canonical::sha256_bytes(
+                &arkret_canonical::canonical_json_bytes(&identity).unwrap(),
+            ));
+            snapshot.signature = sign_detached_object(
+                &arkret_canonical::unsigned_value(snapshot, &["signature"]).unwrap(),
+                DetachedSignatureContext::RealmSnapshot,
+                method.clone(),
+                now,
+                &route.signing_key,
+            )
+            .unwrap();
+        };
+        let row = arkret_wire::TypedCurrentResult::Value {
+            selector: arkret_wire::CurrentSelector::RealmProfile,
+            source_stream_ref: stream_ref.clone(),
+            revision: arkret_wire::CurrentRevision {
+                commit_id: ordinary_commit.commit_id.clone(),
+                stream_position: 1,
+            },
+            value: serde_json::json!({}),
+        };
+        for mut malformed in [
+            {
+                let mut value = snapshot.clone();
+                value.retention_and_history_floor.stream_floors.clear();
+                value
+            },
+            {
+                let mut value = snapshot.clone();
+                value.retention_and_history_floor.stream_floors[0].oldest_position = 2;
+                value
+            },
+            {
+                let mut value = snapshot.clone();
+                let floor = value.retention_and_history_floor.stream_floors[0].clone();
+                value.retention_and_history_floor.stream_floors.push(floor);
+                value
+            },
+            {
+                let mut value = snapshot.clone();
+                value.current_state_entries = vec![row.clone(), row.clone()];
+                value
+            },
+            {
+                let mut value = snapshot.clone();
+                let mut wrong_source = row.clone();
+                let arkret_wire::TypedCurrentResult::Value {
+                    source_stream_ref, ..
+                } = &mut wrong_source
+                else {
+                    unreachable!()
+                };
+                *source_stream_ref = CommitStreamRef::Realm {
+                    realm_id: arkret_wire::RealmId::new(
+                        "ak:realm:AfTcej7ZFNg8uTbkOiUJT0KN1F_c9l1fmtil65CUwncm",
+                    )
+                    .unwrap(),
+                };
+                value.current_state_entries = vec![wrong_source];
+                value
+            },
+            {
+                let mut value = snapshot.clone();
+                let mut future_row = row.clone();
+                let arkret_wire::TypedCurrentResult::Value { revision, .. } = &mut future_row
+                else {
+                    unreachable!()
+                };
+                revision.stream_position = snapshot_head.stream_position + 1;
+                value.current_state_entries = vec![future_row];
+                value
+            },
+        ] {
+            sign_snapshot(&mut malformed);
+            let before = replica.clone();
+            assert!(
+                replica
+                    .install_verified_snapshot_heads(
+                        &malformed,
+                        &malformed.snapshot_id,
+                        &freshness,
+                        &keys,
+                    )
+                    .is_err()
+            );
+            assert_eq!(replica, before);
+        }
         let mut snapshot_replica = replica.clone();
         snapshot_replica
             .install_verified_snapshot_heads(&snapshot, &snapshot.snapshot_id, &freshness, &keys)
