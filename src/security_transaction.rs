@@ -143,10 +143,10 @@ impl SecurityTransactionStore for MemorySecurityTransactionStore {
     }
 
     fn clear_staged_secret(&self, reference: &str) -> Result<()> {
-        self.cleared_secret_refs
-            .lock()
-            .unwrap()
-            .push(reference.to_owned());
+        let mut cleared = self.cleared_secret_refs.lock().unwrap();
+        if !cleared.iter().any(|existing| existing == reference) {
+            cleared.push(reference.to_owned());
+        }
         Ok(())
     }
 
@@ -436,7 +436,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
 
     use arkret_wire::{EventId, RealmCommitId};
     use serde_json::json;
@@ -477,12 +477,13 @@ mod tests {
     }
 
     #[derive(Clone, Default)]
-    struct FailFirstSaveStore {
+    struct FailSaveStore {
         memory: MemorySecurityTransactionStore,
-        fail_next_save: Arc<AtomicBool>,
+        save_count: Arc<AtomicUsize>,
+        fail_on_save: Arc<AtomicUsize>,
     }
 
-    impl SecurityTransactionStore for FailFirstSaveStore {
+    impl SecurityTransactionStore for FailSaveStore {
         fn load(
             &self,
             transaction_id: &TransactionId,
@@ -491,7 +492,8 @@ mod tests {
         }
 
         async fn save(&self, state: &DurableSecurityTransaction) -> Result<()> {
-            if self.fail_next_save.swap(false, Ordering::SeqCst) {
+            let save_number = self.save_count.fetch_add(1, Ordering::SeqCst) + 1;
+            if save_number == self.fail_on_save.load(Ordering::SeqCst) {
                 return Err(Error::Protocol("injected durable save failure".to_owned()));
             }
             self.memory.save(state).await
@@ -508,9 +510,9 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_save_failure_keeps_staged_secret_for_recovery() {
-        let store = FailFirstSaveStore::default();
+        let store = FailSaveStore::default();
         let mut state = durable_state();
-        store.fail_next_save.store(true, Ordering::SeqCst);
+        store.fail_on_save.store(1, Ordering::SeqCst);
 
         assert!(persist_observation(&store, &mut state, true).await.is_err());
         assert_eq!(
@@ -521,6 +523,34 @@ mod tests {
 
         persist_observation(&store, &mut state, true).await.unwrap();
         assert!(state.staged_secret_ref.is_none());
+        assert_eq!(store.memory.cleared_secret_refs(), ["secure/recovery/1"]);
+        assert!(
+            store
+                .load(&state.transaction_id)
+                .unwrap()
+                .unwrap()
+                .staged_secret_ref
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn cleanup_save_failure_retries_from_durable_terminal_reference() {
+        let store = FailSaveStore::default();
+        let mut state = durable_state();
+        store.fail_on_save.store(2, Ordering::SeqCst);
+
+        assert!(persist_observation(&store, &mut state, true).await.is_err());
+        let mut restored = store.load(&state.transaction_id).unwrap().unwrap();
+        assert_eq!(
+            restored.staged_secret_ref.as_deref(),
+            Some("secure/recovery/1")
+        );
+        assert_eq!(store.memory.cleared_secret_refs(), ["secure/recovery/1"]);
+
+        persist_observation(&store, &mut restored, true)
+            .await
+            .unwrap();
         assert_eq!(store.memory.cleared_secret_refs(), ["secure/recovery/1"]);
         assert!(
             store
