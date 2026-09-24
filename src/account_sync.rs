@@ -1,14 +1,14 @@
 //! Account-aggregate delivery over independently committed authority streams.
 
 pub use arkret_models_collaboration::sync_frames::account_subscribe::{
-    AccountDataContainer, AccountStreamInterrupt, AccountSubscribeBatch,
+    AccountDataContainer, AccountFilter, AccountStreamInterrupt, AccountSubscribeBatch,
     AccountSubscribeDeviceListChanges, AccountSubscribeFrame, AccountSubscribeFrameKind,
     AccountSubscribeRealms, AgentDraftPendingIntent, AgentDraftPendingIntentChange,
     AgentDraftPendingIntentContainer, AgentDraftPendingIntentKey, AgentDraftPendingIntentRemoval,
     AgentDraftPendingIntentTerminalRedacted, EventContainer, NotificationContainer,
     NotificationDelta, NotificationDeltaAction, RealmListRequest, RealmSyncEntry,
     RecipientDeliveryContainer, StationCasAccountDataContainer, StationCasAccountDataRemoval,
-    StreamTraceError, StreamTraceValidator, SyncFilter, SyncRequestBody,
+    StreamTraceError, StreamTraceValidator, SyncRequestBody,
 };
 pub use arkret_models_collaboration::sync_frames::account_sync::RealmStreamWindow;
 pub use arkret_models_collaboration::sync_frames::demand_sync::{
