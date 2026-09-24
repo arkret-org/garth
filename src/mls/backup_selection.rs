@@ -121,8 +121,6 @@ mod tests {
             backup_version: NonEmptyString::new("kb_1").unwrap(),
             supersedes_id: None,
             supersedes_digest: None,
-            source_commit_ref: None,
-            recovery_policy_ref: None,
             created_at: at(u32::try_from(seq).unwrap()),
             updated_at: None,
             expires_at: None,

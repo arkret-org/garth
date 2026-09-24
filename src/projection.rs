@@ -492,11 +492,9 @@ fn validate_realm_entry_bindings(realm_id: &RealmId, entry: &RealmSyncEntry) -> 
                         "preview timeline window cannot also claim a snapshot basis".to_owned(),
                     ));
                 }
-                (false, None) => {
-                    return Err(Error::Protocol(
-                        "non-preview timeline window requires a signed snapshot basis".to_owned(),
-                    ));
-                }
+                // A position-0 window has no basis. The consuming lane must
+                // verify its complete chain from genesis before persistence.
+                (false, None) => {}
                 _ => {}
             }
             // A window may reference a snapshot from an earlier authority
@@ -569,7 +567,7 @@ mod tests {
     use arkret_models_collaboration::sync_frames::current_results::AccountCurrentCoverage;
     use arkret_wire::{
         CircleId, CommittedEventFullView, CommittedEventWithheldView, EventDisclosure,
-        EventDisclosureStatus, EventId, RealmSnapshotId, ScopeRef, StrandId,
+        EventDisclosureStatus, EventId, RealmCommitId, RealmSnapshotId, ScopeRef, StrandId,
     };
     use serde_json::json;
 
@@ -754,7 +752,7 @@ mod tests {
     }
 
     #[test]
-    fn non_preview_timeline_window_requires_a_snapshot_basis() {
+    fn position_zero_timeline_window_has_no_snapshot_basis() {
         let head = stream_head(7);
         let entry = RealmSyncEntry {
             streams: Some(vec![RealmStreamWindow {
@@ -771,7 +769,7 @@ mod tests {
             ..RealmSyncEntry::default()
         };
 
-        assert!(realm_entry_to_client_events(&realm_id(), &entry).is_err());
+        assert!(realm_entry_to_client_events(&realm_id(), &entry).is_ok());
     }
 
     #[test]
@@ -858,9 +856,9 @@ mod tests {
                 complete: true,
                 preview_only: None,
                 window_start_basis: Some(StreamWindowStartBasis {
-                    anchor_kind: StreamWindowAnchorKind::StreamGenesis,
-                    anchor_position: None,
-                    anchor_commit_ref: None,
+                    anchor_kind: StreamWindowAnchorKind::AfterCommittedPrefix,
+                    anchor_position: 0,
+                    anchor_commit_ref: RealmCommitId::from_digest([0x66; 32]),
                     snapshot_ref: RealmSnapshotId::from_digest([0x77; 32]),
                     governance_generation: 0,
                     accepted_dependency_refs: None,

@@ -102,7 +102,7 @@ mod tests {
     use arkret_models_crypto::{
         BackupKind, KeyBackupAead, KeyBackupAeadName, KeyBackupAuthData, KeyBackupDomainSeparation,
         KeyBackupEncryption, KeyBackupRecipientMethod, KeyBackupSignatureAlgorithm,
-        KeyBackupSourceCommitRef,
+        KeyBackupSourceCommitRef, SecretStorageContentIndex, SecretStorageItemKind,
     };
     use arkret_wire::{BackupSeriesId, Base64UrlString, DidUrl, EventId, RealmCommitId};
 
@@ -152,7 +152,10 @@ mod tests {
                 subdomain: "mls_account_secret".to_owned(),
                 aead_aad_extensions: Default::default(),
             },
-            contents: Vec::new(),
+            contents: vec![SecretStorageContentIndex {
+                item_kind: SecretStorageItemKind::MlsAccountSecret,
+                secret_id: "account-secret".to_owned(),
+            }],
             ciphertext: Base64UrlString::new("AQID").unwrap(),
             ciphertext_digest: Hash::new(format!("sha256:{}", "b".repeat(64))).unwrap(),
             plaintext_commitment: None,

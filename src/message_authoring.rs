@@ -269,6 +269,9 @@ pub fn classify_message_authoring_error(error: &Error) -> MessageAuthoringFailur
     if let Some(refusal) = MlsSendRefusal::from_problem(error) {
         return refusal.failure(detail);
     }
+    if error.error_code() == Some(arkret_wire::ErrorCode::TemporarilyUnavailable) {
+        return MessageAuthoringFailure::DependencyUnavailable { detail };
+    }
     let reason = problem_reason_code(error)
         .unwrap_or_else(|| arkret_wire::ReasonCode::from_wire(error.code()));
     classify_reason(reason, detail, error.code())
@@ -558,6 +561,43 @@ mod tests {
             MessageAuthoringFailure::PlaintextRefused { .. }
         ));
         assert_eq!(failure.recovery(), MessageAuthoringRecovery::FailClosed);
+    }
+
+    #[test]
+    fn inactive_mls_scope_fails_closed_without_retry() {
+        let problem = arkret_wire::Problem::new(
+            "failed_precondition",
+            409,
+            "scope has no accepted MLS group",
+        );
+        assert_eq!(MlsSendRefusal::from_problem(&problem), None);
+        let failure = classify_message_authoring_error(&Error::Api {
+            status: 409,
+            error: Box::new(problem),
+        });
+        assert!(matches!(failure, MessageAuthoringFailure::Refused { .. }));
+        assert_eq!(failure.recovery(), MessageAuthoringRecovery::FailClosed);
+    }
+
+    #[test]
+    fn current_mls_read_fault_retries_exact_request() {
+        let problem = arkret_wire::Problem::new(
+            "temporarily_unavailable",
+            503,
+            "current MLS group is temporarily unavailable",
+        );
+        let failure = classify_message_authoring_error(&Error::Api {
+            status: 503,
+            error: Box::new(problem),
+        });
+        assert!(matches!(
+            failure,
+            MessageAuthoringFailure::DependencyUnavailable { .. }
+        ));
+        assert_eq!(
+            failure.recovery(),
+            MessageAuthoringRecovery::RetrySameRequest
+        );
     }
 
     fn problem_with_reason(code: &str, reason: &str) -> arkret_wire::Problem {
