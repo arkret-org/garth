@@ -111,6 +111,8 @@ pub trait SecurityTransactionStore: Clone + MaybeSendSync + 'static {
         &'a self,
         state: &'a DurableSecurityTransaction,
     ) -> impl Future<Output = Result<()>> + MaybeSend + 'a;
+    /// Idempotently discard one host-owned secret after a terminal resource
+    /// has been saved. A crash may require repeating this cleanup.
     fn clear_staged_secret(&self, reference: &str) -> Result<()>;
     fn remove(&self, transaction_id: &TransactionId) -> Result<()>;
 }
@@ -236,6 +238,23 @@ fn retain_completed_recovery_receipt(
     Ok(())
 }
 
+async fn persist_observation<S: SecurityTransactionStore>(
+    store: &S,
+    local: &mut DurableSecurityTransaction,
+    terminal: bool,
+) -> Result<()> {
+    // The terminal resource must survive a crash before the only local secret
+    // reference can be discarded. A failed cleanup leaves the reference in
+    // durable state so a later observation can retry it.
+    store.save(local).await?;
+    if terminal && let Some(reference) = local.staged_secret_ref.as_ref() {
+        store.clear_staged_secret(reference)?;
+        local.staged_secret_ref = None;
+        store.save(local).await?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug)]
 pub struct SecurityTransactionEngine<T, S> {
     transport: T,
@@ -264,13 +283,9 @@ where
         resource: SecurityTransaction,
     ) -> Result<SecurityTransaction> {
         validate_observed_resource(local, &resource)?;
-        if resource.terminal_outcome.is_some()
-            && let Some(reference) = local.staged_secret_ref.take()
-        {
-            self.store.clear_staged_secret(&reference)?;
-        }
+        let terminal = resource.terminal_outcome.is_some();
         local.last_observed_resource = Some(resource.clone());
-        self.store.save(local).await?;
+        persist_observation(&self.store, local, terminal).await?;
         Ok(resource)
     }
 
@@ -421,6 +436,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     use arkret_wire::{EventId, RealmCommitId};
     use serde_json::json;
 
@@ -457,6 +474,62 @@ mod tests {
             completed_recovery_receipt: None,
             last_observed_resource: None,
         }
+    }
+
+    #[derive(Clone, Default)]
+    struct FailFirstSaveStore {
+        memory: MemorySecurityTransactionStore,
+        fail_next_save: Arc<AtomicBool>,
+    }
+
+    impl SecurityTransactionStore for FailFirstSaveStore {
+        fn load(
+            &self,
+            transaction_id: &TransactionId,
+        ) -> Result<Option<DurableSecurityTransaction>> {
+            self.memory.load(transaction_id)
+        }
+
+        async fn save(&self, state: &DurableSecurityTransaction) -> Result<()> {
+            if self.fail_next_save.swap(false, Ordering::SeqCst) {
+                return Err(Error::Protocol("injected durable save failure".to_owned()));
+            }
+            self.memory.save(state).await
+        }
+
+        fn clear_staged_secret(&self, reference: &str) -> Result<()> {
+            self.memory.clear_staged_secret(reference)
+        }
+
+        fn remove(&self, transaction_id: &TransactionId) -> Result<()> {
+            self.memory.remove(transaction_id)
+        }
+    }
+
+    #[tokio::test]
+    async fn terminal_save_failure_keeps_staged_secret_for_recovery() {
+        let store = FailFirstSaveStore::default();
+        let mut state = durable_state();
+        store.fail_next_save.store(true, Ordering::SeqCst);
+
+        assert!(persist_observation(&store, &mut state, true).await.is_err());
+        assert_eq!(
+            state.staged_secret_ref.as_deref(),
+            Some("secure/recovery/1")
+        );
+        assert!(store.memory.cleared_secret_refs().is_empty());
+
+        persist_observation(&store, &mut state, true).await.unwrap();
+        assert!(state.staged_secret_ref.is_none());
+        assert_eq!(store.memory.cleared_secret_refs(), ["secure/recovery/1"]);
+        assert!(
+            store
+                .load(&state.transaction_id)
+                .unwrap()
+                .unwrap()
+                .staged_secret_ref
+                .is_none()
+        );
     }
 
     fn completed_recovery_receipt() -> RecoveryReceipt {
