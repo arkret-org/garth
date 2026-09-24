@@ -312,7 +312,7 @@ mod tests {
     use arkret_models_collaboration::session_grants::{
         SessionGrantOutcome, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
     };
-    use arkret_wire::{AccountId, Base64UrlString, DeviceId, DidCoreId, DidUrl, Hash};
+    use arkret_wire::{AccountId, Base64UrlString, DidCoreId, DidUrl, Hash};
     use chrono::{Duration, Utc};
 
     use super::*;
@@ -385,9 +385,9 @@ mod tests {
                 DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
                 DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             ),
-            device_id: Some(
-                DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
-            ),
+            // The refresh options below exercise the Agent branch, whose
+            // holder is the principal alone and never carries a Device.
+            device_id: None,
             grant_id: grant_id(1),
             grant_jwt: "grant-1".to_owned(),
             expires_at: Utc::now() + Duration::hours(2),
@@ -405,9 +405,7 @@ mod tests {
                 DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
                 DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             ),
-            device_id: Some(
-                DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
-            ),
+            device_id: None,
             session_grant: "grant-2".to_owned(),
             session_public_key: session_public_jwk(),
             expires_at: Utc::now() + Duration::hours(1),
