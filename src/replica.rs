@@ -9,9 +9,9 @@ use arkret_models_collaboration::sync_frames::account_sync::{
     StreamWindowAnchorKind, StreamWindowStartBasis,
 };
 use arkret_wire::{
-    AuthorityBundleRequest, CommitStreamHead, CommitStreamRef, CommittedEventView, ReadableFloor,
-    RealmAuthorityBundle, RealmId, RealmSnapshotId, RealmStateSnapshot, StreamScanDirection,
-    StreamScanOutcome, StreamScanRequest, TypedCurrentResult,
+    AuthorityBundleRequest, CommitStreamHead, CommitStreamRef, CommittedEventView, HistoryAccess,
+    ReadableFloor, RealmAuthorityBundle, RealmId, RealmSnapshotId, RealmStateSnapshot,
+    StreamScanDirection, StreamScanOutcome, StreamScanRequest, TypedCurrentResult,
 };
 
 use crate::{Error, Result};
@@ -29,14 +29,17 @@ pub struct VerifiedScanPage {
     rows: Vec<CommittedEventView>,
 }
 
-/// Current rows committed by one exact signed snapshot immediately before a
-/// stream's readable floor. The carrier contains no rows from another stream
-/// and cannot be constructed from shape-only staging.
+/// Current rows committed by one exact signed snapshot whose head is the
+/// Commit immediately before a limited stream window's first verified row
+/// (`before_readable_floor` or `after_committed_prefix`). The carrier contains
+/// no rows from another stream and cannot be constructed from shape-only
+/// staging.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VerifiedFloorSnapshot {
     rows: Vec<TypedCurrentResult>,
     head: CommitStreamHead,
     governance_generation: u64,
+    history_access: HistoryAccess,
 }
 
 impl VerifiedFloorSnapshot {
@@ -54,6 +57,11 @@ impl VerifiedFloorSnapshot {
 
     pub fn governance_generation(&self) -> u64 {
         self.governance_generation
+    }
+
+    /// The signed cut's `retention_and_history_floor.history_access`.
+    pub fn history_access(&self) -> HistoryAccess {
+        self.history_access
     }
 }
 
@@ -253,12 +261,13 @@ impl RealmReplica {
         self.install_verified_snapshot_heads(snapshot, &snapshot.snapshot_id, freshness, keys)
     }
 
-    /// Admit the narrow `before_readable_floor` window whose exact signed
-    /// snapshot head is immediately before its first readable Commit. The
-    /// basis names the floor Commit itself; the subsequent verified scan
-    /// resumes after the signed snapshot head and checks the floor Commit ID.
-    /// Other window shapes remain unresolved until their exact snapshot and
-    /// reconstruction contract is wired.
+    /// Admit a limited stream window anchored to one exact signed snapshot
+    /// head. `before_readable_floor` names the floor Commit itself and the
+    /// signed head is immediately before it; `after_committed_prefix` names
+    /// the signed head itself, the window starts right after it, and the
+    /// prefix through it must lie inside the caller's readable range. In both
+    /// shapes the subsequent verified scan resumes after the signed head and
+    /// must extend its exact Commit. A genesis basis needs no snapshot.
     pub fn install_verified_floor_predecessor(
         &mut self,
         stream_ref: &CommitStreamRef,
@@ -276,16 +285,26 @@ impl RealmReplica {
             .iter()
             .find(|head| &head.stream_ref == stream_ref)
             .ok_or_else(|| Error::Protocol("snapshot omits the floor stream head".to_owned()))?;
-        if basis.anchor_kind != StreamWindowAnchorKind::BeforeReadableFloor
+        let anchored = match basis.anchor_kind {
+            StreamWindowAnchorKind::BeforeReadableFloor => {
+                basis.anchor_position == Some(floor.oldest_position)
+                    && basis.anchor_commit_ref.as_ref() == Some(&floor.floor_commit_id)
+                    && head.stream_position.checked_add(1) == Some(floor.oldest_position)
+                    && floor.floor_reason != arkret_wire::ReadableFloorReason::StreamStart
+            }
+            StreamWindowAnchorKind::AfterCommittedPrefix => {
+                basis.anchor_position == Some(head.stream_position)
+                    && basis.anchor_commit_ref.as_ref() == Some(&head.commit_id)
+                    && floor.oldest_position <= head.stream_position
+            }
+            StreamWindowAnchorKind::StreamGenesis => false,
+        };
+        if !anchored
             || basis.snapshot_ref != snapshot.snapshot_id
             || basis.governance_generation != snapshot.governance_generation
-            || basis.anchor_position != Some(floor.oldest_position)
-            || basis.anchor_commit_ref.as_ref() != Some(&floor.floor_commit_id)
-            || head.stream_position.checked_add(1) != Some(floor.oldest_position)
-            || floor.floor_reason == arkret_wire::ReadableFloorReason::StreamStart
         {
             return Err(Error::Protocol(
-                "snapshot window basis does not anchor the readable floor".to_owned(),
+                "snapshot window basis does not anchor the limited stream window".to_owned(),
             ));
         }
         // A product installer may consume only rows whose single source
@@ -313,6 +332,7 @@ impl RealmReplica {
             rows: snapshot.current_state_entries.clone(),
             head: head.clone(),
             governance_generation: snapshot.governance_generation,
+            history_access: snapshot.retention_and_history_floor.history_access,
         })
     }
 
@@ -515,6 +535,7 @@ fn validate_snapshot(snapshot: &RealmStateSnapshot, realm_id: &RealmId) -> Resul
         ));
     }
     let mut subjects = BTreeSet::new();
+    let mut commits = BTreeMap::new();
     for row in &snapshot.current_state_entries {
         let (selector, source_stream_ref, revision) = match row {
             arkret_wire::TypedCurrentResult::Value {
@@ -535,10 +556,24 @@ fn validate_snapshot(snapshot: &RealmStateSnapshot, realm_id: &RealmId) -> Resul
                 .visible_stream_heads
                 .iter()
                 .find(|head| &head.stream_ref == source_stream_ref)
-                .is_none_or(|head| revision.stream_position > head.stream_position)
+                .is_none_or(|head| {
+                    revision.stream_position > head.stream_position
+                        || (revision.stream_position == head.stream_position
+                            && revision.commit_id != head.commit_id)
+                })
         {
             return Err(Error::Protocol(
                 "Realm snapshot current row has no visible covering stream head".to_owned(),
+            ));
+        }
+        // One stream position names exactly one accepted Commit.
+        if let Some(previous) = commits.insert(
+            (source_stream_ref, revision.stream_position),
+            &revision.commit_id,
+        ) && previous != &revision.commit_id
+        {
+            return Err(Error::Protocol(
+                "Realm snapshot rows name two Commits at one stream position".to_owned(),
             ));
         }
         let bytes = arkret_canonical::canonical_json_bytes(selector)
@@ -827,6 +862,36 @@ mod tests {
             },
             {
                 let mut value = snapshot.clone();
+                let mut other_head_commit = row.clone();
+                let arkret_wire::TypedCurrentResult::Value { revision, .. } =
+                    &mut other_head_commit
+                else {
+                    unreachable!()
+                };
+                revision.commit_id = genesis_commit.commit_id.clone();
+                value.current_state_entries = vec![other_head_commit];
+                value
+            },
+            {
+                let mut value = snapshot.clone();
+                let mut first = row.clone();
+                let mut second = row.clone();
+                for (row, commit) in [(&mut first, [0x61; 32]), (&mut second, [0x62; 32])] {
+                    let arkret_wire::TypedCurrentResult::Value { revision, .. } = row else {
+                        unreachable!()
+                    };
+                    revision.stream_position = 0;
+                    revision.commit_id = arkret_wire::RealmCommitId::from_digest(commit);
+                }
+                let arkret_wire::TypedCurrentResult::Value { selector, .. } = &mut second else {
+                    unreachable!()
+                };
+                *selector = arkret_wire::CurrentSelector::RealmDiscovery;
+                value.current_state_entries = vec![first, second];
+                value
+            },
+            {
+                let mut value = snapshot.clone();
                 let mut future_row = row.clone();
                 let arkret_wire::TypedCurrentResult::Value { revision, .. } = &mut future_row
                 else {
@@ -997,6 +1062,112 @@ mod tests {
             .unwrap();
         assert_eq!(current_carrier.rows(), signed_rows);
         assert_eq!(current_carrier.head(), &genesis_head);
+        assert_eq!(
+            current_carrier.history_access(),
+            arkret_wire::HistoryAccess::AllHistoryForCurrentMembers
+        );
+        // `after_committed_prefix` names the signed head itself; the caller
+        // may read the whole prefix, so the stream-start floor is admitted.
+        let prefix_basis = StreamWindowStartBasis {
+            anchor_kind: StreamWindowAnchorKind::AfterCommittedPrefix,
+            anchor_position: Some(0),
+            anchor_commit_ref: Some(genesis_commit.commit_id.clone()),
+            snapshot_ref: current_snapshot.snapshot_id.clone(),
+            governance_generation: 0,
+            accepted_dependency_refs: None,
+        };
+        let prefix_floor = ReadableFloor {
+            oldest_position: 0,
+            floor_commit_id: genesis_commit.commit_id.clone(),
+            floor_reason: ReadableFloorReason::StreamStart,
+        };
+        let mut prefix_replica = replica.clone();
+        let prefix_carrier = prefix_replica
+            .install_verified_floor_predecessor(
+                &stream_ref,
+                &prefix_basis,
+                &prefix_floor,
+                &current_snapshot,
+                &freshness,
+                &keys,
+            )
+            .unwrap();
+        assert_eq!(prefix_carrier.rows(), signed_rows);
+        assert_eq!(
+            prefix_replica.verified_head(&stream_ref),
+            Some(&genesis_head)
+        );
+        let prefix_tail = StreamScanRequest {
+            realm_id: realm_id.clone(),
+            stream_ref: stream_ref.clone(),
+            direction: StreamScanDirection::After(Some(0)),
+            limit: 1,
+        };
+        let prefix_page = prefix_replica
+            .apply_verified_scan(
+                &prefix_tail,
+                StreamScanOutcome {
+                    committed_events: vec![CommittedEventView::Full(CommittedEventFullView {
+                        commit: ordinary_commit.clone(),
+                        event: ordinary.clone(),
+                    })],
+                    readable_floor: Some(prefix_floor.clone()),
+                    truncated: false,
+                },
+                &freshness,
+                &keys,
+            )
+            .unwrap();
+        assert_eq!(prefix_page.rows().len(), 1);
+        for (forged_basis, forged_floor) in [
+            {
+                let mut value = prefix_basis.clone();
+                value.anchor_position = Some(1);
+                (value, prefix_floor.clone())
+            },
+            {
+                let mut value = prefix_basis.clone();
+                value.anchor_commit_ref = Some(ordinary_commit.commit_id.clone());
+                (value, prefix_floor.clone())
+            },
+            {
+                let mut value = prefix_basis.clone();
+                value.governance_generation = 1;
+                (value, prefix_floor.clone())
+            },
+            (prefix_basis.clone(), {
+                let mut value = prefix_floor.clone();
+                value.oldest_position = 1;
+                value.floor_commit_id = ordinary_commit.commit_id.clone();
+                value.floor_reason = ReadableFloorReason::RetentionPruned;
+                value
+            }),
+            (
+                StreamWindowStartBasis {
+                    anchor_kind: StreamWindowAnchorKind::StreamGenesis,
+                    anchor_position: None,
+                    anchor_commit_ref: None,
+                    ..prefix_basis.clone()
+                },
+                prefix_floor.clone(),
+            ),
+        ] {
+            let mut forged_replica = replica.clone();
+            let before = forged_replica.clone();
+            assert!(
+                forged_replica
+                    .install_verified_floor_predecessor(
+                        &stream_ref,
+                        &forged_basis,
+                        &forged_floor,
+                        &current_snapshot,
+                        &freshness,
+                        &keys,
+                    )
+                    .is_err()
+            );
+            assert_eq!(forged_replica, before);
+        }
         let mut floor_replica = replica.clone();
         floor_replica
             .install_verified_floor_predecessor(
