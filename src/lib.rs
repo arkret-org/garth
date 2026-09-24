@@ -78,7 +78,7 @@ pub use maybe_send::{MaybeSend, MaybeSendSync};
 pub use message_authoring::{
     MessageAuthoringContent, MessageAuthoringFailure, MessageAuthoringIntent,
     MessageAuthoringRecovery, MessageEncryptionContext, MessagePrepareOutcome,
-    MessagePrepareRequestBody, MessageSubmitRequestBody, author_message,
+    MessagePrepareRequestBody, MessageSubmitRequestBody, MlsSendRefusal, author_message,
     classify_authority_rejection, classify_message_authoring_error, queue_authored_message,
     verify_prepared_message,
 };

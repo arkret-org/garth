@@ -56,9 +56,12 @@ pub fn queue_authored_message(request: MessageSubmitRequestBody) -> Result<Queue
 pub enum MessageAuthoringRecovery {
     /// Retry the identical frozen submission. Nothing about it is wrong.
     RetrySameRequest,
-    /// The frozen MLS binding is stale: encrypt the body again for the current
-    /// epoch before authoring a new Event.
-    ReEncrypt,
+    /// The frozen epoch / `group_state_ref` names a group the scope has moved
+    /// past. Fetch and verify the current public group and its continuous MLS
+    /// transitions, install the matching local private state, then encrypt a
+    /// new body and author a new Event. The old frozen request is never
+    /// replayed with a rebound ciphertext.
+    RefreshGroupAndReEncrypt,
     /// Stop this attempt until a covering MLS Commit is accepted, then
     /// encrypt a new body against the resulting current epoch.
     WaitForEpochCommit,
@@ -89,11 +92,14 @@ pub enum MessageAuthoringFailure {
     DependencyUnavailable { detail: String },
     /// The target refuses a plaintext body. The encrypted branch is required.
     PlaintextRefused { detail: String },
-    /// The frozen MLS governance binding no longer matches the installed group
-    /// state, so the body has to be encrypted again.
+    /// Top-level `epoch_mismatch`: the frozen MLS epoch / group state differs
+    /// from the ready current group, so the group has to be refreshed and the
+    /// body encrypted again into a new request.
     EncryptionContextChanged { detail: String },
-    /// A pending MLS membership or key-access change needs a covering Commit
-    /// before this scope can accept another encrypted application Event.
+    /// `failed_precondition` / `epoch_update_required`: a pending MLS
+    /// membership or key-access change needs a covering winning Commit before
+    /// this scope accepts another encrypted application Event. There is no
+    /// target epoch to encrypt for yet.
     EpochCommitPending { detail: String },
     /// This request identity already carries different bytes.
     DuplicateConflict { detail: String },
@@ -110,7 +116,9 @@ impl MessageAuthoringFailure {
             Self::AuthorizationPending { .. } | Self::DependencyUnavailable { .. } => {
                 MessageAuthoringRecovery::RetrySameRequest
             }
-            Self::EncryptionContextChanged { .. } => MessageAuthoringRecovery::ReEncrypt,
+            Self::EncryptionContextChanged { .. } => {
+                MessageAuthoringRecovery::RefreshGroupAndReEncrypt
+            }
             Self::EpochCommitPending { .. } => MessageAuthoringRecovery::WaitForEpochCommit,
             Self::SubmissionOutcomeUnknown { .. } => {
                 MessageAuthoringRecovery::ReplayExactSubmission
@@ -183,6 +191,69 @@ impl std::fmt::Display for MessageAuthoringFailure {
     }
 }
 
+/// The two current MLS send-gate refusals (encryption-and-audit §2.5.2,
+/// decision 0100).
+///
+/// Every encrypted application Event path classifies a Station answer through
+/// this typed view of the registered codes, never through problem detail text,
+/// so the pause-for-repair and refresh-then-re-encrypt paths cannot be
+/// confused with each other or with a key-access consumption refusal
+/// (`mls_governance_binding_stale`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MlsSendRefusal {
+    /// Top-level `epoch_mismatch` (HTTP 409): the frozen epoch or
+    /// `group_state_ref` differs from the ready current group. Refresh the
+    /// group, then encrypt a new request.
+    EpochMismatch,
+    /// `failed_precondition` + `epoch_update_required`: the scope's
+    /// key-access checkpoint awaits a covering winning Commit. Pause, and wait
+    /// for or drive the repair Commit.
+    EpochUpdateRequired,
+}
+
+impl MlsSendRefusal {
+    /// Classify one problem document by its typed registered identity.
+    pub fn from_problem(problem: &arkret_wire::Problem) -> Option<Self> {
+        match problem.error_code()? {
+            arkret_wire::ErrorCode::EpochMismatch => Some(Self::EpochMismatch),
+            arkret_wire::ErrorCode::FailedPrecondition => match problem_reason_code(problem)? {
+                arkret_wire::ReasonCode::EpochUpdateRequired => Some(Self::EpochUpdateRequired),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    /// Classify one `AuthoritySubmitOutcome::Rejected` reason code.
+    pub fn from_rejection_reason(reason_code: &str) -> Option<Self> {
+        if arkret_wire::ErrorCode::from_wire(reason_code)
+            == Some(arkret_wire::ErrorCode::EpochMismatch)
+        {
+            return Some(Self::EpochMismatch);
+        }
+        match arkret_wire::ReasonCode::from_wire(reason_code) {
+            arkret_wire::ReasonCode::EpochUpdateRequired => Some(Self::EpochUpdateRequired),
+            _ => None,
+        }
+    }
+
+    fn failure(self, detail: String) -> MessageAuthoringFailure {
+        match self {
+            Self::EpochMismatch => MessageAuthoringFailure::EncryptionContextChanged { detail },
+            Self::EpochUpdateRequired => MessageAuthoringFailure::EpochCommitPending { detail },
+        }
+    }
+}
+
+/// The typed `reason_code` extension of a problem document, if present.
+fn problem_reason_code(problem: &arkret_wire::Problem) -> Option<arkret_wire::ReasonCode> {
+    problem
+        .extensions
+        .get("reason_code")
+        .and_then(serde_json::Value::as_str)
+        .map(arkret_wire::ReasonCode::from_wire)
+}
+
 /// Classify a transport or contract error into its recovery class.
 ///
 /// Anything that is not a typed API answer is reported as an unknown outcome,
@@ -195,12 +266,12 @@ pub fn classify_message_authoring_error(error: &Error) -> MessageAuthoringFailur
         };
     };
     let detail = error.detail.clone();
-    let reason = error
-        .extensions
-        .get("reason_code")
-        .and_then(serde_json::Value::as_str)
-        .unwrap_or_else(|| error.code());
-    classify_authoring_reason_code(reason, detail, error.code())
+    if let Some(refusal) = MlsSendRefusal::from_problem(error) {
+        return refusal.failure(detail);
+    }
+    let reason = problem_reason_code(error)
+        .unwrap_or_else(|| arkret_wire::ReasonCode::from_wire(error.code()));
+    classify_reason(reason, detail, error.code())
 }
 
 /// Classify one governance-Station rejection reason code from a submit outcome.
@@ -208,30 +279,34 @@ pub fn classify_message_authoring_error(error: &Error) -> MessageAuthoringFailur
 /// A rejection is an answer, not a transport fault: the Event reached the
 /// Station and was refused, so nothing here ever reports an unknown outcome.
 pub fn classify_authority_rejection(reason_code: &str) -> MessageAuthoringFailure {
-    classify_authoring_reason_code(reason_code, reason_code.to_owned(), reason_code)
+    let detail = reason_code.to_owned();
+    if let Some(refusal) = MlsSendRefusal::from_rejection_reason(reason_code) {
+        return refusal.failure(detail);
+    }
+    classify_reason(
+        arkret_wire::ReasonCode::from_wire(reason_code),
+        detail,
+        reason_code,
+    )
 }
 
-fn classify_authoring_reason_code(
-    reason: &str,
+fn classify_reason(
+    reason: arkret_wire::ReasonCode,
     detail: String,
     code: &str,
 ) -> MessageAuthoringFailure {
     use arkret_wire::ReasonCode;
     match reason {
-        arkret_wire::ErrorCode::EPOCH_MISMATCH => {
-            MessageAuthoringFailure::EncryptionContextChanged { detail }
-        }
-        ReasonCode::EPOCH_UPDATE_REQUIRED => MessageAuthoringFailure::EpochCommitPending { detail },
-        ReasonCode::DUPLICATE_CONFLICT => MessageAuthoringFailure::DuplicateConflict { detail },
-        ReasonCode::RATE_LIMITED
-        | ReasonCode::EXTERNAL_RATE_LIMITED
-        | ReasonCode::BACKEND_UNAVAILABLE => {
+        ReasonCode::DuplicateConflict => MessageAuthoringFailure::DuplicateConflict { detail },
+        ReasonCode::RateLimited
+        | ReasonCode::ExternalRateLimited
+        | ReasonCode::BackendUnavailable => {
             MessageAuthoringFailure::DependencyUnavailable { detail }
         }
-        ReasonCode::SIGNAL_PLAINTEXT_FORBIDDEN | ReasonCode::SERVICE_NOT_PLAINTEXT_VISIBLE => {
-            MessageAuthoringFailure::PlaintextRefused { detail }
-        }
-        ReasonCode::POLICY_REVISION_GAP | ReasonCode::DECRYPTION_PENDING => {
+        ReasonCode::SignalPlaintextForbidden
+        | ReasonCode::ServiceNotPlaintextVisible
+        | ReasonCode::MlsActivationRequired => MessageAuthoringFailure::PlaintextRefused { detail },
+        ReasonCode::PolicyRevisionGap | ReasonCode::DecryptionPending => {
             MessageAuthoringFailure::AuthorizationPending { detail }
         }
         _ => MessageAuthoringFailure::Refused {
@@ -348,7 +423,10 @@ mod tests {
                 "stale epoch",
             )),
         });
-        assert_eq!(failure.recovery(), MessageAuthoringRecovery::ReEncrypt);
+        assert_eq!(
+            failure.recovery(),
+            MessageAuthoringRecovery::RefreshGroupAndReEncrypt
+        );
         assert!(!failure.is_not_ready());
     }
 
@@ -389,6 +467,92 @@ mod tests {
     fn a_plaintext_refusal_never_becomes_a_retry() {
         let failure =
             classify_authority_rejection(arkret_wire::ReasonCode::SIGNAL_PLAINTEXT_FORBIDDEN);
+        assert!(matches!(
+            failure,
+            MessageAuthoringFailure::PlaintextRefused { .. }
+        ));
+        assert_eq!(failure.recovery(), MessageAuthoringRecovery::FailClosed);
+    }
+
+    #[test]
+    fn an_uncovered_checkpoint_problem_pauses_for_the_repair_commit() {
+        let problem = problem_with_reason(
+            "failed_precondition",
+            arkret_wire::ReasonCode::EPOCH_UPDATE_REQUIRED,
+        );
+        assert_eq!(
+            MlsSendRefusal::from_problem(&problem),
+            Some(MlsSendRefusal::EpochUpdateRequired)
+        );
+        let failure = classify_message_authoring_error(&Error::Api {
+            status: 409,
+            error: Box::new(problem),
+        });
+        assert!(matches!(
+            failure,
+            MessageAuthoringFailure::EpochCommitPending { .. }
+        ));
+        assert_eq!(
+            failure.recovery(),
+            MessageAuthoringRecovery::WaitForEpochCommit
+        );
+    }
+
+    #[test]
+    fn send_gate_identity_comes_from_registered_codes_not_detail_text() {
+        let wording = arkret_wire::Problem::new(
+            "conflict",
+            409,
+            "epoch_mismatch: epoch_update_required mls_governance_binding_stale",
+        );
+        assert_eq!(MlsSendRefusal::from_problem(&wording), None);
+        let failure = classify_message_authoring_error(&Error::Api {
+            status: 409,
+            error: Box::new(wording),
+        });
+        assert_eq!(failure.recovery(), MessageAuthoringRecovery::FailClosed);
+
+        // The pause reason only counts under its registered outer code.
+        let misplaced =
+            problem_with_reason("conflict", arkret_wire::ReasonCode::EPOCH_UPDATE_REQUIRED);
+        assert_eq!(MlsSendRefusal::from_problem(&misplaced), None);
+        assert_eq!(
+            classify_message_authoring_error(&Error::Api {
+                status: 409,
+                error: Box::new(misplaced),
+            })
+            .recovery(),
+            MessageAuthoringRecovery::FailClosed
+        );
+    }
+
+    #[test]
+    fn submit_rejection_reasons_split_refresh_from_pause() {
+        assert_eq!(
+            MlsSendRefusal::from_rejection_reason(arkret_wire::ErrorCode::EPOCH_MISMATCH),
+            Some(MlsSendRefusal::EpochMismatch)
+        );
+        assert_eq!(
+            classify_authority_rejection(arkret_wire::ErrorCode::EPOCH_MISMATCH).recovery(),
+            MessageAuthoringRecovery::RefreshGroupAndReEncrypt
+        );
+        assert_eq!(
+            MlsSendRefusal::from_rejection_reason(
+                arkret_wire::ReasonCode::MLS_GOVERNANCE_BINDING_STALE
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn plaintext_after_activation_is_a_plaintext_refusal() {
+        let failure = classify_message_authoring_error(&Error::Api {
+            status: 409,
+            error: Box::new(problem_with_reason(
+                "failed_precondition",
+                arkret_wire::ReasonCode::MLS_ACTIVATION_REQUIRED,
+            )),
+        });
         assert!(matches!(
             failure,
             MessageAuthoringFailure::PlaintextRefused { .. }
