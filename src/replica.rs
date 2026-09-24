@@ -11,7 +11,7 @@ use arkret_models_collaboration::sync_frames::account_sync::{
 use arkret_wire::{
     AuthorityBundleRequest, CommitStreamHead, CommitStreamRef, CommittedEventView, ReadableFloor,
     RealmAuthorityBundle, RealmId, RealmSnapshotId, RealmStateSnapshot, StreamScanDirection,
-    StreamScanOutcome, StreamScanRequest,
+    StreamScanOutcome, StreamScanRequest, TypedCurrentResult,
 };
 
 use crate::{Error, Result};
@@ -27,6 +27,34 @@ pub struct StreamReplica {
 #[derive(Clone, Debug, PartialEq)]
 pub struct VerifiedScanPage {
     rows: Vec<CommittedEventView>,
+}
+
+/// Current rows committed by one exact signed snapshot immediately before a
+/// stream's readable floor. The carrier contains no rows from another stream
+/// and cannot be constructed from shape-only staging.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VerifiedFloorSnapshot {
+    rows: Vec<TypedCurrentResult>,
+    head: CommitStreamHead,
+    governance_generation: u64,
+}
+
+impl VerifiedFloorSnapshot {
+    pub fn rows(&self) -> &[TypedCurrentResult] {
+        &self.rows
+    }
+
+    pub fn into_rows(self) -> Vec<TypedCurrentResult> {
+        self.rows
+    }
+
+    pub fn head(&self) -> &CommitStreamHead {
+        &self.head
+    }
+
+    pub fn governance_generation(&self) -> u64 {
+        self.governance_generation
+    }
 }
 
 impl VerifiedScanPage {
@@ -239,7 +267,7 @@ impl RealmReplica {
         snapshot: &RealmStateSnapshot,
         freshness: &RealmAuthorityFreshness,
         keys: &dyn RealmAuthorityKeyDirectory,
-    ) -> Result<()> {
+    ) -> Result<VerifiedFloorSnapshot> {
         basis
             .validate()
             .map_err(|error| Error::Protocol(error.to_string()))?;
@@ -260,7 +288,32 @@ impl RealmReplica {
                 "snapshot window basis does not anchor the readable floor".to_owned(),
             ));
         }
-        self.install_verified_snapshot_heads(snapshot, &basis.snapshot_ref, freshness, keys)
+        // A product installer may consume only rows whose single source
+        // stream is this signed predecessor. Multi-stream snapshots need a
+        // per-stream verified witness set and remain outside this narrow API.
+        if snapshot.visible_stream_heads.len() != 1
+            || snapshot.current_state_entries.iter().any(|row| {
+                let source = match row {
+                    TypedCurrentResult::Value {
+                        source_stream_ref, ..
+                    }
+                    | TypedCurrentResult::MessageReactions {
+                        source_stream_ref, ..
+                    } => source_stream_ref,
+                };
+                source != stream_ref
+            })
+        {
+            return Err(Error::Protocol(
+                "floor snapshot current rows require one exact source stream".to_owned(),
+            ));
+        }
+        self.install_verified_snapshot_heads(snapshot, &basis.snapshot_ref, freshness, keys)?;
+        Ok(VerifiedFloorSnapshot {
+            rows: snapshot.current_state_entries.clone(),
+            head: head.clone(),
+            governance_generation: snapshot.governance_generation,
+        })
     }
 
     pub fn install_snapshot(&mut self, snapshot: RealmStateSnapshot) -> Result<()> {
@@ -861,6 +914,89 @@ mod tests {
             floor_commit_id: arkret_wire::RealmCommitId::from_digest([0x55; 32]),
             floor_reason: ReadableFloorReason::MembershipJoin,
         };
+        let mut current_snapshot = snapshot.clone();
+        let genesis_head = CommitStreamHead {
+            stream_ref: stream_ref.clone(),
+            stream_position: 0,
+            commit_id: genesis_commit.commit_id.clone(),
+        };
+        let genesis_value = arkret_models_collaboration::events_payloads::realm::RealmGenesis::new(
+            arkret_models_collaboration::events_payloads::realm::RealmPurpose::Collaboration,
+            arkret_wire::GenesisSalt::new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap(),
+            arkret_wire::TrustDomainId::new("ak:trust_domain:server.example").unwrap(),
+            arkret_wire::SecurityClass::Standard,
+            arkret_wire::DidCoreId::new("ak:did_core:web:station-a.example").unwrap(),
+            arkret_wire::JoinRule::Invite,
+            arkret_wire::HistoryAccess::SinceJoin,
+            arkret_wire::Discoverability::Listed,
+            None,
+            None,
+        )
+        .unwrap();
+        let genesis_revision = arkret_wire::CurrentRevision {
+            commit_id: genesis_commit.commit_id.clone(),
+            stream_position: 0,
+        };
+        let signed_rows = vec![
+            arkret_wire::TypedCurrentResult::Value {
+                selector: arkret_wire::CurrentSelector::RealmGenesis,
+                source_stream_ref: stream_ref.clone(),
+                revision: genesis_revision.clone(),
+                value: serde_json::to_value(genesis_value).unwrap(),
+            },
+            arkret_wire::TypedCurrentResult::Value {
+                selector: arkret_wire::CurrentSelector::RealmAuthorityRoot,
+                source_stream_ref: stream_ref.clone(),
+                revision: genesis_revision,
+                value: serde_json::json!({
+                    "controller_actor_id": genesis.actor_id.clone(),
+                    "controller_epoch": 0,
+                    "authority_generation": 0,
+                }),
+            },
+        ];
+        current_snapshot.visible_stream_heads = vec![genesis_head.clone()];
+        current_snapshot.current_state_entries = signed_rows.clone();
+        sign_snapshot(&mut current_snapshot);
+        let mut current_basis = basis.clone();
+        current_basis.snapshot_ref = current_snapshot.snapshot_id.clone();
+        current_basis.anchor_position = Some(1);
+        current_basis.anchor_commit_ref = Some(ordinary_commit.commit_id.clone());
+        let current_floor = ReadableFloor {
+            oldest_position: 1,
+            floor_commit_id: ordinary_commit.commit_id.clone(),
+            floor_reason: ReadableFloorReason::RetentionPruned,
+        };
+        let mut bad_signature = current_snapshot.clone();
+        bad_signature.signature =
+            crate::test_fixtures::detached_signature(DetachedSignatureContext::RealmSnapshot);
+        let before_bad_signature = replica.clone();
+        assert!(
+            replica
+                .install_verified_floor_predecessor(
+                    &stream_ref,
+                    &current_basis,
+                    &current_floor,
+                    &bad_signature,
+                    &freshness,
+                    &keys,
+                )
+                .is_err()
+        );
+        assert_eq!(replica, before_bad_signature);
+        let current_carrier = replica
+            .clone()
+            .install_verified_floor_predecessor(
+                &stream_ref,
+                &current_basis,
+                &current_floor,
+                &current_snapshot,
+                &freshness,
+                &keys,
+            )
+            .unwrap();
+        assert_eq!(current_carrier.rows(), signed_rows);
+        assert_eq!(current_carrier.head(), &genesis_head);
         let mut floor_replica = replica.clone();
         floor_replica
             .install_verified_floor_predecessor(

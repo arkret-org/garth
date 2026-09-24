@@ -101,7 +101,7 @@ pub use projection::{
     DecodedMessage, InboundDecoder, RealmProjectionFrame, RealmProjectionState,
     account_batch_to_client_events, account_frame_to_client_events, reconcile_realm_projection,
 };
-pub use replica::{RealmReplica, StreamReplica, VerifiedScanPage};
+pub use replica::{RealmReplica, StreamReplica, VerifiedFloorSnapshot, VerifiedScanPage};
 pub use run::{
     AccountRunner, RunError, RunErrorClass, RunEvent, RunOptions, RunResult, RunStopReason,
     SyncLoopControl, TransportProvider, classify_error,
