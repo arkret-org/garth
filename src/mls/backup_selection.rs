@@ -93,7 +93,7 @@ pub fn recovery_setup_prompt_required(account_recovery_configured: Option<bool>)
 #[cfg(test)]
 mod tests {
     use arkret_models_crypto::{BackupActiveSeriesPointer, BackupKind, KeyBackupSummaryEncryption};
-    use arkret_wire::{AccountId, BackupId, DidCoreId, Hash, RealmCommitId};
+    use arkret_wire::{AccountId, BackupId, DidCoreId, Hash, NonEmptyString, RealmCommitId};
 
     use super::*;
     use crate::test_fixtures::{actor_id, at, device_id, realm_id};
@@ -118,10 +118,15 @@ mod tests {
             actor_id: actor_id(),
             device_id: Some(device_id()),
             backup_kind: BackupKind::SecretStorage,
-            backup_version: "kb_1".to_owned(),
+            backup_version: NonEmptyString::new("kb_1").unwrap(),
+            supersedes_id: None,
+            supersedes_digest: None,
+            source_commit_ref: None,
+            recovery_policy_ref: None,
             created_at: at(u32::try_from(seq).unwrap()),
             updated_at: None,
             expires_at: None,
+            retention: None,
             ciphertext_digest: Hash::new(format!("sha256:{}", "b".repeat(64))).unwrap(),
             encryption: KeyBackupSummaryEncryption {
                 recipient_method,
