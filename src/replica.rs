@@ -206,9 +206,10 @@ impl RealmReplica {
 
     /// Admit the narrow `before_readable_floor` window whose exact signed
     /// snapshot head is immediately before its first readable Commit. The
-    /// subsequent `apply_verified_scan(After(Some(anchor_position)))` checks
-    /// the floor Commit ID and predecessor. Any other window shape remains
-    /// unresolved until its exact snapshot/reconstruction contract is wired.
+    /// basis names the floor Commit itself; the subsequent verified scan
+    /// resumes after the signed snapshot head and checks the floor Commit ID.
+    /// Other window shapes remain unresolved until their exact snapshot and
+    /// reconstruction contract is wired.
     pub fn install_verified_floor_predecessor(
         &mut self,
         stream_ref: &CommitStreamRef,
@@ -229,8 +230,8 @@ impl RealmReplica {
         if basis.anchor_kind != StreamWindowAnchorKind::BeforeReadableFloor
             || basis.snapshot_ref != snapshot.snapshot_id
             || basis.governance_generation != snapshot.governance_generation
-            || basis.anchor_position != Some(head.stream_position)
-            || basis.anchor_commit_ref.as_ref() != Some(&head.commit_id)
+            || basis.anchor_position != Some(floor.oldest_position)
+            || basis.anchor_commit_ref.as_ref() != Some(&floor.floor_commit_id)
             || head.stream_position.checked_add(1) != Some(floor.oldest_position)
             || floor.floor_reason == arkret_wire::ReadableFloorReason::StreamStart
         {
@@ -660,8 +661,8 @@ mod tests {
         );
         let basis = StreamWindowStartBasis {
             anchor_kind: StreamWindowAnchorKind::BeforeReadableFloor,
-            anchor_position: Some(snapshot_head.stream_position),
-            anchor_commit_ref: Some(snapshot_head.commit_id.clone()),
+            anchor_position: Some(snapshot_head.stream_position + 1),
+            anchor_commit_ref: Some(arkret_wire::RealmCommitId::from_digest([0x55; 32])),
             snapshot_ref: snapshot.snapshot_id.clone(),
             governance_generation: snapshot.governance_generation,
             accepted_dependency_refs: None,
