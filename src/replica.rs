@@ -114,6 +114,9 @@ impl RealmReplica {
     /// this API. The caller must have obtained the complete snapshot and must
     /// bind `expected_snapshot_id` to its formal reference; a shape-only
     /// `install_snapshot` can never populate `verified_streams`.
+    /// A historical generation is permitted only for an exact by-ref read
+    /// proven by the installed current authority chain. The current `/head`
+    /// surface must use [`Self::install_verified_current_snapshot_heads`].
     pub fn install_verified_snapshot_heads(
         &mut self,
         snapshot: &RealmStateSnapshot,
@@ -136,10 +139,7 @@ impl RealmReplica {
         let verified = verify_realm_authority_bundle(authority, freshness, keys)
             .map_err(|error| Error::Protocol(error.to_string()))?;
         validate_snapshot(snapshot, &self.realm_id)?;
-        if &snapshot.snapshot_id != expected_snapshot_id
-            || snapshot.governance_generation != verified.current_generation()
-            || snapshot.created_at > freshness.now
-        {
+        if &snapshot.snapshot_id != expected_snapshot_id || snapshot.created_at > freshness.now {
             return Err(Error::Protocol(
                 "snapshot reference, generation, or time mismatch".to_owned(),
             ));
@@ -166,9 +166,9 @@ impl RealmReplica {
         .map_err(|error| Error::Protocol(error.to_string()))?;
         let signer = arkret_wire::project_did_to_core_id(&signer_did)
             .map_err(|error| Error::Protocol(error.to_string()))?;
-        if &signer != verified.current_service_id() {
+        if verified.authority_service_at(snapshot.governance_generation) != Some(&signer) {
             return Err(Error::Protocol(
-                "snapshot signer is not the current governance Station".to_owned(),
+                "snapshot signer is not the Station at its governance generation".to_owned(),
             ));
         }
         let key = keys
@@ -202,6 +202,27 @@ impl RealmReplica {
         }
         self.verified_streams = heads;
         Ok(())
+    }
+
+    /// Verify a current `/head` snapshot. Unlike an exact historical by-ref
+    /// snapshot, its generation must equal the fresh bundle's current term.
+    pub fn install_verified_current_snapshot_heads(
+        &mut self,
+        snapshot: &RealmStateSnapshot,
+        freshness: &RealmAuthorityFreshness,
+        keys: &dyn RealmAuthorityKeyDirectory,
+    ) -> Result<()> {
+        if self
+            .authority
+            .as_ref()
+            .map(|bundle| bundle.current_generation)
+            != Some(snapshot.governance_generation)
+        {
+            return Err(Error::Protocol(
+                "current snapshot has another governance generation".to_owned(),
+            ));
+        }
+        self.install_verified_snapshot_heads(snapshot, &snapshot.snapshot_id, freshness, keys)
     }
 
     /// Admit the narrow `before_readable_floor` window whose exact signed
@@ -632,6 +653,22 @@ mod tests {
         assert_eq!(
             snapshot_replica.verified_head(&stream_ref),
             Some(&snapshot_head)
+        );
+        let mut current_snapshot_replica = replica.clone();
+        current_snapshot_replica
+            .install_verified_current_snapshot_heads(&snapshot, &freshness, &keys)
+            .unwrap();
+        assert_eq!(
+            current_snapshot_replica.verified_head(&stream_ref),
+            Some(&snapshot_head)
+        );
+        let mut older_term_snapshot = snapshot.clone();
+        older_term_snapshot.governance_generation = 1;
+        assert!(
+            replica
+                .clone()
+                .install_verified_current_snapshot_heads(&older_term_snapshot, &freshness, &keys)
+                .is_err()
         );
         let wrong_nonce = RealmAuthorityFreshness::new(
             now,
