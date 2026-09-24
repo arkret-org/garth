@@ -413,9 +413,18 @@ where
         &self,
         transaction_id: &TransactionId,
     ) -> Result<Option<SecurityTransaction>> {
-        let local = self.store.load(transaction_id)?.ok_or_else(|| {
+        let mut local = self.store.load(transaction_id)?.ok_or_else(|| {
             Error::Protocol("security transaction has no local public plan".to_owned())
         })?;
+        if let Some(resource) = local.last_observed_resource.clone()
+            && resource.terminal_outcome.is_some()
+            && local.staged_secret_ref.is_some()
+            && local.pending_continue.is_none()
+        {
+            validate_observed_resource(&local, &resource)?;
+            persist_observation(&self.store, &mut local, true).await?;
+            return Ok(Some(resource));
+        }
         let Some(pending) = local.pending_continue else {
             return Ok(None);
         };
