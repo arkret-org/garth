@@ -13,7 +13,7 @@ use std::time::Duration;
 
 use arkret_http_client::ClientRequestOptions;
 use arkret_retry::{Jitter, RetryPolicy};
-use arkret_wire::{AuthoritySubmitRequest, EventId, RealmCommit};
+use arkret_wire::{AuthoritySubmitRequest, EventId, Problem, RealmCommit};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -309,6 +309,10 @@ pub enum OutboundEngineOutcome {
     Failed {
         item: Box<SendQueueItem>,
         error: String,
+        /// The Station's typed problem when the request itself was refused,
+        /// so the interactive caller classifies it by registered code rather
+        /// than by the rendered text kept on the durable item.
+        problem: Option<Box<Problem>>,
     },
 }
 
@@ -454,6 +458,10 @@ where
                     });
                 }
                 let recorded = message.clone();
+                let problem = match error {
+                    Error::Api { error, .. } => Some(error),
+                    _ => None,
+                };
                 let item = self
                     .store
                     .mutate_outbound(move |queue| {
@@ -470,6 +478,7 @@ where
                 Ok(OutboundEngineOutcome::Failed {
                     item: Box::new(item),
                     error: message,
+                    problem,
                 })
             }
         }
@@ -741,10 +750,15 @@ mod tests {
             .submit_next(&authority, &ClientRequestOptions::default())
             .await
             .unwrap();
-        let OutboundEngineOutcome::Failed { item, .. } = outcome else {
+        let OutboundEngineOutcome::Failed { item, problem, .. } = outcome else {
             panic!("a protocol violation is not retryable");
         };
         assert_eq!(item.status, SendQueueStatus::Failed);
+        assert_eq!(
+            problem.as_deref().map(Problem::code),
+            Some("param_invalid"),
+            "the typed Station problem reaches the caller"
+        );
     }
 
     #[tokio::test]
