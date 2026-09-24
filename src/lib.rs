@@ -14,8 +14,10 @@ pub mod actor_profile_directory;
 pub mod agent_draft_pending_intent_projection;
 pub mod authority;
 pub mod direct_conversation;
+pub mod exact_snapshot;
 pub mod executor;
 pub mod facade;
+pub mod historical_station_keys;
 pub mod maybe_send;
 pub mod message_authoring;
 pub mod mls;
@@ -68,12 +70,17 @@ pub use arkret_wire::{
 pub use authority::{AuthorityClient, AuthorityTransport, QueuedSubmission, SubmissionState};
 pub use direct_conversation::{DirectConversationAction, direct_conversation_action};
 pub use error::{Error, Result};
+pub use exact_snapshot::{ExactSnapshotRefusal, exact_snapshot_read_advertised};
 #[cfg(feature = "native")]
 pub use executor::NativeExecutor;
 #[cfg(all(feature = "wasm", target_arch = "wasm32"))]
 pub use executor::WasmExecutor;
 pub use executor::{Executor, HostClock, SystemClock};
 pub use facade::ArkretClient;
+pub use historical_station_keys::{
+    fetch_historical_station_key_directory, historical_station_key_directory,
+    required_historical_station_ids,
+};
 pub use maybe_send::{MaybeSend, MaybeSendSync};
 pub use message_authoring::{
     MessageAuthoringContent, MessageAuthoringFailure, MessageAuthoringIntent,

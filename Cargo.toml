@@ -63,7 +63,10 @@ zeroize = { version = "1.9.0", default-features = false, features = ["derive"] }
 gloo-timers = { version = "0.4", default-features = false, features = ["futures"], optional = true }
 
 [dev-dependencies]
+arkret-signatures = { version = "0.3.0", path = "../arkret-rust-sdk/crates/signatures", default-features = false, features = ["collaboration", "webvh"] }
 arkret-wire = { version = "0.3.0", path = "../arkret-rust-sdk/crates/wire", default-features = false, features = ["test-support"] }
+rand_chacha = "0.10"
+rand_core = "0.10"
 tempfile = "3.23.0"
 tokio = { version = "1.53.1", default-features = false, features = ["macros", "rt", "sync", "time"] }
 

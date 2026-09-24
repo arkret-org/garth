@@ -23,6 +23,10 @@ pub enum Error {
     Api { status: u16, error: Box<Problem> },
     #[error("account stream interrupted: {0:?}")]
     AccountStreamInterrupt(AccountStreamInterrupt),
+    /// An exact Realm Snapshot by-ref read was refused on a registered
+    /// surface. The window naming that reference fails closed.
+    #[error("exact Realm snapshot read refused: {0:?}")]
+    ExactSnapshotRefused(crate::exact_snapshot::ExactSnapshotRefusal),
     #[error("protocol error: {0}")]
     Protocol(String),
     #[error("storage error: {0}")]

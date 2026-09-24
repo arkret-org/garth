@@ -181,6 +181,10 @@ pub fn classify_error(error: &Error) -> RunErrorClass {
             RunErrorClass::ProtocolViolation
         }
         Error::AccountStreamInterrupt(_) => RunErrorClass::RetryableTransport,
+        Error::ExactSnapshotRefused(crate::exact_snapshot::ExactSnapshotRefusal::Unavailable) => {
+            RunErrorClass::RetryableTransport
+        }
+        Error::ExactSnapshotRefused(_) => RunErrorClass::ProtocolViolation,
     }
 }
 

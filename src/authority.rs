@@ -12,13 +12,15 @@ use arkret_models_collaboration::authority_commit::{
 use arkret_wire::{
     AuthorityBundleRequest, AuthorityCommitStatus, AuthorityHandoffRequest,
     AuthorityRejectionStatus, AuthoritySubmitOutcome, AuthoritySubmitRequest, EventId,
-    RealmAuthorityBundle, RealmAuthorityHandoff, RealmCommit, StreamScanOutcome, StreamScanRequest,
+    RealmAuthorityBundle, RealmAuthorityHandoff, RealmCommit, RealmId, RealmSnapshotId,
+    RealmStateSnapshot, StreamScanOutcome, StreamScanRequest,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, MaybeSend, MaybeSendSync, Result};
 
-/// Runtime-neutral boundary over the four current authority operations.
+/// Runtime-neutral boundary over the current authority operations and the
+/// exact by-ref read of a Snapshot that anchors a verified stream window.
 pub trait AuthorityTransport: MaybeSendSync {
     fn submit<'a>(
         &'a self,
@@ -41,6 +43,15 @@ pub trait AuthorityTransport: MaybeSendSync {
         request: &'a AuthorityHandoffRequest,
         options: &'a ClientRequestOptions,
     ) -> impl Future<Output = Result<RealmAuthorityHandoff>> + MaybeSend + 'a;
+
+    /// `ak.self.realm_state_snapshot.read.by_ref.v1`. Registered refusals
+    /// stay [`Error::Api`] here; [`AuthorityClient::exact_snapshot`]
+    /// classifies them.
+    fn exact_snapshot<'a>(
+        &'a self,
+        realm_id: &'a RealmId,
+        snapshot_id: &'a RealmSnapshotId,
+    ) -> impl Future<Output = Result<RealmStateSnapshot>> + MaybeSend + 'a;
 }
 
 impl AuthorityTransport for Client {
@@ -83,6 +94,16 @@ impl AuthorityTransport for Client {
     ) -> Result<RealmAuthorityHandoff> {
         Ok(self
             .install_realm_authority_handoff(request, options)
+            .await?)
+    }
+
+    async fn exact_snapshot(
+        &self,
+        realm_id: &RealmId,
+        snapshot_id: &RealmSnapshotId,
+    ) -> Result<RealmStateSnapshot> {
+        Ok(self
+            .realm_state_snapshot_by_ref(realm_id, snapshot_id)
             .await?)
     }
 }

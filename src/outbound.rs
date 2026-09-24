@@ -646,6 +646,14 @@ mod tests {
         ) -> Result<RealmAuthorityHandoff> {
             unreachable!("the outbound engine never installs a handoff")
         }
+
+        async fn exact_snapshot(
+            &self,
+            _realm_id: &arkret_wire::RealmId,
+            _snapshot_id: &arkret_wire::RealmSnapshotId,
+        ) -> Result<arkret_wire::RealmStateSnapshot> {
+            unreachable!("the outbound engine never reads a Snapshot")
+        }
     }
 
     fn engine() -> OutboundEngine<MemoryOutboundQueueStore, FixedClock> {
