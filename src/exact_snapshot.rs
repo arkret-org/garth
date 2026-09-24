@@ -26,9 +26,8 @@ pub enum ExactSnapshotRefusal {
     Unavailable,
     /// `realm_state_snapshot_authority_unverified`.
     AuthorityUnverified,
-    /// `not_found`: the Realm or reference is not visible to this caller.
-    NotVisible,
-    /// `capability_denied`.
+    /// `capability_denied`: the universal surface for every authorization
+    /// failure of this read (the Realm or reference is not the caller's).
     CapabilityDenied,
 }
 
@@ -43,7 +42,6 @@ impl ExactSnapshotRefusal {
         match code {
             ErrorCode::RealmStateSnapshotUnavailable => Some(Self::Unavailable),
             ErrorCode::RealmStateSnapshotAuthorityUnverified => Some(Self::AuthorityUnverified),
-            ErrorCode::NotFound => Some(Self::NotVisible),
             ErrorCode::CapabilityDenied => Some(Self::CapabilityDenied),
             _ => None,
         }
@@ -228,7 +226,6 @@ mod tests {
                 503,
                 ExactSnapshotRefusal::Unavailable,
             ),
-            ("not_found", 404, ExactSnapshotRefusal::NotVisible),
             (
                 "capability_denied",
                 403,
@@ -302,7 +299,8 @@ mod tests {
                 403,
                 Some(ExactSnapshotRefusal::AuthorityUnverified),
             ),
-            ("not_found", 404, Some(ExactSnapshotRefusal::NotVisible)),
+            // The operation registers no `not_found`.
+            ("not_found", 404, None),
             (
                 "capability_denied",
                 403,
