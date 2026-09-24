@@ -477,7 +477,6 @@ fn validate_realm_entry_bindings(realm_id: &RealmId, entry: &RealmSyncEntry) -> 
                     .as_ref()
                     .map(|baseline| &baseline.coverage.stream_heads)
             });
-        let mut snapshot_generation = None;
         for stream in streams {
             if stream.stream_ref.realm_id() != realm_id {
                 return Err(Error::Protocol(
@@ -500,23 +499,11 @@ fn validate_realm_entry_bindings(realm_id: &RealmId, entry: &RealmSyncEntry) -> 
                 }
                 _ => {}
             }
-            if let Some(basis) = &stream.window_start_basis {
-                if snapshot_generation
-                    .replace(basis.governance_generation)
-                    .is_some_and(|generation| generation != basis.governance_generation)
-                {
-                    return Err(Error::Protocol(
-                        "timeline windows mix governance generations".to_owned(),
-                    ));
-                }
-                if entry.current.as_ref().is_some_and(|current| {
-                    basis.governance_generation != current.governance_generation
-                }) {
-                    return Err(Error::Protocol(
-                        "timeline snapshot basis uses another governance generation".to_owned(),
-                    ));
-                }
-            }
+            // A window may reference a snapshot from an earlier authority
+            // generation than the typed current result, and sibling streams
+            // may have distinct historical anchors. This shape validator must
+            // not promote either claim to verified input: the consuming lane
+            // checks each exact snapshot against the fresh authority chain.
             if let Some(frozen_heads) = frozen_heads {
                 let Some(head) = frozen_heads
                     .iter()
@@ -859,7 +846,7 @@ mod tests {
     }
 
     #[test]
-    fn timeline_snapshot_generation_must_match_typed_current() {
+    fn historical_timeline_snapshot_generation_is_only_a_shape_claim() {
         let head = stream_head(7);
         let entry = RealmSyncEntry {
             streams: Some(vec![RealmStreamWindow {
@@ -875,7 +862,7 @@ mod tests {
                     anchor_position: None,
                     anchor_commit_ref: None,
                     snapshot_ref: RealmSnapshotId::from_digest([0x77; 32]),
-                    governance_generation: 8,
+                    governance_generation: 0,
                     accepted_dependency_refs: None,
                 }),
                 e2ee_epoch: None,
@@ -884,7 +871,7 @@ mod tests {
             ..RealmSyncEntry::default()
         };
 
-        assert!(realm_entry_to_client_events(&realm_id(), &entry).is_err());
+        assert!(realm_entry_to_client_events(&realm_id(), &entry).is_ok());
     }
 
     #[test]

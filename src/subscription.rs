@@ -67,6 +67,23 @@ pub trait AccountBatchProjector {
         &'a self,
         batch: &'a AccountSubscribeBatch,
     ) -> impl Future<Output = Result<()>> + 'a;
+
+    /// Commit one batch and its next Account checkpoint. The default keeps
+    /// the established replay-safe order; projectors that own the cursor's
+    /// durable store may override this to write product state and checkpoint
+    /// in the same local transaction.
+    fn project_and_checkpoint<'a, C: CursorStore>(
+        &'a self,
+        batch: &'a AccountSubscribeBatch,
+        scope: CursorScope,
+        checkpoint: AccountCursorCheckpoint,
+        cursors: &'a C,
+    ) -> impl Future<Output = Result<()>> + 'a {
+        async move {
+            self.project(batch).await?;
+            cursors.save_account_checkpoint(scope, checkpoint).await
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -160,14 +177,15 @@ where
                         }
                         return Err(error);
                     }
-                    projector.project(&batch).await?;
-                    self.cursors
-                        .save_account_checkpoint(
+                    projector
+                        .project_and_checkpoint(
+                            &batch,
                             scope.clone(),
                             AccountCursorCheckpoint {
                                 cursor: batch.cursor.clone(),
                                 station_cas: next_station_cas.clone(),
                             },
+                            &self.cursors,
                         )
                         .await?;
                     station_cas = next_station_cas;
