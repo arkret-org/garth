@@ -637,9 +637,7 @@ mod tests {
         let freshness = RealmAuthorityFreshness::new(
             crate::test_fixtures::at(2),
             arkret_wire::Base64UrlString::new("AAAAAAAAAAAAAAAAAAAAAA").unwrap(),
-            Duration::minutes(1),
-        )
-        .unwrap();
+        );
         let mut replica = RealmReplica::new(realm_id);
         let before = replica.clone();
 
@@ -757,7 +755,7 @@ mod tests {
             realm_id: realm_id.clone(),
             nonce: nonce.clone(),
         };
-        let freshness = RealmAuthorityFreshness::new(now, nonce, Duration::minutes(5)).unwrap();
+        let freshness = RealmAuthorityFreshness::new(now, nonce);
         let mut replica = RealmReplica::new(realm_id.clone());
         replica
             .install_verified_authority(&authority_request, bundle, &freshness, &keys)
@@ -942,9 +940,7 @@ mod tests {
         let wrong_nonce = RealmAuthorityFreshness::new(
             now,
             arkret_wire::Base64UrlString::new("CCCCCCCCCCCCCCCCCCCCCC").unwrap(),
-            Duration::minutes(5),
-        )
-        .unwrap();
+        );
         assert!(
             snapshot_replica
                 .install_verified_snapshot_heads(
