@@ -195,7 +195,7 @@ mod tests {
     }
 
     const ADVERTISED: &[&str] = &[
-        "ak.operation_bundle.station.http_core.v1",
+        "ak.operation_bundle.station.http_core_current.v1",
         "ak.operation_bundle.station.snapshot_exact_read.v1",
     ];
 
@@ -208,7 +208,7 @@ mod tests {
         let unadvertised = client(Scripted::Snapshot(Box::new(snapshot(snapshot_ref.clone()))));
         let error = unadvertised
             .exact_snapshot(
-                &station_describe(&["ak.operation_bundle.station.http_core.v1"]),
+                &station_describe(&["ak.operation_bundle.station.http_core_current.v1"]),
                 &realm_id,
                 &snapshot_ref,
             )
@@ -278,11 +278,11 @@ mod tests {
     #[test]
     fn only_the_advertised_exact_read_bundle_enables_by_ref() {
         assert!(exact_snapshot_read_advertised(&station_describe(&[
-            "ak.operation_bundle.station.http_core.v1",
+            "ak.operation_bundle.station.http_core_current.v1",
             "ak.operation_bundle.station.snapshot_exact_read.v1",
         ])));
         assert!(!exact_snapshot_read_advertised(&station_describe(&[
-            "ak.operation_bundle.station.http_core.v1",
+            "ak.operation_bundle.station.http_core_current.v1",
         ])));
     }
 
