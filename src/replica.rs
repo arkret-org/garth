@@ -1025,7 +1025,7 @@ mod tests {
         let current_floor = ReadableFloor {
             oldest_position: 1,
             floor_commit_id: ordinary_commit.commit_id.clone(),
-            floor_reason: ReadableFloorReason::RetentionPruned,
+            floor_reason: ReadableFloorReason::MembershipJoin,
         };
         let mut bad_signature = current_snapshot.clone();
         bad_signature.signature =
@@ -1134,7 +1134,7 @@ mod tests {
                 let mut value = prefix_floor.clone();
                 value.oldest_position = 1;
                 value.floor_commit_id = ordinary_commit.commit_id.clone();
-                value.floor_reason = ReadableFloorReason::RetentionPruned;
+                value.floor_reason = ReadableFloorReason::MembershipJoin;
                 value
             }),
         ] {
