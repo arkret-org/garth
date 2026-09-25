@@ -562,7 +562,7 @@ mod tests {
         AccountSubscribeRealms, RealmDetailBaseline,
     };
     use arkret_models_collaboration::sync_frames::account_sync::{
-        RealmStreamWindow, StreamWindowAnchorKind, StreamWindowStartBasis,
+        RealmStreamWindow, StreamWindowStartBasis,
     };
     use arkret_models_collaboration::sync_frames::current_results::AccountCurrentCoverage;
     use arkret_wire::{
@@ -856,7 +856,6 @@ mod tests {
                 complete: true,
                 preview_only: None,
                 window_start_basis: Some(StreamWindowStartBasis {
-                    anchor_kind: StreamWindowAnchorKind::AfterCommittedPrefix,
                     anchor_position: 0,
                     anchor_commit_ref: RealmCommitId::from_digest([0x66; 32]),
                     snapshot_ref: RealmSnapshotId::from_digest([0x77; 32]),

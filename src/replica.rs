@@ -5,9 +5,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use arkret_identity::{
     RealmAuthorityFreshness, RealmAuthorityKeyDirectory, verify_realm_authority_bundle,
 };
-use arkret_models_collaboration::sync_frames::account_sync::{
-    StreamWindowAnchorKind, StreamWindowStartBasis,
-};
+use arkret_models_collaboration::sync_frames::account_sync::StreamWindowStartBasis;
 use arkret_wire::{
     AuthorityBundleRequest, CommitStreamHead, CommitStreamRef, CommittedEventView, HistoryAccess,
     ReadableFloor, RealmAuthorityBundle, RealmId, RealmSnapshotId, RealmStateSnapshot,
@@ -30,10 +28,9 @@ pub struct VerifiedScanPage {
 }
 
 /// Current rows committed by one exact signed snapshot whose head is the
-/// Commit immediately before a limited stream window's first verified row
-/// (`before_readable_floor` or `after_committed_prefix`). The carrier contains
-/// no rows from another stream and cannot be constructed from shape-only
-/// staging.
+/// committed-prefix anchor immediately before a limited stream window's first
+/// verified row. The carrier contains no rows from another stream and cannot
+/// be constructed from shape-only staging.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VerifiedFloorSnapshot {
     rows: Vec<TypedCurrentResult>,
@@ -262,12 +259,12 @@ impl RealmReplica {
     }
 
     /// Admit a limited stream window anchored to one exact signed snapshot
-    /// head. `before_readable_floor` names the floor Commit itself and the
-    /// signed head is immediately before it; `after_committed_prefix` names
-    /// the signed head itself, the window starts right after it, and the
-    /// prefix through it must lie inside the caller's readable range. In both
-    /// shapes the subsequent verified scan resumes after the signed head and
-    /// must extend its exact Commit. A position-0 window has no basis.
+    /// head. The basis names the committed prefix: its anchor is the signed
+    /// head itself, the window starts right after it, and the anchor must not
+    /// lie before the caller's readable floor. The subsequent verified scan
+    /// resumes after the signed head and must extend its exact Commit. A
+    /// position-0 window and a window starting exactly at a nonzero readable
+    /// floor carry no basis; the latter stays preview-only.
     pub fn install_verified_floor_predecessor(
         &mut self,
         stream_ref: &CommitStreamRef,
@@ -285,19 +282,9 @@ impl RealmReplica {
             .iter()
             .find(|head| &head.stream_ref == stream_ref)
             .ok_or_else(|| Error::Protocol("snapshot omits the floor stream head".to_owned()))?;
-        let anchored = match basis.anchor_kind {
-            StreamWindowAnchorKind::BeforeReadableFloor => {
-                basis.anchor_position == floor.oldest_position
-                    && basis.anchor_commit_ref == floor.floor_commit_id
-                    && head.stream_position.checked_add(1) == Some(floor.oldest_position)
-                    && floor.floor_reason != arkret_wire::ReadableFloorReason::StreamStart
-            }
-            StreamWindowAnchorKind::AfterCommittedPrefix => {
-                basis.anchor_position == head.stream_position
-                    && basis.anchor_commit_ref == head.commit_id
-                    && floor.oldest_position <= head.stream_position
-            }
-        };
+        let anchored = basis.anchor_position == head.stream_position
+            && basis.anchor_commit_ref == head.commit_id
+            && floor.oldest_position <= head.stream_position;
         if !anchored
             || basis.snapshot_ref != snapshot.snapshot_id
             || basis.governance_generation != snapshot.governance_generation
@@ -961,17 +948,18 @@ mod tests {
                 )
                 .is_err()
         );
+        // A committed-prefix basis whose anchor is the signed head itself and
+        // whose head is not earlier than the caller readable floor.
         let basis = StreamWindowStartBasis {
-            anchor_kind: StreamWindowAnchorKind::BeforeReadableFloor,
-            anchor_position: snapshot_head.stream_position + 1,
-            anchor_commit_ref: arkret_wire::RealmCommitId::from_digest([0x55; 32]),
+            anchor_position: snapshot_head.stream_position,
+            anchor_commit_ref: snapshot_head.commit_id.clone(),
             snapshot_ref: snapshot.snapshot_id.clone(),
             governance_generation: snapshot.governance_generation,
             accepted_dependency_refs: None,
         };
         let restricted_floor = ReadableFloor {
-            oldest_position: snapshot_head.stream_position + 1,
-            floor_commit_id: arkret_wire::RealmCommitId::from_digest([0x55; 32]),
+            oldest_position: snapshot_head.stream_position,
+            floor_commit_id: snapshot_head.commit_id.clone(),
             floor_reason: ReadableFloorReason::MembershipJoin,
         };
         let mut current_snapshot = snapshot.clone();
@@ -1018,53 +1006,38 @@ mod tests {
         current_snapshot.visible_stream_heads = vec![genesis_head.clone()];
         current_snapshot.current_state_entries = signed_rows.clone();
         sign_snapshot(&mut current_snapshot);
-        let mut current_basis = basis.clone();
-        current_basis.snapshot_ref = current_snapshot.snapshot_id.clone();
-        current_basis.anchor_position = 1;
-        current_basis.anchor_commit_ref = ordinary_commit.commit_id.clone();
-        let current_floor = ReadableFloor {
+        // A snapshot whose head precedes the caller readable floor has no
+        // Commit of the readable range before the window; a window starting
+        // exactly at a nonzero floor carries no basis and stays preview-only.
+        let floor_start_basis = StreamWindowStartBasis {
+            anchor_position: 1,
+            anchor_commit_ref: ordinary_commit.commit_id.clone(),
+            snapshot_ref: current_snapshot.snapshot_id.clone(),
+            governance_generation: current_snapshot.governance_generation,
+            accepted_dependency_refs: None,
+        };
+        let floor_start = ReadableFloor {
             oldest_position: 1,
             floor_commit_id: ordinary_commit.commit_id.clone(),
             floor_reason: ReadableFloorReason::MembershipJoin,
         };
-        let mut bad_signature = current_snapshot.clone();
-        bad_signature.signature =
-            crate::test_fixtures::detached_signature(DetachedSignatureContext::RealmSnapshot);
-        let before_bad_signature = replica.clone();
+        let before_floor_start = replica.clone();
         assert!(
             replica
                 .install_verified_floor_predecessor(
                     &stream_ref,
-                    &current_basis,
-                    &current_floor,
-                    &bad_signature,
+                    &floor_start_basis,
+                    &floor_start,
+                    &current_snapshot,
                     &freshness,
                     &keys,
                 )
                 .is_err()
         );
-        assert_eq!(replica, before_bad_signature);
-        let current_carrier = replica
-            .clone()
-            .install_verified_floor_predecessor(
-                &stream_ref,
-                &current_basis,
-                &current_floor,
-                &current_snapshot,
-                &freshness,
-                &keys,
-            )
-            .unwrap();
-        assert_eq!(current_carrier.rows(), signed_rows);
-        assert_eq!(current_carrier.head(), &genesis_head);
-        assert_eq!(
-            current_carrier.history_access(),
-            arkret_wire::HistoryAccess::AllHistoryForCurrentMembers
-        );
-        // `after_committed_prefix` names the signed head itself; the caller
-        // may read the whole prefix, so the stream-start floor is admitted.
+        assert_eq!(replica, before_floor_start);
+        // The basis names the signed head itself; the caller may read the
+        // whole prefix, so the stream-start floor is admitted.
         let prefix_basis = StreamWindowStartBasis {
-            anchor_kind: StreamWindowAnchorKind::AfterCommittedPrefix,
             anchor_position: 0,
             anchor_commit_ref: genesis_commit.commit_id.clone(),
             snapshot_ref: current_snapshot.snapshot_id.clone(),
@@ -1076,6 +1049,23 @@ mod tests {
             floor_commit_id: genesis_commit.commit_id.clone(),
             floor_reason: ReadableFloorReason::StreamStart,
         };
+        let mut bad_signature = current_snapshot.clone();
+        bad_signature.signature =
+            crate::test_fixtures::detached_signature(DetachedSignatureContext::RealmSnapshot);
+        let before_bad_signature = replica.clone();
+        assert!(
+            replica
+                .install_verified_floor_predecessor(
+                    &stream_ref,
+                    &prefix_basis,
+                    &prefix_floor,
+                    &bad_signature,
+                    &freshness,
+                    &keys,
+                )
+                .is_err()
+        );
+        assert_eq!(replica, before_bad_signature);
         let mut prefix_replica = replica.clone();
         let prefix_carrier = prefix_replica
             .install_verified_floor_predecessor(
@@ -1088,6 +1078,11 @@ mod tests {
             )
             .unwrap();
         assert_eq!(prefix_carrier.rows(), signed_rows);
+        assert_eq!(prefix_carrier.head(), &genesis_head);
+        assert_eq!(
+            prefix_carrier.history_access(),
+            arkret_wire::HistoryAccess::AllHistoryForCurrentMembers
+        );
         assert_eq!(
             prefix_replica.verified_head(&stream_ref),
             Some(&genesis_head)
