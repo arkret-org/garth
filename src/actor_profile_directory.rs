@@ -404,7 +404,11 @@ mod tests {
             },
             DidCoreId::new(PEER).unwrap(),
             DidCoreId::new(STATION).unwrap(),
-            json!({"object": profile_value(None, display_name)}),
+            json!({"object": {
+                "principal_id": PEER,
+                "actor_kind": "user",
+                "display_name": display_name
+            }}),
             instant(0),
         )
         .unwrap();
@@ -412,30 +416,30 @@ mod tests {
             .refresh_content_bound_identity_with_digest_suite(arkret_canonical::DigestSuite::Sha256)
             .unwrap();
         let profile_id = ActorProfileId::from_event_id(&event.event_id);
+        let profile_commit = crate::test_fixtures::commit(
+            7,
+            &event,
+            arkret_wire::CommitStreamRef::Realm {
+                realm_id: RealmId::new(PEER_PCR).unwrap(),
+            },
+            1,
+        );
         ResolvedActorProfile {
             actor_id: event.actor_id.clone(),
-            actor_profile: serde_json::from_value(profile_value(
-                Some(profile_id.as_str()),
-                display_name,
-            ))
+            actor_profile: serde_json::from_value(json!({
+                "id": profile_id.as_str(),
+                "schema": "ak.schema.actor_profile.v1",
+                "realm_id": PEER_PCR,
+                "principal_id": PEER,
+                "actor_kind": "user",
+                "display_name": display_name,
+                "created_at": "2026-08-11T00:00:00.000Z"
+            }))
             .unwrap(),
             profile_event: event,
+            profile_commit,
+            account_status: None,
         }
-    }
-
-    fn profile_value(id: Option<&str>, display_name: &str) -> serde_json::Value {
-        let mut value = json!({
-            "schema": "ak.schema.actor_profile.v1",
-            "realm_id": PEER_PCR,
-            "principal_id": PEER,
-            "actor_kind": "user",
-            "display_name": display_name,
-            "created_at": "2026-08-11T00:00:00.000Z"
-        });
-        if let Some(id) = id {
-            value["id"] = json!(id);
-        }
-        value
     }
 
     fn peer_actor() -> ActorId {
