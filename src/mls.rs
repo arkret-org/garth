@@ -34,7 +34,7 @@ pub use self_preservation::{
 pub use status::{InstalledMlsEpoch, MlsRuntimeError, MlsRuntimeStatus, installed_mls_epoch};
 pub use welcome_admission::{
     LocalMlsEndpoint, admit_welcome, mls_group_id_for_realm, mls_group_id_for_scope,
-    retain_admissible_welcomes, welcome_matches_endpoint,
+    retain_admissible_welcomes, verify_welcome_claim, welcome_matches_endpoint,
 };
 use zeroize::Zeroizing;
 
