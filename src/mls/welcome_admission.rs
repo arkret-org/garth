@@ -7,11 +7,17 @@
 //! wire-shape verification with no host state behind it, so every client
 //! answers it identically.
 
-use arkret_models_crypto::{KeyPackageClaimRecord, KeyPackagesClaimOutcome, MlsCommitPayload};
-use arkret_wire::{
-    ActorId, DeviceId, DidCoreId, DidUrl, Event, EventId, EventKind, MlsGroupId,
-    MlsWelcomeDelivery, MlsWelcomeRecipientEndpoint, RealmId, ScopeRef,
+use arkret_models_crypto::{
+    KeyOperationSignature, KeyPackageClaimRecord, KeyPackagesClaimOutcome,
+    KeyPackagesConsumeRequestBody, KeyPackagesConsumeUnsignedRequest, MlsCommitPayload,
+    RecipientMlsDurableReceipt, RecipientMlsDurableSigner, keypackages_consume_signing_input,
 };
+use arkret_wire::{
+    ActorId, Base64UrlString, DeviceId, DidCoreId, DidUrl, DomainSeparationId, Event, EventId,
+    EventKind, MlsGroupId, MlsWelcomeDelivery, MlsWelcomeRecipientEndpoint, NonEmptyString,
+    RealmId, ScopeRef,
+};
+use chrono::{DateTime, Utc};
 
 use crate::{Error, Result};
 
@@ -204,6 +210,95 @@ pub fn verify_welcome_claim(
         ));
     }
     Ok(record.clone())
+}
+
+/// The signed `keypackages/consume` command a Welcome's endpoint sends once
+/// the group state the Welcome joined is durable (device-lifecycle.md §9
+/// consume, decision 0121).
+///
+/// `outcome` is the claim outcome the Welcome was verified against
+/// ([`verify_welcome_claim`]); the receipt names its claim request and the
+/// claimed KeyPackage, this endpoint's `local_station`, the scope's group,
+/// `joined_epoch` (the accepted Commit's next epoch) and the delivery's
+/// [`MlsWelcomeDelivery::durable_receipt_digest`]. `sign` signs one input
+/// under the endpoint key `recipient` names and is used for the receipt and
+/// then the command, so both carry the same endpoint signature.
+pub fn signed_welcome_consume(
+    welcome: &MlsWelcomeDelivery,
+    outcome: &KeyPackagesClaimOutcome,
+    recipient: RecipientMlsDurableSigner,
+    local_station: &DidCoreId,
+    joined_epoch: u64,
+    durable_at: DateTime<Utc>,
+    sign: impl Fn(&str, &[u8]) -> Result<KeyOperationSignature>,
+) -> Result<KeyPackagesConsumeRequestBody> {
+    let refused = |detail: &str| Error::Protocol(format!("MLS Welcome consume: {detail}"));
+    let record = outcome
+        .claims
+        .iter()
+        .find(|record| record.claim_id == welcome.keypackage_claim_ref.as_str())
+        .ok_or_else(|| refused("the outcome does not hold the Welcome's claim"))?;
+    let method = match &recipient {
+        RecipientMlsDurableSigner::Device {
+            device_verification_method,
+            ..
+        } => device_verification_method,
+        RecipientMlsDurableSigner::Agent {
+            recipient_agent_verification_method,
+            ..
+        } => recipient_agent_verification_method,
+        RecipientMlsDurableSigner::MinimalMetadataPairwise { .. } => {
+            return Err(refused(
+                "a pairwise endpoint never consumes a Welcome claim",
+            ));
+        }
+    }
+    .as_str()
+    .to_owned();
+    let mut receipt = RecipientMlsDurableReceipt {
+        domain: NonEmptyString::new(
+            DomainSeparationId::MLS_RECIPIENT_DURABLE_RECEIPT_V1.to_owned(),
+        )
+        .map_err(|error| refused(&error.to_string()))?,
+        claim_request_id: outcome.claim_request_id.clone(),
+        key_package_ref: NonEmptyString::new(record.keypackage_ref.clone())
+            .map_err(|error| refused(&error.to_string()))?,
+        recipient,
+        recipient_id: local_station.clone(),
+        realm_id: welcome.realm_id.clone(),
+        mls_group_id: mls_group_id_for_scope(&welcome.effective_scope)?,
+        mls_epoch: joined_epoch,
+        welcome_ref: welcome.welcome_id.clone(),
+        welcome_digest: welcome.durable_receipt_digest()?,
+        durable_at,
+        // Replaced by the endpoint signature below; the signing input omits it.
+        signature: KeyOperationSignature {
+            kid: NonEmptyString::new(method.clone())
+                .map_err(|error| refused(&error.to_string()))?,
+            signature_algorithm: None,
+            sig: Base64UrlString::new("AA".to_owned())
+                .map_err(|error| refused(&error.to_string()))?,
+        },
+    };
+    receipt.signature = sign(
+        &method,
+        &receipt
+            .canonical_signing_bytes()
+            .map_err(|error| refused(&error.to_string()))?,
+    )?;
+    receipt.validate_shape().map_err(refused)?;
+    let unsigned = KeyPackagesConsumeUnsignedRequest {
+        claim_id: welcome.keypackage_claim_ref.clone(),
+        recipient_durable_receipt: receipt,
+    };
+    let signature = sign(
+        &method,
+        &keypackages_consume_signing_input(&unsigned)
+            .map_err(|error| refused(&error.to_string()))?,
+    )?;
+    let request = unsigned.into_signed(signature);
+    request.validate_shape().map_err(refused)?;
+    Ok(request)
 }
 
 #[cfg(test)]
@@ -513,6 +608,128 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("does not add"), "{error}");
+    }
+
+    fn device_signer() -> RecipientMlsDurableSigner {
+        RecipientMlsDurableSigner::Device {
+            recipient_account_id: recipient().as_account_id().cloned().unwrap(),
+            recipient_device_id: device_id(),
+            device_verification_method: DidUrl::new("did:web:bob.example#device").unwrap(),
+        }
+    }
+
+    /// Signs with one fixed Ed25519 key and records every signed input.
+    fn signer(
+        inputs: &std::cell::RefCell<Vec<Vec<u8>>>,
+    ) -> impl Fn(&str, &[u8]) -> Result<KeyOperationSignature> + '_ {
+        use ed25519_dalek::Signer as _;
+        let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        move |method, input| {
+            inputs.borrow_mut().push(input.to_vec());
+            Ok(KeyOperationSignature {
+                kid: NonEmptyString::new(method.to_owned()).unwrap(),
+                signature_algorithm: Some(NonEmptyString::new("Ed25519").unwrap()),
+                sig: Base64UrlString::new(arkret_canonical::base64url_encode(
+                    &key.sign(input).to_bytes(),
+                ))
+                .unwrap(),
+            })
+        }
+    }
+
+    /// decision 0121: the consume command's durable receipt names the claim
+    /// the Welcome was verified against, this Station, the scope's group, the
+    /// joined epoch and the delivery's durable receipt digest, and both the
+    /// receipt and the command carry the endpoint signature over their exact
+    /// signing inputs.
+    #[test]
+    fn the_welcome_consume_command_binds_the_durable_join() {
+        let commit = accepted_commit(KEYPACKAGE);
+        let welcome = recipient_welcome(&commit);
+        let claims = outcome(vec![claim_record()]);
+        let inputs = std::cell::RefCell::new(Vec::new());
+        let request = signed_welcome_consume(
+            &welcome,
+            &claims,
+            device_signer(),
+            &station(),
+            1,
+            at(20),
+            signer(&inputs),
+        )
+        .unwrap();
+        let receipt = &request.recipient_durable_receipt;
+        assert_eq!(request.claim_id, welcome.keypackage_claim_ref);
+        assert_eq!(receipt.claim_request_id, claims.claim_request_id);
+        assert_eq!(
+            receipt.key_package_ref.as_str(),
+            claim_record().keypackage_ref
+        );
+        assert_eq!(receipt.recipient_id, station());
+        assert_eq!(receipt.realm_id, realm_id());
+        assert_eq!(
+            receipt.mls_group_id,
+            mls_group_id_for_scope(&welcome.effective_scope).unwrap()
+        );
+        assert_eq!(receipt.mls_epoch, 1);
+        assert_eq!(receipt.welcome_ref, welcome.welcome_id);
+        assert_eq!(
+            receipt.welcome_digest,
+            welcome.durable_receipt_digest().unwrap()
+        );
+        let inputs = inputs.into_inner();
+        assert_eq!(
+            inputs,
+            vec![
+                receipt.canonical_signing_bytes().unwrap(),
+                keypackages_consume_signing_input(&request.unsigned()).unwrap(),
+            ]
+        );
+        let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]).verifying_key();
+        for (input, signature) in inputs.iter().zip([&receipt.signature, &request.signature]) {
+            let bytes = arkret_canonical::base64url_decode(signature.sig.as_str()).unwrap();
+            let signature = ed25519_dalek::Signature::from_slice(&bytes).unwrap();
+            assert!(key.verify_strict(input, &signature).is_ok());
+        }
+    }
+
+    /// A Welcome whose claim the outcome does not hold, or a pairwise
+    /// endpoint, never yields a consume command.
+    #[test]
+    fn a_welcome_consume_needs_its_claim_and_an_endpoint_key() {
+        let commit = accepted_commit(KEYPACKAGE);
+        let welcome = recipient_welcome(&commit);
+        let inputs = std::cell::RefCell::new(Vec::new());
+        assert!(
+            signed_welcome_consume(
+                &welcome,
+                &outcome(Vec::new()),
+                device_signer(),
+                &station(),
+                1,
+                at(20),
+                signer(&inputs),
+            )
+            .is_err()
+        );
+        assert!(
+            signed_welcome_consume(
+                &welcome,
+                &outcome(vec![claim_record()]),
+                RecipientMlsDurableSigner::MinimalMetadataPairwise {
+                    recipient_pairwise_verification_method: DidUrl::new(
+                        "did:web:bob.example#pairwise"
+                    )
+                    .unwrap(),
+                },
+                &station(),
+                1,
+                at(20),
+                signer(&inputs),
+            )
+            .is_err()
+        );
+        assert!(inputs.into_inner().is_empty());
     }
 
     #[test]
