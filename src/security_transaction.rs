@@ -182,6 +182,20 @@ pub fn validate_recovery_commit_boundary(
     Ok(())
 }
 
+fn validate_recovery_receipt_digest(
+    receipt: &RecoveryReceipt,
+    accepted_digest: &arkret_wire::Hash,
+) -> Result<()> {
+    let bytes = arkret_canonical::canonical_json_bytes(receipt)?;
+    let digest = arkret_wire::Hash::new(arkret_canonical::sha256_digest(&bytes))?;
+    if &digest != accepted_digest {
+        return Err(Error::Protocol(
+            "completed recovery accepted a different terminal receipt".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_observed_resource(
     local: &DurableSecurityTransaction,
     resource: &SecurityTransaction,
@@ -388,7 +402,6 @@ where
                     "completed recovery omitted its terminal receipt".to_owned(),
                 ));
             };
-            let expected_terminal_digest = request.client_attestation.attestation_digest()?;
             let Some(SecurityTransactionTerminalOutcome::Completed {
                 completion_attestation: Some(completion_attestation),
                 ..
@@ -398,11 +411,10 @@ where
                     "completed recovery omitted its completion attestation".to_owned(),
                 ));
             };
-            if completion_attestation.terminal_receipt_digest != expected_terminal_digest {
-                return Err(Error::Protocol(
-                    "completed recovery accepted a different terminal receipt".to_owned(),
-                ));
-            }
+            validate_recovery_receipt_digest(
+                &artifact.recovery_receipt,
+                &completion_attestation.terminal_receipt_digest,
+            )?;
             retain_completed_recovery_receipt(&mut local, &artifact.recovery_receipt)?;
         }
         local.pending_continue = None;
@@ -609,6 +621,25 @@ mod tests {
             }
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn completed_recovery_binds_the_exact_receipt_not_its_outer_artifact() {
+        let receipt = completed_recovery_receipt();
+        let digest = |value: &serde_json::Value| {
+            arkret_wire::Hash::new(arkret_canonical::sha256_digest(
+                &arkret_canonical::canonical_json_bytes(value).unwrap(),
+            ))
+            .unwrap()
+        };
+        let receipt_digest = digest(&serde_json::to_value(&receipt).unwrap());
+        validate_recovery_receipt_digest(&receipt, &receipt_digest).unwrap();
+        let artifact_digest = digest(&json!({"recovery_receipt": receipt}));
+        assert_ne!(receipt_digest, artifact_digest);
+        assert!(validate_recovery_receipt_digest(&receipt, &artifact_digest).is_err());
+        let mut altered = receipt;
+        altered.welcome_count += 1;
+        assert!(validate_recovery_receipt_digest(&altered, &receipt_digest).is_err());
     }
 
     #[test]
