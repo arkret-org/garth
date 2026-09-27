@@ -79,6 +79,9 @@ impl SendQueueItem {
             SubmissionState::Committed { commit, .. } => Some(commit),
             SubmissionState::UnitCommitted { outcome } => match outcome.as_ref() {
                 SelfAuthoritySubmitOutcome::OrdinaryRealmBootstrap(value) => value.commits.first(),
+                SelfAuthoritySubmitOutcome::DirectConversationFounding(value) => {
+                    value.commits.first()
+                }
                 _ => None,
             },
             _ => None,

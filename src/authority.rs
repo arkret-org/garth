@@ -7,7 +7,8 @@ use arkret_identity::{
     RealmAuthorityFreshness, RealmAuthorityKeyDirectory, verify_realm_authority_bundle,
 };
 use arkret_models_collaboration::authority_commit::{
-    OrdinaryRealmBootstrapUnitSubmission, SelfAuthoritySubmitOutcome, SelfAuthoritySubmitRequest,
+    DirectConversationFoundingUnitSubmission, OrdinaryRealmBootstrapUnitSubmission,
+    SelfAuthoritySubmitOutcome, SelfAuthoritySubmitRequest,
 };
 use arkret_wire::{
     AuthorityBundleRequest, AuthorityCommitStatus, AuthorityHandoffRequest,
@@ -225,12 +226,21 @@ impl QueuedSubmission {
         Self::from_self(SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(unit))
     }
 
+    pub fn direct_conversation_founding(
+        unit: DirectConversationFoundingUnitSubmission,
+    ) -> Result<Self> {
+        Self::from_self(SelfAuthoritySubmitRequest::DirectConversationFounding(unit))
+    }
+
     fn from_self(request: SelfAuthoritySubmitRequest) -> Result<Self> {
         request.validate()?;
         let event_id = match &request {
             SelfAuthoritySubmitRequest::Event(value) => value.event.event_id.clone(),
             SelfAuthoritySubmitRequest::MlsCommit(value) => value.commit_event.event_id.clone(),
             SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(value) => {
+                value.events[0].event.event_id.clone()
+            }
+            SelfAuthoritySubmitRequest::DirectConversationFounding(value) => {
                 value.events[0].event.event_id.clone()
             }
             _ => {
@@ -261,6 +271,7 @@ impl QueuedSubmission {
             SelfAuthoritySubmitRequest::Event(value) => &value.event,
             SelfAuthoritySubmitRequest::MlsCommit(value) => &value.commit_event,
             SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(value) => &value.events[0].event,
+            SelfAuthoritySubmitRequest::DirectConversationFounding(value) => &value.events[0].event,
             _ => unreachable!("validated queued submission branch"),
         }
     }
@@ -282,7 +293,8 @@ impl QueuedSubmission {
         }
         match outcome {
             SelfAuthoritySubmitOutcome::Ordinary(value) => self.apply_outcome(value),
-            value @ SelfAuthoritySubmitOutcome::OrdinaryRealmBootstrap(_) => {
+            value @ (SelfAuthoritySubmitOutcome::OrdinaryRealmBootstrap(_)
+            | SelfAuthoritySubmitOutcome::DirectConversationFounding(_)) => {
                 self.state = SubmissionState::UnitCommitted {
                     outcome: Box::new(value),
                 };
@@ -350,6 +362,9 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
         queued.validate_queued_request()?;
         let options = match &queued.request {
             SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(unit) => options
+                .clone()
+                .idempotency_key(unit.idempotency_key.as_uuid().to_string()),
+            SelfAuthoritySubmitRequest::DirectConversationFounding(unit) => options
                 .clone()
                 .idempotency_key(unit.idempotency_key.as_uuid().to_string()),
             _ => options.clone(),
