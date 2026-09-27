@@ -1,7 +1,7 @@
 //! Durable producer-submission engine over the governance-authority seam.
 //!
-//! Every queued item is one `EventAdmissionSubmission { event }` (or the MLS
-//! commit submission that carries its Welcome deliveries). The queue owns the
+//! Every queued item is one frozen self submission: an Event, an MLS commit
+//! with its Welcome deliveries, or a complete Realm bootstrap. The queue owns the
 //! lifecycle — queued, forwarding, committed, rejected — and the authority
 //! outcome is the only thing that moves an item out of `Forwarding`. A
 //! producer Event never carries a predecessor, a basis or a position, so the
@@ -12,8 +12,11 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arkret_http_client::ClientRequestOptions;
+use arkret_models_collaboration::authority_commit::{
+    SelfAuthoritySubmitOutcome, SelfAuthoritySubmitRequest,
+};
 use arkret_retry::{Jitter, RetryPolicy};
-use arkret_wire::{AuthoritySubmitRequest, EventId, Problem, RealmCommit};
+use arkret_wire::{EventId, Problem, RealmCommit};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
@@ -66,7 +69,7 @@ impl SendQueueItem {
         &self.submission.event_id
     }
 
-    pub fn request(&self) -> &AuthoritySubmitRequest {
+    pub fn request(&self) -> &SelfAuthoritySubmitRequest {
         &self.submission.request
     }
 
@@ -74,6 +77,10 @@ impl SendQueueItem {
     pub fn commit(&self) -> Option<&RealmCommit> {
         match &self.submission.state {
             SubmissionState::Committed { commit, .. } => Some(commit),
+            SubmissionState::UnitCommitted { outcome } => match outcome.as_ref() {
+                SelfAuthoritySubmitOutcome::OrdinaryRealmBootstrap(value) => value.commits.first(),
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -132,17 +139,18 @@ impl SendQueue {
                 "an outbound item must be enqueued before it has an authority outcome".to_owned(),
             ));
         }
+        submission.validate_queued_request()?;
         if self.get(&submission.event_id).is_some() {
             return Err(Error::Protocol(
                 "this Event is already queued for authority submission".to_owned(),
             ));
         }
-        let submitted_event = submission_event(&submission.request);
+        let submitted_event = submission.primary_event();
         if submitted_event.kind == arkret_wire::EventKind::MlsGenesis
             && self.items.iter().any(|item| {
                 !item.status.is_terminal()
-                    && submission_event(item.request()).kind == arkret_wire::EventKind::MlsGenesis
-                    && submission_event(item.request()).scope_ref == submitted_event.scope_ref
+                    && item.submission.primary_event().kind == arkret_wire::EventKind::MlsGenesis
+                    && item.submission.primary_event().scope_ref == submitted_event.scope_ref
             })
         {
             return Err(Error::Protocol(
@@ -231,13 +239,6 @@ impl SendQueue {
             !item.status.is_terminal() || item.settled_at.is_none_or(|at| at >= cutoff)
         });
         before - self.items.len()
-    }
-}
-
-fn submission_event(request: &AuthoritySubmitRequest) -> &arkret_wire::Event {
-    match request {
-        AuthoritySubmitRequest::Event(submission) => &submission.event,
-        AuthoritySubmitRequest::MlsCommit(submission) => &submission.commit_event,
     }
 }
 
@@ -401,7 +402,9 @@ where
         match authority.submit(&mut submission, options).await {
             Ok(()) => {
                 let status = match &submission.state {
-                    SubmissionState::Committed { .. } => SendQueueStatus::Committed,
+                    SubmissionState::Committed { .. } | SubmissionState::UnitCommitted { .. } => {
+                        SendQueueStatus::Committed
+                    }
                     SubmissionState::Rejected { .. } => SendQueueStatus::Rejected,
                     SubmissionState::Queued => {
                         return Err(Error::Protocol(
@@ -421,6 +424,20 @@ where
                         item: Box::new(item),
                         commit,
                     },
+                    SubmissionState::UnitCommitted { .. } => {
+                        let commit = item
+                            .commit()
+                            .ok_or_else(|| {
+                                Error::Protocol(
+                                    "aggregate outcome omitted its genesis Commit".to_owned(),
+                                )
+                            })?
+                            .clone();
+                        OutboundEngineOutcome::Committed {
+                            item: Box::new(item),
+                            commit: Box::new(commit),
+                        }
+                    }
                     SubmissionState::Rejected { reason_code, .. } => {
                         OutboundEngineOutcome::Rejected {
                             item: Box::new(item),

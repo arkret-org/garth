@@ -395,7 +395,10 @@ mod tests {
         .unwrap();
         let expected = arkret_canonical::canonical_json_bytes(&request.submission.event).unwrap();
         let queued = queue_authored_message(request).unwrap();
-        let AuthoritySubmitRequest::Event(submission) = queued.request else {
+        let arkret_models_collaboration::authority_commit::SelfAuthoritySubmitRequest::Event(
+            submission,
+        ) = queued.request
+        else {
             panic!("message authoring must queue an ordinary Event submission");
         };
         assert_eq!(

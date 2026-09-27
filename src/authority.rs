@@ -7,7 +7,7 @@ use arkret_identity::{
     RealmAuthorityFreshness, RealmAuthorityKeyDirectory, verify_realm_authority_bundle,
 };
 use arkret_models_collaboration::authority_commit::{
-    SelfAuthoritySubmitOutcome, SelfAuthoritySubmitRequest,
+    OrdinaryRealmBootstrapUnitSubmission, SelfAuthoritySubmitOutcome, SelfAuthoritySubmitRequest,
 };
 use arkret_wire::{
     AuthorityBundleRequest, AuthorityCommitStatus, AuthorityHandoffRequest,
@@ -27,6 +27,31 @@ pub trait AuthorityTransport: MaybeSendSync {
         request: &'a AuthoritySubmitRequest,
         options: &'a ClientRequestOptions,
     ) -> impl Future<Output = Result<AuthoritySubmitOutcome>> + MaybeSend + 'a;
+
+    fn submit_self<'a>(
+        &'a self,
+        request: &'a SelfAuthoritySubmitRequest,
+        options: &'a ClientRequestOptions,
+    ) -> impl Future<Output = Result<SelfAuthoritySubmitOutcome>> + MaybeSend + 'a {
+        async move {
+            let request = match request {
+                SelfAuthoritySubmitRequest::Event(value) => {
+                    AuthoritySubmitRequest::Event(value.clone())
+                }
+                SelfAuthoritySubmitRequest::MlsCommit(value) => {
+                    AuthoritySubmitRequest::MlsCommit(value.clone())
+                }
+                _ => {
+                    return Err(Error::Protocol(
+                        "transport does not implement atomic self submission".to_owned(),
+                    ));
+                }
+            };
+            self.submit(&request, options)
+                .await
+                .map(SelfAuthoritySubmitOutcome::Ordinary)
+        }
+    }
 
     fn scan<'a>(
         &'a self,
@@ -76,6 +101,14 @@ impl AuthorityTransport for Client {
         }
     }
 
+    async fn submit_self(
+        &self,
+        request: &SelfAuthoritySubmitRequest,
+        options: &ClientRequestOptions,
+    ) -> Result<SelfAuthoritySubmitOutcome> {
+        Ok(self.submit_to_realm_authority(request, options).await?)
+    }
+
     async fn scan(&self, request: &StreamScanRequest) -> Result<StreamScanOutcome> {
         Ok(self.scan_commit_stream(request).await?)
     }
@@ -116,25 +149,95 @@ pub enum SubmissionState {
         status: AuthorityCommitStatus,
         commit: Box<RealmCommit>,
     },
+    UnitCommitted {
+        outcome: Box<SelfAuthoritySubmitOutcome>,
+    },
     Rejected {
         status: AuthorityRejectionStatus,
         reason_code: String,
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct QueuedSubmission {
-    pub request: AuthoritySubmitRequest,
+    pub request: SelfAuthoritySubmitRequest,
     pub event_id: EventId,
     pub state: SubmissionState,
 }
 
+impl<'de> Deserialize<'de> for QueuedSubmission {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        use serde::de::Error as _;
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Raw {
+            request: SelfAuthoritySubmitRequest,
+            event_id: EventId,
+            state: SubmissionState,
+        }
+        let raw = Raw::deserialize(deserializer)?;
+        let mut queued = Self::from_self(raw.request).map_err(D::Error::custom)?;
+        if queued.event_id != raw.event_id {
+            return Err(D::Error::custom(
+                "queued identity does not bind the frozen request",
+            ));
+        }
+        match raw.state {
+            SubmissionState::Queued => {}
+            SubmissionState::Committed { status, commit } => queued
+                .apply_outcome(AuthoritySubmitOutcome::Accepted {
+                    status,
+                    commit: *commit,
+                })
+                .map_err(D::Error::custom)?,
+            SubmissionState::Rejected {
+                status,
+                reason_code,
+            } => queued
+                .apply_outcome(AuthoritySubmitOutcome::Rejected {
+                    status,
+                    reason_code,
+                })
+                .map_err(D::Error::custom)?,
+            SubmissionState::UnitCommitted { outcome } => queued
+                .apply_self_outcome(*outcome)
+                .map_err(D::Error::custom)?,
+        }
+        Ok(queued)
+    }
+}
+
 impl QueuedSubmission {
     pub fn new(request: AuthoritySubmitRequest) -> Result<Self> {
+        let request = match request {
+            AuthoritySubmitRequest::Event(value) => SelfAuthoritySubmitRequest::Event(value),
+            AuthoritySubmitRequest::MlsCommit(value) => {
+                SelfAuthoritySubmitRequest::MlsCommit(value)
+            }
+        };
+        Self::from_self(request)
+    }
+
+    pub fn realm_bootstrap(unit: OrdinaryRealmBootstrapUnitSubmission) -> Result<Self> {
+        Self::from_self(SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(unit))
+    }
+
+    fn from_self(request: SelfAuthoritySubmitRequest) -> Result<Self> {
         request.validate()?;
         let event_id = match &request {
-            AuthoritySubmitRequest::Event(value) => value.event.event_id.clone(),
-            AuthoritySubmitRequest::MlsCommit(value) => value.commit_event.event_id.clone(),
+            SelfAuthoritySubmitRequest::Event(value) => value.event.event_id.clone(),
+            SelfAuthoritySubmitRequest::MlsCommit(value) => value.commit_event.event_id.clone(),
+            SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(value) => {
+                value.events[0].event.event_id.clone()
+            }
+            _ => {
+                return Err(Error::Protocol(
+                    "unsupported queued self submission unit".to_owned(),
+                ));
+            }
         };
         Ok(Self {
             request,
@@ -143,8 +246,69 @@ impl QueuedSubmission {
         })
     }
 
-    pub fn apply_outcome(&mut self, outcome: AuthoritySubmitOutcome) -> Result<()> {
+    pub fn validate_queued_request(&self) -> Result<()> {
+        let validated = Self::from_self(self.request.clone())?;
+        if validated.event_id != self.event_id {
+            return Err(Error::Protocol(
+                "queued identity does not bind the frozen request".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn primary_event(&self) -> &arkret_wire::Event {
+        match &self.request {
+            SelfAuthoritySubmitRequest::Event(value) => &value.event,
+            SelfAuthoritySubmitRequest::MlsCommit(value) => &value.commit_event,
+            SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(value) => &value.events[0].event,
+            _ => unreachable!("validated queued submission branch"),
+        }
+    }
+
+    pub fn apply_self_outcome(&mut self, outcome: SelfAuthoritySubmitOutcome) -> Result<()> {
         outcome.validate_for_request(&self.request)?;
+        if let (
+            SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(unit),
+            SelfAuthoritySubmitOutcome::OrdinaryRealmBootstrap(accepted),
+        ) = (&self.request, &outcome)
+        {
+            for (submission, commit) in unit.events.iter().zip(&accepted.commits) {
+                arkret_wire::CommittedEventFullView {
+                    event: submission.event.clone(),
+                    commit: commit.clone(),
+                }
+                .validate_shape()?;
+            }
+        }
+        match outcome {
+            SelfAuthoritySubmitOutcome::Ordinary(value) => self.apply_outcome(value),
+            value @ SelfAuthoritySubmitOutcome::OrdinaryRealmBootstrap(_) => {
+                self.state = SubmissionState::UnitCommitted {
+                    outcome: Box::new(value),
+                };
+                Ok(())
+            }
+            _ => Err(Error::Protocol(
+                "unsupported queued aggregate outcome".to_owned(),
+            )),
+        }
+    }
+
+    pub fn apply_outcome(&mut self, outcome: AuthoritySubmitOutcome) -> Result<()> {
+        let ordinary = match &self.request {
+            SelfAuthoritySubmitRequest::Event(value) => {
+                AuthoritySubmitRequest::Event(value.clone())
+            }
+            SelfAuthoritySubmitRequest::MlsCommit(value) => {
+                AuthoritySubmitRequest::MlsCommit(value.clone())
+            }
+            _ => {
+                return Err(Error::Protocol(
+                    "aggregate unit requires its complete outcome".to_owned(),
+                ));
+            }
+        };
+        outcome.validate_for_request(&ordinary)?;
         self.state = match outcome {
             AuthoritySubmitOutcome::Accepted { status, commit } => SubmissionState::Committed {
                 status,
@@ -183,8 +347,18 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
         queued: &mut QueuedSubmission,
         options: &ClientRequestOptions,
     ) -> Result<()> {
-        let outcome = self.transport.submit(&queued.request, options).await?;
-        queued.apply_outcome(outcome)
+        queued.validate_queued_request()?;
+        let options = match &queued.request {
+            SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(unit) => options
+                .clone()
+                .idempotency_key(unit.idempotency_key.as_uuid().to_string()),
+            _ => options.clone(),
+        };
+        let outcome = self
+            .transport
+            .submit_self(&queued.request, &options)
+            .await?;
+        queued.apply_self_outcome(outcome)
     }
 
     /// Fetch a shape-checked but unverified scan page. Consumers MUST pass it
