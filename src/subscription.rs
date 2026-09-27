@@ -141,7 +141,6 @@ where
         T: AccountSubscribeTransport + ?Sized,
         P: AccountBatchProjector + ?Sized,
     {
-        request.validate()?;
         let scope = CursorScope::Account {
             service_id,
             actor_id,
@@ -155,6 +154,12 @@ where
             });
         request.after = checkpoint.map(|checkpoint| checkpoint.cursor);
         request.catchup = Some(request.after.is_none());
+        if request.after.is_none() {
+            request.replace_filter = None;
+        }
+        // The runner owns `after`. Validate the actual wire request only
+        // after restoring it, so a resumed demand replacement has its cursor.
+        request.validate()?;
 
         while !self.control.is_cancelled() {
             match transport.subscribe(&request).await? {
@@ -173,6 +178,7 @@ where
                             station_cas.reset_for_initial_sync();
                             request.after = None;
                             request.catchup = Some(true);
+                            request.replace_filter = None;
                             continue;
                         }
                         return Err(error);
@@ -191,6 +197,7 @@ where
                     station_cas = next_station_cas;
                     request.after = Some(batch.cursor);
                     request.catchup = Some(false);
+                    request.replace_filter = None;
                 }
                 AccountSubscribeSnapshotResult::ReconnectAfter {
                     reconnect_after_ms,
@@ -203,6 +210,7 @@ where
                         station_cas.reset_for_initial_sync();
                         request.after = None;
                         request.catchup = Some(true);
+                        request.replace_filter = None;
                     } else if let Some(cursor) = reconnect_cursor {
                         self.cursors
                             .save_account_checkpoint(
@@ -246,6 +254,7 @@ mod tests {
     #[derive(Debug)]
     struct ScriptedTransport {
         responses: Mutex<VecDeque<AccountSubscribeSnapshotResult>>,
+        requests: Mutex<Vec<SyncRequestBody>>,
         calls: AtomicUsize,
         cancel_on_call: Option<SubscriptionControl>,
     }
@@ -254,6 +263,7 @@ mod tests {
         fn new(responses: Vec<AccountSubscribeSnapshotResult>) -> Self {
             Self {
                 responses: Mutex::new(responses.into()),
+                requests: Mutex::new(Vec::new()),
                 calls: AtomicUsize::new(0),
                 cancel_on_call: None,
             }
@@ -265,6 +275,7 @@ mod tests {
         ) -> Self {
             Self {
                 responses: Mutex::new(responses.into()),
+                requests: Mutex::new(Vec::new()),
                 calls: AtomicUsize::new(0),
                 cancel_on_call: Some(control),
             }
@@ -274,8 +285,10 @@ mod tests {
     impl AccountSubscribeTransport for ScriptedTransport {
         async fn subscribe(
             &self,
-            _request: &SyncRequestBody,
+            request: &SyncRequestBody,
         ) -> Result<AccountSubscribeSnapshotResult> {
+            request.validate()?;
+            self.requests.lock().unwrap().push(request.clone());
             self.calls.fetch_add(1, Ordering::SeqCst);
             if let Some(control) = &self.cancel_on_call {
                 control.cancel();
@@ -345,6 +358,58 @@ mod tests {
             service_id: None,
             actor_id: actor_id(),
             device_id: device_id(),
+        }
+    }
+
+    #[tokio::test]
+    async fn demand_replacement_restores_the_cursor_before_wire_validation() {
+        for resumed in [false, true] {
+            let store = crate::MemoryStore::new();
+            if resumed {
+                store
+                    .save_account_checkpoint(
+                        scope(),
+                        AccountCursorCheckpoint {
+                            cursor: "ak:cursor:old".to_owned(),
+                            station_cas: Default::default(),
+                        },
+                    )
+                    .await
+                    .unwrap();
+            }
+            let subscription = AccountSubscription::new(ImmediateExecutor, store);
+            let transport = ScriptedTransport::cancelling(
+                vec![AccountSubscribeSnapshotResult::ReconnectAfter {
+                    reconnect_after_ms: 1,
+                    reconnect_cursor: None,
+                    reason: None,
+                    reset_cursor: false,
+                }],
+                subscription.control(),
+            );
+            subscription
+                .run(
+                    &transport,
+                    &Projector::new(None, false),
+                    None,
+                    actor_id(),
+                    device_id(),
+                    SyncRequestBody {
+                        filter: Some(Default::default()),
+                        replace_filter: Some(true),
+                        ..Default::default()
+                    },
+                )
+                .await
+                .unwrap();
+            let requests = transport.requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            assert_eq!(
+                requests[0].after.as_deref(),
+                resumed.then_some("ak:cursor:old")
+            );
+            assert_eq!(requests[0].catchup, Some(!resumed));
+            assert_eq!(requests[0].replace_filter, resumed.then_some(true));
         }
     }
 
