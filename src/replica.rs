@@ -403,12 +403,28 @@ impl RealmReplica {
         if request.stream_ref == authority.realm_stream_head.stream_ref {
             for item in &outcome.committed_events {
                 let commit = item.commit();
-                if commit.stream_position > authority.realm_stream_head.stream_position
-                    || (commit.stream_position == authority.realm_stream_head.stream_position
-                        && commit.commit_id != authority.realm_stream_head.commit_id)
+                if commit.stream_position > authority.realm_stream_head.stream_position {
+                    // Known-tenure rows must still authenticate before this
+                    // is treated as a concurrent append. A new tenure first
+                    // needs its independently verified authority chain.
+                    if commit.governance_generation <= authority.current_generation {
+                        let result = match item {
+                            CommittedEventView::Full(full) => {
+                                verified.verify_committed_item(full, keys)
+                            }
+                            CommittedEventView::Withheld(withheld) => {
+                                verified.verify_commit(&withheld.commit, keys)
+                            }
+                        };
+                        result.map_err(|error| Error::Protocol(error.to_string()))?;
+                    }
+                    return Err(Error::AuthorityCutBehind);
+                }
+                if commit.stream_position == authority.realm_stream_head.stream_position
+                    && commit.commit_id != authority.realm_stream_head.commit_id
                 {
                     return Err(Error::Protocol(
-                        "scan Realm Commit lies beyond the verified authority cut".to_owned(),
+                        "scan Realm Commit forks the verified authority head".to_owned(),
                     ));
                 }
             }
@@ -1236,6 +1252,80 @@ mod tests {
             }),
             truncated: false,
         };
+        // A concurrent append after the authority read is not a fork. The
+        // old cut must publish nothing, and a fresh signed cut must verify
+        // the same page before it can advance the replica.
+        let current_bundle = replica.authority.as_ref().unwrap().clone();
+        let mut earlier_bundle = current_bundle.clone();
+        earlier_bundle.realm_stream_head = CommitStreamHead {
+            stream_ref: stream_ref.clone(),
+            stream_position: 0,
+            commit_id: outcome.committed_events[0].commit().commit_id.clone(),
+        };
+        earlier_bundle.current_assertion.realm_stream_head =
+            earlier_bundle.realm_stream_head.clone();
+        earlier_bundle.current_assertion.signature = sign_detached_object(
+            &arkret_canonical::unsigned_value(&earlier_bundle.current_assertion, &["signature"])
+                .unwrap(),
+            DetachedSignatureContext::RealmAuthorityCurrentAssertion,
+            method.clone(),
+            now,
+            &route.signing_key,
+        )
+        .unwrap();
+        let mut racing_replica = RealmReplica::new(request.realm_id.clone());
+        racing_replica
+            .install_verified_authority(&authority_request, earlier_bundle, &freshness, &keys)
+            .unwrap();
+        let before = racing_replica.clone();
+        let error = racing_replica
+            .apply_verified_scan(&request, outcome.clone(), &freshness, &keys)
+            .unwrap_err();
+        assert!(matches!(error, Error::AuthorityCutBehind));
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::RunErrorClass::RetryableTransport
+        );
+        assert_eq!(racing_replica, before);
+        let mut forged_future = outcome.clone();
+        let CommittedEventView::Full(second) = &mut forged_future.committed_events[1] else {
+            unreachable!()
+        };
+        second.commit.signature.signed_digest =
+            arkret_wire::Hash::new(format!("sha256:{}", "f".repeat(64))).unwrap();
+        let error = racing_replica
+            .apply_verified_scan(&request, forged_future, &freshness, &keys)
+            .unwrap_err();
+        assert!(matches!(error, Error::Protocol(_)));
+        assert_eq!(racing_replica, before);
+        racing_replica
+            .install_verified_authority(&authority_request, current_bundle, &freshness, &keys)
+            .unwrap();
+        assert_eq!(
+            racing_replica
+                .apply_verified_scan(&request, outcome.clone(), &freshness, &keys)
+                .unwrap()
+                .rows()
+                .len(),
+            2
+        );
+
+        let mut fork = outcome.clone();
+        let CommittedEventView::Full(second) = &mut fork.committed_events[1] else {
+            unreachable!()
+        };
+        second.commit.commit_id = arkret_wire::RealmCommitId::from_digest([0x77; 32]);
+        let before = replica.clone();
+        let error = replica
+            .apply_verified_scan(&request, fork, &freshness, &keys)
+            .unwrap_err();
+        assert!(matches!(error, Error::Protocol(_)));
+        assert_eq!(
+            crate::classify_error(&error),
+            crate::RunErrorClass::ProtocolViolation
+        );
+        assert_eq!(replica, before);
+
         let mut forged = outcome.clone();
         let CommittedEventView::Full(second) = &mut forged.committed_events[1] else {
             unreachable!()

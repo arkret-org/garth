@@ -154,7 +154,7 @@ pub type RunResult<T> = std::result::Result<T, RunError>;
 
 pub fn classify_error(error: &Error) -> RunErrorClass {
     match error {
-        Error::Http(_) => RunErrorClass::RetryableTransport,
+        Error::Http(_) | Error::AuthorityCutBehind => RunErrorClass::RetryableTransport,
         Error::Api { status: 429, .. } => RunErrorClass::RateLimited,
         Error::Api { status: 401, .. } => RunErrorClass::Unauthorized,
         Error::Api { error, .. }

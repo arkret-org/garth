@@ -27,6 +27,10 @@ pub enum Error {
     /// surface. The window naming that reference fails closed.
     #[error("exact Realm snapshot read refused: {0:?}")]
     ExactSnapshotRefused(crate::exact_snapshot::ExactSnapshotRefusal),
+    /// A later scan observed a Realm head beyond the previously fetched
+    /// authority cut. Nothing was installed; restart with fresh authority.
+    #[error("Realm scan requires a newer verified authority cut")]
+    AuthorityCutBehind,
     #[error("protocol error: {0}")]
     Protocol(String),
     #[error("storage error: {0}")]
