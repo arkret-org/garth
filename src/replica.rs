@@ -29,8 +29,8 @@ pub struct VerifiedScanPage {
 
 /// Current rows committed by one exact signed snapshot whose head is the
 /// committed-prefix anchor immediately before a limited stream window's first
-/// verified row. The carrier contains no rows from another stream and cannot
-/// be constructed from shape-only staging.
+/// verified row. The carrier contains only rows sourced from that stream, even
+/// when the signed snapshot covers several independent streams.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VerifiedFloorSnapshot {
     rows: Vec<TypedCurrentResult>,
@@ -293,29 +293,46 @@ impl RealmReplica {
                 "snapshot window basis does not anchor the limited stream window".to_owned(),
             ));
         }
-        // A product installer may consume only rows whose single source
-        // stream is this signed predecessor. Multi-stream snapshots need a
-        // per-stream verified witness set and remain outside this narrow API.
-        if snapshot.visible_stream_heads.len() != 1
-            || snapshot.current_state_entries.iter().any(|row| {
-                let source = match row {
+        if self.verified_head(stream_ref).is_some() {
+            return Err(Error::Protocol(
+                "floor snapshot cannot replace an established verified stream head".to_owned(),
+            ));
+        }
+        // Verify the whole signed object, including all visible heads and
+        // rows, on an isolated replica. Only this stream's predecessor is
+        // imported: another stream may name another historical snapshot and
+        // must never inherit this head or its replay cursor.
+        let mut candidate = Self::new(self.realm_id.clone());
+        candidate.authority = self.authority.clone();
+        candidate.authority_request = self.authority_request.clone();
+        candidate.install_verified_snapshot_heads(
+            snapshot,
+            &basis.snapshot_ref,
+            freshness,
+            keys,
+        )?;
+        let predecessor = candidate
+            .verified_streams
+            .remove(stream_ref)
+            .ok_or_else(|| {
+                Error::Protocol("verified snapshot omits the floor stream head".to_owned())
+            })?;
+        self.verified_streams
+            .insert(stream_ref.clone(), predecessor);
+        Ok(VerifiedFloorSnapshot {
+            rows: snapshot
+                .current_state_entries
+                .iter()
+                .filter(|row| match row {
                     TypedCurrentResult::Value {
                         source_stream_ref, ..
                     }
                     | TypedCurrentResult::MessageReactions {
                         source_stream_ref, ..
-                    } => source_stream_ref,
-                };
-                source != stream_ref
-            })
-        {
-            return Err(Error::Protocol(
-                "floor snapshot current rows require one exact source stream".to_owned(),
-            ));
-        }
-        self.install_verified_snapshot_heads(snapshot, &basis.snapshot_ref, freshness, keys)?;
-        Ok(VerifiedFloorSnapshot {
-            rows: snapshot.current_state_entries.clone(),
+                    } => source_stream_ref == stream_ref,
+                })
+                .cloned()
+                .collect(),
             head: head.clone(),
             governance_generation: snapshot.governance_generation,
             history_access: snapshot.retention_and_history_floor.history_access,
@@ -1101,6 +1118,133 @@ mod tests {
         );
         assert_eq!(
             prefix_replica.verified_head(&stream_ref),
+            Some(&genesis_head)
+        );
+        let circle_id = arkret_wire::CircleId::from_event_id(&genesis.event_id);
+        let circle_stream = CommitStreamRef::Circle {
+            realm_id: realm_id.clone(),
+            circle_id: circle_id.clone(),
+        };
+        let circle_head = CommitStreamHead {
+            stream_ref: circle_stream.clone(),
+            stream_position: 0,
+            commit_id: arkret_wire::RealmCommitId::from_digest([0x44; 32]),
+        };
+        let sidecar_stream = CommitStreamRef::Sidecar {
+            realm_id: realm_id.clone(),
+            sidecar_id: arkret_wire::SidecarId::from_event_id(&genesis.event_id),
+        };
+        let sidecar_head = CommitStreamHead {
+            stream_ref: sidecar_stream.clone(),
+            stream_position: 0,
+            commit_id: arkret_wire::RealmCommitId::from_digest([0x55; 32]),
+        };
+        let circle_row = TypedCurrentResult::Value {
+            selector: arkret_wire::CurrentSelector::Circle { circle_id },
+            source_stream_ref: circle_stream.clone(),
+            revision: arkret_wire::CurrentRevision {
+                commit_id: circle_head.commit_id.clone(),
+                stream_position: 0,
+            },
+            value: serde_json::json!({"state": "active"}),
+        };
+        let mut multi = current_snapshot.clone();
+        multi.visible_stream_heads.push(circle_head.clone());
+        multi.visible_stream_heads.push(sidecar_head.clone());
+        multi
+            .retention_and_history_floor
+            .stream_floors
+            .push(arkret_wire::StreamHistoryFloor {
+                stream_ref: circle_stream.clone(),
+                oldest_position: 0,
+            });
+        multi
+            .retention_and_history_floor
+            .stream_floors
+            .push(arkret_wire::StreamHistoryFloor {
+                stream_ref: sidecar_stream.clone(),
+                oldest_position: 0,
+            });
+        multi.current_state_entries.push(circle_row.clone());
+        sign_snapshot(&mut multi);
+        let circle_basis = StreamWindowStartBasis {
+            anchor_position: 0,
+            anchor_commit_ref: circle_head.commit_id.clone(),
+            snapshot_ref: multi.snapshot_id.clone(),
+            governance_generation: multi.governance_generation,
+            accepted_dependency_refs: None,
+        };
+        let circle_floor = ReadableFloor {
+            oldest_position: 0,
+            floor_commit_id: circle_head.commit_id.clone(),
+            floor_reason: ReadableFloorReason::StreamStart,
+        };
+        let mut multi_replica = replica.clone();
+        let circle_slice = multi_replica
+            .install_verified_floor_predecessor(
+                &circle_stream,
+                &circle_basis,
+                &circle_floor,
+                &multi,
+                &freshness,
+                &keys,
+            )
+            .unwrap();
+        assert_eq!(circle_slice.rows(), &[circle_row]);
+        assert_eq!(
+            multi_replica.verified_head(&circle_stream),
+            Some(&circle_head)
+        );
+        assert_eq!(multi_replica.verified_head(&stream_ref), None);
+        assert_eq!(multi_replica.verified_head(&sidecar_stream), None);
+        let sidecar_slice = multi_replica
+            .install_verified_floor_predecessor(
+                &sidecar_stream,
+                &StreamWindowStartBasis {
+                    anchor_position: 0,
+                    anchor_commit_ref: sidecar_head.commit_id.clone(),
+                    snapshot_ref: multi.snapshot_id.clone(),
+                    governance_generation: multi.governance_generation,
+                    accepted_dependency_refs: None,
+                },
+                &ReadableFloor {
+                    oldest_position: 0,
+                    floor_commit_id: sidecar_head.commit_id.clone(),
+                    floor_reason: ReadableFloorReason::StreamStart,
+                },
+                &multi,
+                &freshness,
+                &keys,
+            )
+            .unwrap();
+        assert!(sidecar_slice.rows().is_empty());
+        assert_eq!(
+            multi_replica.verified_head(&sidecar_stream),
+            Some(&sidecar_head)
+        );
+        let mut realm_basis = prefix_basis.clone();
+        realm_basis.snapshot_ref = multi.snapshot_id.clone();
+        let realm_slice = multi_replica
+            .install_verified_floor_predecessor(
+                &stream_ref,
+                &realm_basis,
+                &prefix_floor,
+                &multi,
+                &freshness,
+                &keys,
+            )
+            .unwrap();
+        assert_eq!(realm_slice.rows(), signed_rows);
+        assert_eq!(
+            multi_replica.verified_head(&circle_stream),
+            Some(&circle_head)
+        );
+        assert_eq!(
+            multi_replica.verified_head(&sidecar_stream),
+            Some(&sidecar_head)
+        );
+        assert_eq!(
+            multi_replica.verified_head(&stream_ref),
             Some(&genesis_head)
         );
         let prefix_tail = StreamScanRequest {
