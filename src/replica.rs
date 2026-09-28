@@ -25,6 +25,7 @@ pub struct StreamReplica {
 #[derive(Clone, Debug, PartialEq)]
 pub struct VerifiedScanPage {
     rows: Vec<CommittedEventView>,
+    authority_context: [u8; 32],
 }
 
 /// Current rows committed by one exact signed snapshot whose head is the
@@ -83,6 +84,21 @@ pub struct RealmReplica {
 }
 
 impl RealmReplica {
+    fn authority_context(&self) -> Result<[u8; 32]> {
+        let bundle = self
+            .authority
+            .as_ref()
+            .ok_or_else(|| Error::Protocol("missing verified authority".to_owned()))?;
+        let request = self
+            .authority_request
+            .as_ref()
+            .ok_or_else(|| Error::Protocol("missing authority request".to_owned()))?;
+        let value = serde_json::to_value((request, bundle))
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+        let bytes = arkret_canonical::canonical_json_bytes(&value)
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+        Ok(arkret_canonical::sha256_bytes(&bytes))
+    }
     pub fn new(realm_id: RealmId) -> Self {
         Self {
             realm_id,
@@ -92,6 +108,20 @@ impl RealmReplica {
             authority_request: None,
             verified_streams: BTreeMap::new(),
         }
+    }
+
+    /// Isolate a second verified scan under the same nonce-bound authority
+    /// without carrying any previously installed stream predecessors.
+    pub fn fork_verified_authority(&self) -> Result<Self> {
+        if self.authority_request.is_none() || self.authority.is_none() {
+            return Err(Error::Protocol(
+                "replica has no verified authority".to_owned(),
+            ));
+        }
+        let mut fork = Self::new(self.realm_id.clone());
+        fork.authority = self.authority.clone();
+        fork.authority_request = self.authority_request.clone();
+        Ok(fork)
     }
 
     /// Shape-only staging data. This does not establish authority and cannot
@@ -264,7 +294,9 @@ impl RealmReplica {
     /// lie before the caller's readable floor. The subsequent verified scan
     /// resumes after the signed head and must extend its exact Commit. A
     /// position-0 window and a window starting exactly at a nonzero readable
-    /// floor carry no basis; the latter stays preview-only.
+    /// floor carry no basis; the latter stays preview-only. Nonempty accepted
+    /// dependencies require complete verified genesis-to-signed-head scans
+    /// under this replica's exact nonce-bound authority context.
     pub fn install_verified_floor_predecessor(
         &mut self,
         stream_ref: &CommitStreamRef,
@@ -273,24 +305,11 @@ impl RealmReplica {
         snapshot: &RealmStateSnapshot,
         freshness: &RealmAuthorityFreshness,
         keys: &dyn RealmAuthorityKeyDirectory,
+        dependency_pages: &BTreeMap<CommitStreamRef, Vec<VerifiedScanPage>>,
     ) -> Result<VerifiedFloorSnapshot> {
         basis
             .validate()
             .map_err(|error| Error::Protocol(error.to_string()))?;
-        // The signed Snapshot proves its own heads and rows, but it does not
-        // carry the accepted cross-stream Commit references asserted by the
-        // Account window basis. Until each reference can be resolved against
-        // independently verified accepted Commit evidence, a nonempty set
-        // cannot become a replay predecessor.
-        if basis
-            .accepted_dependency_refs
-            .as_ref()
-            .is_some_and(|refs| !refs.is_empty())
-        {
-            return Err(Error::Protocol(
-                "floor snapshot has unverified accepted dependency references".to_owned(),
-            ));
-        }
         let head = snapshot
             .visible_stream_heads
             .iter()
@@ -325,6 +344,71 @@ impl RealmReplica {
             freshness,
             keys,
         )?;
+        for dependency in basis.accepted_dependency_refs.iter().flatten() {
+            if dependency.stream_ref == *stream_ref
+                || dependency.stream_ref.realm_id() != &self.realm_id
+            {
+                return Err(Error::Protocol(
+                    "floor dependency names the wrong stream or Realm".to_owned(),
+                ));
+            }
+            let signed_head = snapshot
+                .visible_stream_heads
+                .iter()
+                .find(|head| head.stream_ref == dependency.stream_ref)
+                .ok_or_else(|| {
+                    Error::Protocol("floor dependency has no signed stream head".to_owned())
+                })?;
+            let pages = dependency_pages
+                .get(&dependency.stream_ref)
+                .ok_or_else(|| {
+                    Error::Protocol("floor dependency has no verified scan".to_owned())
+                })?;
+            let authority_context = self.authority_context()?;
+            if pages
+                .iter()
+                .any(|page| page.authority_context != authority_context)
+            {
+                return Err(Error::Protocol(
+                    "floor dependency uses another authority context".to_owned(),
+                ));
+            }
+            let mut previous: Option<(arkret_wire::RealmCommitId, u64)> = None;
+            let mut found = false;
+            let mut reached_head = false;
+            for row in pages.iter().flat_map(|page| page.rows()) {
+                let commit = row.commit();
+                let expected_position = match &previous {
+                    Some((_, position)) => position.checked_add(1).ok_or_else(|| {
+                        Error::Protocol("floor dependency position overflow".to_owned())
+                    })?,
+                    None => 0,
+                };
+                if commit.realm_id != self.realm_id
+                    || commit.stream_ref != dependency.stream_ref
+                    || commit.stream_position != expected_position
+                    || commit.previous_commit_ref != previous.as_ref().map(|(id, _)| id.clone())
+                    || commit.governance_generation > basis.governance_generation
+                {
+                    return Err(Error::Protocol(
+                        "floor dependency scan is not a verified prefix".to_owned(),
+                    ));
+                }
+                if commit.stream_position == dependency.stream_position {
+                    found = matches!(row, CommittedEventView::Full(_)) && dependency.matches(row);
+                }
+                if commit.stream_position == signed_head.stream_position {
+                    reached_head = commit.commit_id == signed_head.commit_id;
+                    break;
+                }
+                previous = Some((commit.commit_id.clone(), commit.stream_position));
+            }
+            if !found || !reached_head {
+                return Err(Error::Protocol(
+                    "floor dependency is not in the signed accepted prefix".to_owned(),
+                ));
+            }
+        }
         let predecessor = candidate
             .verified_streams
             .remove(stream_ref)
@@ -497,6 +581,7 @@ impl RealmReplica {
             };
             result.map_err(|error| Error::Protocol(error.to_string()))?;
         }
+        let authority_context = self.authority_context()?;
         let accepted = outcome.committed_events;
         let replica = self
             .verified_streams
@@ -511,7 +596,10 @@ impl RealmReplica {
             });
         }
         replica.items.extend(accepted.iter().cloned());
-        Ok(VerifiedScanPage { rows: accepted })
+        Ok(VerifiedScanPage {
+            rows: accepted,
+            authority_context,
+        })
     }
 
     /// The locally verified tail for one independent stream. Shape-only
@@ -1078,6 +1166,7 @@ mod tests {
                     &current_snapshot,
                     &freshness,
                     &keys,
+                    &BTreeMap::new(),
                 )
                 .is_err()
         );
@@ -1109,6 +1198,7 @@ mod tests {
                     &bad_signature,
                     &freshness,
                     &keys,
+                    &BTreeMap::new(),
                 )
                 .is_err()
         );
@@ -1122,6 +1212,7 @@ mod tests {
                 &current_snapshot,
                 &freshness,
                 &keys,
+                &BTreeMap::new(),
             )
             .unwrap();
         assert_eq!(prefix_carrier.rows(), signed_rows);
@@ -1193,6 +1284,147 @@ mod tests {
             floor_commit_id: circle_head.commit_id.clone(),
             floor_reason: ReadableFloorReason::StreamStart,
         };
+        let mut dependency_replica = replica.fork_verified_authority().unwrap();
+        let genesis_page = dependency_replica
+            .apply_verified_scan(
+                &StreamScanRequest {
+                    realm_id: realm_id.clone(),
+                    stream_ref: stream_ref.clone(),
+                    direction: StreamScanDirection::After(None),
+                    limit: 2,
+                },
+                StreamScanOutcome {
+                    committed_events: vec![CommittedEventView::Full(CommittedEventFullView {
+                        commit: genesis_commit.clone(),
+                        event: genesis.clone(),
+                    })],
+                    readable_floor: Some(prefix_floor.clone()),
+                    truncated: true,
+                },
+                &freshness,
+                &keys,
+            )
+            .unwrap();
+        let ordinary_page = dependency_replica
+            .apply_verified_scan(
+                &StreamScanRequest {
+                    realm_id: realm_id.clone(),
+                    stream_ref: stream_ref.clone(),
+                    direction: StreamScanDirection::After(Some(0)),
+                    limit: 1,
+                },
+                StreamScanOutcome {
+                    committed_events: vec![CommittedEventView::Full(CommittedEventFullView {
+                        commit: ordinary_commit.clone(),
+                        event: ordinary.clone(),
+                    })],
+                    readable_floor: Some(prefix_floor.clone()),
+                    truncated: false,
+                },
+                &freshness,
+                &keys,
+            )
+            .unwrap();
+        let proof = BTreeMap::from([(
+            stream_ref.clone(),
+            vec![genesis_page.clone(), ordinary_page.clone()],
+        )]);
+        let accepted_ref = arkret_wire::CommittedEventRef {
+            event_id: ordinary.event_id.clone(),
+            commit_id: ordinary_commit.commit_id.clone(),
+            stream_ref: stream_ref.clone(),
+            stream_position: 1,
+        };
+        let mut dependency_snapshot = multi.clone();
+        dependency_snapshot.visible_stream_heads[0] = snapshot_head.clone();
+        sign_snapshot(&mut dependency_snapshot);
+        let mut dependent_basis = circle_basis.clone();
+        dependent_basis.snapshot_ref = dependency_snapshot.snapshot_id.clone();
+        dependent_basis.accepted_dependency_refs = Some(vec![accepted_ref.clone()]);
+        let mut dependency_install = replica.clone();
+        dependency_install
+            .install_verified_floor_predecessor(
+                &circle_stream,
+                &dependent_basis,
+                &circle_floor,
+                &dependency_snapshot,
+                &freshness,
+                &keys,
+                &proof,
+            )
+            .unwrap();
+        assert_eq!(
+            dependency_install.verified_head(&circle_stream),
+            Some(&circle_head)
+        );
+        for wrong in [
+            {
+                let mut value = accepted_ref.clone();
+                value.commit_id = arkret_wire::RealmCommitId::from_digest([0xee; 32]);
+                value
+            },
+            {
+                let mut value = accepted_ref.clone();
+                value.stream_position = 0;
+                value
+            },
+            {
+                let mut value = accepted_ref.clone();
+                value.stream_ref = circle_stream.clone();
+                value
+            },
+        ] {
+            let mut basis = circle_basis.clone();
+            basis.snapshot_ref = dependency_snapshot.snapshot_id.clone();
+            basis.accepted_dependency_refs = Some(vec![wrong.clone()]);
+            let mut candidate = replica.clone();
+            let before = candidate.clone();
+            assert!(
+                candidate
+                    .install_verified_floor_predecessor(
+                        &circle_stream,
+                        &basis,
+                        &circle_floor,
+                        &multi,
+                        &freshness,
+                        &keys,
+                        &proof,
+                    )
+                    .is_err()
+            );
+            assert_eq!(candidate, before);
+        }
+        let short_proof = BTreeMap::from([(stream_ref.clone(), vec![genesis_page])]);
+        assert!(
+            replica
+                .clone()
+                .install_verified_floor_predecessor(
+                    &circle_stream,
+                    &dependent_basis,
+                    &circle_floor,
+                    &dependency_snapshot,
+                    &freshness,
+                    &keys,
+                    &short_proof,
+                )
+                .is_err()
+        );
+        let mut wrong_context = proof.clone();
+        wrong_context.get_mut(&stream_ref).unwrap()[0].authority_context = [0xff; 32];
+        assert!(
+            replica
+                .clone()
+                .install_verified_floor_predecessor(
+                    &circle_stream,
+                    &dependent_basis,
+                    &circle_floor,
+                    &dependency_snapshot,
+                    &freshness,
+                    &keys,
+                    &wrong_context,
+                )
+                .is_err()
+        );
         let mut multi_replica = replica.clone();
         let mut invented_dependency = circle_basis.clone();
         invented_dependency.accepted_dependency_refs = Some(vec![arkret_wire::CommittedEventRef {
@@ -1208,9 +1440,10 @@ mod tests {
                     &circle_stream,
                     &invented_dependency,
                     &circle_floor,
-                    &multi,
+                    &dependency_snapshot,
                     &freshness,
                     &keys,
+                    &BTreeMap::new(),
                 )
                 .is_err()
         );
@@ -1223,6 +1456,7 @@ mod tests {
                 &multi,
                 &freshness,
                 &keys,
+                &BTreeMap::new(),
             )
             .unwrap();
         assert_eq!(circle_slice.rows(), &[circle_row]);
@@ -1250,6 +1484,7 @@ mod tests {
                 &multi,
                 &freshness,
                 &keys,
+                &BTreeMap::new(),
             )
             .unwrap();
         assert!(sidecar_slice.rows().is_empty());
@@ -1267,6 +1502,7 @@ mod tests {
                 &multi,
                 &freshness,
                 &keys,
+                &BTreeMap::new(),
             )
             .unwrap();
         assert_eq!(realm_slice.rows(), signed_rows);
@@ -1338,7 +1574,7 @@ mod tests {
                             commit: scoped_commit.clone(),
                             event: scoped_event,
                         })],
-                        readable_floor: Some(scoped_floor),
+                        readable_floor: Some(scoped_floor.clone()),
                         truncated: false,
                     },
                     &freshness,
@@ -1346,6 +1582,32 @@ mod tests {
                 )
                 .unwrap();
             assert_eq!(page.rows()[0].commit().commit_id, scoped_commit.commit_id);
+            if scoped_stream == circle_stream {
+                let verified_tail = dependency_install
+                    .apply_verified_scan(
+                        &StreamScanRequest {
+                            realm_id: realm_id.clone(),
+                            stream_ref: circle_stream.clone(),
+                            direction: StreamScanDirection::After(Some(0)),
+                            limit: 1,
+                        },
+                        StreamScanOutcome {
+                            committed_events: page.rows().to_vec(),
+                            readable_floor: Some(scoped_floor.clone()),
+                            truncated: false,
+                        },
+                        &freshness,
+                        &keys,
+                    )
+                    .unwrap();
+                assert_eq!(verified_tail.rows().len(), 1);
+                assert_eq!(
+                    dependency_install
+                        .verified_head(&circle_stream)
+                        .map(|head| head.stream_position),
+                    Some(1)
+                );
+            }
             assert_eq!(
                 multi_replica
                     .verified_head(&scoped_stream)
@@ -1410,6 +1672,7 @@ mod tests {
                         &current_snapshot,
                         &freshness,
                         &keys,
+                        &BTreeMap::new(),
                     )
                     .is_err()
             );
@@ -1424,6 +1687,7 @@ mod tests {
                 &snapshot,
                 &freshness,
                 &keys,
+                &BTreeMap::new(),
             )
             .unwrap();
         assert_eq!(
@@ -1442,6 +1706,7 @@ mod tests {
                     &snapshot,
                     &freshness,
                     &keys,
+                    &BTreeMap::new(),
                 )
                 .is_err()
         );
