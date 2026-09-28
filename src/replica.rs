@@ -277,6 +277,20 @@ impl RealmReplica {
         basis
             .validate()
             .map_err(|error| Error::Protocol(error.to_string()))?;
+        // The signed Snapshot proves its own heads and rows, but it does not
+        // carry the accepted cross-stream Commit references asserted by the
+        // Account window basis. Until each reference can be resolved against
+        // independently verified accepted Commit evidence, a nonempty set
+        // cannot become a replay predecessor.
+        if basis
+            .accepted_dependency_refs
+            .as_ref()
+            .is_some_and(|refs| !refs.is_empty())
+        {
+            return Err(Error::Protocol(
+                "floor snapshot has unverified accepted dependency references".to_owned(),
+            ));
+        }
         let head = snapshot
             .visible_stream_heads
             .iter()
@@ -1180,6 +1194,27 @@ mod tests {
             floor_reason: ReadableFloorReason::StreamStart,
         };
         let mut multi_replica = replica.clone();
+        let mut invented_dependency = circle_basis.clone();
+        invented_dependency.accepted_dependency_refs = Some(vec![arkret_wire::CommittedEventRef {
+            event_id: genesis.event_id.clone(),
+            commit_id: arkret_wire::RealmCommitId::from_digest([0xee; 32]),
+            stream_ref: stream_ref.clone(),
+            stream_position: 999,
+        }]);
+        let before_dependency = multi_replica.clone();
+        assert!(
+            multi_replica
+                .install_verified_floor_predecessor(
+                    &circle_stream,
+                    &invented_dependency,
+                    &circle_floor,
+                    &multi,
+                    &freshness,
+                    &keys,
+                )
+                .is_err()
+        );
+        assert_eq!(multi_replica, before_dependency);
         let circle_slice = multi_replica
             .install_verified_floor_predecessor(
                 &circle_stream,
@@ -1247,6 +1282,77 @@ mod tests {
             multi_replica.verified_head(&stream_ref),
             Some(&genesis_head)
         );
+        for (seed, scoped_stream, scoped_floor) in [
+            (0x45, circle_stream.clone(), circle_floor.clone()),
+            (
+                0x56,
+                sidecar_stream.clone(),
+                ReadableFloor {
+                    oldest_position: 0,
+                    floor_commit_id: sidecar_head.commit_id.clone(),
+                    floor_reason: ReadableFloorReason::StreamStart,
+                },
+            ),
+        ] {
+            let scoped_scope = match &scoped_stream {
+                CommitStreamRef::Circle {
+                    realm_id,
+                    circle_id,
+                } => ScopeRef::Circle {
+                    realm_id: realm_id.clone(),
+                    circle_id: circle_id.clone(),
+                },
+                CommitStreamRef::Sidecar {
+                    realm_id,
+                    sidecar_id,
+                } => ScopeRef::Sidecar {
+                    realm_id: realm_id.clone(),
+                    sidecar_id: sidecar_id.clone(),
+                },
+                _ => unreachable!(),
+            };
+            let scoped_event = arkret_wire::test_support::raw_event_at(
+                EventKind::MessageCreate.as_str(),
+                scoped_scope,
+                arkret_wire::DidCoreId::new("ak:did_core:web:founder.example").unwrap(),
+                project_did_to_core_id(&Did::new("did:web:station-a.example").unwrap()).unwrap(),
+                serde_json::json!({}),
+                now - Duration::seconds(1),
+            )
+            .unwrap();
+            let mut scoped_commit =
+                crate::test_fixtures::commit(seed, &scoped_event, scoped_stream.clone(), 1);
+            scoped_commit.authority_ref =
+                RealmCommitAuthorityRef::GenesisOrChangeEvent(genesis.event_id.clone());
+            let scoped_commit = seal(scoped_commit, &route.signing_key);
+            let page = multi_replica
+                .apply_verified_scan(
+                    &StreamScanRequest {
+                        realm_id: realm_id.clone(),
+                        stream_ref: scoped_stream.clone(),
+                        direction: StreamScanDirection::After(Some(0)),
+                        limit: 1,
+                    },
+                    StreamScanOutcome {
+                        committed_events: vec![CommittedEventView::Full(CommittedEventFullView {
+                            commit: scoped_commit.clone(),
+                            event: scoped_event,
+                        })],
+                        readable_floor: Some(scoped_floor),
+                        truncated: false,
+                    },
+                    &freshness,
+                    &keys,
+                )
+                .unwrap();
+            assert_eq!(page.rows()[0].commit().commit_id, scoped_commit.commit_id);
+            assert_eq!(
+                multi_replica
+                    .verified_head(&scoped_stream)
+                    .map(|head| head.stream_position),
+                Some(1)
+            );
+        }
         let prefix_tail = StreamScanRequest {
             realm_id: realm_id.clone(),
             stream_ref: stream_ref.clone(),
