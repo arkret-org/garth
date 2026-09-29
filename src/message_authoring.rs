@@ -584,12 +584,6 @@ impl DomainRevisionContext {
                 source_stream_ref,
                 revision,
                 ..
-            })
-            | Some(arkret_wire::TypedCurrentResult::MessageReactions {
-                selector: actual_selector,
-                source_stream_ref,
-                revision,
-                ..
             }) => {
                 if selector != actual_selector || stream != source_stream_ref {
                     return Err(Error::Protocol(

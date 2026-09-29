@@ -424,9 +424,6 @@ impl RealmReplica {
                 .filter(|row| match row {
                     TypedCurrentResult::Value {
                         source_stream_ref, ..
-                    }
-                    | TypedCurrentResult::MessageReactions {
-                        source_stream_ref, ..
                     } => source_stream_ref == stream_ref,
                 })
                 .cloned()
@@ -660,12 +657,6 @@ fn validate_snapshot(snapshot: &RealmStateSnapshot, realm_id: &RealmId) -> Resul
     for row in &snapshot.current_state_entries {
         let (selector, source_stream_ref, revision) = match row {
             arkret_wire::TypedCurrentResult::Value {
-                selector,
-                source_stream_ref,
-                revision,
-                ..
-            }
-            | arkret_wire::TypedCurrentResult::MessageReactions {
                 selector,
                 source_stream_ref,
                 revision,
@@ -966,10 +957,7 @@ mod tests {
                 let mut wrong_source = row.clone();
                 let arkret_wire::TypedCurrentResult::Value {
                     source_stream_ref, ..
-                } = &mut wrong_source
-                else {
-                    unreachable!()
-                };
+                } = &mut wrong_source;
                 *source_stream_ref = CommitStreamRef::Realm {
                     realm_id: arkret_wire::RealmId::new(
                         "ak:realm:AfTcej7ZFNg8uTbkOiUJT0KN1F_c9l1fmtil65CUwncm",
@@ -983,10 +971,7 @@ mod tests {
                 let mut value = snapshot.clone();
                 let mut other_head_commit = row.clone();
                 let arkret_wire::TypedCurrentResult::Value { revision, .. } =
-                    &mut other_head_commit
-                else {
-                    unreachable!()
-                };
+                    &mut other_head_commit;
                 revision.commit_id = genesis_commit.commit_id.clone();
                 value.current_state_entries = vec![other_head_commit];
                 value
@@ -996,15 +981,11 @@ mod tests {
                 let mut first = row.clone();
                 let mut second = row.clone();
                 for (row, commit) in [(&mut first, [0x61; 32]), (&mut second, [0x62; 32])] {
-                    let arkret_wire::TypedCurrentResult::Value { revision, .. } = row else {
-                        unreachable!()
-                    };
+                    let arkret_wire::TypedCurrentResult::Value { revision, .. } = row;
                     revision.stream_position = 0;
                     revision.commit_id = arkret_wire::RealmCommitId::from_digest(commit);
                 }
-                let arkret_wire::TypedCurrentResult::Value { selector, .. } = &mut second else {
-                    unreachable!()
-                };
+                let arkret_wire::TypedCurrentResult::Value { selector, .. } = &mut second;
                 *selector = arkret_wire::CurrentSelector::RealmDiscovery;
                 value.current_state_entries = vec![first, second];
                 value
@@ -1012,10 +993,7 @@ mod tests {
             {
                 let mut value = snapshot.clone();
                 let mut future_row = row.clone();
-                let arkret_wire::TypedCurrentResult::Value { revision, .. } = &mut future_row
-                else {
-                    unreachable!()
-                };
+                let arkret_wire::TypedCurrentResult::Value { revision, .. } = &mut future_row;
                 revision.stream_position = snapshot_head.stream_position + 1;
                 value.current_state_entries = vec![future_row];
                 value
