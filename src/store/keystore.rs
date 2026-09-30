@@ -160,6 +160,32 @@ pub trait SecureKeyStore: MaybeSendSync + 'static {
     }
 
     fn get_secret_bytes(&self, key: &str) -> SecureKeyStoreResult<Option<KeyBytes>>;
+
+    /// Read the committed backend value rather than an instance-local cache.
+    /// Backends without this capability must fail instead of emulating a read.
+    fn read_secret_bytes_durable<'a>(
+        &'a self,
+        _key: &'a str,
+    ) -> BoxSecureStoreFuture<'a, SecureKeyStoreResult<Option<KeyBytes>>> {
+        Box::pin(async { Err(SecureKeyStoreError::Unsupported("committed secret read")) })
+    }
+
+    /// Compare and replace under one backend transaction shared by all handles.
+    /// `None` expects an absent entry. `false` leaves the winner unchanged.
+    /// Success resolves only after durable commit; a process mutex is insufficient.
+    fn compare_exchange_secret_bytes_durable<'a>(
+        &'a self,
+        _key: &'a str,
+        _expected: Option<&'a [u8]>,
+        _replacement: &'a [u8],
+    ) -> BoxSecureStoreFuture<'a, SecureKeyStoreResult<bool>> {
+        Box::pin(async {
+            Err(SecureKeyStoreError::Unsupported(
+                "atomic secret compare exchange",
+            ))
+        })
+    }
+
     fn delete_secret(&self, key: &str) -> SecureKeyStoreResult<()>;
     /// Wait for removal from persistent storage. Async backends must override
     /// this; synchronous keyrings and in-memory stores complete immediately.
@@ -231,6 +257,30 @@ impl SecureKeyStore for MemorySecureKeyStore {
 
     fn get_secret_bytes(&self, key: &str) -> SecureKeyStoreResult<Option<KeyBytes>> {
         self.with_map(|map| map.get(key).cloned())
+    }
+
+    fn read_secret_bytes_durable<'a>(
+        &'a self,
+        key: &'a str,
+    ) -> BoxSecureStoreFuture<'a, SecureKeyStoreResult<Option<KeyBytes>>> {
+        Box::pin(async move { self.get_secret_bytes(key) })
+    }
+
+    fn compare_exchange_secret_bytes_durable<'a>(
+        &'a self,
+        key: &'a str,
+        expected: Option<&'a [u8]>,
+        replacement: &'a [u8],
+    ) -> BoxSecureStoreFuture<'a, SecureKeyStoreResult<bool>> {
+        Box::pin(async move {
+            self.with_map(|map| {
+                if map.get(key).map(KeyBytes::as_slice) != expected {
+                    return false;
+                }
+                map.insert(key.to_owned(), KeyBytes::new(replacement.to_vec()));
+                true
+            })
+        })
     }
 
     fn delete_secret(&self, key: &str) -> SecureKeyStoreResult<()> {
@@ -374,6 +424,60 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn unsupported_backends_cannot_emulate_atomic_secret_updates() {
+        let store = SdkKeyStoreSecureAdapter::new(MissingKeyStore);
+        assert!(matches!(
+            store.read_secret_bytes_durable("queue").await,
+            Err(SecureKeyStoreError::Unsupported(_))
+        ));
+        assert!(matches!(
+            store
+                .compare_exchange_secret_bytes_durable("queue", None, b"first")
+                .await,
+            Err(SecureKeyStoreError::Unsupported(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn secret_compare_exchange_preserves_the_winner_across_handles() {
+        let first = MemorySecureKeyStore::new();
+        let second = first.clone();
+        assert!(
+            first
+                .compare_exchange_secret_bytes_durable("queue", None, b"first")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !second
+                .compare_exchange_secret_bytes_durable("queue", None, b"stale")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !second
+                .compare_exchange_secret_bytes_durable("queue", Some(b"wrong"), b"stale")
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            second
+                .read_secret_bytes_durable("queue")
+                .await
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            b"first"
+        );
+        assert!(
+            second
+                .compare_exchange_secret_bytes_durable("queue", Some(b"first"), b"next")
+                .await
+                .unwrap()
+        );
+    }
 
     #[derive(Clone, Debug)]
     struct MissingKeyStore;
