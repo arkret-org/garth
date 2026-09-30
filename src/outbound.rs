@@ -304,7 +304,8 @@ pub enum OutboundEngineOutcome {
         item: Box<SendQueueItem>,
         reason_code: String,
     },
-    /// A retryable transport fault; the item is queued again after `delay`.
+    /// A retryable authority, local gate or transport result; the same frozen
+    /// item is durably queued again after `delay`.
     Retry {
         item: Box<SendQueueItem>,
         delay: Duration,
@@ -425,6 +426,17 @@ where
         }
         match authority.submit(&mut submission, options).await {
             Ok(()) => {
+                if let SubmissionState::Rejected {
+                    status,
+                    reason_code,
+                } = &submission.state
+                    && *status == arkret_wire::AuthorityRejectionStatus::RetryableUnavailable
+                {
+                    let reason = format!("retryable_unavailable: {reason_code}");
+                    let mut retry = claimed;
+                    retry.submission = submission;
+                    return self.defer_claimed(retry, reason, settled_at).await;
+                }
                 let status = match &submission.state {
                     SubmissionState::Committed { .. } | SubmissionState::UnitCommitted { .. } => {
                         SendQueueStatus::Committed
@@ -516,14 +528,15 @@ where
         let next = now
             .timestamp_millis()
             .saturating_add(i64::try_from(delay.as_millis()).unwrap_or(i64::MAX));
-        let event_id = claimed.submission.event_id;
+        let event_id = claimed.submission.event_id.clone();
+        let submission = claimed.submission;
         let item = self
             .store
             .mutate_outbound(move |queue| {
                 queue.settle(
                     &event_id,
                     SendQueueStatus::Queued,
-                    None,
+                    Some(submission),
                     Some(reason),
                     Some(next),
                     now,
@@ -637,6 +650,7 @@ mod tests {
     enum Scripted {
         Accept,
         Reject,
+        Retryable,
         Transport,
         Protocol,
     }
@@ -677,9 +691,18 @@ mod tests {
                         1,
                     ),
                 }),
-                Scripted::Reject => Ok(AuthoritySubmitOutcome::Rejected {
-                    status: AuthorityRejectionStatus::Rejected,
-                    reason_code: "authorization_denied".to_owned(),
+                Scripted::Reject | Scripted::Retryable => Ok(AuthoritySubmitOutcome::Rejected {
+                    status: if matches!(self.script, Scripted::Retryable) {
+                        AuthorityRejectionStatus::RetryableUnavailable
+                    } else {
+                        AuthorityRejectionStatus::Rejected
+                    },
+                    reason_code: if matches!(self.script, Scripted::Retryable) {
+                        "revision_unavailable"
+                    } else {
+                        "authorization_denied"
+                    }
+                    .to_owned(),
                 }),
                 Scripted::Transport => Err(Error::Http("connection reset".to_owned())),
                 Scripted::Protocol => Err(Error::Api {
@@ -765,6 +788,64 @@ mod tests {
         };
         assert_eq!(reason_code, "authorization_denied");
         assert_eq!(item.rejection_reason_code(), Some("authorization_denied"));
+    }
+
+    #[cfg(feature = "native")]
+    #[tokio::test]
+    async fn retryable_authority_outcome_is_nonterminal_at_the_durable_boundary() {
+        #[derive(Clone, Copy)]
+        struct LaterClock;
+        impl HostClock for LaterClock {
+            fn now(&self) -> DateTime<Utc> {
+                FixedClock.now() + chrono::Duration::hours(1)
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("garth-state.json");
+        let engine = OutboundEngine::new(crate::FileStore::open(&path).unwrap(), FixedClock);
+        let queued = submission(3);
+        let event_id = queued.event_id.clone();
+        let expected = arkret_canonical::canonical_json_bytes(&queued.request).unwrap();
+        engine.enqueue(queued).await.unwrap();
+        let authority = AuthorityClient::new(ScriptedTransport::new(Scripted::Retryable));
+        let outcome = engine
+            .submit_next(&authority, &ClientRequestOptions::default())
+            .await
+            .unwrap();
+        assert!(matches!(outcome, OutboundEngineOutcome::Retry { .. }));
+        drop(engine);
+        let reopened = OutboundEngine::new(crate::FileStore::open(&path).unwrap(), LaterClock);
+        let snapshot = reopened.snapshot().await.unwrap();
+        let item = &snapshot.items[0];
+        assert_eq!(item.status, SendQueueStatus::Queued);
+        assert!(
+            matches!(&item.submission.state, SubmissionState::Rejected { status: AuthorityRejectionStatus::RetryableUnavailable, reason_code } if reason_code == "revision_unavailable")
+        );
+        assert_eq!(item.event_id(), &event_id);
+        assert_eq!(
+            item.last_error.as_deref(),
+            Some("retryable_unavailable: revision_unavailable")
+        );
+        assert!(item.settled_at.is_none());
+        assert!(item.commit().is_none());
+        assert_eq!(
+            arkret_canonical::canonical_json_bytes(item.request()).unwrap(),
+            expected
+        );
+        let accepting = AuthorityClient::new(ScriptedTransport::new(Scripted::Accept));
+        let OutboundEngineOutcome::Committed { item, .. } = reopened
+            .submit_next(&accepting, &ClientRequestOptions::default())
+            .await
+            .unwrap()
+        else {
+            panic!("the durable retry must still be eligible");
+        };
+        assert_eq!(item.event_id(), &event_id);
+        assert_eq!(
+            arkret_canonical::canonical_json_bytes(item.request()).unwrap(),
+            expected
+        );
+        assert_eq!(accepting.transport().calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]
