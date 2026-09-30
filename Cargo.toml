@@ -34,6 +34,7 @@ route-material-test-support = []
 wasm = ["dep:gloo-timers"]
 
 [dependencies]
+getrandom = { version = "0.4.3", default-features = false, features = ["std", "sys_rng"] }
 arkret-auth = { version = "0.3.0", path = "../arkret-rust-sdk/crates/auth", default-features = false }
 arkret-canonical = { version = "0.3.0", path = "../arkret-rust-sdk/crates/canonical", default-features = false }
 arkret-http-client = { version = "0.3.0", path = "../arkret-rust-sdk/crates/http-client", default-features = false }
@@ -60,6 +61,7 @@ url = { version = "2.5", default-features = false }
 zeroize = { version = "1.9.0", default-features = false, features = ["derive"] }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom = { version = "0.4.3", default-features = false, features = ["wasm_js"] }
 gloo-timers = { version = "0.4", default-features = false, features = ["futures"], optional = true }
 
 [dev-dependencies]

@@ -17,7 +17,8 @@ use arkret_identity::{
 use arkret_models_identity::AuthenticatedServiceResolution;
 use arkret_signatures::PublicKeyMaterial;
 use arkret_wire::{
-    DetachedObjectSignature, DidCoreId, RealmAuthorityBundle, RealmStateSnapshot, StreamScanOutcome,
+    DetachedObjectSignature, DidCoreId, RealmAuthorityBundle, RealmCommit, RealmStateSnapshot,
+    StreamScanOutcome,
 };
 use chrono::{DateTime, Utc};
 
@@ -144,8 +145,15 @@ pub fn historical_station_key_directory(
     snapshot: Option<&RealmStateSnapshot>,
     resolutions: &BTreeMap<DidCoreId, AuthenticatedServiceResolution>,
 ) -> Result<RealmAuthorityKeyMap> {
+    key_directory_for_methods(signed_methods(bundle, scan, snapshot), resolutions)
+}
+
+fn key_directory_for_methods(
+    methods: Vec<SignedStationMethod<'_>>,
+    resolutions: &BTreeMap<DidCoreId, AuthenticatedServiceResolution>,
+) -> Result<RealmAuthorityKeyMap> {
     let mut keys = RealmAuthorityKeyMap::new();
-    for entry in signed_methods(bundle, scan, snapshot) {
+    for entry in methods {
         let service_id = station_id_for_signature(entry.signature)?;
         let resolution = resolutions.get(&service_id).ok_or_else(|| {
             Error::Protocol(format!(
@@ -181,6 +189,28 @@ pub async fn fetch_historical_station_key_directory(
     scan: Option<&StreamScanOutcome>,
     snapshot: Option<&RealmStateSnapshot>,
 ) -> Result<RealmAuthorityKeyMap> {
+    fetch_keys_for_methods(http, bundle, signed_methods(bundle, scan, snapshot)).await
+}
+
+/// Include accepted receipts at their own historical signing coordinates.
+pub(crate) async fn fetch_historical_station_keys_for_commits(
+    http: &Client,
+    bundle: &RealmAuthorityBundle,
+    commits: &[&RealmCommit],
+) -> Result<RealmAuthorityKeyMap> {
+    let mut methods = signed_methods(bundle, None, None);
+    methods.extend(commits.iter().map(|commit| SignedStationMethod {
+        signature: &commit.signature,
+        accepted_at: commit.committed_at,
+    }));
+    fetch_keys_for_methods(http, bundle, methods).await
+}
+
+async fn fetch_keys_for_methods(
+    http: &Client,
+    bundle: &RealmAuthorityBundle,
+    methods: Vec<SignedStationMethod<'_>>,
+) -> Result<RealmAuthorityKeyMap> {
     let current: AuthenticatedServiceResolution =
         serde_json::from_value(bundle.current_route_record.clone()).map_err(|error| {
             Error::Protocol(format!(
@@ -193,7 +223,13 @@ pub async fn fetch_historical_station_key_directory(
         ));
     }
     let mut resolutions = BTreeMap::from([(current.service_id.clone(), current)]);
-    for service_id in required_historical_station_ids(bundle, scan, snapshot)? {
+    let mut ids = methods
+        .iter()
+        .map(|entry| station_id_for_signature(entry.signature))
+        .collect::<Result<Vec<_>>>()?;
+    ids.sort();
+    ids.dedup();
+    for service_id in ids {
         if resolutions.contains_key(&service_id) {
             continue;
         }
@@ -207,7 +243,7 @@ pub async fn fetch_historical_station_key_directory(
             })?;
         resolutions.insert(service_id, resolution);
     }
-    historical_station_key_directory(bundle, scan, snapshot, &resolutions)
+    key_directory_for_methods(methods, &resolutions)
 }
 
 #[cfg(test)]

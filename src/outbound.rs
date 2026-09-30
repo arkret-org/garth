@@ -792,6 +792,94 @@ mod tests {
 
     #[cfg(feature = "native")]
     #[tokio::test]
+    async fn http_acceptance_without_authority_proof_never_settles_the_queue() {
+        use std::io::{Read, Write};
+        use std::sync::atomic::AtomicBool;
+        let queued = submission(3);
+        let event_id = queued.event_id.clone();
+        let outcome = AuthoritySubmitOutcome::Accepted {
+            status: AuthorityCommitStatus::Committed,
+            commit: commit(
+                7,
+                queued.primary_event(),
+                CommitStreamRef::from_scope(
+                    &queued.primary_event().scope_ref,
+                    Some(queued.primary_event().realm_id.clone()),
+                )
+                .unwrap(),
+                1,
+            ),
+        };
+        let body = serde_json::to_string(&outcome).unwrap();
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let running = Arc::new(AtomicBool::new(true));
+        let serving = running.clone();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let observed = calls.clone();
+        let server = std::thread::spawn(move || {
+            while serving.load(Ordering::SeqCst) {
+                let Ok((mut socket, _)) = listener.accept() else {
+                    std::thread::sleep(Duration::from_millis(5));
+                    continue;
+                };
+                socket
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut buffer = [0_u8; 4096];
+                let size = socket.read(&mut buffer).unwrap();
+                let request = String::from_utf8_lossy(&buffer[..size]);
+                let response = if request.starts_with("POST /_arkret/self/events ") {
+                    observed.fetch_add(1, Ordering::SeqCst);
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                } else {
+                    "HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        .to_owned()
+                };
+                socket.write_all(response.as_bytes()).unwrap();
+            }
+        });
+        let client = arkret_http_client::Client::builder(
+            url::Url::parse(&format!("http://{address}")).unwrap(),
+        )
+        .allow_insecure_localhost()
+        .build()
+        .unwrap();
+        let engine = engine();
+        engine.enqueue(queued).await.unwrap();
+        let result = engine
+            .submit_next(
+                &AuthorityClient::new(client),
+                &ClientRequestOptions::default(),
+            )
+            .await;
+        running.store(false, Ordering::SeqCst);
+        server.join().unwrap();
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "exercise the real HTTP acceptance decoder"
+        );
+        assert!(
+            !matches!(result, Ok(OutboundEngineOutcome::Committed { .. })),
+            "shape-only HTTP acceptance must not establish a Commit"
+        );
+        let snapshot = engine.snapshot().await.unwrap();
+        let item = snapshot
+            .items
+            .iter()
+            .find(|item| item.event_id() == &event_id)
+            .unwrap();
+        assert_ne!(item.status, SendQueueStatus::Committed);
+        assert!(item.commit().is_none());
+    }
+
+    #[cfg(feature = "native")]
+    #[tokio::test]
     async fn retryable_authority_outcome_is_nonterminal_at_the_durable_boundary() {
         #[derive(Clone, Copy)]
         struct LaterClock;

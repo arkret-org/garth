@@ -94,7 +94,7 @@ impl AuthorityTransport for Client {
                 SelfAuthoritySubmitRequest::MlsCommit(value.clone())
             }
         };
-        match self.submit_to_realm_authority(&request, options).await? {
+        match AuthorityTransport::submit_self(self, &request, options).await? {
             SelfAuthoritySubmitOutcome::Ordinary(outcome) => Ok(outcome),
             _ => Err(crate::Error::Protocol(
                 "ordinary queued submission returned an aggregate outcome".to_owned(),
@@ -107,7 +107,34 @@ impl AuthorityTransport for Client {
         request: &SelfAuthoritySubmitRequest,
         options: &ClientRequestOptions,
     ) -> Result<SelfAuthoritySubmitOutcome> {
-        Ok(self.submit_to_realm_authority(request, options).await?)
+        let outcome = self.submit_to_realm_authority(request, options).await?;
+        let items = accepted_items(request, &outcome)?;
+        if !items.is_empty() {
+            let mut nonce = [0_u8; 32];
+            getrandom::fill(&mut nonce).map_err(|error| Error::Protocol(error.to_string()))?;
+            let nonce =
+                arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(nonce))
+                    .map_err(|error| Error::Protocol(error.to_owned()))?;
+            let authority_request = AuthorityBundleRequest {
+                realm_id: items[0].commit.realm_id.clone(),
+                nonce: nonce.clone(),
+            };
+            let bundle = AuthorityClient::new(self.clone())
+                .resolve_authority(&authority_request)
+                .await?;
+            let commits = items.iter().map(|item| &item.commit).collect::<Vec<_>>();
+            let keys = crate::historical_station_keys::fetch_historical_station_keys_for_commits(
+                self, &bundle, &commits,
+            )
+            .await?;
+            verify_accepted_items(
+                &items,
+                &bundle,
+                &RealmAuthorityFreshness::new(chrono::Utc::now(), nonce),
+                &keys,
+            )?;
+        }
+        Ok(outcome)
     }
 
     async fn scan(&self, request: &StreamScanRequest) -> Result<StreamScanOutcome> {
@@ -140,6 +167,79 @@ impl AuthorityTransport for Client {
             .realm_state_snapshot_by_ref(realm_id, snapshot_id)
             .await?)
     }
+}
+
+fn accepted_items(
+    request: &SelfAuthoritySubmitRequest,
+    outcome: &SelfAuthoritySubmitOutcome,
+) -> Result<Vec<arkret_wire::CommittedEventFullView>> {
+    outcome.validate_for_request(request)?;
+    let pair =
+        |event: &arkret_wire::Event, commit: &RealmCommit| arkret_wire::CommittedEventFullView {
+            event: event.clone(),
+            commit: commit.clone(),
+        };
+    let items = match (request, outcome) {
+        (_, SelfAuthoritySubmitOutcome::Ordinary(AuthoritySubmitOutcome::Rejected { .. })) => {
+            vec![]
+        }
+        (
+            SelfAuthoritySubmitRequest::Event(value),
+            SelfAuthoritySubmitOutcome::Ordinary(AuthoritySubmitOutcome::Accepted {
+                commit, ..
+            }),
+        ) => vec![pair(&value.event, commit)],
+        (
+            SelfAuthoritySubmitRequest::MlsCommit(value),
+            SelfAuthoritySubmitOutcome::Ordinary(AuthoritySubmitOutcome::Accepted {
+                commit, ..
+            }),
+        ) => vec![pair(&value.commit_event, commit)],
+        (
+            SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(value),
+            SelfAuthoritySubmitOutcome::OrdinaryRealmBootstrap(accepted),
+        ) => value
+            .events
+            .iter()
+            .zip(&accepted.commits)
+            .map(|(event, commit)| pair(&event.event, commit))
+            .collect(),
+        (
+            SelfAuthoritySubmitRequest::DirectConversationFounding(value),
+            SelfAuthoritySubmitOutcome::DirectConversationFounding(accepted),
+        ) => value
+            .events
+            .iter()
+            .zip(&accepted.commits)
+            .map(|(event, commit)| pair(&event.event, commit))
+            .collect(),
+        (
+            SelfAuthoritySubmitRequest::MembershipCompensation(value),
+            SelfAuthoritySubmitOutcome::MembershipCompensation(accepted),
+        ) => vec![pair(&value.event_submission.event, &accepted.commit)],
+        _ => {
+            return Err(Error::Protocol(
+                "acceptance branch does not bind its frozen request".to_owned(),
+            ));
+        }
+    };
+    Ok(items)
+}
+
+fn verify_accepted_items(
+    items: &[arkret_wire::CommittedEventFullView],
+    bundle: &RealmAuthorityBundle,
+    freshness: &RealmAuthorityFreshness,
+    keys: &dyn RealmAuthorityKeyDirectory,
+) -> Result<()> {
+    let authority = verify_realm_authority_bundle(bundle, freshness, keys)
+        .map_err(|error| Error::Protocol(error.to_string()))?;
+    for item in items {
+        authority
+            .verify_committed_item(item, keys)
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -431,5 +531,148 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
             ));
         }
         Ok(installed)
+    }
+}
+
+#[cfg(test)]
+mod acceptance_proof_tests {
+    use arkret_identity::RealmAuthorityKeyMap;
+    use arkret_signatures::PublicKeyMaterial;
+    use arkret_signatures::detached_object::sign_detached_object;
+    use arkret_wire::{
+        CommitStreamHead, DetachedSignatureContext, Did, DidUrl, EventKind,
+        RealmAuthorityCurrentAssertion, RealmCommitAuthorityRef, ScopeRef, project_did_to_core_id,
+    };
+    use chrono::{Duration, Utc};
+    use ed25519_dalek::SigningKey;
+
+    use super::*;
+
+    #[test]
+    fn receipts_require_signed_authority_and_exact_frozen_events() {
+        let route = crate::service_route_material::test_fixture::current_web_route_fixture(
+            "station-a.example",
+            "station",
+            0xA1,
+        );
+        let now = Utc::now();
+        let realm_id = crate::test_fixtures::realm_id();
+        let stream_ref = crate::test_fixtures::realm_stream();
+        let method = DidUrl::new("did:web:station-a.example#signing-1").unwrap();
+        let station =
+            project_did_to_core_id(&Did::new("did:web:station-a.example").unwrap()).unwrap();
+        let keys = RealmAuthorityKeyMap::new().with_key(
+            &method,
+            PublicKeyMaterial::Ed25519Raw {
+                bytes: route.signing_key.verifying_key().to_bytes().to_vec(),
+            },
+        );
+        let scope = ScopeRef::Realm {
+            realm_id: realm_id.clone(),
+        };
+        let genesis = arkret_wire::test_support::raw_event_at(
+            EventKind::RealmCreate.as_str(),
+            scope.clone(),
+            arkret_wire::DidCoreId::new("ak:did_core:web:founder.example").unwrap(),
+            station.clone(),
+            serde_json::json!({}),
+            now - Duration::seconds(2),
+        )
+        .unwrap();
+        let ordinary = arkret_wire::test_support::raw_event_at(
+            EventKind::MessageCreate.as_str(),
+            scope,
+            arkret_wire::DidCoreId::new("ak:did_core:web:founder.example").unwrap(),
+            station.clone(),
+            serde_json::json!({}),
+            now - Duration::seconds(1),
+        )
+        .unwrap();
+        let seal = |mut commit: RealmCommit, key: &SigningKey| {
+            let unsigned =
+                arkret_canonical::canonical::unsigned_value(&commit, &["signature"]).unwrap();
+            commit.signature = sign_detached_object(
+                &unsigned,
+                DetachedSignatureContext::RealmCommit,
+                method.clone(),
+                now,
+                key,
+            )
+            .unwrap();
+            commit
+        };
+        let mut genesis_commit = crate::test_fixtures::commit(1, &genesis, stream_ref.clone(), 0);
+        genesis_commit.authority_ref =
+            RealmCommitAuthorityRef::GenesisOrChangeEvent(genesis.event_id.clone());
+        let genesis_commit = seal(genesis_commit, &route.signing_key);
+        let mut ordinary_commit = crate::test_fixtures::commit(2, &ordinary, stream_ref.clone(), 1);
+        ordinary_commit.authority_ref =
+            RealmCommitAuthorityRef::GenesisOrChangeEvent(genesis.event_id.clone());
+        let ordinary_commit = seal(ordinary_commit, &route.signing_key);
+        let head = CommitStreamHead {
+            stream_ref: stream_ref.clone(),
+            stream_position: 1,
+            commit_id: ordinary_commit.commit_id.clone(),
+        };
+        let nonce = arkret_wire::Base64UrlString::new("BBBBBBBBBBBBBBBBBBBBBB").unwrap();
+        let mut assertion = RealmAuthorityCurrentAssertion {
+            realm_id: realm_id.clone(),
+            current_generation: 0,
+            current_service_id: station.clone(),
+            last_handoff_ref: None,
+            realm_stream_head: head.clone(),
+            nonce: nonce.clone(),
+            expires_at: now + Duration::minutes(5),
+            signature: crate::test_fixtures::detached_signature(
+                DetachedSignatureContext::RealmAuthorityCurrentAssertion,
+            ),
+        };
+        let unsigned =
+            arkret_canonical::canonical::unsigned_value(&assertion, &["signature"]).unwrap();
+        assertion.signature = sign_detached_object(
+            &unsigned,
+            DetachedSignatureContext::RealmAuthorityCurrentAssertion,
+            method.clone(),
+            now,
+            &route.signing_key,
+        )
+        .unwrap();
+        let bundle = RealmAuthorityBundle {
+            realm_id: realm_id.clone(),
+            genesis_event: genesis.clone(),
+            genesis_commit: genesis_commit.clone(),
+            authority_transitions: vec![],
+            current_generation: 0,
+            current_service_id: station,
+            current_route_record: serde_json::to_value(&route.resolution).unwrap(),
+            realm_stream_head: head,
+            bundle_issued_at: now,
+            current_assertion: assertion,
+        };
+
+        let item = arkret_wire::CommittedEventFullView {
+            event: ordinary,
+            commit: ordinary_commit,
+        };
+        let freshness = RealmAuthorityFreshness::new(now, nonce);
+        verify_accepted_items(&[item.clone()], &bundle, &freshness, &keys).unwrap();
+        let mut forged = item.clone();
+        forged.commit.signature.sig =
+            arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode([0_u8; 64]))
+                .unwrap();
+        assert!(verify_accepted_items(&[forged.clone()], &bundle, &freshness, &keys).is_err());
+        assert!(
+            verify_accepted_items(&[item.clone(), forged], &bundle, &freshness, &keys).is_err()
+        );
+        let mut wrong_event = item.clone();
+        wrong_event.event = genesis;
+        assert!(verify_accepted_items(&[wrong_event], &bundle, &freshness, &keys).is_err());
+        let mut future_generation = item.clone();
+        future_generation.commit.governance_generation = 1;
+        assert!(verify_accepted_items(&[future_generation], &bundle, &freshness, &keys).is_err());
+        let mut replay = freshness;
+        replay.expected_nonce =
+            arkret_wire::Base64UrlString::new("CCCCCCCCCCCCCCCCCCCCCC").unwrap();
+        assert!(verify_accepted_items(&[item], &bundle, &replay, &keys).is_err());
     }
 }
