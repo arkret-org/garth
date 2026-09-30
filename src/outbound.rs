@@ -2,8 +2,8 @@
 //!
 //! Every queued item is one frozen self submission: an Event, an MLS commit
 //! with its Welcome deliveries, or a complete Realm bootstrap. The queue owns the
-//! lifecycle — queued, forwarding, committed, rejected — and the authority
-//! outcome is the only thing that moves an item out of `Forwarding`. A
+//! lifecycle — queued, forwarding, committed, rejected — and only an authority
+//! outcome can establish a commit or rejection. Local gates retain queued work. A
 //! producer Event never carries a predecessor, a basis or a position, so the
 //! queue is a plain retry ledger rather than a causal structure.
 
@@ -390,6 +390,24 @@ where
         authority: &AuthorityClient<T>,
         options: &ClientRequestOptions,
     ) -> Result<OutboundEngineOutcome> {
+        self.submit_next_checked(authority, options, |_| async { Ok(()) })
+            .await
+    }
+
+    /// Recheck host authorization on the exact frozen request before forwarding.
+    /// A local refusal defers the original item without a network call or an
+    /// authority outcome. The gate runs for each attempt, including after restart.
+    pub async fn submit_next_checked<T, G, F>(
+        &self,
+        authority: &AuthorityClient<T>,
+        options: &ClientRequestOptions,
+        gate: G,
+    ) -> Result<OutboundEngineOutcome>
+    where
+        T: AuthorityTransport,
+        G: FnOnce(SelfAuthoritySubmitRequest) -> F,
+        F: Future<Output = std::result::Result<(), String>>,
+    {
         let now = self.clock.now();
         let Some(claimed) = self
             .store
@@ -402,6 +420,9 @@ where
         let mut submission = claimed.submission.clone();
         let event_id = submission.event_id.clone();
         let settled_at = self.clock.now();
+        if let Err(reason) = gate(submission.request.clone()).await {
+            return self.defer_claimed(claimed, reason, settled_at).await;
+        }
         match authority.submit(&mut submission, options).await {
             Ok(()) => {
                 let status = match &submission.state {
@@ -453,29 +474,7 @@ where
             Err(error) => {
                 let message = error.to_string();
                 if crate::run::is_retryable(&error) {
-                    let delay = self.policy.delay(
-                        claimed.attempts.saturating_sub(1),
-                        &mut Jitter::from_seed(self.jitter_seed ^ u64::from(claimed.attempts)),
-                    );
-                    let next = settled_at.timestamp_millis()
-                        + i64::try_from(delay.as_millis()).unwrap_or(i64::MAX);
-                    let item = self
-                        .store
-                        .mutate_outbound(move |queue| {
-                            queue.settle(
-                                &event_id,
-                                SendQueueStatus::Queued,
-                                None,
-                                Some(message),
-                                Some(next),
-                                settled_at,
-                            )
-                        })
-                        .await?;
-                    return Ok(OutboundEngineOutcome::Retry {
-                        item: Box::new(item),
-                        delay,
-                    });
+                    return self.defer_claimed(claimed, message, settled_at).await;
                 }
                 let recorded = message.clone();
                 let problem = match error {
@@ -502,6 +501,39 @@ where
                 })
             }
         }
+    }
+
+    async fn defer_claimed(
+        &self,
+        claimed: SendQueueItem,
+        reason: String,
+        now: DateTime<Utc>,
+    ) -> Result<OutboundEngineOutcome> {
+        let delay = self.policy.delay(
+            claimed.attempts.saturating_sub(1),
+            &mut Jitter::from_seed(self.jitter_seed ^ u64::from(claimed.attempts)),
+        );
+        let next = now
+            .timestamp_millis()
+            .saturating_add(i64::try_from(delay.as_millis()).unwrap_or(i64::MAX));
+        let event_id = claimed.submission.event_id;
+        let item = self
+            .store
+            .mutate_outbound(move |queue| {
+                queue.settle(
+                    &event_id,
+                    SendQueueStatus::Queued,
+                    None,
+                    Some(reason),
+                    Some(next),
+                    now,
+                )
+            })
+            .await?;
+        Ok(OutboundEngineOutcome::Retry {
+            item: Box::new(item),
+            delay,
+        })
     }
 }
 
@@ -816,6 +848,68 @@ mod tests {
             arkret_canonical::canonical_json_bytes(snapshot.items[0].request()).unwrap(),
             expected
         );
+    }
+
+    #[cfg(feature = "native")]
+    #[tokio::test]
+    async fn a_local_guard_survives_restart_without_network_or_reauthoring() {
+        #[derive(Clone, Copy)]
+        struct AtClock(DateTime<Utc>);
+        impl HostClock for AtClock {
+            fn now(&self) -> DateTime<Utc> {
+                self.0
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("garth-state.json");
+        let engine = OutboundEngine::new(crate::FileStore::open(&path).unwrap(), FixedClock);
+        let queued = submission(3);
+        let event_id = queued.event_id.clone();
+        let expected = arkret_canonical::canonical_json_bytes(&queued.request).unwrap();
+        engine.enqueue(queued).await.unwrap();
+        let authority = AuthorityClient::new(ScriptedTransport::new(Scripted::Accept));
+        let held = engine
+            .submit_next_checked(&authority, &ClientRequestOptions::default(), |_| async {
+                Err("Circle parent membership is no longer effective".to_owned())
+            })
+            .await
+            .unwrap();
+        let OutboundEngineOutcome::Retry { item, .. } = held else {
+            panic!("a local guard must retain queued work")
+        };
+        assert_eq!(authority.transport().calls.load(Ordering::SeqCst), 0);
+        assert_eq!(item.status, SendQueueStatus::Queued);
+        assert!(matches!(item.submission.state, SubmissionState::Queued));
+        assert!(item.settled_at.is_none());
+        let retry_at = DateTime::from_timestamp_millis(item.next_attempt_at_ms).unwrap();
+        drop(engine);
+        let reopened =
+            OutboundEngine::new(crate::FileStore::open(&path).unwrap(), AtClock(retry_at));
+        let snapshot = reopened.snapshot().await.unwrap();
+        assert_eq!(snapshot.items[0].event_id(), &event_id);
+        assert_eq!(
+            arkret_canonical::canonical_json_bytes(snapshot.items[0].request()).unwrap(),
+            expected
+        );
+        let accepted = reopened
+            .submit_next_checked(
+                &authority,
+                &ClientRequestOptions::default(),
+                |request| async move {
+                    assert_eq!(
+                        arkret_canonical::canonical_json_bytes(&request).unwrap(),
+                        expected
+                    );
+                    Ok(())
+                },
+            )
+            .await
+            .unwrap();
+        let OutboundEngineOutcome::Committed { item, .. } = accepted else {
+            panic!("a reopened gate must send the original request")
+        };
+        assert_eq!(item.event_id(), &event_id);
+        assert_eq!(authority.transport().calls.load(Ordering::SeqCst), 1);
     }
 
     #[cfg(feature = "native")]
