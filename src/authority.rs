@@ -22,6 +22,10 @@ use crate::{Error, MaybeSend, MaybeSendSync, Result};
 
 /// Runtime-neutral boundary over the current authority operations and the
 /// exact by-ref read of a Snapshot that anchors a verified stream window.
+/// Accepted submission outcomes must authenticate every receipt against its
+/// authority chain and frozen Event before they cross this boundary. The HTTP
+/// implementation performs this verification; custom transports must uphold
+/// the same contract.
 pub trait AuthorityTransport: MaybeSendSync {
     fn submit<'a>(
         &'a self,

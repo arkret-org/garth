@@ -236,11 +236,7 @@ async fn fetch_keys_for_methods(
         let resolution = http
             .open_service_resolution(&service_id)
             .await
-            .map_err(|error| {
-                Error::Protocol(format!(
-                    "historical Station resolution {service_id}: {error}"
-                ))
-            })?;
+            .map_err(Error::from)?;
         resolutions.insert(service_id, resolution);
     }
     key_directory_for_methods(methods, &resolutions)
@@ -498,6 +494,49 @@ mod tests {
         assert!(
             historical_station_key_directory(&bundle, None, Some(&before_inception), &both)
                 .is_err()
+        );
+    }
+
+    #[cfg(feature = "native")]
+    #[tokio::test]
+    async fn historical_resolution_outage_keeps_its_retryable_transport_class() {
+        use std::io::{Read as _, Write as _};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            let mut bytes = [0_u8; 4096];
+            let read = stream.read(&mut bytes).unwrap();
+            assert!(
+                String::from_utf8_lossy(&bytes[..read]).starts_with("GET /_arkret/open/services/")
+            );
+            let body = serde_json::to_string(&arkret_wire::Problem::new(
+                "temporarily_unavailable",
+                503,
+                "Station history is temporarily unavailable",
+            ))
+            .unwrap();
+            write!(stream, "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/problem+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
+        });
+        let at = Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap();
+        let current = webvh_station("station-a.example", 61, at);
+        let old = webvh_station("station-b.example", 62, at);
+        let bundle = bundle_signed_by(&current, at + Duration::seconds(10));
+        let snapshot = snapshot_signed_by(&old, at + Duration::seconds(10));
+        let http = Client::builder(Url::parse(&format!("http://{address}/")).unwrap())
+            .allow_insecure_localhost()
+            .build()
+            .unwrap();
+        let error = fetch_historical_station_key_directory(&http, &bundle, None, Some(&snapshot))
+            .await
+            .unwrap_err();
+        server.join().unwrap();
+        assert!(
+            crate::run::is_retryable(&error),
+            "a historical evidence outage must preserve retryability: {error}"
         );
     }
 
