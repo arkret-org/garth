@@ -60,6 +60,8 @@ pub struct SendQueueItem {
     pub attempts: u32,
     pub next_attempt_at_ms: i64,
     pub last_error: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_problem: Option<Box<Problem>>,
     pub enqueued_at: DateTime<Utc>,
     pub settled_at: Option<DateTime<Utc>>,
 }
@@ -167,6 +169,7 @@ impl SendQueue {
             attempts: 0,
             next_attempt_at_ms: now.timestamp_millis(),
             last_error: None,
+            last_problem: None,
             enqueued_at: now,
             settled_at: None,
         });
@@ -493,17 +496,25 @@ where
                     Error::Api { error, .. } => Some(error),
                     _ => None,
                 };
+                let durable_problem = problem.clone();
                 let item = self
                     .store
                     .mutate_outbound(move |queue| {
-                        queue.settle(
+                        let mut item = queue.settle(
                             &event_id,
                             SendQueueStatus::Failed,
                             None,
                             Some(recorded),
                             None,
                             settled_at,
-                        )
+                        )?;
+                        item.last_problem = durable_problem;
+                        *queue
+                            .items
+                            .iter_mut()
+                            .find(|stored| stored.event_id() == &event_id)
+                            .expect("settled queue item remains present") = item.clone();
+                        Ok(item)
                     })
                     .await?;
                 Ok(OutboundEngineOutcome::Failed {
@@ -976,6 +987,7 @@ mod tests {
             panic!("a protocol violation is not retryable");
         };
         assert_eq!(item.status, SendQueueStatus::Failed);
+        assert_eq!(item.last_problem, problem);
         assert_eq!(
             problem.as_deref().map(Problem::code),
             Some("param_invalid"),
