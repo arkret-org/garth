@@ -63,6 +63,12 @@ impl AccountSubscribeTransport for arkret_http_client::Client {
 /// satisfy that executor's `Send` bound at the spawn site; local UI state may
 /// instead remain on its single-thread executor without an unsafe wrapper.
 pub trait AccountBatchProjector {
+    /// Durably invalidate the Account baseline before requesting a fresh
+    /// snapshot. This never resets Realm MLS state or device-message receipts.
+    fn reset_baseline(&self) -> impl Future<Output = Result<()>> + '_ {
+        async { Ok(()) }
+    }
+
     fn project<'a>(
         &'a self,
         batch: &'a AccountSubscribeBatch,
@@ -162,7 +168,20 @@ where
         request.validate()?;
 
         while !self.control.is_cancelled() {
-            match transport.subscribe(&request).await? {
+            let result = match transport.subscribe(&request).await {
+                Err(error) if error.is_invalid_cursor() => {
+                    projector.reset_baseline().await?;
+                    self.cursors.clear(scope.clone()).await?;
+                    station_cas.reset_for_initial_sync();
+                    request.after = None;
+                    request.catchup = Some(true);
+                    request.replace_filter = None;
+                    self.executor.sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
+                other => other?,
+            };
+            match result {
                 AccountSubscribeSnapshotResult::Batch(batch) => {
                     let mut next_station_cas = station_cas.clone();
                     if request.after.is_none() {
@@ -174,6 +193,7 @@ where
                         .try_for_each(|frame| next_station_cas.apply_frame(frame).map(|_| ()))
                     {
                         if crate::station_cas_projection::is_revision_integrity_error(&error) {
+                            projector.reset_baseline().await?;
                             self.cursors.clear(scope.clone()).await?;
                             station_cas.reset_for_initial_sync();
                             request.after = None;
@@ -206,6 +226,7 @@ where
                     ..
                 } => {
                     if reset_cursor {
+                        projector.reset_baseline().await?;
                         self.cursors.clear(scope.clone()).await?;
                         station_cas.reset_for_initial_sync();
                         request.after = None;
@@ -253,7 +274,7 @@ mod tests {
 
     #[derive(Debug)]
     struct ScriptedTransport {
-        responses: Mutex<VecDeque<AccountSubscribeSnapshotResult>>,
+        responses: Mutex<VecDeque<Result<AccountSubscribeSnapshotResult>>>,
         requests: Mutex<Vec<SyncRequestBody>>,
         calls: AtomicUsize,
         cancel_on_call: Option<SubscriptionControl>,
@@ -262,7 +283,7 @@ mod tests {
     impl ScriptedTransport {
         fn new(responses: Vec<AccountSubscribeSnapshotResult>) -> Self {
             Self {
-                responses: Mutex::new(responses.into()),
+                responses: Mutex::new(responses.into_iter().map(Ok).collect()),
                 requests: Mutex::new(Vec::new()),
                 calls: AtomicUsize::new(0),
                 cancel_on_call: None,
@@ -274,7 +295,7 @@ mod tests {
             control: SubscriptionControl,
         ) -> Self {
             Self {
-                responses: Mutex::new(responses.into()),
+                responses: Mutex::new(responses.into_iter().map(Ok).collect()),
                 requests: Mutex::new(Vec::new()),
                 calls: AtomicUsize::new(0),
                 cancel_on_call: Some(control),
@@ -297,13 +318,14 @@ mod tests {
                 .lock()
                 .unwrap()
                 .pop_front()
-                .ok_or_else(|| Error::Protocol("subscription test script exhausted".to_owned()))
+                .ok_or_else(|| Error::Protocol("subscription test script exhausted".to_owned()))?
         }
     }
 
     #[derive(Debug)]
     struct Projector {
         calls: AtomicUsize,
+        resets: AtomicUsize,
         control: Option<SubscriptionControl>,
         fail: bool,
     }
@@ -312,6 +334,7 @@ mod tests {
         fn new(control: Option<SubscriptionControl>, fail: bool) -> Self {
             Self {
                 calls: AtomicUsize::new(0),
+                resets: AtomicUsize::new(0),
                 control,
                 fail,
             }
@@ -319,6 +342,10 @@ mod tests {
     }
 
     impl AccountBatchProjector for Projector {
+        async fn reset_baseline(&self) -> Result<()> {
+            self.resets.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
         async fn project(&self, _batch: &AccountSubscribeBatch) -> Result<()> {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if let Some(control) = &self.control {
@@ -411,6 +438,110 @@ mod tests {
             assert_eq!(requests[0].catchup, Some(!resumed));
             assert_eq!(requests[0].replace_filter, resumed.then_some(true));
         }
+    }
+
+    #[tokio::test]
+    async fn cursor_expiry_resets_the_baseline_and_resumes_without_reauthentication() {
+        let store = crate::MemoryStore::new();
+        store
+            .save_account_checkpoint(
+                scope(),
+                AccountCursorCheckpoint {
+                    cursor: "ak:cursor:expired".into(),
+                    station_cas: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+        let subscription = AccountSubscription::new(ImmediateExecutor, store.clone());
+        let projector = Projector::new(Some(subscription.control()), false);
+        let transport = ScriptedTransport::new(Vec::new());
+        transport.responses.lock().unwrap().extend([
+            Err(Error::Api {
+                status: 410,
+                error: Box::new(arkret_wire::Problem::new(
+                    "cursor_expired",
+                    410,
+                    "cursor has expired",
+                )),
+            }),
+            Ok(AccountSubscribeSnapshotResult::Batch(
+                AccountSubscribeBatch {
+                    frames: Vec::new(),
+                    cursor: "ak:cursor:fresh".into(),
+                },
+            )),
+        ]);
+        subscription
+            .run(
+                &transport,
+                &projector,
+                None,
+                actor_id(),
+                device_id(),
+                SyncRequestBody::default(),
+            )
+            .await
+            .unwrap();
+        let requests = transport.requests.lock().unwrap();
+        assert_eq!(requests.len(), 2);
+        assert_eq!(requests[0].after.as_deref(), Some("ak:cursor:expired"));
+        assert_eq!(requests[1].after, None);
+        assert_eq!(requests[1].catchup, Some(true));
+        assert_eq!(requests[1].replace_filter, None);
+        assert_eq!(projector.resets.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ak:cursor:fresh")
+        );
+    }
+
+    #[tokio::test]
+    async fn unauthorized_is_not_treated_as_cursor_expiry() {
+        let store = crate::MemoryStore::new();
+        store
+            .save_account_checkpoint(
+                scope(),
+                AccountCursorCheckpoint {
+                    cursor: "ak:cursor:valid".into(),
+                    station_cas: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+        let subscription = AccountSubscription::new(ImmediateExecutor, store.clone());
+        let projector = Projector::new(None, false);
+        let transport = ScriptedTransport::new(Vec::new());
+        transport
+            .responses
+            .lock()
+            .unwrap()
+            .push_back(Err(Error::Api {
+                status: 401,
+                error: Box::new(arkret_wire::Problem::new(
+                    "unauthenticated",
+                    401,
+                    "grant rejected",
+                )),
+            }));
+        assert!(
+            subscription
+                .run(
+                    &transport,
+                    &projector,
+                    None,
+                    actor_id(),
+                    device_id(),
+                    SyncRequestBody::default()
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(projector.resets.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ak:cursor:valid")
+        );
     }
 
     #[tokio::test]
