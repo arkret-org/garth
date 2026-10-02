@@ -51,6 +51,12 @@ pub enum CursorScope {
         actor_id: ActorId,
         device_id: DeviceId,
     },
+    AgentDeliveries {
+        service_id: Option<DidCoreId>,
+        actor_id: ActorId,
+        verification_method: arkret_wire::DidUrl,
+        authorization_event_ref: EventId,
+    },
 }
 
 pub const MAX_PENDING_DELIVERIES: usize = 4096;

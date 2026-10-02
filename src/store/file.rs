@@ -445,4 +445,44 @@ mod inbox_tests {
                 .is_empty()
         );
     }
+
+    #[tokio::test]
+    async fn agent_delivery_cursor_reopens_and_is_fenced_by_current_key_authorization() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("agent.json");
+        let actor_id = ActorId::account(AccountId::new(
+            DidCoreId::new("ak:did_core:web:agent.example").unwrap(),
+            DidCoreId::new("ak:did_core:web:station.example").unwrap(),
+        ));
+        let scope = CursorScope::AgentDeliveries {
+            service_id: Some(DidCoreId::new("ak:did_core:web:station.example").unwrap()),
+            actor_id,
+            verification_method: arkret_wire::DidUrl::new("did:web:agent.example#runtime").unwrap(),
+            authorization_event_ref: EventId::from_digest(
+                arkret_canonical::DigestSuite::Sha256,
+                [1; 32],
+            ),
+        };
+        FileStore::open(&path)
+            .unwrap()
+            .save(scope.clone(), "old-endpoint-cursor".to_owned())
+            .await
+            .unwrap();
+        let reopened = FileStore::open(&path).unwrap();
+        assert_eq!(
+            reopened.load(scope.clone()).await.unwrap().as_deref(),
+            Some("old-endpoint-cursor")
+        );
+        let mut rotated = scope;
+        let CursorScope::AgentDeliveries {
+            authorization_event_ref,
+            ..
+        } = &mut rotated
+        else {
+            unreachable!()
+        };
+        *authorization_event_ref =
+            EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [2; 32]);
+        assert_eq!(reopened.load(rotated).await.unwrap(), None);
+    }
 }
