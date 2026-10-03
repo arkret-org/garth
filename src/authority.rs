@@ -151,12 +151,22 @@ impl AuthorityTransport for Client {
     ) -> Result<RealmAuthorityBundle> {
         match self.realm_authority_bundle(request).await {
             Ok(bundle) => Ok(bundle),
-            Err(error) if error.error_code() == Some(arkret_wire::ErrorCode::CapabilityDenied) => {
-                // A member's Account Station need not govern this Realm. Its
-                // Snapshot signer is only a locator, never an authority proof.
-                let snapshot = self.realm_state_snapshot_head(&request.realm_id).await?;
-                let station =
-                    crate::historical_station_keys::station_id_for_signature(&snapshot.signature)?;
+            Err(error)
+                if matches!(&error, arkret_http_client::Error::Api { status: 403, .. })
+                    && error.error_code() == Some(arkret_wire::ErrorCode::CapabilityDenied) =>
+            {
+                // A replica cannot issue a governing Snapshot. A retained
+                // Commit signer is only a locator, never an authority proof.
+                let scan_request = StreamScanRequest {
+                    realm_id: request.realm_id.clone(),
+                    stream_ref: arkret_wire::CommitStreamRef::Realm {
+                        realm_id: request.realm_id.clone(),
+                    },
+                    direction: arkret_wire::StreamScanDirection::Before(None),
+                    limit: 1,
+                };
+                let scan = self.scan_commit_stream(&scan_request).await?;
+                let station = authority_locator_station(&scan_request, &scan)?;
                 let resolution = self.open_service_resolution(&station).await?;
                 let base_url = authority_locator_base(&resolution, &station)?;
                 let candidate = self.with_base_url(url::Url::parse(&base_url)?)?;
@@ -187,6 +197,21 @@ impl AuthorityTransport for Client {
             .realm_state_snapshot_by_ref(realm_id, snapshot_id)
             .await?)
     }
+}
+
+fn authority_locator_station(
+    request: &StreamScanRequest,
+    outcome: &StreamScanOutcome,
+) -> Result<arkret_wire::DidCoreId> {
+    outcome
+        .validate_for_request(request)
+        .map_err(|error| Error::Protocol(error.to_string()))?;
+    let [item] = outcome.committed_events.as_slice() else {
+        return Err(Error::Protocol(
+            "governance locator requires one retained Realm Commit".to_owned(),
+        ));
+    };
+    crate::historical_station_keys::station_id_for_signature(&item.commit().signature)
 }
 
 fn authority_locator_base(
@@ -733,6 +758,32 @@ mod acceptance_proof_tests {
             event: ordinary,
             commit: ordinary_commit,
         };
+        let locator_request = StreamScanRequest {
+            realm_id: realm_id.clone(),
+            stream_ref: stream_ref.clone(),
+            direction: arkret_wire::StreamScanDirection::Before(None),
+            limit: 1,
+        };
+        let mut locator_page = StreamScanOutcome {
+            committed_events: vec![arkret_wire::CommittedEventView::Full(item.clone())],
+            readable_floor: None,
+            truncated: false,
+        };
+        assert_eq!(
+            authority_locator_station(&locator_request, &locator_page).unwrap(),
+            bundle.current_service_id,
+        );
+        let mut foreign_request = locator_request.clone();
+        foreign_request.realm_id = RealmId::from_event_id(&EventId::from_digest(
+            arkret_canonical::DigestSuite::Sha256,
+            [19; 32],
+        ));
+        foreign_request.stream_ref = arkret_wire::CommitStreamRef::Realm {
+            realm_id: foreign_request.realm_id.clone(),
+        };
+        assert!(authority_locator_station(&foreign_request, &locator_page).is_err());
+        locator_page.committed_events.clear();
+        assert!(authority_locator_station(&locator_request, &locator_page).is_err());
         let freshness = RealmAuthorityFreshness::new(now, nonce);
         verify_accepted_items(&[item.clone()], &bundle, &freshness, &keys).unwrap();
         let mut forged = item.clone();
