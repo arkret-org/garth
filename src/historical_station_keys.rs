@@ -193,7 +193,7 @@ pub async fn fetch_historical_station_key_directory(
 }
 
 /// Include accepted receipts at their own historical signing coordinates.
-pub(crate) async fn fetch_historical_station_keys_for_commits(
+pub async fn fetch_historical_station_keys_for_commits(
     http: &Client,
     bundle: &RealmAuthorityBundle,
     commits: &[&RealmCommit],

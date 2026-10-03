@@ -8,7 +8,7 @@ use arkret_identity::{
 use arkret_models_collaboration::sync_frames::account_sync::StreamWindowStartBasis;
 use arkret_wire::{
     AuthorityBundleRequest, CommitStreamHead, CommitStreamRef, CommittedEventView, HistoryAccess,
-    ReadableFloor, RealmAuthorityBundle, RealmId, RealmSnapshotId, RealmStateSnapshot,
+    ReadableFloor, RealmAuthorityBundle, RealmCommit, RealmId, RealmSnapshotId, RealmStateSnapshot,
     StreamScanDirection, StreamScanOutcome, StreamScanRequest, TypedCurrentResult,
 };
 
@@ -81,6 +81,7 @@ pub struct RealmReplica {
     pub streams: BTreeMap<CommitStreamRef, StreamReplica>,
     authority_request: Option<AuthorityBundleRequest>,
     verified_streams: BTreeMap<CommitStreamRef, StreamReplica>,
+    verified_anchors: BTreeMap<CommitStreamRef, RealmCommit>,
 }
 
 impl RealmReplica {
@@ -107,6 +108,7 @@ impl RealmReplica {
             streams: BTreeMap::new(),
             authority_request: None,
             verified_streams: BTreeMap::new(),
+            verified_anchors: BTreeMap::new(),
         }
     }
 
@@ -140,6 +142,7 @@ impl RealmReplica {
         self.authority = Some(bundle);
         self.authority_request = None;
         self.verified_streams.clear();
+        self.verified_anchors.clear();
         Ok(())
     }
 
@@ -169,6 +172,67 @@ impl RealmReplica {
         self.authority = Some(bundle);
         self.authority_request = Some(request.clone());
         self.verified_streams.clear();
+        self.verified_anchors.clear();
+        Ok(())
+    }
+
+    /// Refresh the nonce-bound current authority without losing independently
+    /// verified stream predecessors. A fresh assertion cannot roll back or
+    /// replace the already authenticated genesis/handoff chain.
+    pub fn refresh_verified_authority(
+        &mut self,
+        request: &AuthorityBundleRequest,
+        bundle: RealmAuthorityBundle,
+        freshness: &RealmAuthorityFreshness,
+        keys: &dyn RealmAuthorityKeyDirectory,
+    ) -> Result<()> {
+        let mut candidate = Self::new(self.realm_id.clone());
+        candidate.install_verified_authority(request, bundle, freshness, keys)?;
+        let incoming = candidate.authority.as_ref().expect("installed authority");
+        if let Some(previous) = self
+            .authority
+            .as_ref()
+            .filter(|_| self.authority_request.is_some())
+        {
+            if incoming.genesis_event != previous.genesis_event
+                || incoming.genesis_commit != previous.genesis_commit
+                || incoming.current_generation < previous.current_generation
+                || !incoming
+                    .authority_transitions
+                    .starts_with(&previous.authority_transitions)
+            {
+                return Err(Error::Protocol(
+                    "fresh authority replaces the verified lineage".to_owned(),
+                ));
+            }
+            if incoming.realm_stream_head.stream_position
+                < previous.realm_stream_head.stream_position
+            {
+                return Err(Error::AuthorityCutBehind);
+            }
+            if incoming.realm_stream_head.stream_position
+                == previous.realm_stream_head.stream_position
+                && incoming.realm_stream_head.commit_id != previous.realm_stream_head.commit_id
+            {
+                return Err(Error::Protocol(
+                    "fresh authority forks the installed Realm head".to_owned(),
+                ));
+            }
+        }
+        if let Some(head) = self.verified_head(&incoming.realm_stream_head.stream_ref) {
+            if head.stream_position > incoming.realm_stream_head.stream_position {
+                return Err(Error::AuthorityCutBehind);
+            }
+            if head.stream_position == incoming.realm_stream_head.stream_position
+                && head.commit_id != incoming.realm_stream_head.commit_id
+            {
+                return Err(Error::Protocol(
+                    "fresh authority forks the verified Realm tail".to_owned(),
+                ));
+            }
+        }
+        self.authority = candidate.authority;
+        self.authority_request = candidate.authority_request;
         Ok(())
     }
 
@@ -586,6 +650,8 @@ impl RealmReplica {
             .or_default();
         if let Some(last) = accepted.last() {
             let commit = last.commit();
+            self.verified_anchors
+                .insert(request.stream_ref.clone(), commit.clone());
             replica.head = Some(CommitStreamHead {
                 stream_ref: commit.stream_ref.clone(),
                 stream_position: commit.stream_position,
@@ -605,6 +671,87 @@ impl RealmReplica {
         self.verified_streams
             .get(stream_ref)
             .and_then(|stream| stream.head.as_ref())
+    }
+
+    /// The signed predecessor retained after the durable rows are released.
+    pub fn verified_anchor(&self, stream_ref: &CommitStreamRef) -> Option<&RealmCommit> {
+        self.verified_anchors.get(stream_ref)
+    }
+
+    /// Reverify a persisted signed Commit under this request's fresh authority.
+    /// A bare head or a cached authority result cannot enter this boundary.
+    pub fn restore_verified_anchor(
+        &mut self,
+        commit: &RealmCommit,
+        freshness: &RealmAuthorityFreshness,
+        keys: &dyn RealmAuthorityKeyDirectory,
+    ) -> Result<()> {
+        let authority = self
+            .authority
+            .as_ref()
+            .ok_or_else(|| Error::Protocol("anchor has no fresh authority".to_owned()))?;
+        let request = self
+            .authority_request
+            .as_ref()
+            .ok_or_else(|| Error::Protocol("anchor has no authority nonce".to_owned()))?;
+        if freshness.expected_nonce != request.nonce || commit.realm_id != self.realm_id {
+            return Err(Error::Protocol(
+                "anchor does not bind the fresh Realm request".to_owned(),
+            ));
+        }
+        let verified = verify_realm_authority_bundle(authority, freshness, keys)
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+        verified
+            .verify_commit(commit, keys)
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+        if commit.stream_ref == authority.realm_stream_head.stream_ref {
+            if commit.stream_position > authority.realm_stream_head.stream_position {
+                return Err(Error::AuthorityCutBehind);
+            }
+            if commit.stream_position == authority.realm_stream_head.stream_position
+                && commit.commit_id != authority.realm_stream_head.commit_id
+            {
+                return Err(Error::Protocol(
+                    "signed anchor forks the fresh Realm head".to_owned(),
+                ));
+            }
+        }
+        let head = CommitStreamHead {
+            stream_ref: commit.stream_ref.clone(),
+            stream_position: commit.stream_position,
+            commit_id: commit.commit_id.clone(),
+        };
+        if let Some(existing) = self.verified_head(&commit.stream_ref)
+            && (head.stream_position < existing.stream_position
+                || (head.stream_position == existing.stream_position && head != *existing))
+        {
+            return Err(Error::Protocol(
+                "signed anchor replaces an already verified predecessor".to_owned(),
+            ));
+        }
+        self.verified_streams
+            .entry(commit.stream_ref.clone())
+            .or_default()
+            .head = Some(head);
+        self.verified_anchors
+            .insert(commit.stream_ref.clone(), commit.clone());
+        Ok(())
+    }
+
+    /// Retire only this stream's predecessor for an authorized floor rebuild.
+    /// Other independent streams retain their continuous verified heads.
+    pub fn reset_verified_stream(&mut self, stream_ref: &CommitStreamRef) {
+        self.verified_streams.remove(stream_ref);
+        self.verified_anchors.remove(stream_ref);
+    }
+
+    /// Projection owns the durable rows. A live follower needs only its exact
+    /// verified heads after the checkpoint; retaining all rows would grow with
+    /// the complete history and make each candidate clone unbounded.
+    pub fn release_verified_rows(&mut self) {
+        for stream in self.verified_streams.values_mut() {
+            stream.items.clear();
+        }
     }
 }
 
@@ -1727,6 +1874,10 @@ mod tests {
             limit: 2,
         };
         let floor_commit_id = genesis_commit.commit_id.clone();
+        let handoff_change = CommittedEventFullView {
+            commit: ordinary_commit.clone(),
+            event: ordinary.clone(),
+        };
         let outcome = StreamScanOutcome {
             committed_events: vec![
                 CommittedEventView::Full(CommittedEventFullView {
@@ -1835,12 +1986,400 @@ mod tests {
         assert!(replica.verified_head(&stream_ref).is_none());
 
         let accepted = replica
-            .apply_verified_scan(&request, outcome, &freshness, &keys)
+            .apply_verified_scan(&request, outcome.clone(), &freshness, &keys)
             .unwrap();
         assert_eq!(accepted.rows().len(), 2);
         assert_eq!(
             replica.verified_head(&stream_ref).unwrap().stream_position,
             1
+        );
+
+        // A fresh nonce does not require downloading the authenticated prefix
+        // again; a refresh still verifies the complete authority chain.
+        let mut refreshed = replica.authority.as_ref().unwrap().clone();
+        let renewed_nonce = arkret_wire::Base64UrlString::new("DDDDDDDDDDDDDDDDDDDDDD").unwrap();
+        refreshed.current_assertion.nonce = renewed_nonce.clone();
+        refreshed.current_assertion.signature = sign_detached_object(
+            &arkret_canonical::unsigned_value(&refreshed.current_assertion, &["signature"])
+                .unwrap(),
+            DetachedSignatureContext::RealmAuthorityCurrentAssertion,
+            method.clone(),
+            now,
+            &route.signing_key,
+        )
+        .unwrap();
+        let renewed_request = AuthorityBundleRequest {
+            realm_id: request.realm_id.clone(),
+            nonce: renewed_nonce.clone(),
+        };
+        let renewed_freshness = RealmAuthorityFreshness::new(now, renewed_nonce);
+        replica
+            .refresh_verified_authority(
+                &renewed_request,
+                refreshed.clone(),
+                &renewed_freshness,
+                &keys,
+            )
+            .unwrap();
+        assert_eq!(replica.verified_head(&stream_ref), Some(&snapshot_head));
+        let before = replica.clone();
+        assert!(
+            replica
+                .refresh_verified_authority(&renewed_request, refreshed.clone(), &freshness, &keys)
+                .is_err()
+        );
+        assert_eq!(replica, before);
+        assert!(
+            replica
+                .refresh_verified_authority(
+                    &renewed_request,
+                    refreshed.clone(),
+                    &renewed_freshness,
+                    &RealmAuthorityKeyMap::new()
+                )
+                .is_err()
+        );
+        assert_eq!(replica, before);
+        let mut forked = refreshed.clone();
+        forked.realm_stream_head.commit_id = arkret_wire::RealmCommitId::from_digest([0x71; 32]);
+        forked.current_assertion.realm_stream_head = forked.realm_stream_head.clone();
+        forked.current_assertion.signature = sign_detached_object(
+            &arkret_canonical::unsigned_value(&forked.current_assertion, &["signature"]).unwrap(),
+            DetachedSignatureContext::RealmAuthorityCurrentAssertion,
+            method.clone(),
+            now,
+            &route.signing_key,
+        )
+        .unwrap();
+        assert!(
+            replica
+                .refresh_verified_authority(&renewed_request, forked, &renewed_freshness, &keys)
+                .is_err()
+        );
+        assert_eq!(replica, before);
+        replica.release_verified_rows();
+        let anchor = replica.verified_anchor(&stream_ref).unwrap().clone();
+        let mut reloaded = RealmReplica::new(request.realm_id.clone());
+        assert!(
+            reloaded
+                .restore_verified_anchor(&anchor, &renewed_freshness, &keys)
+                .is_err()
+        );
+        reloaded
+            .install_verified_authority(&renewed_request, refreshed, &renewed_freshness, &keys)
+            .unwrap();
+        let before = reloaded.clone();
+        assert!(
+            reloaded
+                .restore_verified_anchor(&anchor, &freshness, &keys)
+                .is_err()
+        );
+        assert_eq!(reloaded, before);
+        let mut forged_anchor = anchor.clone();
+        forged_anchor.signature.signed_digest =
+            arkret_wire::Hash::new(format!("sha256:{}", "f".repeat(64))).unwrap();
+        assert!(
+            reloaded
+                .restore_verified_anchor(&forged_anchor, &renewed_freshness, &keys)
+                .is_err()
+        );
+        assert_eq!(reloaded, before);
+        reloaded
+            .restore_verified_anchor(&anchor, &renewed_freshness, &keys)
+            .unwrap();
+        assert_eq!(reloaded.verified_head(&stream_ref), Some(&snapshot_head));
+        let continuation = StreamScanRequest {
+            direction: StreamScanDirection::After(Some(snapshot_head.stream_position)),
+            ..request.clone()
+        };
+        let empty = StreamScanOutcome {
+            committed_events: vec![],
+            ..outcome
+        };
+        assert!(
+            replica
+                .apply_verified_scan(&continuation, empty.clone(), &renewed_freshness, &keys)
+                .unwrap()
+                .rows()
+                .is_empty()
+        );
+        assert_eq!(replica.verified_head(&stream_ref), Some(&snapshot_head));
+        assert!(
+            reloaded
+                .apply_verified_scan(&continuation, empty, &renewed_freshness, &keys)
+                .unwrap()
+                .rows()
+                .is_empty()
+        );
+        assert_eq!(reloaded.verified_anchor(&stream_ref), Some(&anchor));
+
+        // A genuinely signed successor term preserves the verified old-term
+        // tail. Missing hops, missing successor keys and rollback cannot
+        // alter that tail, even when the Realm position has not changed.
+        let successor = crate::service_route_material::test_fixture::current_web_route_fixture(
+            "station-b.example",
+            "station",
+            0xB2,
+        );
+        let successor_method = DidUrl::new("did:web:station-b.example#signing-1").unwrap();
+        let successor_id =
+            project_did_to_core_id(&Did::new("did:web:station-b.example").unwrap()).unwrap();
+        let mut handoff_snapshot = multi.clone();
+        for head in &mut handoff_snapshot.visible_stream_heads {
+            *head = if head.stream_ref == stream_ref {
+                snapshot_head.clone()
+            } else {
+                multi_replica
+                    .verified_head(&head.stream_ref)
+                    .unwrap()
+                    .clone()
+            };
+        }
+        sign_snapshot(&mut handoff_snapshot);
+        let mut handoff = arkret_wire::RealmAuthorityHandoff {
+            handoff_id: arkret_wire::RealmAuthorityHandoffId::from_digest([0x31; 32]),
+            realm_id: request.realm_id.clone(),
+            from_generation: 0,
+            to_generation: 1,
+            from_service_id: reloaded
+                .authority
+                .as_ref()
+                .unwrap()
+                .current_service_id
+                .clone(),
+            to_service_id: successor_id.clone(),
+            final_stream_heads_digest: arkret_wire::Hash::new(
+                arkret_canonical::canonical::canonical_sha256(
+                    &handoff_snapshot.visible_stream_heads,
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            snapshot_ref: handoff_snapshot.snapshot_id.clone(),
+            snapshot_digest: handoff_snapshot.signature.signed_digest.clone(),
+            change_event_ref: handoff_change.event.event_id.clone(),
+            change_commit_id: handoff_change.commit.commit_id.clone(),
+            old_authority_signature: crate::test_fixtures::detached_signature(
+                DetachedSignatureContext::RealmAuthorityHandoffOld,
+            ),
+            new_authority_acceptance_signature: crate::test_fixtures::detached_signature(
+                DetachedSignatureContext::RealmAuthorityHandoffNewAcceptance,
+            ),
+        };
+        let unsigned = arkret_canonical::unsigned_value(
+            &handoff,
+            &[
+                "old_authority_signature",
+                "new_authority_acceptance_signature",
+            ],
+        )
+        .unwrap();
+        handoff.old_authority_signature = sign_detached_object(
+            &unsigned,
+            DetachedSignatureContext::RealmAuthorityHandoffOld,
+            method.clone(),
+            now,
+            &route.signing_key,
+        )
+        .unwrap();
+        handoff.new_authority_acceptance_signature = sign_detached_object(
+            &unsigned,
+            DetachedSignatureContext::RealmAuthorityHandoffNewAcceptance,
+            successor_method.clone(),
+            now,
+            &successor.signing_key,
+        )
+        .unwrap();
+        let mut successor_bundle = reloaded.authority.as_ref().unwrap().clone();
+        successor_bundle
+            .authority_transitions
+            .push(arkret_wire::RealmAuthorityTransition {
+                change_event: handoff_change.event,
+                change_commit: handoff_change.commit,
+                handoff: handoff.clone(),
+            });
+        successor_bundle.current_generation = 1;
+        successor_bundle.current_service_id = successor_id.clone();
+        successor_bundle.current_route_record =
+            serde_json::to_value(&successor.resolution).unwrap();
+        successor_bundle.current_assertion.current_generation = 1;
+        successor_bundle.current_assertion.current_service_id = successor_id;
+        successor_bundle.current_assertion.last_handoff_ref = Some(handoff.handoff_id.clone());
+        let successor_request = AuthorityBundleRequest {
+            realm_id: request.realm_id.clone(),
+            nonce: arkret_wire::Base64UrlString::new("EEEEEEEEEEEEEEEEEEEEEE").unwrap(),
+        };
+        let successor_freshness =
+            RealmAuthorityFreshness::new(now, successor_request.nonce.clone());
+        successor_bundle.current_assertion.nonce = successor_request.nonce.clone();
+        successor_bundle.current_assertion.signature = sign_detached_object(
+            &arkret_canonical::unsigned_value(&successor_bundle.current_assertion, &["signature"])
+                .unwrap(),
+            DetachedSignatureContext::RealmAuthorityCurrentAssertion,
+            successor_method.clone(),
+            now,
+            &successor.signing_key,
+        )
+        .unwrap();
+        let successor_keys = keys.clone().with_key(
+            &successor_method,
+            PublicKeyMaterial::Ed25519Raw {
+                bytes: successor.signing_key.verifying_key().to_bytes().to_vec(),
+            },
+        );
+        arkret_wire::AuthorityHandoffRequest {
+            handoff: handoff.clone(),
+            final_stream_heads: handoff_snapshot.visible_stream_heads.clone(),
+            snapshot: handoff_snapshot,
+            authority_bundle: successor_bundle.clone(),
+        }
+        .validate_shape()
+        .unwrap();
+        let independent_heads = multi_replica.verified_streams.clone();
+        multi_replica
+            .refresh_verified_authority(
+                &successor_request,
+                successor_bundle.clone(),
+                &successor_freshness,
+                &successor_keys,
+            )
+            .unwrap();
+        assert_eq!(multi_replica.verified_streams, independent_heads);
+        let before_handoff = reloaded.clone();
+        let mut missing_hop = successor_bundle.clone();
+        missing_hop.authority_transitions.clear();
+        assert!(
+            reloaded
+                .refresh_verified_authority(
+                    &successor_request,
+                    missing_hop,
+                    &successor_freshness,
+                    &successor_keys
+                )
+                .is_err()
+        );
+        assert_eq!(reloaded, before_handoff);
+        assert!(
+            reloaded
+                .refresh_verified_authority(
+                    &successor_request,
+                    successor_bundle.clone(),
+                    &successor_freshness,
+                    &keys
+                )
+                .is_err()
+        );
+        assert_eq!(reloaded, before_handoff);
+        reloaded
+            .refresh_verified_authority(
+                &successor_request,
+                successor_bundle,
+                &successor_freshness,
+                &successor_keys,
+            )
+            .unwrap();
+        assert_eq!(reloaded.verified_anchor(&stream_ref), Some(&anchor));
+        let after_handoff = reloaded.clone();
+        assert!(
+            reloaded
+                .refresh_verified_authority(
+                    &renewed_request,
+                    before_handoff.authority.unwrap(),
+                    &renewed_freshness,
+                    &keys
+                )
+                .is_err()
+        );
+        assert_eq!(reloaded, after_handoff);
+        let successor_event = arkret_wire::test_support::raw_event_at(
+            EventKind::MessageCreate.as_str(),
+            ScopeRef::Realm {
+                realm_id: request.realm_id.clone(),
+            },
+            arkret_wire::DidCoreId::new("ak:did_core:web:founder.example").unwrap(),
+            reloaded
+                .authority
+                .as_ref()
+                .unwrap()
+                .current_service_id
+                .clone(),
+            serde_json::json!({}),
+            now,
+        )
+        .unwrap();
+        let mut successor_commit =
+            crate::test_fixtures::commit(3, &successor_event, stream_ref.clone(), 2);
+        successor_commit.governance_generation = 1;
+        successor_commit.authority_ref = RealmCommitAuthorityRef::Handoff(handoff.handoff_id);
+        successor_commit.committed_at = now;
+        successor_commit.signature = sign_detached_object(
+            &arkret_canonical::unsigned_value(&successor_commit, &["signature"]).unwrap(),
+            DetachedSignatureContext::RealmCommit,
+            successor_method.clone(),
+            now,
+            &successor.signing_key,
+        )
+        .unwrap();
+        let mut appended_bundle = reloaded.authority.as_ref().unwrap().clone();
+        appended_bundle.realm_stream_head = CommitStreamHead {
+            stream_ref: stream_ref.clone(),
+            stream_position: 2,
+            commit_id: successor_commit.commit_id.clone(),
+        };
+        appended_bundle.current_assertion.realm_stream_head =
+            appended_bundle.realm_stream_head.clone();
+        let appended_request = AuthorityBundleRequest {
+            realm_id: request.realm_id.clone(),
+            nonce: arkret_wire::Base64UrlString::new("FFFFFFFFFFFFFFFFFFFFFF").unwrap(),
+        };
+        let appended_freshness = RealmAuthorityFreshness::new(now, appended_request.nonce.clone());
+        appended_bundle.current_assertion.nonce = appended_request.nonce.clone();
+        appended_bundle.current_assertion.signature = sign_detached_object(
+            &arkret_canonical::unsigned_value(&appended_bundle.current_assertion, &["signature"])
+                .unwrap(),
+            DetachedSignatureContext::RealmAuthorityCurrentAssertion,
+            successor_method,
+            now,
+            &successor.signing_key,
+        )
+        .unwrap();
+        reloaded
+            .refresh_verified_authority(
+                &appended_request,
+                appended_bundle,
+                &appended_freshness,
+                &successor_keys,
+            )
+            .unwrap();
+        let accepted_tail = reloaded
+            .apply_verified_scan(
+                &continuation,
+                StreamScanOutcome {
+                    committed_events: vec![CommittedEventView::Full(CommittedEventFullView {
+                        commit: successor_commit.clone(),
+                        event: successor_event,
+                    })],
+                    readable_floor: Some(ReadableFloor {
+                        oldest_position: 0,
+                        floor_commit_id: reloaded
+                            .authority
+                            .as_ref()
+                            .unwrap()
+                            .genesis_commit
+                            .commit_id
+                            .clone(),
+                        floor_reason: ReadableFloorReason::StreamStart,
+                    }),
+                    truncated: false,
+                },
+                &appended_freshness,
+                &successor_keys,
+            )
+            .unwrap();
+        assert_eq!(accepted_tail.rows().len(), 1);
+        assert_eq!(
+            reloaded.verified_anchor(&stream_ref),
+            Some(&successor_commit)
         );
     }
 }

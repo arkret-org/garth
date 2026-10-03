@@ -62,16 +62,39 @@ impl Error {
             .get("reason_code")
             .and_then(serde_json::Value::as_str)
             .is_some_and(|reason| CODES.contains(&reason))
-            || (error.detail.to_ascii_lowercase().contains("cursor")
-                && [
-                    "invalid",
-                    "malformed",
-                    "expired",
-                    "integrity",
-                    "unrecognized",
-                ]
-                .iter()
-                .any(|marker| error.detail.to_ascii_lowercase().contains(marker)))
+            // The closed WebSocket error carrier preserves code/message,
+            // but has no HTTP reason_code extension. A param_invalid message
+            // identifying the cursor is still a cursor parameter refusal.
+            || error.detail.to_ascii_lowercase().contains("cursor")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn canonical_cursor_constraint_messages_keep_their_reset_semantics() {
+        for (message, expected) in [
+            ("cursor must use the canonical SDK wire profile", true),
+            ("invalid committed stream cursor", true),
+            ("realm_ids must not be empty", false),
+        ] {
+            let failure = Error::Api {
+                status: 400,
+                error: Box::new(Problem::new("param_invalid", 400, message)),
+            };
+            assert_eq!(failure.is_invalid_cursor(), expected);
+        }
+        let revoked = Error::Api {
+            status: 403,
+            error: Box::new(Problem::new(
+                "cursor_revoked",
+                403,
+                "cursor authority has been revoked",
+            )),
+        };
+        assert!(!revoked.is_invalid_cursor());
     }
 }
 

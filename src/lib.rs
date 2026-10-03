@@ -78,8 +78,8 @@ pub use executor::WasmExecutor;
 pub use executor::{Executor, HostClock, SystemClock};
 pub use facade::ArkretClient;
 pub use historical_station_keys::{
-    fetch_historical_station_key_directory, historical_station_key_directory,
-    required_historical_station_ids,
+    fetch_historical_station_key_directory, fetch_historical_station_keys_for_commits,
+    historical_station_key_directory, required_historical_station_ids,
 };
 pub use maybe_send::{MaybeSend, MaybeSendSync};
 pub use message_authoring::{

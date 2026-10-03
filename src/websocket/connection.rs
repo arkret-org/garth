@@ -6,16 +6,14 @@
 
 use std::collections::BTreeMap;
 
-use arkret_models_collaboration::sync_frames::account_subscribe::AccountSubscribeFrame;
-use arkret_models_collaboration::sync_frames::committed_event_subscribe::CommittedEventSubscribeFrame;
 use arkret_models_collaboration::sync_frames::websocket::{
     WebSocketChannelControlPayload, WebSocketClientFrame, WebSocketCloseReason,
     WebSocketConnectionLimits, WebSocketConnectionState, WebSocketDataPayload,
     WebSocketOpenParameters, WebSocketServerFrame,
 };
 use arkret_wire::{
-    DomainSeparationId, SignalStreamFrame, WEBSOCKET_HARD_MAX_FRAME_BYTES, WebSocketCloseCode,
-    WebSocketOperationId, WebSocketTransportError,
+    DomainSeparationId, WEBSOCKET_HARD_MAX_FRAME_BYTES, WebSocketCloseCode, WebSocketOperationId,
+    WebSocketTransportError,
 };
 
 use super::shared::SharedCell;
@@ -217,6 +215,32 @@ impl WebSocketChannelState {
         let frame = match self.decode_server_frame(text) {
             Ok(frame) => frame,
             Err(_) => {
+                // A closed outer frame with another registered rail payload
+                // affects only its known live channel. Malformed or unknown
+                // frames still fail the physical connection.
+                let generic = arkret_models_collaboration::sync_frames::websocket::WebSocketFrameIngress::new(
+                    self.max_frame_bytes as u32, None,
+                ).decode_server_frame(text.as_bytes());
+                if let Ok(
+                    WebSocketServerFrame::Data { channel_id, .. }
+                    | WebSocketServerFrame::ChannelControl { channel_id, .. },
+                ) = generic
+                    && self
+                        .state
+                        .channel(&channel_id)
+                        .is_some_and(|channel| !channel.closed)
+                    && self.close_channel(&channel_id).is_ok()
+                {
+                    self.push(
+                        &channel_id,
+                        ChannelFrame::Failed(WebSocketTransportError::new(
+                            arkret_wire::ErrorCode::SchemaViolation,
+                            "payload does not match the channel operation",
+                        )),
+                    );
+                    self.push_closed(&channel_id);
+                    return Dispatch::Continue;
+                }
                 return Dispatch::Close {
                     code: WebSocketCloseCode::ProtocolError,
                     reason: "frame",
@@ -290,69 +314,15 @@ impl WebSocketChannelState {
         Dispatch::Continue
     }
 
-    /// The payload has no discriminator of its own. Decode it using the
-    /// operation of the already-open channel; heartbeat shapes overlap across
-    /// the account, events and Signal rails.
     fn decode_server_frame(&self, text: &str) -> Result<WebSocketServerFrame> {
-        if text.len() > self.max_frame_bytes {
-            return Err(Error::Protocol(
-                "WebSocket frame exceeds the effective byte limit".to_owned(),
-            ));
-        }
-        let value = arkret_canonical::parse_canonical_json(text.as_bytes())?;
-        let mut frame: WebSocketServerFrame = serde_json::from_value(value.clone())?;
-        let Some(channel_id) = frame.channel_id() else {
-            return Ok(frame);
-        };
-        let Some(channel) = self.state.channel(channel_id) else {
-            return Ok(frame);
-        };
-        let Some(payload) = value.get("payload").cloned() else {
-            return Ok(frame);
-        };
-        match &mut frame {
-            WebSocketServerFrame::Data { payload: slot, .. } => {
-                *slot = match channel.operation_id {
-                    WebSocketOperationId::AccountStreamSubscribe => {
-                        WebSocketDataPayload::Account(Box::new(serde_json::from_value::<
-                            AccountSubscribeFrame,
-                        >(payload)?))
-                    }
-                    WebSocketOperationId::CommittedEventStreamSubscribe => {
-                        WebSocketDataPayload::Events(Box::new(serde_json::from_value::<
-                            CommittedEventSubscribeFrame,
-                        >(payload)?))
-                    }
-                    WebSocketOperationId::SignalStreamSubscribe => {
-                        WebSocketDataPayload::Signal(Box::new(serde_json::from_value::<
-                            SignalStreamFrame,
-                        >(payload)?))
-                    }
-                };
-            }
-            WebSocketServerFrame::ChannelControl { payload: slot, .. } => {
-                *slot =
-                    match channel.operation_id {
-                        WebSocketOperationId::AccountStreamSubscribe => {
-                            WebSocketChannelControlPayload::Account(Box::new(
-                                serde_json::from_value::<AccountSubscribeFrame>(payload)?,
-                            ))
-                        }
-                        WebSocketOperationId::CommittedEventStreamSubscribe => {
-                            WebSocketChannelControlPayload::Events(Box::new(
-                                serde_json::from_value::<CommittedEventSubscribeFrame>(payload)?,
-                            ))
-                        }
-                        WebSocketOperationId::SignalStreamSubscribe => {
-                            WebSocketChannelControlPayload::Signal(Box::new(
-                                serde_json::from_value::<SignalStreamFrame>(payload)?,
-                            ))
-                        }
-                    };
-            }
-            _ => {}
-        }
-        Ok(frame)
+        arkret_models_collaboration::sync_frames::websocket::WebSocketFrameIngress::new(
+            self.max_frame_bytes as u32,
+            None,
+        )
+        .decode_server_frame_for_channels(text.as_bytes(), |id| {
+            self.state.channel(id).map(|channel| channel.operation_id)
+        })
+        .map_err(|error| Error::Protocol(error.message))
     }
 }
 
@@ -840,6 +810,42 @@ mod tests {
         ));
         let sent = record.sent.with_mut(|sent| sent.clone());
         assert!(sent.iter().any(|frame| frame.contains("\"kind\":\"pong\"")));
+    }
+
+    #[tokio::test]
+    async fn a_registered_payload_for_the_wrong_rail_closes_only_its_channel() {
+        let wrong = WebSocketInbound::Text(
+            r#"{"channel_id":"signal-2","kind":"data","payload":{"cursor":"ak:cursor:YWNjountY3Vyc29yLTAwMDE","kind":"delta"}}"#.to_owned(),
+        );
+        let good = WebSocketInbound::Text(
+            r#"{"channel_id":"account-1","kind":"data","payload":{"cursor":"ak:cursor:YWNjountY3Vyc29yLTAwMDE","kind":"delta"}}"#.to_owned(),
+        );
+        let (mut connection, _, record) = establish(vec![wrong, good]).await;
+        let shared = connection.shared();
+        shared.with_mut(|state| {
+            state
+                .open_channel(WebSocketOpenParameters::Account(Default::default()))
+                .unwrap();
+            state
+                .open_channel(WebSocketOpenParameters::Signal(Default::default()))
+                .unwrap();
+        });
+        assert_eq!(connection.pump().await.unwrap(), PumpOutcome::Continue);
+        shared.with_mut(|state| {
+            assert!(matches!(
+                state.take_channel_frames("signal-2").as_slice(),
+                [ChannelFrame::Failed(_), ChannelFrame::Closed]
+            ));
+            assert!(!state.is_terminated());
+        });
+        assert_eq!(connection.pump().await.unwrap(), PumpOutcome::Continue);
+        shared.with_mut(|state| {
+            assert!(matches!(
+                state.take_channel_frames("account-1").as_slice(),
+                [ChannelFrame::Data(WebSocketDataPayload::Account(_))]
+            ))
+        });
+        assert!(record.closed.with_mut(|closed| closed.is_empty()));
     }
 
     #[tokio::test]
