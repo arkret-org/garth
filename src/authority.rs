@@ -767,12 +767,15 @@ mod acceptance_proof_tests {
         let mut locator_page = StreamScanOutcome {
             committed_events: vec![arkret_wire::CommittedEventView::Full(item.clone())],
             readable_floor: None,
-            truncated: false,
+            truncated: true,
         };
         assert_eq!(
             authority_locator_station(&locator_request, &locator_page).unwrap(),
             bundle.current_service_id,
         );
+        let mut unanchored_floor = locator_page.clone();
+        unanchored_floor.truncated = false;
+        assert!(authority_locator_station(&locator_request, &unanchored_floor).is_err());
         let mut foreign_request = locator_request.clone();
         foreign_request.realm_id = RealmId::from_event_id(&EventId::from_digest(
             arkret_canonical::DigestSuite::Sha256,
