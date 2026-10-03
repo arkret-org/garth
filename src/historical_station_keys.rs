@@ -84,7 +84,7 @@ fn signed_methods<'a>(
     methods
 }
 
-fn station_id_for_signature(signature: &DetachedObjectSignature) -> Result<DidCoreId> {
+pub(crate) fn station_id_for_signature(signature: &DetachedObjectSignature) -> Result<DidCoreId> {
     let did = arkret_identity::verification_method_did(signature.verification_method.as_str())
         .map_err(protocol)?;
     arkret_wire::project_did_to_core_id(&did).map_err(protocol)

@@ -149,7 +149,23 @@ impl AuthorityTransport for Client {
         &self,
         request: &AuthorityBundleRequest,
     ) -> Result<RealmAuthorityBundle> {
-        Ok(self.realm_authority_bundle(request).await?)
+        match self.realm_authority_bundle(request).await {
+            Ok(bundle) => Ok(bundle),
+            Err(error) if error.error_code() == Some(arkret_wire::ErrorCode::CapabilityDenied) => {
+                // A member's Account Station need not govern this Realm. Its
+                // Snapshot signer is only a locator, never an authority proof.
+                let snapshot = self.realm_state_snapshot_head(&request.realm_id).await?;
+                let station =
+                    crate::historical_station_keys::station_id_for_signature(&snapshot.signature)?;
+                let resolution = self.open_service_resolution(&station).await?;
+                let base_url = authority_locator_base(&resolution, &station)?;
+                let candidate = self.with_base_url(url::Url::parse(&base_url)?)?;
+                // This open operation deliberately carries no Account grant.
+                // The caller must still verify the nonce-bound complete chain.
+                Ok(candidate.realm_authority_bundle(request).await?)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     async fn install_handoff(
@@ -171,6 +187,24 @@ impl AuthorityTransport for Client {
             .realm_state_snapshot_by_ref(realm_id, snapshot_id)
             .await?)
     }
+}
+
+fn authority_locator_base(
+    resolution: &arkret_models_identity::AuthenticatedServiceResolution,
+    station: &arkret_wire::DidCoreId,
+) -> Result<String> {
+    if resolution.service_id != *station || resolution.service_kind != "station" {
+        return Err(Error::Protocol(
+            "authority locator resolution identity or role mismatch".to_owned(),
+        ));
+    }
+    arkret_identity::verify_authenticated_service_resolution_history(
+        resolution,
+        station,
+        chrono::Utc::now(),
+    )
+    .map_err(|error| Error::Protocol(error.to_string()))?;
+    Ok(resolution.projection()?.base_url)
 }
 
 fn accepted_items(
@@ -549,8 +583,49 @@ mod acceptance_proof_tests {
     };
     use chrono::{Duration, Utc};
     use ed25519_dalek::SigningKey;
+    use rand_core::SeedableRng as _;
 
     use super::*;
+
+    #[test]
+    fn authority_locator_requires_exact_station_and_complete_native_history() {
+        let now = Utc::now();
+        let mut rng = rand_chacha::ChaCha20Rng::seed_from_u64(91);
+        let prepared = arkret_signatures::webvh::prepare_service_inception_with_did_key_seed(
+            &mut rng,
+            &arkret_signatures::webvh::ServiceInceptionInput {
+                principal_endpoint: &url::Url::parse("https://governance.example/").unwrap(),
+                local_id: "service",
+                also_known_as: &[],
+                version_time: now - Duration::minutes(1),
+                did_key_fragment: Some("realm-authority"),
+            },
+            &[91; 32],
+        )
+        .unwrap();
+        let station = project_did_to_core_id(&Did::new(prepared.did.clone()).unwrap()).unwrap();
+        let resolution = arkret_identity::build_authenticated_webvh_service_resolution(
+            station.clone(),
+            "station".to_owned(),
+            serde_json::from_value(prepared.log_entry["state"].clone()).unwrap(),
+            vec![prepared.log_entry.clone()],
+            vec![],
+            now,
+        )
+        .unwrap();
+        assert_eq!(
+            authority_locator_base(&resolution, &station).unwrap(),
+            "https://governance.example/"
+        );
+        let other = arkret_wire::DidCoreId::new("ak:did_core:web:other.example").unwrap();
+        assert!(authority_locator_base(&resolution, &other).is_err());
+        let mut wrong_role = resolution.clone();
+        wrong_role.service_kind = "directory_service".to_owned();
+        assert!(authority_locator_base(&wrong_role, &station).is_err());
+        let mut forged = resolution;
+        forged.normalized_did_document.id = Did::new("did:web:forged.example").unwrap();
+        assert!(authority_locator_base(&forged, &station).is_err());
+    }
 
     #[test]
     fn receipts_require_signed_authority_and_exact_frozen_events() {
