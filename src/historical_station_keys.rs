@@ -179,8 +179,8 @@ fn key_directory_for_methods(
     Ok(keys)
 }
 
-/// Fetch missing Station resolution carriers through the typed public SDK
-/// endpoint and build the historical directory. The bundle's current route
+/// Fetch missing Station resolutions through the SDK method adapter and
+/// build the historical directory. The bundle's current route
 /// record supplies only the current Station; every prior generation needs
 /// its own complete history.
 pub async fn fetch_historical_station_key_directory(
@@ -211,6 +211,23 @@ async fn fetch_keys_for_methods(
     bundle: &RealmAuthorityBundle,
     methods: Vec<SignedStationMethod<'_>>,
 ) -> Result<RealmAuthorityKeyMap> {
+    fetch_keys_for_methods_with_resolver(bundle, methods, |did| async move {
+        http.resolve_service_from_did(&did, arkret_wire::ServiceKind::Station)
+            .await
+            .map_err(Error::from)
+    })
+    .await
+}
+
+async fn fetch_keys_for_methods_with_resolver<F, Fut>(
+    bundle: &RealmAuthorityBundle,
+    methods: Vec<SignedStationMethod<'_>>,
+    mut resolve: F,
+) -> Result<RealmAuthorityKeyMap>
+where
+    F: FnMut(arkret_wire::Did) -> Fut,
+    Fut: std::future::Future<Output = Result<AuthenticatedServiceResolution>>,
+{
     let current: AuthenticatedServiceResolution =
         serde_json::from_value(bundle.current_route_record.clone()).map_err(|error| {
             Error::Protocol(format!(
@@ -233,10 +250,16 @@ async fn fetch_keys_for_methods(
         if resolutions.contains_key(&service_id) {
             continue;
         }
-        let resolution = http
-            .open_service_resolution(&service_id)
-            .await
-            .map_err(Error::from)?;
+        let signature = methods
+            .iter()
+            .find(|entry| {
+                station_id_for_signature(entry.signature).ok().as_ref() == Some(&service_id)
+            })
+            .ok_or_else(|| protocol("historical Station has no signed DID locator"))?
+            .signature;
+        let did = arkret_identity::verification_method_did(signature.verification_method.as_str())
+            .map_err(protocol)?;
+        let resolution = resolve(did).await?;
         resolutions.insert(service_id, resolution);
     }
     key_directory_for_methods(methods, &resolutions)
@@ -500,40 +523,25 @@ mod tests {
     #[cfg(feature = "native")]
     #[tokio::test]
     async fn historical_resolution_outage_keeps_its_retryable_transport_class() {
-        use std::io::{Read as _, Write as _};
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            stream
-                .set_read_timeout(Some(std::time::Duration::from_secs(10)))
-                .unwrap();
-            let mut bytes = [0_u8; 4096];
-            let read = stream.read(&mut bytes).unwrap();
-            assert!(
-                String::from_utf8_lossy(&bytes[..read]).starts_with("GET /_arkret/open/services/")
-            );
-            let body = serde_json::to_string(&arkret_wire::Problem::new(
-                "temporarily_unavailable",
-                503,
-                "Station history is temporarily unavailable",
-            ))
-            .unwrap();
-            write!(stream, "HTTP/1.1 503 Service Unavailable\r\nContent-Type: application/problem+json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}", body.len(), body).unwrap();
-        });
         let at = Utc.with_ymd_and_hms(2026, 5, 1, 0, 0, 0).unwrap();
         let current = webvh_station("station-a.example", 61, at);
         let old = webvh_station("station-b.example", 62, at);
         let bundle = bundle_signed_by(&current, at + Duration::seconds(10));
         let snapshot = snapshot_signed_by(&old, at + Duration::seconds(10));
-        let http = Client::builder(Url::parse(&format!("http://{address}/")).unwrap())
-            .allow_insecure_localhost()
-            .build()
-            .unwrap();
-        let error = fetch_historical_station_key_directory(&http, &bundle, None, Some(&snapshot))
-            .await
-            .unwrap_err();
-        server.join().unwrap();
+        let old_did = arkret_identity::verification_method_did(old.method.as_str()).unwrap();
+        let mut calls = 0;
+        let error = fetch_keys_for_methods_with_resolver(
+            &bundle,
+            signed_methods(&bundle, None, Some(&snapshot)),
+            |did| {
+                calls += 1;
+                assert_eq!(did, old_did);
+                std::future::ready(Err(Error::Http("service DID returned 503".to_owned())))
+            },
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(calls, 1);
         assert!(
             crate::run::is_retryable(&error),
             "a historical evidence outage must preserve retryability: {error}"

@@ -166,8 +166,12 @@ impl AuthorityTransport for Client {
                     limit: 1,
                 };
                 let scan = self.scan_commit_stream(&scan_request).await?;
-                let station = authority_locator_station(&scan_request, &scan)?;
-                let resolution = self.open_service_resolution(&station).await?;
+                let did = authority_locator_did(&scan_request, &scan)?;
+                let station = arkret_wire::project_did_to_core_id(&did)
+                    .map_err(|error| Error::Protocol(error.to_string()))?;
+                let resolution = self
+                    .resolve_service_from_did(&did, arkret_wire::ServiceKind::Station)
+                    .await?;
                 let base_url = authority_locator_base(&resolution, &station)?;
                 let candidate = self.with_base_url(url::Url::parse(&base_url)?)?;
                 // This open operation deliberately carries no Account grant.
@@ -199,10 +203,10 @@ impl AuthorityTransport for Client {
     }
 }
 
-fn authority_locator_station(
+fn authority_locator_did(
     request: &StreamScanRequest,
     outcome: &StreamScanOutcome,
-) -> Result<arkret_wire::DidCoreId> {
+) -> Result<arkret_wire::Did> {
     outcome
         .validate_for_request(request)
         .map_err(|error| Error::Protocol(error.to_string()))?;
@@ -211,7 +215,8 @@ fn authority_locator_station(
             "governance locator requires one retained Realm Commit".to_owned(),
         ));
     };
-    crate::historical_station_keys::station_id_for_signature(&item.commit().signature)
+    arkret_identity::verification_method_did(item.commit().signature.verification_method.as_str())
+        .map_err(|error| Error::Protocol(error.to_string()))
 }
 
 fn authority_locator_base(
@@ -770,12 +775,15 @@ mod acceptance_proof_tests {
             truncated: true,
         };
         assert_eq!(
-            authority_locator_station(&locator_request, &locator_page).unwrap(),
+            project_did_to_core_id(
+                &authority_locator_did(&locator_request, &locator_page).unwrap()
+            )
+            .unwrap(),
             bundle.current_service_id,
         );
         let mut unanchored_floor = locator_page.clone();
         unanchored_floor.truncated = false;
-        assert!(authority_locator_station(&locator_request, &unanchored_floor).is_err());
+        assert!(authority_locator_did(&locator_request, &unanchored_floor).is_err());
         let mut foreign_request = locator_request.clone();
         foreign_request.realm_id = RealmId::from_event_id(&EventId::from_digest(
             arkret_canonical::DigestSuite::Sha256,
@@ -784,9 +792,9 @@ mod acceptance_proof_tests {
         foreign_request.stream_ref = arkret_wire::CommitStreamRef::Realm {
             realm_id: foreign_request.realm_id.clone(),
         };
-        assert!(authority_locator_station(&foreign_request, &locator_page).is_err());
+        assert!(authority_locator_did(&foreign_request, &locator_page).is_err());
         locator_page.committed_events.clear();
-        assert!(authority_locator_station(&locator_request, &locator_page).is_err());
+        assert!(authority_locator_did(&locator_request, &locator_page).is_err());
         let freshness = RealmAuthorityFreshness::new(now, nonce);
         verify_accepted_items(&[item.clone()], &bundle, &freshness, &keys).unwrap();
         let mut forged = item.clone();
