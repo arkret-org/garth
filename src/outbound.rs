@@ -661,6 +661,8 @@ mod tests {
     enum Scripted {
         Accept,
         Reject,
+        #[cfg(feature = "native")]
+        Retryable,
         Transport,
         Protocol,
     }
@@ -704,6 +706,11 @@ mod tests {
                 Scripted::Reject => Ok(AuthoritySubmitOutcome::Rejected {
                     status: AuthorityRejectionStatus::Rejected,
                     reason_code: "authorization_denied".to_owned(),
+                }),
+                #[cfg(feature = "native")]
+                Scripted::Retryable => Ok(AuthoritySubmitOutcome::Rejected {
+                    status: AuthorityRejectionStatus::RetryableUnavailable,
+                    reason_code: "revision_unavailable".to_owned(),
                 }),
                 Scripted::Transport => Err(Error::Http("connection reset".to_owned())),
                 Scripted::Protocol => Err(Error::Api {
