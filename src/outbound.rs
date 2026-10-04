@@ -661,7 +661,6 @@ mod tests {
     enum Scripted {
         Accept,
         Reject,
-        Retryable,
         Transport,
         Protocol,
     }
@@ -702,18 +701,9 @@ mod tests {
                         1,
                     ),
                 }),
-                Scripted::Reject | Scripted::Retryable => Ok(AuthoritySubmitOutcome::Rejected {
-                    status: if matches!(self.script, Scripted::Retryable) {
-                        AuthorityRejectionStatus::RetryableUnavailable
-                    } else {
-                        AuthorityRejectionStatus::Rejected
-                    },
-                    reason_code: if matches!(self.script, Scripted::Retryable) {
-                        "revision_unavailable"
-                    } else {
-                        "authorization_denied"
-                    }
-                    .to_owned(),
+                Scripted::Reject => Ok(AuthoritySubmitOutcome::Rejected {
+                    status: AuthorityRejectionStatus::Rejected,
+                    reason_code: "authorization_denied".to_owned(),
                 }),
                 Scripted::Transport => Err(Error::Http("connection reset".to_owned())),
                 Scripted::Protocol => Err(Error::Api {
