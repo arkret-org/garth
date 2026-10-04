@@ -14,6 +14,7 @@ pub mod actor_profile_directory;
 pub mod agent_draft_pending_intent_projection;
 pub mod authority;
 pub mod direct_conversation;
+pub mod direct_structure;
 pub mod exact_snapshot;
 pub mod executor;
 pub mod facade;

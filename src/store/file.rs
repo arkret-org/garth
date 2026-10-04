@@ -50,6 +50,12 @@ impl FileStore {
         Ok(read(&state))
     }
 
+    /// Enumerate retained local checkpoints. A cursor is continuity state,
+    /// never authorization to fetch or consume its stream.
+    pub fn cursor_scopes(&self) -> Result<Vec<CursorScope>> {
+        self.read(|state| state.cursors.keys().cloned().collect())
+    }
+
     fn mutate<T>(&self, mutation: impl FnOnce(&mut StoreState) -> Result<(T, bool)>) -> Result<T> {
         let _guard = acquire_store_lock(&self.path)?;
         let mut state = load_state(&self.path)?;
@@ -419,6 +425,7 @@ mod inbox_tests {
             .unwrap();
 
         let reopened = FileStore::open(&path).unwrap();
+        assert_eq!(reopened.cursor_scopes().unwrap(), vec![scope()]);
         assert_eq!(
             reopened.load_account_checkpoint(scope()).await.unwrap(),
             Some(checkpoint.clone())
