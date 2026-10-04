@@ -12,6 +12,7 @@ pub mod account_handoff;
 pub mod account_sync;
 pub mod actor_profile_directory;
 pub mod agent_draft_pending_intent_projection;
+pub mod agent_interaction;
 pub mod authority;
 pub mod direct_conversation;
 pub mod direct_structure;
