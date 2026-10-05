@@ -181,7 +181,7 @@ where
             .factory
             .refresh_options(&previous_state, &self.refresh_options)?;
         self.session
-            .refresh_after_unauthorized(refresh_options, self.clock.now())
+            .refresh_after_unauthorized(refresh_options, self.clock.clone())
             .await?;
         let refreshed_grant_id = self
             .session
@@ -218,7 +218,7 @@ where
             .factory
             .refresh_options(&previous_state, &self.refresh_options)?;
         self.session
-            .refresh_once(refresh_options, self.clock.now())
+            .refresh_once(refresh_options, self.clock.clone())
             .await?;
         self.persist_current_state().await?;
         self.clear_cached_transport();
@@ -234,7 +234,7 @@ where
             .factory
             .refresh_options(&current, &self.refresh_options)?;
         self.session
-            .refresh_if_due(refresh_options, self.clock.now())
+            .refresh_if_due(refresh_options, self.clock.clone())
             .await?;
         let state = self
             .session

@@ -126,6 +126,16 @@ picks the envelope the local recovery path can actually open.
 
 ## 8. Run transient transports
 
+Session issue and refresh methods take a `HostClock`, normally `SystemClock`.
+They sample it again after the Account Authority exchange before validating
+and installing the returned credential. A timestamp captured before an async
+request cannot validate the new grant's `not_before` or expiry. During Agent
+rotation the outgoing observation is validated before the exchange, and the
+successor is validated at response time; a successful exchange may outlive the
+old grant. Exact outcome, holder, scope, successor and installation fences
+still apply. Deterministic tests must advance their host clock across transport
+completion and include genuinely future and expired response credentials.
+
 `SignalReceiver` verifies the Station delivery authority and sender proof
 before host decryption, validates the plaintext binding, and enforces sequence
 high-water state. An accepted outcome carries the verified

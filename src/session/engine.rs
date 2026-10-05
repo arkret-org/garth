@@ -296,9 +296,13 @@ where
         refresh_decision(refresh_state.as_ref(), now)
     }
 
-    pub async fn login(&self, login: LoginKind, now: DateTime<Utc>) -> Result<SessionHandle> {
+    pub async fn login(
+        &self,
+        login: LoginKind,
+        clock: impl crate::HostClock,
+    ) -> Result<SessionHandle> {
         let request = login.into_session_grant_request()?;
-        self.login_request(request, now).await
+        self.login_request(request, clock).await
     }
 
     /// Issue a session from an already-authored canonical request.
@@ -307,12 +311,15 @@ where
     /// handoff after OIDC, are authored by `arkret-auth` rather than one of the
     /// convenience [`LoginKind`] builders. They still pass through the same
     /// response validation and state installation as every other login.
+    /// Sample the host clock after transport completion: an issuer can set
+    /// `not_before` later than the time when this request was sent.
     pub async fn login_request(
         &self,
         request: SessionGrantRequestBody,
-        now: DateTime<Utc>,
+        clock: impl crate::HostClock,
     ) -> Result<SessionHandle> {
         let outcome = self.transport.issue_session_grant(request.clone()).await?;
+        let now = clock.now();
         let state = state_from_issue_outcome(&request, outcome, now)?;
         if let SessionGrantRequestBody::Agent(agent) = &request {
             let observation = state.agent_participation_observation(now)?;
@@ -332,8 +339,9 @@ where
     pub async fn refresh_if_due(
         &self,
         options: SessionRefreshOptions,
-        now: DateTime<Utc>,
+        clock: impl crate::HostClock,
     ) -> Result<SessionHandle> {
+        let now = clock.now();
         match self.refresh_decision(now) {
             RefreshDecision::Fresh => self.current_handle().ok_or_else(no_active_grant),
             RefreshDecision::Due => {
@@ -342,7 +350,7 @@ where
                 if self.within_refresh_cooldown(now) {
                     return self.current_handle().ok_or_else(no_active_grant);
                 }
-                self.refresh_once(options, now).await
+                self.refresh_once(options, clock).await
             }
             RefreshDecision::NoGrant => Err(no_active_grant()),
             RefreshDecision::GrantExpired => Err(protocol("session grant is expired")),
@@ -355,18 +363,19 @@ where
     pub async fn refresh_after_unauthorized(
         &self,
         options: SessionRefreshOptions,
-        now: DateTime<Utc>,
+        clock: impl crate::HostClock,
     ) -> Result<SessionHandle> {
+        let now = clock.now();
         if self.within_refresh_cooldown(now) {
             return self.current_handle().ok_or_else(no_active_grant);
         }
-        self.refresh_once(options, now).await
+        self.refresh_once(options, clock).await
     }
 
     pub async fn refresh_once(
         &self,
         options: SessionRefreshOptions,
-        now: DateTime<Utc>,
+        clock: impl crate::HostClock,
     ) -> Result<SessionHandle> {
         // Single-flight: the grant JWT is consumed by rotation, so a second
         // concurrent refresh would race the winner with an already-spent JWT.
@@ -383,20 +392,28 @@ where
         };
 
         let current = self.current_state().ok_or_else(no_active_grant)?;
+        let now = clock.now();
         if refresh_decision(Some(&current.refresh_state()), now) == RefreshDecision::GrantExpired {
             return Err(protocol("session grant is expired"));
         }
 
         let (request, expected_dpop_jkt) = refresh_request(&current, options)?;
+        // Validate the outgoing observation while its credential is valid.
+        // The old credential may expire during a successful rotation.
+        let previous_observation = if current.device_id.is_none() {
+            Some(current.agent_participation_observation(now)?)
+        } else {
+            None
+        };
         let outcome = self
             .transport
             .refresh_session_grant(request.clone())
             .await?;
+        let now = clock.now();
         let state =
             state_from_refresh_outcome(&current, &request, &expected_dpop_jkt, outcome, now)?;
-        if current.device_id.is_none() {
-            current
-                .agent_participation_observation(now)?
+        if let Some(previous_observation) = previous_observation {
+            previous_observation
                 .validate_successor(&state.agent_participation_observation(now)?)
                 .map_err(protocol)?;
         }
@@ -627,6 +644,53 @@ pub(super) mod tests {
     use super::*;
     use crate::session::AgentKeyProofLogin;
 
+    #[derive(Clone)]
+    struct FixedClock(DateTime<Utc>);
+
+    impl crate::HostClock for FixedClock {
+        fn now(&self) -> DateTime<Utc> {
+            self.0
+        }
+    }
+
+    #[derive(Clone)]
+    struct AdvancingClock(Arc<Mutex<DateTime<Utc>>>);
+
+    impl crate::HostClock for AdvancingClock {
+        fn now(&self) -> DateTime<Utc> {
+            *self.0.lock().unwrap()
+        }
+    }
+
+    #[derive(Clone)]
+    struct AdvancingTransport {
+        inner: MockSessionTransport,
+        clock: AdvancingClock,
+        response_at: DateTime<Utc>,
+    }
+
+    impl SessionGrantTransport for AdvancingTransport {
+        fn issue_session_grant<'a>(
+            &'a self,
+            request: SessionGrantRequestBody,
+        ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
+            Box::pin(async move {
+                *self.clock.0.lock().unwrap() = self.response_at;
+                self.inner.issue_session_grant(request).await
+            })
+        }
+
+        fn refresh_session_grant<'a>(
+            &'a self,
+            request: SessionGrantRefreshRequestBody,
+        ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
+            Box::pin(async move {
+                *self.clock.0.lock().unwrap() = self.response_at;
+                self.inner.refresh_session_grant(request).await
+            })
+        }
+    }
+
     #[derive(Clone, Default)]
     struct MockSessionTransport {
         issue_requests: Arc<Mutex<Vec<SessionGrantRequestBody>>>,
@@ -765,6 +829,15 @@ pub(super) mod tests {
     // The mock transport is the authenticated issuer boundary. Use actual
     // signed JWT claims so exact-state and overlay checks exercise the codec.
     pub(crate) fn agent_jwt(label: &str, grant: SessionGrantId, expires: DateTime<Utc>) -> String {
+        agent_jwt_at(label, grant, now(), expires)
+    }
+
+    fn agent_jwt_at(
+        label: &str,
+        grant: SessionGrantId,
+        not_before: DateTime<Utc>,
+        expires: DateTime<Utc>,
+    ) -> String {
         use ed25519_dalek::Signer as _;
         let claims = arkret_models_identity::SignedSessionGrantClaims {
             kind: arkret_models_identity::SESSION_GRANT_CREDENTIAL_KIND.to_owned(),
@@ -772,7 +845,7 @@ pub(super) mod tests {
             issuance_nonce: arkret_models_identity::SessionGrantIssuanceNonce::from_bytes([11;32]),
             account_id: AccountId::new(principal_id(), audience()),
             session_public_key: session_public_jwk(), audience_id: audience(),
-            scopes: vec!["ak.self.events.stream.subscribe.v1".into()], not_before: now(), expires_at: expires,
+            scopes: vec!["ak.self.events.stream.subscribe.v1".into()], not_before, expires_at: expires,
             session_id: label.into(), credential_class: arkret_models_identity::SessionGrantCredentialClass::Standard,
             holder_binding: arkret_models_identity::SessionGrantHolderBinding::AgentRuntime {
                 agent_id: principal_id(), agent_key_authorization_ref: agent_key_authorization_ref(),
@@ -896,7 +969,10 @@ pub(super) mod tests {
         ))]);
         let engine = SessionEngine::new(transport.clone());
 
-        let handle = engine.login(agent_login(), now()).await.unwrap();
+        let handle = engine
+            .login(agent_login(), FixedClock(now()))
+            .await
+            .unwrap();
 
         assert_eq!(
             handle.access_token,
@@ -905,6 +981,76 @@ pub(super) mod tests {
         let requests = transport.issue_requests();
         assert_eq!(requests.len(), 1);
         assert!(matches!(requests[0], SessionGrantRequestBody::Agent(_)));
+    }
+
+    #[tokio::test]
+    async fn agent_login_validates_at_response_time_without_relaxing_validity() {
+        let response_at = now() + Duration::milliseconds(100);
+        for (not_before, expires_at, accepted) in [
+            (
+                now() + Duration::milliseconds(50),
+                now() + Duration::hours(1),
+                true,
+            ),
+            (
+                response_at + Duration::milliseconds(1),
+                now() + Duration::hours(1),
+                false,
+            ),
+            (now(), response_at, false),
+        ] {
+            let mut outcome = issue_outcome("grant-agent", grant_id(10), principal_id(), None);
+            outcome.expires_at = expires_at;
+            outcome.session_grant =
+                agent_jwt_at("grant-agent", grant_id(10), not_before, expires_at);
+            let clock = AdvancingClock(Arc::new(Mutex::new(now())));
+            let engine = SessionEngine::new(AdvancingTransport {
+                inner: MockSessionTransport::with_issue_responses(vec![Ok(outcome)]),
+                clock: clock.clone(),
+                response_at,
+            });
+            assert_eq!(engine.login(agent_login(), clock).await.is_ok(), accepted);
+            assert_eq!(engine.current_state().is_some(), accepted);
+        }
+    }
+
+    #[tokio::test]
+    async fn agent_rotation_validates_new_grant_after_transport_and_old_grant_before_it() {
+        let response_at = now() + Duration::minutes(21);
+        for (not_before, expires_at, accepted) in [
+            (
+                now() + Duration::minutes(20),
+                now() + Duration::hours(1),
+                true,
+            ),
+            (
+                response_at + Duration::milliseconds(1),
+                now() + Duration::hours(1),
+                false,
+            ),
+            (now(), response_at, false),
+        ] {
+            let mut outcome = refresh_outcome("grant-2", grant_id(2));
+            outcome.expires_at = expires_at;
+            outcome.session_grant = agent_jwt_at("grant-2", grant_id(2), not_before, expires_at);
+            let clock = AdvancingClock(Arc::new(Mutex::new(now())));
+            let engine = SessionEngine::with_state(
+                AdvancingTransport {
+                    inner: MockSessionTransport::with_refresh_responses(vec![Ok(outcome)]),
+                    clock: clock.clone(),
+                    response_at,
+                },
+                active_state(),
+            );
+            assert_eq!(
+                engine.refresh_once(refresh_options(), clock).await.is_ok(),
+                accepted
+            );
+            assert_eq!(
+                engine.current_state().unwrap().grant_id,
+                grant_id(if accepted { 2 } else { 1 })
+            );
+        }
     }
 
     #[test]
@@ -989,7 +1135,10 @@ pub(super) mod tests {
         let engine = SessionEngine::new(transport.clone());
         let request = agent_login().into_session_grant_request().unwrap();
 
-        let handle = engine.login_request(request, now()).await.unwrap();
+        let handle = engine
+            .login_request(request, FixedClock(now()))
+            .await
+            .unwrap();
 
         assert_eq!(
             handle.access_token,
@@ -1025,7 +1174,7 @@ pub(super) mod tests {
             let transport = MockSessionTransport::with_issue_responses(vec![Ok(outcome)]);
             let engine = SessionEngine::new(transport);
 
-            let result = engine.login(agent_login(), now()).await;
+            let result = engine.login(agent_login(), FixedClock(now())).await;
 
             assert!(result.is_err());
             assert!(engine.current_state().is_none());
@@ -1037,14 +1186,24 @@ pub(super) mod tests {
         let transport = MockSessionTransport::default();
         let engine = SessionEngine::new(transport.clone());
 
-        assert!(engine.refresh_once(refresh_options(), now()).await.is_err());
+        assert!(
+            engine
+                .refresh_once(refresh_options(), FixedClock(now()))
+                .await
+                .is_err()
+        );
         assert!(transport.refresh_requests().is_empty());
 
         let mut expired = active_state();
         expired.expires_at = now() - Duration::seconds(1);
         let engine = SessionEngine::with_state(transport.clone(), expired);
 
-        assert!(engine.refresh_once(refresh_options(), now()).await.is_err());
+        assert!(
+            engine
+                .refresh_once(refresh_options(), FixedClock(now()))
+                .await
+                .is_err()
+        );
         assert!(transport.refresh_requests().is_empty());
     }
 
@@ -1065,7 +1224,7 @@ pub(super) mod tests {
             let transport = MockSessionTransport::default();
             let engine = SessionEngine::with_state(transport.clone(), active_state());
 
-            let result = engine.refresh_once(options, now()).await;
+            let result = engine.refresh_once(options, FixedClock(now())).await;
 
             assert!(result.is_err());
             assert!(transport.refresh_requests().is_empty());
@@ -1080,7 +1239,10 @@ pub(super) mod tests {
         ))]);
         let engine = SessionEngine::with_state(transport.clone(), active_state());
 
-        let handle = engine.refresh_once(refresh_options(), now()).await.unwrap();
+        let handle = engine
+            .refresh_once(refresh_options(), FixedClock(now()))
+            .await
+            .unwrap();
 
         assert_eq!(
             handle.access_token,
@@ -1148,7 +1310,7 @@ pub(super) mod tests {
             let engine = SessionEngine::with_state(transport, active_state());
 
             let error = engine
-                .refresh_once(refresh_options(), now())
+                .refresh_once(refresh_options(), FixedClock(now()))
                 .await
                 .expect_err("a changed successor is rejected");
 
@@ -1171,7 +1333,9 @@ pub(super) mod tests {
             )]);
             let engine = SessionEngine::with_state(transport.clone(), active_state());
 
-            let result = engine.refresh_once(refresh_options(), now()).await;
+            let result = engine
+                .refresh_once(refresh_options(), FixedClock(now()))
+                .await;
 
             assert!(result.is_err());
             assert_eq!(
@@ -1230,13 +1394,20 @@ pub(super) mod tests {
 
         let winner = {
             let engine = Arc::clone(&engine);
-            tokio::spawn(async move { engine.refresh_once(refresh_options(), now()).await })
+            tokio::spawn(async move {
+                engine
+                    .refresh_once(refresh_options(), FixedClock(now()))
+                    .await
+            })
         };
         // Wait until the winner's transport call is in flight...
         started.notified().await;
         // ...then race a second refresh: it must NOT fire a transport call and
         // returns the still-valid current handle instead.
-        let loser = engine.refresh_once(refresh_options(), now()).await.unwrap();
+        let loser = engine
+            .refresh_once(refresh_options(), FixedClock(now()))
+            .await
+            .unwrap();
         assert_eq!(loser.access_token, active_state().grant_jwt);
         assert_eq!(*refresh_calls.lock().unwrap(), 1);
 
@@ -1269,7 +1440,11 @@ pub(super) mod tests {
 
         let cancelled = {
             let engine = Arc::clone(&engine);
-            tokio::spawn(async move { engine.refresh_once(refresh_options(), now()).await })
+            tokio::spawn(async move {
+                engine
+                    .refresh_once(refresh_options(), FixedClock(now()))
+                    .await
+            })
         };
         started.notified().await;
         cancelled.abort();
@@ -1281,7 +1456,11 @@ pub(super) mod tests {
 
         let retry = {
             let engine = Arc::clone(&engine);
-            tokio::spawn(async move { engine.refresh_once(refresh_options(), now()).await })
+            tokio::spawn(async move {
+                engine
+                    .refresh_once(refresh_options(), FixedClock(now()))
+                    .await
+            })
         };
         started.notified().await;
         release.notify_one();
@@ -1318,7 +1497,7 @@ pub(super) mod tests {
                     grant_id(1),
                     now() + Duration::seconds(30),
                 )),
-                now(),
+                FixedClock(now()),
             )
             .await
             .unwrap();
@@ -1330,7 +1509,7 @@ pub(super) mod tests {
 
         // Still Due, but within the cooldown: no second transport call.
         let handle = engine
-            .refresh_if_due(refresh_options(), now() + Duration::seconds(1))
+            .refresh_if_due(refresh_options(), FixedClock(now() + Duration::seconds(1)))
             .await
             .unwrap();
         assert_eq!(
@@ -1347,7 +1526,7 @@ pub(super) mod tests {
                     grant_id(2),
                     now() + Duration::seconds(30),
                 )),
-                now() + Duration::seconds(REFRESH_SUCCESS_COOLDOWN_SECS),
+                FixedClock(now() + Duration::seconds(REFRESH_SUCCESS_COOLDOWN_SECS)),
             )
             .await
             .unwrap();
