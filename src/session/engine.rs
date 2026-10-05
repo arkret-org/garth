@@ -228,8 +228,9 @@ impl Drop for RefreshInFlightGuard {
 #[derive(Clone, Debug)]
 pub struct SessionEngine<T> {
     transport: T,
-    state: Arc<Mutex<Option<SessionGrantState>>>,
+    state: Arc<Mutex<(Option<SessionGrantState>, u64)>>,
     refresh_gate: Arc<Mutex<RefreshGate>>,
+    own_station_identity: arkret_http_client::own_station_results::OwnStationSessionIdentity,
 }
 
 impl<T> SessionEngine<T>
@@ -239,16 +240,18 @@ where
     pub fn new(transport: T) -> Self {
         Self {
             transport,
-            state: Arc::new(Mutex::new(None)),
+            state: Arc::new(Mutex::new((None, 0))),
             refresh_gate: Arc::new(Mutex::new(RefreshGate::default())),
+            own_station_identity: Default::default(),
         }
     }
 
     pub fn with_state(transport: T, state: SessionGrantState) -> Self {
         Self {
             transport,
-            state: Arc::new(Mutex::new(Some(state))),
+            state: Arc::new(Mutex::new((Some(state), 0))),
             refresh_gate: Arc::new(Mutex::new(RefreshGate::default())),
+            own_station_identity: Default::default(),
         }
     }
 
@@ -257,7 +260,7 @@ where
     // Recover the guard rather than `unwrap()`-panicking, keeping the engine free
     // of a panic surface (and consistent with the store layer, which also maps
     // lock failures to a value rather than aborting).
-    fn state_lock(&self) -> MutexGuard<'_, Option<SessionGrantState>> {
+    fn state_lock(&self) -> MutexGuard<'_, (Option<SessionGrantState>, u64)> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -275,7 +278,36 @@ where
     }
 
     pub fn current_state(&self) -> Option<SessionGrantState> {
-        self.state_lock().clone()
+        self.state_lock().0.clone()
+    }
+
+    /// Capture grant and local replacement epoch under the same lock.
+    pub fn own_station_snapshot(
+        &self,
+        binding: &arkret_models_discovery::StationConnectionBinding,
+    ) -> Result<arkret_http_client::own_station_results::OwnStationSessionSnapshot> {
+        self.own_station_snapshot_at(binding, Utc::now())
+    }
+    pub fn own_station_snapshot_at(
+        &self,
+        binding: &arkret_models_discovery::StationConnectionBinding,
+        now: DateTime<Utc>,
+    ) -> Result<arkret_http_client::own_station_results::OwnStationSessionSnapshot> {
+        let live = self.state_lock();
+        let state = live.0.as_ref().ok_or_else(no_active_grant)?;
+        if state.expires_at <= now {
+            return Err(protocol("own Station session grant is expired"));
+        }
+        arkret_http_client::own_station_results::OwnStationSessionSnapshot::new(
+            binding.clone(),
+            state.account_id.clone(),
+            state.audience_id.clone(),
+            state.grant_id.clone(),
+            live.1,
+            state.grant_jwt.clone(),
+        )
+        .map(|snapshot| snapshot.with_provider_identity(self.own_station_identity.clone()))
+        .map_err(Error::from)
     }
 
     pub fn current_handle(&self) -> Option<SessionHandle> {
@@ -283,7 +315,13 @@ where
     }
 
     pub fn replace_state(&self, state: Option<SessionGrantState>) {
-        *self.state_lock() = state;
+        let mut live = self.state_lock();
+        if live.1 == u64::MAX {
+            live.0 = None;
+            return;
+        }
+        live.1 += 1;
+        live.0 = state;
     }
 
     pub fn clear_state(&self) {
@@ -292,7 +330,7 @@ where
 
     pub fn refresh_decision(&self, now: DateTime<Utc>) -> RefreshDecision {
         let state = self.state_lock();
-        let refresh_state = state.as_ref().map(SessionGrantState::refresh_state);
+        let refresh_state = state.0.as_ref().map(SessionGrantState::refresh_state);
         refresh_decision(refresh_state.as_ref(), now)
     }
 
@@ -332,7 +370,7 @@ where
             }
         }
         let handle = state.handle();
-        *self.state_lock() = Some(state);
+        self.replace_state(Some(state));
         Ok(handle)
     }
 
@@ -391,7 +429,10 @@ where
             RefreshInFlightGuard(Arc::clone(&self.refresh_gate))
         };
 
-        let current = self.current_state().ok_or_else(no_active_grant)?;
+        let (current, current_epoch) = {
+            let live = self.state_lock();
+            (live.0.clone().ok_or_else(no_active_grant)?, live.1)
+        };
         let now = clock.now();
         if refresh_decision(Some(&current.refresh_state()), now) == RefreshDecision::GrantExpired {
             return Err(protocol("session grant is expired"));
@@ -419,12 +460,19 @@ where
         }
         let handle = state.handle();
         let mut installed = self.state_lock();
-        if installed.as_ref().map(|s| &s.grant_id) != Some(&current.grant_id) {
+        if installed.1 != current_epoch
+            || installed.0.as_ref().map(|s| &s.grant_id) != Some(&current.grant_id)
+        {
             return Err(protocol(
                 "late session refresh cannot replace another active session",
             ));
         }
-        *installed = Some(state);
+        if installed.1 == u64::MAX {
+            installed.0 = None;
+            return Err(protocol("session replacement epoch is exhausted"));
+        }
+        installed.1 += 1;
+        installed.0 = Some(state);
         drop(installed);
         self.gate_lock().last_success_at = Some(now);
         Ok(handle)

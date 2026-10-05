@@ -15,6 +15,15 @@ pub trait AuthenticatedTransportFactory: Clone + crate::MaybeSendSync + 'static 
 
     fn build(&self, state: &SessionGrantState) -> Result<Self::Transport>;
 
+    /// Recheck the factory's live host identity without issuing network IO.
+    fn validate_own_station_session(
+        &self,
+        state: &SessionGrantState,
+        _binding: &arkret_models_discovery::StationConnectionBinding,
+    ) -> Result<()> {
+        self.build(state).map(|_| ())
+    }
+
     /// Mint per-refresh inputs (notably short-lived signed proofs). The
     /// default keeps static options for simple clients and tests.
     fn refresh_options(
@@ -23,6 +32,49 @@ pub trait AuthenticatedTransportFactory: Clone + crate::MaybeSendSync + 'static 
         fallback: &SessionRefreshOptions,
     ) -> Result<SessionRefreshOptions> {
         Ok(fallback.clone())
+    }
+}
+
+struct ProviderOwnStationSource<T, F, E> {
+    session: SessionEngine<T>,
+    binding: arkret_models_discovery::StationConnectionBinding,
+    factory: F,
+    clock: E,
+}
+
+impl<
+    T: SessionGrantTransport + crate::MaybeSendSync,
+    F: AuthenticatedTransportFactory,
+    E: HostClock,
+> arkret_http_client::own_station_results::OwnStationSessionSource
+    for ProviderOwnStationSource<T, F, E>
+{
+    fn snapshot(
+        &self,
+    ) -> arkret_http_client::Result<
+        arkret_http_client::own_station_results::OwnStationSessionSnapshot,
+    > {
+        let checked = || -> Result<_> {
+            let before = self
+                .session
+                .own_station_snapshot_at(&self.binding, self.clock.now())?;
+            let state = self
+                .session
+                .current_state()
+                .ok_or_else(|| Error::Protocol("no active own Station session".into()))?;
+            self.factory
+                .validate_own_station_session(&state, &self.binding)?;
+            let after = self
+                .session
+                .own_station_snapshot_at(&self.binding, self.clock.now())?;
+            if before != after {
+                return Err(Error::Protocol(
+                    "own Station session changed during host identity validation".into(),
+                ));
+            }
+            Ok(after)
+        };
+        checked().map_err(|error| arkret_http_client::Error::Protocol(error.to_string()))
     }
 }
 
@@ -136,6 +188,28 @@ where
 
     pub fn session(&self) -> &SessionEngine<T> {
         &self.session
+    }
+
+    /// Bind a factory-built authenticated client to this provider's live grant.
+    /// The source remains shared with every login, rotation and invalidation.
+    pub fn own_station_result_client(
+        &self,
+        client: arkret_http_client::Client,
+        binding: arkret_models_discovery::StationConnectionBinding,
+    ) -> Result<arkret_http_client::own_station_results::OwnStationResultClient>
+    where
+        T: Clone + crate::MaybeSendSync + 'static,
+    {
+        let source = Arc::new(ProviderOwnStationSource {
+            session: self.session.clone(),
+            binding: binding.clone(),
+            factory: self.factory.clone(),
+            clock: self.clock.clone(),
+        });
+        arkret_http_client::own_station_results::OwnStationResultClient::new(
+            client, binding, source,
+        )
+        .map_err(Error::from)
     }
 
     pub fn clear_cached_transport(&self) {
@@ -414,6 +488,62 @@ mod tests {
             session_public_key: Some(session_public_jwk().into_string()),
             dpop_jkt: Some(session_dpop_jkt()),
         }
+    }
+
+    #[test]
+    fn own_station_live_provider_rejects_aba_new_instance_and_expired_grant() {
+        let transport = RefreshTransport {
+            outcomes: Arc::new(Mutex::new(VecDeque::new())),
+            calls: Arc::new(Mutex::new(0)),
+        };
+        let state = state();
+        let binding = arkret_models_discovery::StationConnectionBinding {
+            service_id: state.audience_id.clone(),
+            base_url: "https://service.example/".into(),
+            trust_domain: arkret_wire::TrustDomainId::new("ak:trust_domain:service.example")
+                .unwrap(),
+            auth_metadata: arkret_models_discovery::AuthMetadata::minimal(),
+        };
+        let engine = SessionEngine::with_state(transport.clone(), state.clone());
+        let first = engine
+            .own_station_snapshot_at(&binding, Utc::now())
+            .unwrap();
+        engine.clear_state();
+        engine.replace_state(Some(state.clone()));
+        assert_ne!(
+            first,
+            engine
+                .own_station_snapshot_at(&binding, Utc::now())
+                .unwrap()
+        );
+        let new_engine = SessionEngine::with_state(transport, state.clone());
+        assert_ne!(
+            first,
+            new_engine
+                .own_station_snapshot_at(&binding, Utc::now())
+                .unwrap()
+        );
+        assert!(
+            new_engine
+                .own_station_snapshot_at(&binding, state.expires_at)
+                .is_err()
+        );
+        let factory = TokenFactory {
+            calls: Arc::new(Mutex::new(0)),
+        };
+        let source = ProviderOwnStationSource {
+            session: engine,
+            binding,
+            factory: factory.clone(),
+            clock: crate::SystemClock,
+        };
+        arkret_http_client::own_station_results::OwnStationSessionSource::snapshot(&source)
+            .unwrap();
+        assert_eq!(
+            *factory.calls.lock().unwrap(),
+            1,
+            "snapshot rechecks the factory host identity"
+        );
     }
 
     fn refresh_outcome() -> SessionGrantOutcome {

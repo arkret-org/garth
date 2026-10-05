@@ -1,0 +1,1787 @@
+//! Ordinary Account clients consume original governance results through their
+//! accepted, authenticated Station. Native Station/audit verification remains
+//! in `replica` and is deliberately not weakened by this module.
+
+use std::collections::BTreeMap;
+
+use arkret_http_client::own_station_results::{
+    BoundOwnStationResponse, OwnStationResultClient, OwnStationSessionSnapshot,
+};
+use arkret_models_collaboration::authority_commit::{
+    SelfAuthoritySubmitOutcome, SelfAuthoritySubmitRequest,
+};
+use arkret_models_collaboration::sync_frames::account_sync::StreamWindowStartBasis;
+use arkret_models_identity::signer_key_operations::{
+    HistoricalSignerKeyQuerySender, SignerKeyQueryResult, SignerKeyQuerySelector,
+    SignerKeysQueryRequestBody,
+};
+use arkret_wire::{
+    CommitStreamHead, CommitStreamRef, CommittedEventRef, CommittedEventView, EventId,
+    ReadableFloor, RealmId, RealmSnapshotId, RealmStateSnapshot, RequestId, StreamScanDirection,
+    StreamScanOutcome, StreamScanRequest, TypedCurrentResult,
+};
+
+use crate::{Error, Result};
+
+pub struct OwnStationScanPage {
+    response: BoundOwnStationResponse<StreamScanRequest, StreamScanOutcome>,
+}
+impl OwnStationScanPage {
+    pub fn rows(&self) -> Result<&[CommittedEventView]> {
+        Ok(&self.response.value()?.committed_events)
+    }
+    pub fn into_rows(self) -> Result<Vec<CommittedEventView>> {
+        Ok(self.response.into_value()?.committed_events)
+    }
+    pub fn session(&self) -> &OwnStationSessionSnapshot {
+        self.response.session()
+    }
+}
+
+/// Separate from `VerifiedFloorSnapshot`: this is ordinary local consumption,
+/// not independently audited or portable evidence.
+pub struct OwnStationFloorSnapshot {
+    response: BoundOwnStationResponse<(RealmId, RealmSnapshotId), RealmStateSnapshot>,
+    stream_ref: CommitStreamRef,
+}
+impl OwnStationFloorSnapshot {
+    pub fn snapshot(&self) -> Result<&RealmStateSnapshot> {
+        Ok(self.response.value()?)
+    }
+    pub fn head(&self) -> Result<&CommitStreamHead> {
+        self.snapshot()?
+            .visible_stream_heads
+            .iter()
+            .find(|head| head.stream_ref == self.stream_ref)
+            .ok_or_else(|| protocol("floor snapshot omitted its stream"))
+    }
+    pub fn governance_generation(&self) -> Result<u64> {
+        Ok(self.snapshot()?.governance_generation)
+    }
+    pub fn history_access(&self) -> Result<arkret_wire::HistoryAccess> {
+        Ok(self.snapshot()?.retention_and_history_floor.history_access)
+    }
+    pub fn rows(&self) -> Result<Vec<TypedCurrentResult>> {
+        Ok(self
+            .response
+            .value()?
+            .current_state_entries
+            .iter()
+            .filter(|row| match row {
+                TypedCurrentResult::Value {
+                    source_stream_ref, ..
+                } => source_stream_ref == &self.stream_ref,
+            })
+            .cloned()
+            .collect())
+    }
+}
+
+pub struct OwnStationReplica {
+    realm_id: RealmId,
+    context: Option<OwnStationSessionSnapshot>,
+    heads: BTreeMap<CommitStreamRef, CommitStreamHead>,
+    current_heads: BTreeMap<CommitStreamRef, CommitStreamHead>,
+    generations: BTreeMap<CommitStreamRef, u64>,
+    snapshot: Option<RealmStateSnapshot>,
+}
+
+impl OwnStationReplica {
+    pub fn new(realm_id: RealmId) -> Self {
+        Self {
+            realm_id,
+            context: None,
+            heads: BTreeMap::new(),
+            current_heads: BTreeMap::new(),
+            generations: BTreeMap::new(),
+            snapshot: None,
+        }
+    }
+    pub fn head(&self, stream: &CommitStreamRef) -> Option<&CommitStreamHead> {
+        self.heads.get(stream)
+    }
+    pub fn snapshot(&self) -> Option<&RealmStateSnapshot> {
+        self.snapshot.as_ref()
+    }
+    /// Re-admit a durable head using one exact original, never a bare cursor.
+    pub async fn restore_checkpoint_head(
+        &mut self,
+        client: &OwnStationResultClient,
+        expected: &CommitStreamHead,
+    ) -> Result<()> {
+        let before = expected
+            .stream_position
+            .checked_add(1)
+            .ok_or_else(|| protocol("checkpoint position overflow"))?;
+        let request = StreamScanRequest {
+            realm_id: self.realm_id.clone(),
+            stream_ref: expected.stream_ref.clone(),
+            direction: StreamScanDirection::Before(Some(before)),
+            limit: 1,
+        };
+        let response = client.scan_commit_stream(&request).await?;
+        self.restore_bound_head(client, expected, response).await
+    }
+
+    pub async fn restore_bound_head(
+        &mut self,
+        client: &OwnStationResultClient,
+        expected: &CommitStreamHead,
+        response: BoundOwnStationResponse<StreamScanRequest, StreamScanOutcome>,
+    ) -> Result<()> {
+        self.check_context(response.session())?;
+        if response.session() != client.session()? {
+            return Err(protocol("checkpoint response belongs to another session"));
+        }
+        let request = response.request();
+        let outcome = response.value()?;
+        outcome
+            .validate_for_request(request)
+            .map_err(|error| protocol(&error.to_string()))?;
+        let before = expected
+            .stream_position
+            .checked_add(1)
+            .ok_or_else(|| protocol("checkpoint position overflow"))?;
+        if request.realm_id != self.realm_id
+            || request.stream_ref != expected.stream_ref
+            || request.direction != StreamScanDirection::Before(Some(before))
+            || request.limit != 1
+            || outcome.committed_events.len() != 1
+        {
+            return Err(protocol(
+                "checkpoint restoration is not one exact same-stream original",
+            ));
+        }
+        let row = &outcome.committed_events[0];
+        if head(row.commit()) != *expected {
+            return Err(protocol(
+                "checkpoint restoration changed its accepted original",
+            ));
+        }
+        verify_row(client, row).await?;
+        self.check_head(row.commit())?;
+        response.value()?;
+        client.check_session()?;
+        self.context = Some(response.session().clone());
+        self.generations.insert(
+            expected.stream_ref.clone(),
+            row.commit().governance_generation,
+        );
+        self.heads
+            .insert(expected.stream_ref.clone(), expected.clone());
+        Ok(())
+    }
+    fn check_context(&self, session: &OwnStationSessionSnapshot) -> Result<()> {
+        if self.context.as_ref().is_some_and(|saved| saved != session) {
+            return Err(protocol(
+                "ordinary replica belongs to another local session",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Exact historical anchor re-admitted through the current authenticated
+    /// self read. The expected four-coordinate reference comes from a durable
+    /// local checkpoint, never from the pending MLS Commit's asserted payload.
+    pub async fn restore_bound_anchor(
+        &mut self,
+        client: &OwnStationResultClient,
+        expected: &CommittedEventRef,
+        response: BoundOwnStationResponse<EventId, CommittedEventView>,
+    ) -> Result<()> {
+        self.check_context(response.session())?;
+        if response.session() != client.session()?
+            || response.request() != &expected.event_id
+            || !expected.matches(response.value()?)
+        {
+            return Err(protocol(
+                "ordinary historical anchor differs from its exact checkpoint",
+            ));
+        }
+        let row = response.value()?;
+        if !matches!(row, CommittedEventView::Full(_)) {
+            return Err(protocol(
+                "withheld anchor cannot supply an MLS historical base",
+            ));
+        }
+        verify_get_candidate(client, expected, row).await?;
+        let commit = row.commit();
+        if commit.realm_id != self.realm_id {
+            return Err(protocol("ordinary anchor belongs to another Realm"));
+        }
+        self.check_head(commit)?;
+        response.value()?;
+        client.check_session()?;
+        self.context = Some(response.session().clone());
+        self.generations
+            .insert(commit.stream_ref.clone(), commit.governance_generation);
+        self.heads.insert(commit.stream_ref.clone(), head(commit));
+        Ok(())
+    }
+
+    pub async fn apply_bound_scan(
+        &mut self,
+        client: &OwnStationResultClient,
+        response: BoundOwnStationResponse<StreamScanRequest, StreamScanOutcome>,
+    ) -> Result<OwnStationScanPage> {
+        self.check_context(response.session())?;
+        if response.session() != client.session()? {
+            return Err(protocol(
+                "ordinary scan is from another authenticated session",
+            ));
+        }
+        let request = response.request();
+        let outcome = response.value()?;
+        outcome
+            .validate_for_request(request)
+            .map_err(|error| protocol(&error.to_string()))?;
+        if request.realm_id != self.realm_id {
+            return Err(protocol("ordinary scan belongs to another Realm"));
+        }
+        let StreamScanDirection::After(after) = request.direction else {
+            return Err(protocol("ordinary replica requires a forward scan"));
+        };
+        let saved = self.heads.get(&request.stream_ref);
+        if saved.map(|value| value.stream_position) != after {
+            return Err(protocol(
+                "ordinary scan does not resume its saved independent head",
+            ));
+        }
+        let mut previous_id = saved.map(|value| value.commit_id.clone());
+        let mut position = match saved {
+            Some(value) => value
+                .stream_position
+                .checked_add(1)
+                .ok_or_else(|| protocol("stream position overflow"))?,
+            None => 0,
+        };
+        let mut generation = self
+            .generations
+            .get(&request.stream_ref)
+            .copied()
+            .unwrap_or(0);
+        let cap = if let Some(snapshot) = &self.snapshot {
+            let cap = snapshot
+                .visible_stream_heads
+                .iter()
+                .find(|value| value.stream_ref == request.stream_ref)
+                .ok_or_else(|| protocol("scan stream is absent from installed current cut"))?;
+            if outcome
+                .readable_floor
+                .as_ref()
+                .map(|floor| floor.oldest_position)
+                != snapshot
+                    .retention_and_history_floor
+                    .stream_floors
+                    .iter()
+                    .find(|floor| floor.stream_ref == request.stream_ref)
+                    .map(|floor| floor.oldest_position)
+            {
+                return Err(protocol(
+                    "ordinary scan and installed current have different history floors",
+                ));
+            }
+            Some((cap, snapshot.governance_generation))
+        } else {
+            if outcome
+                .readable_floor
+                .as_ref()
+                .is_some_and(|floor| floor.oldest_position > 0)
+            {
+                return Err(protocol("limited history requires an exact snapshot basis"));
+            }
+            None
+        };
+        for row in &outcome.committed_events {
+            let commit = row.commit();
+            if commit.stream_position != position
+                || commit.previous_commit_ref != previous_id
+                || commit.governance_generation < generation
+            {
+                return Err(protocol(
+                    "ordinary scan has a fork, gap, mixed generation or rollback",
+                ));
+            }
+            if let Some((cap, current_generation)) = cap {
+                if commit.governance_generation > current_generation
+                    || commit.stream_position > cap.stream_position
+                    || (commit.stream_position == cap.stream_position
+                        && commit.commit_id != cap.commit_id)
+                {
+                    return Err(protocol(
+                        "ordinary scan exceeds or forks its exact current cut",
+                    ));
+                }
+            }
+            verify_row(client, row).await?;
+            previous_id = Some(commit.commit_id.clone());
+            position = position
+                .checked_add(1)
+                .ok_or_else(|| protocol("stream position overflow"))?;
+            generation = commit.governance_generation;
+        }
+        response.value()?;
+        client.check_session()?;
+        if let Some(last) = outcome.committed_events.last() {
+            self.heads
+                .insert(request.stream_ref.clone(), head(last.commit()));
+            self.generations
+                .insert(request.stream_ref.clone(), generation);
+        }
+        self.context = Some(response.session().clone());
+        Ok(OwnStationScanPage { response })
+    }
+
+    pub fn install_bound_snapshot<Q>(
+        &mut self,
+        response: &BoundOwnStationResponse<Q, RealmStateSnapshot>,
+    ) -> Result<()> {
+        self.check_context(response.session())?;
+        let snapshot = response.value()?;
+        validate_snapshot(snapshot, &self.realm_id)?;
+        if self
+            .snapshot
+            .as_ref()
+            .is_some_and(|old| snapshot.governance_generation < old.governance_generation)
+        {
+            return Err(protocol("ordinary current generation rollback"));
+        }
+        for incoming in &snapshot.visible_stream_heads {
+            if self.heads.get(&incoming.stream_ref).is_some_and(|old| {
+                incoming.stream_position < old.stream_position
+                    || (incoming.stream_position == old.stream_position
+                        && incoming.commit_id != old.commit_id)
+            }) {
+                return Err(protocol(
+                    "ordinary current cut is behind or forks accepted history",
+                ));
+            }
+            if self
+                .current_heads
+                .get(&incoming.stream_ref)
+                .is_some_and(|old| {
+                    incoming.stream_position < old.stream_position
+                        || (incoming.stream_position == old.stream_position
+                            && incoming.commit_id != old.commit_id)
+                })
+            {
+                return Err(protocol("ordinary current head rollback or fork"));
+            }
+        }
+        for incoming in &snapshot.visible_stream_heads {
+            self.current_heads
+                .insert(incoming.stream_ref.clone(), incoming.clone());
+        }
+        self.context = Some(response.session().clone());
+        self.snapshot = Some(snapshot.clone());
+        // Snapshot heads are current coverage, not downloaded predecessors.
+        Ok(())
+    }
+
+    pub fn install_bound_floor_predecessor(
+        &mut self,
+        stream_ref: &CommitStreamRef,
+        basis: &StreamWindowStartBasis,
+        floor: &ReadableFloor,
+        response: BoundOwnStationResponse<(RealmId, RealmSnapshotId), RealmStateSnapshot>,
+        dependencies: &BTreeMap<CommitStreamRef, Vec<OwnStationScanPage>>,
+    ) -> Result<OwnStationFloorSnapshot> {
+        self.check_context(response.session())?;
+        basis
+            .validate()
+            .map_err(|error| protocol(&error.to_string()))?;
+        let snapshot = response.value()?;
+        validate_snapshot(snapshot, &self.realm_id)?;
+        if response.request() != &(self.realm_id.clone(), basis.snapshot_ref.clone())
+            || snapshot.snapshot_id != basis.snapshot_ref
+            || snapshot.governance_generation != basis.governance_generation
+            || self.heads.contains_key(stream_ref)
+        {
+            return Err(protocol(
+                "ordinary floor basis does not name its exact unused snapshot",
+            ));
+        }
+        let target = snapshot
+            .visible_stream_heads
+            .iter()
+            .find(|head| &head.stream_ref == stream_ref)
+            .ok_or_else(|| protocol("snapshot omits floor stream"))?;
+        if target.commit_id != basis.anchor_commit_ref
+            || target.stream_position != basis.anchor_position
+            || floor.oldest_position > target.stream_position
+            || !snapshot
+                .retention_and_history_floor
+                .stream_floors
+                .iter()
+                .any(|value| {
+                    value.stream_ref == *stream_ref
+                        && value.oldest_position == floor.oldest_position
+                })
+        {
+            return Err(protocol("ordinary floor basis mixes head, floor or stream"));
+        }
+        for dependency in basis.accepted_dependency_refs.iter().flatten() {
+            if dependency.stream_ref == *stream_ref
+                || dependency.stream_ref.realm_id() != &self.realm_id
+            {
+                return Err(protocol("floor dependency has wrong scope"));
+            }
+            let cap = snapshot
+                .visible_stream_heads
+                .iter()
+                .find(|head| head.stream_ref == dependency.stream_ref)
+                .ok_or_else(|| protocol("dependency has no current covering head"))?;
+            let pages = dependencies
+                .get(&dependency.stream_ref)
+                .ok_or_else(|| protocol("floor dependency lacks original accepted history"))?;
+            let mut previous = None;
+            let mut position = 0;
+            let mut found = false;
+            let mut reached = false;
+            for page in pages {
+                if page.session() != response.session() {
+                    return Err(protocol(
+                        "floor dependency uses another authenticated cut/session",
+                    ));
+                }
+                for row in page.rows()? {
+                    let commit = row.commit();
+                    if commit.stream_ref != dependency.stream_ref
+                        || commit.stream_position != position
+                        || commit.previous_commit_ref != previous
+                        || commit.governance_generation > basis.governance_generation
+                        || commit.stream_position > cap.stream_position
+                    {
+                        return Err(protocol(
+                            "floor dependency is not a continuous accepted prefix",
+                        ));
+                    }
+                    if dependency.matches(row) {
+                        found = matches!(row, CommittedEventView::Full(_));
+                    }
+                    if commit.stream_position == cap.stream_position {
+                        reached = commit.commit_id == cap.commit_id;
+                    }
+                    previous = Some(commit.commit_id.clone());
+                    position = position
+                        .checked_add(1)
+                        .ok_or_else(|| protocol("floor dependency position overflow"))?;
+                }
+            }
+            if !found || !reached {
+                return Err(protocol(
+                    "floor dependency is not covered by its exact snapshot",
+                ));
+            }
+        }
+        response.value()?;
+        self.context = Some(response.session().clone());
+        self.generations
+            .insert(stream_ref.clone(), snapshot.governance_generation);
+        self.heads.insert(stream_ref.clone(), target.clone());
+        Ok(OwnStationFloorSnapshot {
+            response,
+            stream_ref: stream_ref.clone(),
+        })
+    }
+
+    fn check_head(&self, commit: &arkret_wire::RealmCommit) -> Result<()> {
+        if self.heads.get(&commit.stream_ref).is_some_and(|old| {
+            commit.stream_position < old.stream_position
+                || (commit.stream_position == old.stream_position
+                    && commit.commit_id != old.commit_id)
+        }) || self
+            .generations
+            .get(&commit.stream_ref)
+            .is_some_and(|old| commit.governance_generation < *old)
+        {
+            return Err(protocol(
+                "ordinary historical anchor rolls back or forks its saved stream",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn head(commit: &arkret_wire::RealmCommit) -> CommitStreamHead {
+    CommitStreamHead {
+        stream_ref: commit.stream_ref.clone(),
+        stream_position: commit.stream_position,
+        commit_id: commit.commit_id.clone(),
+    }
+}
+
+fn validate_snapshot(snapshot: &RealmStateSnapshot, realm: &RealmId) -> Result<()> {
+    crate::replica::validate_snapshot(snapshot, realm)?;
+    let mut body = serde_json::to_value(snapshot).map_err(|error| protocol(&error.to_string()))?;
+    let object = body
+        .as_object_mut()
+        .ok_or_else(|| protocol("snapshot is not an object"))?;
+    object.remove("snapshot_id");
+    object.remove("signature");
+    let bytes = arkret_canonical::canonical_json_bytes(&body)
+        .map_err(|error| protocol(&error.to_string()))?;
+    if snapshot.snapshot_id != RealmSnapshotId::from_digest(arkret_canonical::sha256_bytes(&bytes))
+    {
+        return Err(protocol("ordinary snapshot content address mismatch"));
+    }
+    Ok(())
+}
+
+async fn verify_row(client: &OwnStationResultClient, row: &CommittedEventView) -> Result<()> {
+    row.validate_shape()
+        .map_err(|error| protocol(&error.to_string()))?;
+    row.commit()
+        .verify_commit_id_matches_content()
+        .map_err(|error| protocol(&error.to_string()))?;
+    let CommittedEventView::Full(full) = row else {
+        return Ok(());
+    };
+    let event = &full.event;
+    let suite = event.realm_id.digest_suite_code().digest_suite();
+    event
+        .verify_event_id_matches_content_with_digest_suite(suite)
+        .map_err(|error| protocol(&error.to_string()))?;
+    let human = event
+        .verify_producer_proof_self_consistency(suite)
+        .map_err(|error| protocol(&error.to_string()))?;
+    let proof = event
+        .producer_proof
+        .as_ref()
+        .ok_or_else(|| protocol("disclosed Event has no producer proof"))?;
+    if event.actual_signer().as_account_id().is_none() {
+        // A service-generated franking original may be retained in an
+        // ordinary timeline. This verifies its content/proof consistency and
+        // exact Service method controller, not the dedicated franking
+        // signature or portable Service evidence. A franking consumer must
+        // still run its registered historical Service proof verifier.
+        if event.kind != arkret_wire::EventKind::ModerationFrankingProof {
+            return Err(protocol(
+                "unsupported Service producer in ordinary consumption",
+            ));
+        }
+        proof
+            .validate_production()
+            .map_err(|error| protocol(&error.to_string()))?;
+        client.check_session()?;
+        return Ok(());
+    }
+    let reference = CommittedEventRef {
+        event_id: event.event_id.clone(),
+        commit_id: full.commit.commit_id.clone(),
+        stream_ref: full.commit.stream_ref.clone(),
+        stream_position: full.commit.stream_position,
+    };
+    // This entry point consumes ordinary Full originals. Native PCR audit
+    // uses its registered dedicated capability, not this historical query.
+    if human.is_some() && full.commit.producer_signer_fact_digest.is_none() {
+        return Err(protocol(
+            "original ordinary Human signer source is unavailable",
+        ));
+    }
+    let sender = if let Some(human) = &human {
+        HistoricalSignerKeyQuerySender::AccountDevice {
+            actor: arkret_wire::ActorId::account(human.account_id.clone()),
+            device_id: human.device_id.clone(),
+            verification_method: proof.verification_method.clone(),
+            committed_event_ref: reference,
+        }
+    } else {
+        HistoricalSignerKeyQuerySender::Agent {
+            actor: event.actual_signer().clone(),
+            verification_method: proof.verification_method.clone(),
+            committed_event_ref: reference,
+        }
+    };
+    let request = SignerKeysQueryRequestBody {
+        request_id: request_id()?,
+        realm_id: event.realm_id.clone(),
+        recipient_account_id: client.session()?.account_id().clone(),
+        queries: vec![SignerKeyQuerySelector::HistoricalEvent { sender }],
+    };
+    let outcome = client.signer_keys_query(&request).await?;
+    outcome
+        .value()?
+        .validate_for_request(&request)
+        .map_err(|error| protocol(&error.to_string()))?;
+    let Some(SignerKeyQueryResult::HistoricalResolved {
+        key, accepted_at, ..
+    }) = outcome.value()?.results.first()
+    else {
+        return Err(protocol(
+            "exact historical producer signing key is unavailable",
+        ));
+    };
+    if let Some(human) = human {
+        let fact = arkret_models_collaboration::authority_commit::HumanHistoricalSignerFact {
+            event_id: event.event_id.clone(),
+            actor: event.actual_signer().clone(),
+            device_id: human.device_id,
+            verification_method: proof.verification_method.clone(),
+            key: key.clone(),
+            accepted_at: *accepted_at,
+        };
+        fact.validate_event_binding(event, suite)
+            .map_err(|error| protocol(&error.to_string()))?;
+        if full.commit.producer_signer_fact_digest.as_ref()
+            != Some(
+                &fact
+                    .digest()
+                    .map_err(|error| protocol(&error.to_string()))?,
+            )
+        {
+            return Err(protocol(
+                "ordinary Human source differs from original Commit fact digest",
+            ));
+        }
+    }
+    let material = arkret_signatures::PublicKeyMaterial::Ed25519Raw {
+        bytes: arkret_canonical::base64url_decode(key.public_key_b64u.as_str())
+            .map_err(|error| protocol(&error.to_string()))?,
+    };
+    let bytes = arkret_signatures::EventProofBuilder::new()
+        .envelope_bytes(event)
+        .map_err(|error| protocol(&error.to_string()))?;
+    arkret_signatures::verify_ed25519_detached_jws_proof_with_digest_suite(
+        proof,
+        &bytes,
+        &event.actor_id,
+        &material,
+        suite,
+    )
+    .map_err(|error| protocol(&error.to_string()))?;
+    client.check_session()?;
+    Ok(())
+}
+
+fn request_id() -> Result<RequestId> {
+    let mut bytes = [0u8; 16];
+    getrandom::fill(&mut bytes).map_err(|error| protocol(&error.to_string()))?;
+    let millis = chrono::Utc::now().timestamp_millis().max(0) as u64;
+    bytes[..6].copy_from_slice(&millis.to_be_bytes()[2..]);
+    bytes[6] = (bytes[6] & 15) | 0x70;
+    bytes[8] = (bytes[8] & 63) | 0x80;
+    let hex = bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    RequestId::new(format!(
+        "ak:request:{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    ))
+    .map_err(|error| protocol(&error.to_string()))
+}
+
+fn protocol(message: &str) -> Error {
+    Error::Protocol(message.into())
+}
+
+/// Consume only a real authenticated acceptance paired with its frozen request.
+/// This verifies originals without granting a history read or advancing a head.
+pub async fn consume_bound_submission(
+    client: &OwnStationResultClient,
+    request: &SelfAuthoritySubmitRequest,
+    response: BoundOwnStationResponse<SelfAuthoritySubmitRequest, SelfAuthoritySubmitOutcome>,
+) -> Result<BoundOwnStationResponse<SelfAuthoritySubmitRequest, SelfAuthoritySubmitOutcome>> {
+    if response.session() != client.session()? || response.request() != request {
+        return Err(protocol(
+            "ordinary acceptance differs from its source or frozen request",
+        ));
+    }
+    let accepted = crate::authority::accepted_items(response.request(), response.value()?)?;
+    for original in accepted {
+        verify_row(client, &CommittedEventView::Full(original)).await?;
+        response.value()?;
+    }
+    client.check_session()?;
+    response.value()?;
+    Ok(response)
+}
+
+/// Independently validate one disclosed historical original without advancing
+/// any replay head. This is useful for exact MLS predecessor recovery.
+pub async fn consume_bound_event(
+    client: &OwnStationResultClient,
+    expected: &CommittedEventRef,
+    response: BoundOwnStationResponse<EventId, CommittedEventView>,
+) -> Result<BoundOwnStationResponse<EventId, CommittedEventView>> {
+    if response.session() != client.session()?
+        || response.request() != &expected.event_id
+        || !expected.matches(response.value()?)
+        || !matches!(response.value()?, CommittedEventView::Full(_))
+    {
+        return Err(protocol(
+            "ordinary exact Event differs from requested original",
+        ));
+    }
+    verify_get_candidate(client, expected, response.value()?).await?;
+    response.value()?;
+    Ok(response)
+}
+
+async fn verify_get_candidate(
+    client: &OwnStationResultClient,
+    expected: &CommittedEventRef,
+    candidate: &CommittedEventView,
+) -> Result<()> {
+    let before = expected
+        .stream_position
+        .checked_add(1)
+        .ok_or_else(|| protocol("historical row position overflow"))?;
+    let request = StreamScanRequest {
+        realm_id: expected.stream_ref.realm_id().clone(),
+        stream_ref: expected.stream_ref.clone(),
+        direction: StreamScanDirection::Before(Some(before)),
+        limit: 1,
+    };
+    let scan = client.scan_commit_stream(&request).await?;
+    let scan = consume_bound_scan_row(client, expected, scan).await?;
+    if scan.value()?.committed_events.first() != Some(candidate) {
+        return Err(protocol(
+            "GET candidate differs from exact accepted stream original",
+        ));
+    }
+    Ok(())
+}
+
+/// Consume one actual per-stream `stream_row` original, the registered input
+/// for an exact historical producer signer selector.
+pub async fn consume_bound_scan_row(
+    client: &OwnStationResultClient,
+    expected: &CommittedEventRef,
+    response: BoundOwnStationResponse<StreamScanRequest, StreamScanOutcome>,
+) -> Result<BoundOwnStationResponse<StreamScanRequest, StreamScanOutcome>> {
+    let request = response.request();
+    let before = expected
+        .stream_position
+        .checked_add(1)
+        .ok_or_else(|| protocol("historical row position overflow"))?;
+    if response.session() != client.session()?
+        || request.realm_id != *expected.stream_ref.realm_id()
+        || request.stream_ref != expected.stream_ref
+        || request.direction != StreamScanDirection::Before(Some(before))
+        || request.limit != 1
+    {
+        return Err(protocol(
+            "historical producer input is not its exact same-stream read",
+        ));
+    }
+    let [row] = response.value()?.committed_events.as_slice() else {
+        return Err(protocol(
+            "historical producer input requires one original stream row",
+        ));
+    };
+    if !expected.matches(row) || !matches!(row, CommittedEventView::Full(_)) {
+        return Err(protocol(
+            "historical stream row is withheld or differs from exact reference",
+        ));
+    }
+    verify_row(client, row).await?;
+    response.value()?;
+    Ok(response)
+}
+
+pub fn consume_bound_snapshot<Q>(
+    response: &BoundOwnStationResponse<Q, RealmStateSnapshot>,
+    realm: &RealmId,
+) -> Result<()> {
+    validate_snapshot(response.value()?, realm)
+}
+
+/// A typed mode result derived only from an actual authenticated response.
+/// Both production paths retain their genuine source until consumption; a
+/// snapshot Present row is not reconstructed into a synthetic SDK response.
+pub struct OwnStationAgentInteraction {
+    value: arkret_models_collaboration::exact_current_results::ExactCurrentResultsReadOutcome,
+    source: OwnStationAgentInteractionSource,
+}
+
+enum OwnStationAgentInteractionSource {
+    Snapshot(BoundOwnStationResponse<RealmId, RealmStateSnapshot>),
+    Exact {
+        before: BoundOwnStationResponse<RealmId, RealmStateSnapshot>,
+        response: BoundOwnStationResponse<
+            (arkret_models_collaboration::exact_current_results::ExactCurrentResultsReadRequestBody, u64),
+            arkret_models_collaboration::exact_current_results::ExactCurrentResultsReadOutcome,
+        >,
+        after: BoundOwnStationResponse<RealmId, RealmStateSnapshot>,
+    },
+}
+
+impl OwnStationAgentInteraction {
+    pub fn value(
+        &self,
+    ) -> arkret_http_client::Result<
+        &arkret_models_collaboration::exact_current_results::ExactCurrentResultsReadOutcome,
+    > {
+        match &self.source {
+            OwnStationAgentInteractionSource::Snapshot(snapshot) => {
+                snapshot.value()?;
+            }
+            OwnStationAgentInteractionSource::Exact {
+                before,
+                response,
+                after,
+            } => {
+                before.value()?;
+                response.value()?;
+                after.value()?;
+            }
+        }
+        Ok(&self.value)
+    }
+
+    pub fn into_value(
+        self,
+    ) -> arkret_http_client::Result<
+        arkret_models_collaboration::exact_current_results::ExactCurrentResultsReadOutcome,
+    > {
+        self.value()?;
+        Ok(self.value)
+    }
+}
+
+/// Exact Agent mode read through its authenticated own Station, fenced by
+/// original snapshots before and after. No governance endpoint discovery.
+pub async fn read_own_station_agent_interaction(
+    client: &OwnStationResultClient,
+    realm: &RealmId,
+    agent: &arkret_wire::AccountId,
+) -> Result<OwnStationAgentInteraction> {
+    use arkret_models_collaboration::agent_interaction::AgentInteractionExactCurrentSelector;
+    use arkret_models_collaboration::exact_current_results::{
+        ExactCurrentResultSelector, ExactCurrentResultsReadOutcome,
+        ExactCurrentResultsReadRequestBody,
+    };
+    let before = client.snapshot_head(realm).await?;
+    consume_bound_snapshot(&before, realm)?;
+    let request = ExactCurrentResultsReadRequestBody {
+        realm_id: realm.clone(),
+        selector: ExactCurrentResultSelector::AgentInteraction(
+            AgentInteractionExactCurrentSelector::new(agent.clone()),
+        ),
+    };
+    let snapshot = before.value()?;
+    if let Some(value) = crate::agent_interaction::present_from_snapshot(&request, snapshot)? {
+        before.value()?;
+        return Ok(OwnStationAgentInteraction {
+            value,
+            source: OwnStationAgentInteractionSource::Snapshot(before),
+        });
+    }
+    let stream = CommitStreamRef::Realm {
+        realm_id: realm.clone(),
+    };
+    let expected = snapshot
+        .visible_stream_heads
+        .iter()
+        .find(|head| head.stream_ref == stream)
+        .ok_or_else(|| protocol("Agent mode snapshot omits Realm head"))?;
+    let result = client
+        .exact_current_result(&request, snapshot.governance_generation)
+        .await?;
+    let after = client.snapshot_head(realm).await?;
+    consume_bound_snapshot(&after, realm)?;
+    let after_value = after.value()?;
+    let (generation, result_head) = match result.value()? {
+        ExactCurrentResultsReadOutcome::Present {
+            governance_generation,
+            effective_stream_head,
+            ..
+        }
+        | ExactCurrentResultsReadOutcome::NeverWritten {
+            governance_generation,
+            effective_stream_head,
+            ..
+        } => (*governance_generation, effective_stream_head),
+    };
+    if before.session() != after.session()
+        || generation != snapshot.governance_generation
+        || generation != after_value.governance_generation
+        || result_head != expected
+        || after_value
+            .visible_stream_heads
+            .iter()
+            .find(|head| head.stream_ref == stream)
+            != Some(expected)
+    {
+        return Err(protocol("ordinary Agent mode read crossed a current cut"));
+    }
+    result.value()?;
+    Ok(OwnStationAgentInteraction {
+        value: result.value()?.clone(),
+        source: OwnStationAgentInteractionSource::Exact {
+            before,
+            response: result,
+            after,
+        },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Read, Write};
+    use std::sync::Arc;
+
+    use arkret_http_client::own_station_results::{
+        OwnStationSessionSnapshot, OwnStationSessionSource,
+    };
+
+    use super::*;
+
+    struct Source(OwnStationSessionSnapshot);
+    impl OwnStationSessionSource for Source {
+        fn snapshot(&self) -> arkret_http_client::Result<OwnStationSessionSnapshot> {
+            Ok(self.0.clone())
+        }
+    }
+    fn client(
+        bodies: Vec<serde_json::Value>,
+    ) -> (OwnStationResultClient, std::thread::JoinHandle<()>) {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}/", listener.local_addr().unwrap());
+        let station = arkret_wire::DidCoreId::new("ak:did_core:web:station.example").unwrap();
+        let binding = arkret_models_discovery::StationConnectionBinding {
+            service_id: station.clone(),
+            base_url: base.clone(),
+            trust_domain: arkret_wire::TrustDomainId::new("ak:trust_domain:station.example")
+                .unwrap(),
+            auth_metadata: arkret_models_discovery::AuthMetadata::minimal(),
+        };
+        let snapshot = OwnStationSessionSnapshot::new(
+            binding.clone(),
+            arkret_wire::AccountId::new(
+                arkret_wire::DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
+                station.clone(),
+            ),
+            station,
+            arkret_wire::SessionGrantId::from_issuance_digest([3; 32]),
+            0,
+            "test-grant".into(),
+        )
+        .unwrap()
+        .with_provider_identity(Default::default());
+        let raw = arkret_http_client::ClientBuilder::new(url::Url::parse(&base).unwrap())
+            .allow_insecure_localhost()
+            .auth(arkret_http_client::Auth::Bearer("test-grant".into()))
+            .build()
+            .unwrap();
+        let server = std::thread::spawn(move || {
+            for body in bodies {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .unwrap();
+                let mut buffer = [0; 16384];
+                let count = stream.read(&mut buffer).unwrap();
+                let mut request_bytes = buffer[..count].to_vec();
+                let header_end = loop {
+                    if let Some(index) = request_bytes
+                        .windows(4)
+                        .position(|bytes| bytes == b"\r\n\r\n")
+                    {
+                        break index + 4;
+                    }
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0);
+                    request_bytes.extend_from_slice(&buffer[..count]);
+                };
+                let headers =
+                    String::from_utf8_lossy(&request_bytes[..header_end]).to_ascii_lowercase();
+                let body_len = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.strip_prefix("content-length:")
+                            .map(|value| value.trim().parse::<usize>().unwrap())
+                    })
+                    .unwrap_or(0);
+                while request_bytes.len() < header_end + body_len {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert!(count > 0);
+                    request_bytes.extend_from_slice(&buffer[..count]);
+                }
+                assert!(headers.contains("authorization: bearer test-grant"));
+                let body = if let Some(key) = body.get("__signer_key") {
+                    let request: SignerKeysQueryRequestBody =
+                        serde_json::from_slice(&request_bytes[header_end..header_end + body_len])
+                            .unwrap();
+                    let key: arkret_models_identity::signer_key_operations::ResolvedSignerKey =
+                        serde_json::from_value(key.clone()).unwrap();
+                    let mut selector = request.queries[0].clone();
+                    if body
+                        .get("__wrong_historical_target")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                    {
+                        if let SignerKeyQuerySelector::HistoricalEvent {
+                            sender:
+                                arkret_models_identity::HistoricalSignerKeyQuerySender::AccountDevice {
+                                    committed_event_ref,
+                                    ..
+                                },
+                        } = &mut selector
+                        {
+                            committed_event_ref.stream_position += 1;
+                        }
+                    }
+                    serde_json::to_value(
+                        arkret_models_identity::signer_key_operations::SignerKeysQueryOutcome {
+                            request_id: request.request_id,
+                            realm_id: request.realm_id,
+                            recipient_account_id: request.recipient_account_id,
+                            results: vec![SignerKeyQueryResult::HistoricalResolved {
+                                selector,
+                                key,
+                                accepted_at: crate::test_fixtures::at(1),
+                            }],
+                        },
+                    )
+                    .unwrap()
+                } else {
+                    body
+                };
+                let bytes = serde_json::to_vec(&body).unwrap();
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
+                    bytes.len()
+                );
+                stream.write_all(header.as_bytes()).unwrap();
+                stream.write_all(&bytes).unwrap();
+            }
+        });
+        (
+            OwnStationResultClient::new(raw, binding, Arc::new(Source(snapshot))).unwrap(),
+            server,
+        )
+    }
+
+    fn commit(
+        position: u64,
+        previous: Option<arkret_wire::RealmCommitId>,
+    ) -> arkret_wire::RealmCommit {
+        let event = crate::test_fixtures::event(
+            4,
+            arkret_wire::EventKind::RealmCreate,
+            serde_json::json!({}),
+        );
+        let mut value =
+            crate::test_fixtures::commit(4, &event, crate::test_fixtures::realm_stream(), position);
+        value.previous_commit_ref = previous;
+        let mut body = serde_json::to_value(&value).unwrap();
+        body.as_object_mut().unwrap().remove("commit_id");
+        body.as_object_mut().unwrap().remove("signature");
+        value.commit_id = arkret_wire::RealmCommitId::from_digest(arkret_canonical::sha256_bytes(
+            &arkret_canonical::canonical_json_bytes(&body).unwrap(),
+        ));
+        value
+    }
+    fn withheld(commit: arkret_wire::RealmCommit) -> serde_json::Value {
+        serde_json::json!({"commit":commit,"event_disclosure":{"status":"withheld"}})
+    }
+
+    #[test]
+    fn own_station_bound_factory_rejects_wrong_account_station_or_enrolled_origin() {
+        // Host authentication is supplied by the existing live session source;
+        // neither a viewer/profile row nor a caller-defined epoch can replace it.
+        let station = arkret_wire::DidCoreId::new("ak:did_core:web:station.example").unwrap();
+        let other = arkret_wire::DidCoreId::new("ak:did_core:web:other.example").unwrap();
+        let binding = arkret_models_discovery::StationConnectionBinding {
+            service_id: station.clone(),
+            base_url: "http://127.0.0.1:32123/".into(),
+            trust_domain: arkret_wire::TrustDomainId::new("ak:trust_domain:station.example")
+                .unwrap(),
+            auth_metadata: arkret_models_discovery::AuthMetadata::minimal(),
+        };
+        let account = arkret_wire::AccountId::new(
+            arkret_wire::DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
+            station.clone(),
+        );
+        assert!(
+            OwnStationSessionSnapshot::new(
+                binding.clone(),
+                arkret_wire::AccountId::new(account.principal_id.clone(), other),
+                station.clone(),
+                arkret_wire::SessionGrantId::from_issuance_digest([3; 32]),
+                0,
+                "test-grant".into(),
+            )
+            .is_err()
+        );
+        let session = OwnStationSessionSnapshot::new(
+            binding.clone(),
+            account,
+            station,
+            arkret_wire::SessionGrantId::from_issuance_digest([3; 32]),
+            0,
+            "test-grant".into(),
+        )
+        .unwrap()
+        .with_provider_identity(Default::default());
+        let wrong_origin = arkret_http_client::ClientBuilder::new(
+            url::Url::parse("http://127.0.0.1:32124/").unwrap(),
+        )
+        .allow_insecure_localhost()
+        .auth(arkret_http_client::Auth::Bearer("test-grant".into()))
+        .build()
+        .unwrap();
+        assert!(
+            OwnStationResultClient::new(wrong_origin, binding, Arc::new(Source(session))).is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn own_station_full_producer_actual_signature_and_exact_historical_query() {
+        use arkret_signatures::{Ed25519DetachedJwsSigner, SignEventOptions, sign_event};
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        let method = format!(
+            "did:web:alice.example#{}",
+            crate::test_fixtures::device_id().as_str()
+        );
+        let mut event = crate::test_fixtures::event(
+            4,
+            arkret_wire::EventKind::MessageCreate,
+            serde_json::json!({
+                "strand_id": "ak:strand:AXh0mpVGb536xVxbSPfM4Wc_1WuXAxTYgmtXEncKM9T0",
+                "track_name": "discussion",
+                "content": {"kind": "ak.content.text", "body": "producer fixture"}
+            }),
+        );
+        event.actor_id = arkret_wire::ActorId::account(arkret_wire::AccountId::new(
+            arkret_wire::DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
+            arkret_wire::DidCoreId::new("ak:did_core:web:station.example").unwrap(),
+        ));
+        let mut authored = arkret_wire::AuthoredEvent::finalize_with_digest_suite(
+            event,
+            arkret_canonical::DigestSuite::Sha256,
+        )
+        .unwrap();
+        sign_event(
+            &mut authored,
+            &Ed25519DetachedJwsSigner::new(signing_key.clone(), method),
+            SignEventOptions::new().with_created_at(crate::test_fixtures::at(0)),
+        )
+        .unwrap();
+        let event = authored.into_event();
+        let mut accepted = commit(0, None);
+        accepted.event_ref = event.event_id.clone();
+        accepted.committed_at = crate::test_fixtures::at(2);
+        let mut body = serde_json::to_value(&accepted).unwrap();
+        body.as_object_mut().unwrap().remove("commit_id");
+        body.as_object_mut().unwrap().remove("signature");
+        accepted.commit_id = arkret_wire::RealmCommitId::from_digest(
+            arkret_canonical::sha256_bytes(&arkret_canonical::canonical_json_bytes(&body).unwrap()),
+        );
+        let mut reference = CommittedEventRef {
+            event_id: event.event_id.clone(),
+            commit_id: accepted.commit_id.clone(),
+            stream_ref: accepted.stream_ref.clone(),
+            stream_position: 0,
+        };
+        let mut authorization = commit(0, None);
+        authorization.realm_id = arkret_wire::RealmId::from_event_id(&authorization.event_ref);
+        authorization.stream_ref = arkret_wire::CommitStreamRef::Realm {
+            realm_id: authorization.realm_id.clone(),
+        };
+        let mut authorization_body = serde_json::to_value(&authorization).unwrap();
+        authorization_body
+            .as_object_mut()
+            .unwrap()
+            .remove("commit_id");
+        authorization_body
+            .as_object_mut()
+            .unwrap()
+            .remove("signature");
+        authorization.commit_id =
+            arkret_wire::RealmCommitId::from_digest(arkret_canonical::sha256_bytes(
+                &arkret_canonical::canonical_json_bytes(&authorization_body).unwrap(),
+            ));
+        let authorization_ref = CommittedEventRef {
+            event_id: authorization.event_ref.clone(),
+            commit_id: authorization.commit_id.clone(),
+            stream_ref: authorization.stream_ref.clone(),
+            stream_position: authorization.stream_position,
+        };
+        let original_key = arkret_models_identity::ResolvedSignerKey {
+            public_key_b64u: arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
+                signing_key.verifying_key().as_bytes(),
+            ))
+            .unwrap(),
+            authorization_ref: authorization_ref.clone(),
+            revision: arkret_wire::CurrentRevision {
+                commit_id: authorization.commit_id.clone(),
+                stream_position: 0,
+            },
+            governance_generation: 0,
+        };
+        let original_fact =
+            arkret_models_collaboration::authority_commit::HumanHistoricalSignerFact {
+                event_id: event.event_id.clone(),
+                actor: event.actual_signer().clone(),
+                device_id: crate::test_fixtures::device_id(),
+                verification_method: event
+                    .producer_proof
+                    .as_ref()
+                    .unwrap()
+                    .verification_method
+                    .clone(),
+                key: original_key,
+                accepted_at: crate::test_fixtures::at(1),
+            };
+        original_fact
+            .validate_event_binding(&event, arkret_canonical::DigestSuite::Sha256)
+            .unwrap();
+        accepted.producer_signer_fact_digest = Some(original_fact.digest().unwrap());
+        let mut body = serde_json::to_value(&accepted).unwrap();
+        body.as_object_mut().unwrap().remove("commit_id");
+        body.as_object_mut().unwrap().remove("signature");
+        accepted.commit_id = arkret_wire::RealmCommitId::from_digest(
+            arkret_canonical::sha256_bytes(&arkret_canonical::canonical_json_bytes(&body).unwrap()),
+        );
+        reference.commit_id = accepted.commit_id.clone();
+        assert_ne!(authorization_ref, reference);
+        assert_ne!(authorization.committed_at, accepted.committed_at);
+        for valid_key in [true, false] {
+            let public_key = if valid_key {
+                signing_key.verifying_key()
+            } else {
+                ed25519_dalek::SigningKey::from_bytes(&[42; 32]).verifying_key()
+            };
+            let key = arkret_models_identity::signer_key_operations::ResolvedSignerKey {
+                public_key_b64u: arkret_wire::Base64UrlString::new(
+                    arkret_canonical::base64url_encode(public_key.as_bytes()),
+                )
+                .unwrap(),
+                authorization_ref: authorization_ref.clone(),
+                revision: arkret_wire::CurrentRevision {
+                    commit_id: authorization.commit_id.clone(),
+                    stream_position: 0,
+                },
+                governance_generation: 0,
+            };
+            let (client, server) = client(vec![
+                serde_json::json!({"commit":accepted,"event":event}),
+                serde_json::json!({
+                    "committed_events":[{"commit":accepted,"event":event}],
+                    "readable_floor": ReadableFloor {
+                        oldest_position: 0,
+                        floor_commit_id: accepted.commit_id.clone(),
+                        floor_reason: arkret_wire::ReadableFloorReason::StreamStart,
+                    },
+                    "truncated":false
+                }),
+                serde_json::json!({"__signer_key":key}),
+            ]);
+            let mut replica = OwnStationReplica::new(event.realm_id.clone());
+            let response = client.committed_event_get(&event.event_id).await.unwrap();
+            let result = replica
+                .restore_bound_anchor(&client, &reference, response)
+                .await;
+            assert_eq!(
+                result.is_ok(),
+                valid_key,
+                "real detached producer signature gate"
+            );
+            assert_eq!(
+                replica.head(&accepted.stream_ref).is_some(),
+                valid_key,
+                "failed proof must not publish a head"
+            );
+            server.join().unwrap();
+        }
+        let mut legacy = accepted.clone();
+        legacy.producer_signer_fact_digest = None;
+        let mut legacy_body = serde_json::to_value(&legacy).unwrap();
+        legacy_body.as_object_mut().unwrap().remove("commit_id");
+        legacy_body.as_object_mut().unwrap().remove("signature");
+        legacy.commit_id = arkret_wire::RealmCommitId::from_digest(arkret_canonical::sha256_bytes(
+            &arkret_canonical::canonical_json_bytes(&legacy_body).unwrap(),
+        ));
+        let legacy_ref = CommittedEventRef {
+            commit_id: legacy.commit_id.clone(),
+            ..reference.clone()
+        };
+        let (source, server) = client(vec![
+            serde_json::json!({"commit":legacy,"event":event}),
+            serde_json::json!({"committed_events":[{"commit":legacy,"event":event}],"readable_floor":{"oldest_position":0,"floor_commit_id":legacy.commit_id,"floor_reason":"stream_start"},"truncated":false}),
+        ]);
+        let mut legacy_replica = OwnStationReplica::new(event.realm_id.clone());
+        let original = source.committed_event_get(&event.event_id).await.unwrap();
+        let error = legacy_replica
+            .restore_bound_anchor(&source, &legacy_ref, original)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("original ordinary Human signer source is unavailable")
+        );
+        assert!(legacy_replica.context.is_none());
+        assert!(legacy_replica.heads.is_empty() && legacy_replica.generations.is_empty());
+        server.join().unwrap();
+        // A real source-bound self acceptance is sufficient: no scan response
+        // exists in this server, and this operation owns no replica mutation.
+        for refusal in [
+            "none",
+            "wrong_key",
+            "wrong_historical_target",
+            "wrong_request",
+            "wrong_session",
+            "commit_content",
+            "event_content",
+        ] {
+            let mut frozen_event = event.clone();
+            if refusal == "event_content" {
+                frozen_event.payload.insert(
+                    "content".into(),
+                    serde_json::json!({"kind":"ak.content.text","body":"tampered"}),
+                );
+            }
+            let request = SelfAuthoritySubmitRequest::Event(
+                arkret_wire::EventAdmissionSubmission::new(frozen_event),
+            );
+            let mut supplied = accepted.clone();
+            if refusal == "commit_content" {
+                supplied.committed_at = crate::test_fixtures::at(3);
+            }
+            let outcome = SelfAuthoritySubmitOutcome::Ordinary(
+                arkret_wire::AuthoritySubmitOutcome::Accepted {
+                    status: arkret_wire::AuthorityCommitStatus::Committed,
+                    commit: supplied,
+                },
+            );
+            let mut bodies = vec![serde_json::to_value(outcome).unwrap()];
+            if matches!(refusal, "none" | "wrong_key" | "wrong_historical_target") {
+                let public_key = if refusal != "wrong_key" {
+                    signing_key.verifying_key()
+                } else {
+                    ed25519_dalek::SigningKey::from_bytes(&[42; 32]).verifying_key()
+                };
+                let key = arkret_models_identity::ResolvedSignerKey {
+                    public_key_b64u: arkret_wire::Base64UrlString::new(
+                        arkret_canonical::base64url_encode(public_key.as_bytes()),
+                    )
+                    .unwrap(),
+                    authorization_ref: authorization_ref.clone(),
+                    revision: arkret_wire::CurrentRevision {
+                        commit_id: authorization.commit_id.clone(),
+                        stream_position: 0,
+                    },
+                    governance_generation: 0,
+                };
+                bodies.push(serde_json::json!({"__signer_key":key,"__wrong_historical_target":refusal == "wrong_historical_target"}));
+            }
+            let (source, server) = client(bodies);
+            let response = source
+                .submit_to_realm_authority(
+                    &request,
+                    &arkret_http_client::ClientRequestOptions::default(),
+                )
+                .await
+                .unwrap();
+            let mut expected = request.clone();
+            if refusal == "wrong_request" {
+                let SelfAuthoritySubmitRequest::Event(value) = &mut expected else {
+                    unreachable!()
+                };
+                value.event.created_at = crate::test_fixtures::at(3);
+            }
+            let replica = OwnStationReplica::new(event.realm_id.clone());
+            let result = if refusal == "wrong_session" {
+                let (foreign, idle) = client(vec![]);
+                idle.join().unwrap();
+                consume_bound_submission(&foreign, &expected, response).await
+            } else {
+                consume_bound_submission(&source, &expected, response).await
+            };
+            assert_eq!(
+                result.is_ok(),
+                refusal == "none",
+                "bound acceptance gate: {refusal}"
+            );
+            assert!(
+                replica.head(&accepted.stream_ref).is_none(),
+                "acceptance consumption never advances history"
+            );
+            server.join().unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn own_station_actual_scan_content_ids_continuity_and_withheld_mls_anchor() {
+        let first = commit(0, None);
+        let second = commit(1, Some(first.commit_id.clone()));
+        let wrong = commit(2, Some(first.commit_id.clone()));
+        let bodies = vec![
+            serde_json::json!({"committed_events":[withheld(first.clone()),withheld(second.clone())],"readable_floor":{"oldest_position":0,"floor_commit_id":first.commit_id,"floor_reason":"stream_start"},"truncated":false}),
+            serde_json::json!({"committed_events":[withheld(wrong)],"truncated":false}),
+            withheld(second.clone()),
+        ];
+        let (client, server) = client(bodies);
+        let mut replica = OwnStationReplica::new(crate::test_fixtures::realm_id());
+        let request = StreamScanRequest {
+            realm_id: crate::test_fixtures::realm_id(),
+            stream_ref: crate::test_fixtures::realm_stream(),
+            direction: StreamScanDirection::After(None),
+            limit: 2,
+        };
+        let page = replica
+            .apply_bound_scan(&client, client.scan_commit_stream(&request).await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(page.rows().unwrap().len(), 2);
+        assert_eq!(replica.head(&request.stream_ref).unwrap(), &head(&second));
+        let next = StreamScanRequest {
+            direction: StreamScanDirection::After(Some(1)),
+            ..request.clone()
+        };
+        assert!(
+            replica
+                .apply_bound_scan(&client, client.scan_commit_stream(&next).await.unwrap())
+                .await
+                .is_err()
+        );
+        assert_eq!(replica.head(&request.stream_ref).unwrap(), &head(&second));
+        let mut recovery = OwnStationReplica::new(crate::test_fixtures::realm_id());
+        let reference = CommittedEventRef {
+            event_id: second.event_ref.clone(),
+            commit_id: second.commit_id.clone(),
+            stream_ref: second.stream_ref.clone(),
+            stream_position: second.stream_position,
+        };
+        let response = client
+            .committed_event_get(&reference.event_id)
+            .await
+            .unwrap();
+        let error = recovery
+            .restore_bound_anchor(&client, &reference, response)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("withheld"));
+        assert!(recovery.head(&request.stream_ref).is_none());
+        server.join().unwrap();
+    }
+
+    // Migrated from the retired raw-context consumer. Every response below
+    // comes through the real HTTP Bound factory; no public Account/epoch pair
+    // can manufacture an accepted page.
+    #[tokio::test]
+    async fn own_station_bound_scan_preserves_originals_and_all_state_on_refusal() {
+        let first = commit(0, None);
+        let second = commit(1, Some(first.commit_id.clone()));
+        let current = snapshot(vec![head(&second)]);
+        let outcome = serde_json::json!({
+            "committed_events": [withheld(first.clone()), withheld(second.clone())],
+            "readable_floor": {"oldest_position":0,"floor_commit_id":first.commit_id,"floor_reason":"stream_start"},
+            "truncated":false
+        });
+        let mut corrupted = second.clone();
+        corrupted.committed_at += chrono::Duration::seconds(1);
+        let bad = serde_json::json!({
+            "committed_events": [withheld(first.clone()), withheld(corrupted)],
+            "readable_floor": {"oldest_position":0,"floor_commit_id":first.commit_id,"floor_reason":"stream_start"},
+            "truncated":false
+        });
+        let empty = serde_json::json!({
+            "committed_events":[],
+            "readable_floor":{"oldest_position":0,"floor_commit_id":first.commit_id,"floor_reason":"stream_start"},
+            "truncated":false
+        });
+        let substituted = snapshot(vec![CommitStreamHead {
+            commit_id: first.commit_id.clone(),
+            ..head(&second)
+        }]);
+        let (client, server) = client(vec![
+            serde_json::to_value(&current).unwrap(),
+            bad,
+            outcome.clone(),
+            outcome,
+            serde_json::to_value(substituted).unwrap(),
+            empty.clone(),
+        ]);
+        let mut replica = OwnStationReplica::new(first.realm_id.clone());
+        replica
+            .install_bound_snapshot(&client.snapshot_head(&first.realm_id).await.unwrap())
+            .unwrap();
+        let state = |replica: &OwnStationReplica| {
+            (
+                replica.context.clone(),
+                replica.heads.clone(),
+                replica.current_heads.clone(),
+                replica.generations.clone(),
+                replica.snapshot.clone(),
+            )
+        };
+        let before = state(&replica);
+        let request = StreamScanRequest {
+            realm_id: first.realm_id.clone(),
+            stream_ref: first.stream_ref.clone(),
+            direction: StreamScanDirection::After(None),
+            limit: 2,
+        };
+        assert!(
+            replica
+                .apply_bound_scan(&client, client.scan_commit_stream(&request).await.unwrap())
+                .await
+                .is_err()
+        );
+        assert!(state(&replica) == before);
+        let page = replica
+            .apply_bound_scan(&client, client.scan_commit_stream(&request).await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(
+            page.rows()
+                .unwrap()
+                .iter()
+                .map(|row| row.commit().commit_id.clone())
+                .collect::<Vec<_>>(),
+            vec![first.commit_id.clone(), second.commit_id.clone()]
+        );
+        let installed = state(&replica);
+        assert!(
+            replica
+                .apply_bound_scan(&client, client.scan_commit_stream(&request).await.unwrap())
+                .await
+                .is_err()
+        );
+        assert!(state(&replica) == installed);
+        assert!(
+            replica
+                .install_bound_snapshot(&client.snapshot_head(&first.realm_id).await.unwrap())
+                .is_err()
+        );
+        assert!(state(&replica) == installed);
+        let tail = StreamScanRequest {
+            direction: StreamScanDirection::After(Some(1)),
+            ..request
+        };
+        let (other, other_server) = self::client(vec![empty]);
+        assert!(
+            replica
+                .apply_bound_scan(&other, other.scan_commit_stream(&tail).await.unwrap())
+                .await
+                .is_err()
+        );
+        assert!(state(&replica) == installed);
+        let page = replica
+            .apply_bound_scan(&client, client.scan_commit_stream(&tail).await.unwrap())
+            .await
+            .unwrap();
+        assert!(page.rows().unwrap().is_empty());
+        assert!(state(&replica) == installed);
+        other_server.join().unwrap();
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn own_station_generic_withheld_checkpoint_restores_and_continues_without_accepting_forks()
+     {
+        let first = commit(0, None);
+        let checkpoint = commit(1, Some(first.commit_id.clone()));
+        let next = commit(2, Some(checkpoint.commit_id.clone()));
+        let fork = commit(2, Some(first.commit_id.clone()));
+        let (client, server) = client(vec![
+            serde_json::json!({"committed_events":[withheld(checkpoint.clone())],"truncated":true}),
+            serde_json::json!({"committed_events":[withheld(next.clone())],"truncated":false}),
+            serde_json::json!({"committed_events":[withheld(fork.clone())],"truncated":true}),
+            serde_json::json!({"committed_events":[withheld(fork.clone())],"truncated":true}),
+        ]);
+        let mut replica = OwnStationReplica::new(checkpoint.realm_id.clone());
+        replica
+            .restore_checkpoint_head(&client, &head(&checkpoint))
+            .await
+            .unwrap();
+        assert_eq!(
+            replica.head(&checkpoint.stream_ref),
+            Some(&head(&checkpoint))
+        );
+        let request = StreamScanRequest {
+            realm_id: next.realm_id.clone(),
+            stream_ref: next.stream_ref.clone(),
+            direction: StreamScanDirection::After(Some(checkpoint.stream_position)),
+            limit: 1,
+        };
+        let page = replica
+            .apply_bound_scan(&client, client.scan_commit_stream(&request).await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(page.rows().unwrap().len(), 1);
+        assert_eq!(replica.head(&next.stream_ref), Some(&head(&next)));
+        let mismatch = replica
+            .restore_checkpoint_head(&client, &head(&next))
+            .await
+            .unwrap_err();
+        assert!(
+            mismatch
+                .to_string()
+                .contains("changed its accepted original")
+        );
+        assert_eq!(replica.head(&next.stream_ref), Some(&head(&next)));
+        let error = replica
+            .restore_checkpoint_head(&client, &head(&fork))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("fork"));
+        assert_eq!(replica.head(&next.stream_ref), Some(&head(&next)));
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn own_station_empty_limited_scan_cannot_invent_floor_anchor() {
+        let (client, server) = client(vec![
+            serde_json::json!({"committed_events":[],"readable_floor":{"oldest_position":7,"floor_commit_id":arkret_wire::RealmCommitId::from_digest([7;32]),"floor_reason":"membership_join"},"truncated":false}),
+        ]);
+        let request = StreamScanRequest {
+            realm_id: crate::test_fixtures::realm_id(),
+            stream_ref: crate::test_fixtures::realm_stream(),
+            direction: StreamScanDirection::After(None),
+            limit: 1,
+        };
+        let mut replica = OwnStationReplica::new(request.realm_id.clone());
+        let response = client
+            .scan_commit_stream(&request)
+            .await
+            .expect("valid closed ReadableFloor must reach the consumer gate");
+        let error = replica
+            .apply_bound_scan(&client, response)
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("limited history"));
+        assert!(replica.head(&request.stream_ref).is_none());
+        server.join().unwrap();
+    }
+
+    fn snapshot(mut heads: Vec<CommitStreamHead>) -> RealmStateSnapshot {
+        heads.sort_by(|left, right| left.stream_ref.cmp(&right.stream_ref));
+        let mut value = RealmStateSnapshot {
+            snapshot_id: RealmSnapshotId::from_digest([1; 32]),
+            realm_id: crate::test_fixtures::realm_id(),
+            governance_generation: 0,
+            retention_and_history_floor: arkret_wire::RetentionAndHistoryFloor {
+                history_access: arkret_wire::HistoryAccess::SinceJoin,
+                stream_floors: heads
+                    .iter()
+                    .map(|head| arkret_wire::StreamHistoryFloor {
+                        stream_ref: head.stream_ref.clone(),
+                        oldest_position: 0,
+                    })
+                    .collect(),
+            },
+            visible_stream_heads: heads,
+            current_state_entries: vec![],
+            created_at: crate::test_fixtures::at(1),
+            signature: crate::test_fixtures::detached_signature(
+                arkret_wire::DetachedSignatureContext::RealmSnapshot,
+            ),
+        };
+        let mut body = serde_json::to_value(&value).unwrap();
+        body.as_object_mut().unwrap().remove("snapshot_id");
+        body.as_object_mut().unwrap().remove("signature");
+        value.snapshot_id = RealmSnapshotId::from_digest(arkret_canonical::sha256_bytes(
+            &arkret_canonical::canonical_json_bytes(&body).unwrap(),
+        ));
+        value
+    }
+
+    #[tokio::test]
+    async fn own_station_current_watermark_survives_hidden_stream_and_empty_cut_mismatch() {
+        let realm_head = head(&commit(0, None));
+        let stream = CommitStreamRef::Sidecar {
+            realm_id: crate::test_fixtures::realm_id(),
+            sidecar_id: arkret_wire::SidecarId::from_event_id(&EventId::from_digest(
+                arkret_canonical::DigestSuite::Sha256,
+                [6; 32],
+            )),
+        };
+        let first = CommitStreamHead {
+            stream_ref: stream.clone(),
+            stream_position: 10,
+            commit_id: arkret_wire::RealmCommitId::from_digest([10; 32]),
+        };
+        let lower = CommitStreamHead {
+            stream_ref: stream.clone(),
+            stream_position: 9,
+            commit_id: arkret_wire::RealmCommitId::from_digest([9; 32]),
+        };
+        let (client, server) = client(vec![
+            serde_json::to_value(snapshot(vec![realm_head.clone(), first.clone()])).unwrap(),
+            serde_json::json!({"committed_events":[],"readable_floor":ReadableFloor { oldest_position: 7, floor_commit_id: arkret_wire::RealmCommitId::from_digest([7;32]), floor_reason: arkret_wire::ReadableFloorReason::MembershipJoin },"truncated":false}),
+            serde_json::to_value(snapshot(vec![realm_head.clone()])).unwrap(),
+            serde_json::to_value(snapshot(vec![realm_head, lower])).unwrap(),
+        ]);
+        let mut replica = OwnStationReplica::new(crate::test_fixtures::realm_id());
+        replica
+            .install_bound_snapshot(&client.snapshot_head(&replica.realm_id).await.unwrap())
+            .unwrap();
+        let request = StreamScanRequest {
+            realm_id: replica.realm_id.clone(),
+            stream_ref: stream.clone(),
+            direction: StreamScanDirection::After(None),
+            limit: 1,
+        };
+        let error = replica
+            .apply_bound_scan(&client, client.scan_commit_stream(&request).await.unwrap())
+            .await
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("different history floors"));
+        replica
+            .install_bound_snapshot(&client.snapshot_head(&replica.realm_id).await.unwrap())
+            .unwrap();
+        let old = replica.snapshot().unwrap().snapshot_id.clone();
+        assert!(
+            replica
+                .install_bound_snapshot(&client.snapshot_head(&replica.realm_id).await.unwrap())
+                .is_err()
+        );
+        assert_eq!(replica.snapshot().unwrap().snapshot_id, old);
+        assert!(
+            replica.head(&stream).is_none(),
+            "current coverage never invents a replay predecessor"
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn result_consumption_roles_27_registered_policy_cases() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!("../../arkret-spec/spec/v1/artifacts/fixtures/governance-result-consumption-roles-fixture.json")).unwrap();
+        let contract: serde_json::Value = serde_json::from_str(include_str!(
+            "../../arkret-spec/spec/v1/artifacts/registry/contract-registry.json"
+        ))
+        .unwrap();
+        let roles = &contract["did_evidence_boundary_registry"]["governance_result_consumption_contract"]
+            ["roles"];
+        let cases = fixture["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 27);
+        for case in cases {
+            let policy = &roles[case["role"].as_str().unwrap()];
+            let sorted = |value: &serde_json::Value| {
+                value
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|value| value.as_str().unwrap().to_owned())
+                    .collect::<std::collections::BTreeSet<_>>()
+            };
+            let accepted = !policy.is_null()
+                && case["source"] == policy["input"]
+                && case["method_history_verifier"] == policy["method_history_verifier"]
+                && case["live_did_discovery"] == false
+                && case["portable"] == false
+                && sorted(&case["checks"]) == sorted(&policy["checks"]);
+            assert_eq!(
+                if accepted { "accept" } else { "reject" },
+                case["expected"].as_str().unwrap(),
+                "registered semantic role policy: {}",
+                case["name"]
+            );
+        }
+        // This is the registered semantic policy fixture only. Actual HTTP,
+        // producer crypto, durable sessions and MLS have separate tests.
+    }
+}

@@ -567,13 +567,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use arkret_canonical::DigestSuite;
+    use arkret_models_collaboration::authority_commit::AuthorityHandoffRequest;
     use arkret_signatures::{Ed25519DetachedJwsSigner, SignEventOptions, sign_event};
     use arkret_wire::{
         ActorId, AuthoredEvent, AuthorityBundleRequest, AuthorityCommitStatus,
-        AuthorityHandoffRequest, AuthorityRejectionStatus, AuthoritySubmitOutcome,
-        AuthoritySubmitRequest, CommitStreamRef, DidCoreId, Event, EventAdmissionSubmission,
-        EventId, EventKind, Problem, RealmAuthorityBundle, RealmAuthorityHandoff, RealmId,
-        ScopeRef, StreamScanOutcome, StreamScanRequest,
+        AuthorityRejectionStatus, AuthoritySubmitOutcome, AuthoritySubmitRequest, CommitStreamRef,
+        DidCoreId, Event, EventAdmissionSubmission, EventId, EventKind, Problem,
+        RealmAuthorityBundle, RealmAuthorityHandoff, RealmId, ScopeRef, StreamScanOutcome,
+        StreamScanRequest,
     };
 
     use super::*;

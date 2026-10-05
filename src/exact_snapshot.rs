@@ -97,12 +97,12 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use arkret_http_client::ClientRequestOptions;
+    use arkret_models_collaboration::authority_commit::AuthorityHandoffRequest;
     use arkret_models_discovery::TransportBinding;
     use arkret_wire::{
-        AuthorityBundleRequest, AuthorityHandoffRequest, AuthoritySubmitOutcome,
-        AuthoritySubmitRequest, CommitStreamHead, DetachedSignatureContext, Did,
-        RealmAuthorityBundle, RealmAuthorityHandoff, RealmCommitId, StreamScanOutcome,
-        StreamScanRequest, TrustDomainId,
+        AuthorityBundleRequest, AuthoritySubmitOutcome, AuthoritySubmitRequest, CommitStreamHead,
+        DetachedSignatureContext, Did, RealmAuthorityBundle, RealmAuthorityHandoff, RealmCommitId,
+        StreamScanOutcome, StreamScanRequest, TrustDomainId,
     };
 
     use super::*;

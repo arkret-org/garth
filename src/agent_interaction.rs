@@ -42,7 +42,7 @@ pub async fn read_verified_agent_interaction(
 // A present typed row in the authorized snapshot already supplies the exact
 // selector, revision and current cut. Do not require a second service scope to
 // reread that same fact. Absence is never a never-written proof.
-fn present_from_snapshot(
+pub(crate) fn present_from_snapshot(
     request: &ExactCurrentResultsReadRequestBody,
     snapshot: &RealmStateSnapshot,
 ) -> Result<Option<ExactCurrentResultsReadOutcome>> {

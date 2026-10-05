@@ -7,14 +7,14 @@ use arkret_identity::{
     RealmAuthorityFreshness, RealmAuthorityKeyDirectory, verify_realm_authority_bundle,
 };
 use arkret_models_collaboration::authority_commit::{
-    DirectConversationFoundingUnitSubmission, OrdinaryRealmBootstrapUnitSubmission,
-    SelfAuthoritySubmitOutcome, SelfAuthoritySubmitRequest,
+    AuthorityHandoffRequest, DirectConversationFoundingUnitSubmission,
+    OrdinaryRealmBootstrapUnitSubmission, SelfAuthoritySubmitOutcome, SelfAuthoritySubmitRequest,
 };
 use arkret_wire::{
-    AuthorityBundleRequest, AuthorityCommitStatus, AuthorityHandoffRequest,
-    AuthorityRejectionStatus, AuthoritySubmitOutcome, AuthoritySubmitRequest, EventId,
-    RealmAuthorityBundle, RealmAuthorityHandoff, RealmCommit, RealmId, RealmSnapshotId,
-    RealmStateSnapshot, StreamScanOutcome, StreamScanRequest,
+    AuthorityBundleRequest, AuthorityCommitStatus, AuthorityRejectionStatus,
+    AuthoritySubmitOutcome, AuthoritySubmitRequest, EventId, RealmAuthorityBundle,
+    RealmAuthorityHandoff, RealmCommit, RealmId, RealmSnapshotId, RealmStateSnapshot,
+    StreamScanOutcome, StreamScanRequest,
 };
 use serde::{Deserialize, Serialize};
 
@@ -200,6 +200,75 @@ impl AuthorityTransport for Client {
         Ok(self
             .realm_state_snapshot_by_ref(realm_id, snapshot_id)
             .await?)
+    }
+}
+
+/// Ordinary client role. It consumes the original acceptance from its fixed
+/// authenticated Station and still checks every frozen Event and producer.
+/// Governance discovery/handoff remain exclusive to the native role above.
+impl AuthorityTransport for arkret_http_client::own_station_results::OwnStationResultClient {
+    async fn submit(
+        &self,
+        request: &AuthoritySubmitRequest,
+        options: &ClientRequestOptions,
+    ) -> Result<AuthoritySubmitOutcome> {
+        let request = match request {
+            AuthoritySubmitRequest::Event(value) => {
+                SelfAuthoritySubmitRequest::Event(value.clone())
+            }
+            AuthoritySubmitRequest::MlsCommit(value) => {
+                SelfAuthoritySubmitRequest::MlsCommit(value.clone())
+            }
+        };
+        match AuthorityTransport::submit_self(self, &request, options).await? {
+            SelfAuthoritySubmitOutcome::Ordinary(value) => Ok(value),
+            _ => Err(Error::Protocol(
+                "ordinary submission returned an aggregate outcome".into(),
+            )),
+        }
+    }
+
+    async fn submit_self(
+        &self,
+        request: &SelfAuthoritySubmitRequest,
+        options: &ClientRequestOptions,
+    ) -> Result<SelfAuthoritySubmitOutcome> {
+        let response = self.submit_to_realm_authority(request, options).await?;
+        Ok(
+            crate::own_station_results::consume_bound_submission(self, request, response)
+                .await?
+                .into_value()?,
+        )
+    }
+
+    async fn scan(&self, request: &StreamScanRequest) -> Result<StreamScanOutcome> {
+        Ok(self.scan_commit_stream(request).await?.into_value()?)
+    }
+    async fn authority_bundle(
+        &self,
+        _request: &AuthorityBundleRequest,
+    ) -> Result<RealmAuthorityBundle> {
+        Err(Error::Protocol(
+            "ordinary own-Station consumption does not perform governance discovery".into(),
+        ))
+    }
+    async fn install_handoff(
+        &self,
+        _request: &AuthorityHandoffRequest,
+        _options: &ClientRequestOptions,
+    ) -> Result<RealmAuthorityHandoff> {
+        Err(Error::Protocol(
+            "ordinary own-Station consumption cannot install Station handoffs".into(),
+        ))
+    }
+    async fn exact_snapshot(
+        &self,
+        realm: &RealmId,
+        snapshot: &RealmSnapshotId,
+    ) -> Result<RealmStateSnapshot> {
+        let response = self.snapshot_by_ref(realm, snapshot).await?;
+        crate::own_station_results::consume_bound_snapshot(&response, realm)?;
+        Ok(response.into_value()?)
     }
 }
 
@@ -590,7 +659,7 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
         request: &AuthorityHandoffRequest,
         options: &ClientRequestOptions,
     ) -> Result<RealmAuthorityHandoff> {
-        request.validate_shape()?;
+        request.validate_new_handoff()?;
         let installed = self.transport.install_handoff(request, options).await?;
         installed.validate_shape()?;
         if installed != request.handoff {

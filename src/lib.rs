@@ -25,7 +25,7 @@ pub mod message_authoring;
 pub mod mls;
 pub mod notification_projection;
 pub mod outbound;
-pub mod own_station;
+pub mod own_station_results;
 pub mod presence;
 pub mod projection;
 pub mod replica;
@@ -56,6 +56,7 @@ pub use actor_profile_directory::{
 pub use agent_draft_pending_intent_projection::{
     AgentDraftPendingIntentProjection, AgentDraftPendingIntentProjectionUpdate,
 };
+pub use arkret_models_collaboration::authority_commit::AuthorityHandoffRequest;
 pub use arkret_models_collaboration::signal_plaintext::{
     MAX_SIGNAL_PLAINTEXT_TTL_MS, SignalPlaintext, SignalPlaintextKind, SignalPlaintextProfile,
     SignalSequence, SignalSequenceDecision, SignalSequenceDomain, SignalSequenceEndpoint,
@@ -64,11 +65,10 @@ pub use arkret_models_collaboration::signal_plaintext::{
 };
 pub use arkret_retry::{RetryPolicy, RetrySchedule};
 pub use arkret_wire::{
-    AuthorityBundleRequest, AuthorityHandoffRequest, AuthoritySubmitOutcome,
-    AuthoritySubmitRequest, CommitStreamHead, CommitStreamRef, CommittedEventFullView,
-    CommittedEventRef, CommittedEventView, CommittedEventWithheldView, EventAdmissionSubmission,
-    RealmAuthorityBundle, RealmAuthorityHandoff, RealmCommit, RealmStateSnapshot,
-    StreamScanOutcome, StreamScanRequest,
+    AuthorityBundleRequest, AuthoritySubmitOutcome, AuthoritySubmitRequest, CommitStreamHead,
+    CommitStreamRef, CommittedEventFullView, CommittedEventRef, CommittedEventView,
+    CommittedEventWithheldView, EventAdmissionSubmission, RealmAuthorityBundle,
+    RealmAuthorityHandoff, RealmCommit, RealmStateSnapshot, StreamScanOutcome, StreamScanRequest,
 };
 pub use authority::{AuthorityClient, AuthorityTransport, QueuedSubmission, SubmissionState};
 pub use direct_conversation::{DirectConversationAction, direct_conversation_action};

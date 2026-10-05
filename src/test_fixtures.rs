@@ -66,6 +66,7 @@ pub fn commit(seed: u8, event: &Event, stream_ref: CommitStreamRef, position: u6
             [9; 32],
         )),
         committed_at: at(1),
+        producer_signer_fact_digest: None,
         signature: detached_signature(DetachedSignatureContext::RealmCommit),
     }
 }
