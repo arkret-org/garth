@@ -237,7 +237,7 @@ fn authority_locator_base(
     Ok(resolution.projection()?.base_url)
 }
 
-fn accepted_items(
+pub(crate) fn accepted_items(
     request: &SelfAuthoritySubmitRequest,
     outcome: &SelfAuthoritySubmitOutcome,
 ) -> Result<Vec<arkret_wire::CommittedEventFullView>> {

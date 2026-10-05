@@ -25,6 +25,7 @@ pub mod message_authoring;
 pub mod mls;
 pub mod notification_projection;
 pub mod outbound;
+pub mod own_station;
 pub mod presence;
 pub mod projection;
 pub mod replica;

@@ -82,9 +82,227 @@ pub struct RealmReplica {
     authority_request: Option<AuthorityBundleRequest>,
     verified_streams: BTreeMap<CommitStreamRef, StreamReplica>,
     verified_anchors: BTreeMap<CommitStreamRef, RealmCommit>,
+    own_station_context: Option<[u8; 32]>,
 }
 
 impl RealmReplica {
+    pub(crate) fn consume_station_stream_head(
+        &mut self,
+        context: [u8; 32],
+        stream: &CommitStreamRef,
+        cut: &RealmStateSnapshot,
+    ) -> Result<()> {
+        self.require_station_context(context)?;
+        validate_original_snapshot(cut, &self.realm_id, &cut.snapshot_id)?;
+        if self.verified_head(stream).is_some() {
+            return Err(Error::Protocol(
+                "current cannot replace an established stream predecessor".into(),
+            ));
+        }
+        let head = cut
+            .visible_stream_heads
+            .iter()
+            .find(|head| &head.stream_ref == stream)
+            .ok_or_else(|| Error::Protocol("current omits the bootstrap stream head".into()))?;
+        self.verified_streams.insert(
+            stream.clone(),
+            StreamReplica {
+                head: Some(head.clone()),
+                items: Vec::new(),
+            },
+        );
+        self.own_station_context = Some(context);
+        Ok(())
+    }
+    pub(crate) fn consume_station_anchor(
+        &mut self,
+        context: [u8; 32],
+        anchor: &RealmCommit,
+        cut: &RealmStateSnapshot,
+    ) -> Result<()> {
+        self.require_station_context(context)?;
+        validate_original_snapshot(cut, &self.realm_id, &cut.snapshot_id)?;
+        anchor.validate_content_address()?;
+        let head = cut
+            .visible_stream_heads
+            .iter()
+            .find(|head| head.stream_ref == anchor.stream_ref)
+            .ok_or_else(|| Error::Protocol("persisted anchor has no current stream".into()))?;
+        if anchor.realm_id != self.realm_id
+            || anchor.governance_generation > cut.governance_generation
+            || anchor.stream_position > head.stream_position
+            || (anchor.stream_position == head.stream_position
+                && anchor.commit_id != head.commit_id)
+        {
+            return Err(Error::Protocol(
+                "persisted anchor differs from original current cut".into(),
+            ));
+        }
+        if self.verified_head(&anchor.stream_ref).is_some() {
+            return Err(Error::Protocol(
+                "persisted anchor cannot replace a predecessor".into(),
+            ));
+        }
+        self.verified_anchors
+            .insert(anchor.stream_ref.clone(), anchor.clone());
+        self.verified_streams.insert(
+            anchor.stream_ref.clone(),
+            StreamReplica {
+                head: Some(CommitStreamHead {
+                    stream_ref: anchor.stream_ref.clone(),
+                    stream_position: anchor.stream_position,
+                    commit_id: anchor.commit_id.clone(),
+                }),
+                items: Vec::new(),
+            },
+        );
+        self.own_station_context = Some(context);
+        Ok(())
+    }
+    pub(crate) fn consume_station_snapshot(
+        &mut self,
+        context: [u8; 32],
+        snapshot: &RealmStateSnapshot,
+    ) -> Result<()> {
+        validate_original_snapshot(snapshot, &self.realm_id, &snapshot.snapshot_id)?;
+        if !self.verified_streams.is_empty() {
+            return Err(Error::Protocol(
+                "snapshot cannot replace an established stream predecessor".to_owned(),
+            ));
+        }
+        // The capability is bound to the transport/account/epoch, not a
+        // reconstructed native authority bundle or historical public key.
+        self.require_station_context(context)?;
+        for head in &snapshot.visible_stream_heads {
+            self.verified_streams.insert(
+                head.stream_ref.clone(),
+                StreamReplica {
+                    head: Some(head.clone()),
+                    items: Vec::new(),
+                },
+            );
+        }
+        self.snapshot = Some(snapshot.clone());
+        self.own_station_context = Some(context);
+        Ok(())
+    }
+
+    pub(crate) fn consume_station_scan(
+        &mut self,
+        context: [u8; 32],
+        request: &StreamScanRequest,
+        outcome: StreamScanOutcome,
+        cut: &RealmStateSnapshot,
+    ) -> Result<VerifiedScanPage> {
+        validate_original_snapshot(cut, &self.realm_id, &cut.snapshot_id)?;
+        self.require_station_context(context)?;
+        outcome.validate_for_request(request)?;
+        if request.realm_id != self.realm_id {
+            return Err(Error::Protocol("scan belongs to another Realm".to_owned()));
+        }
+        let head = cut
+            .visible_stream_heads
+            .iter()
+            .find(|head| head.stream_ref == request.stream_ref)
+            .ok_or_else(|| Error::Protocol("own Station cut omits requested stream".to_owned()))?;
+        let StreamScanDirection::After(after) = request.direction else {
+            return Err(Error::Protocol(
+                "ordinary replay requires a forward scan".to_owned(),
+            ));
+        };
+        match (self.verified_head(&request.stream_ref), after) {
+            (Some(previous), Some(position)) if previous.stream_position == position => {
+                if outcome.committed_events.first().is_some_and(|row| {
+                    row.commit().previous_commit_ref.as_ref() != Some(&previous.commit_id)
+                }) {
+                    return Err(Error::Protocol(
+                        "scan does not extend exact predecessor".to_owned(),
+                    ));
+                }
+            }
+            // SDK validation binds After(None) to the original readable
+            // floor Commit. This does not settle an Account preview window
+            // or reconstruct typed current from unavailable earlier history.
+            (None, None) => {}
+            _ => {
+                return Err(Error::Protocol(
+                    "scan lacks its exact predecessor".to_owned(),
+                ));
+            }
+        }
+        let mut previous_commit = self.verified_anchors.get(&request.stream_ref);
+        for row in &outcome.committed_events {
+            let commit = row.commit();
+            commit.validate_content_address()?;
+            if previous_commit.is_some_and(|previous| {
+                commit.governance_generation < previous.governance_generation
+                    || (commit.governance_generation == previous.governance_generation
+                        && commit.authority_ref != previous.authority_ref)
+            }) {
+                return Err(Error::Protocol(
+                    "scan rolls back or substitutes the governance term".to_owned(),
+                ));
+            }
+            if commit.governance_generation > cut.governance_generation
+                || commit.stream_position > head.stream_position
+            {
+                return Err(Error::AuthorityCutBehind);
+            }
+            if commit.stream_position == head.stream_position && commit.commit_id != head.commit_id
+            {
+                return Err(Error::Protocol(
+                    "scan forks the original snapshot head".to_owned(),
+                ));
+            }
+            if let CommittedEventView::Full(full) = row {
+                full.validate_shape()?;
+                let suite = full.event.event_id.digest_suite_code().digest_suite();
+                full.event
+                    .verify_event_id_matches_content_with_digest_suite(suite)?;
+                full.event
+                    .validate_proof_bindings_with_digest_suite(suite)?;
+            }
+            previous_commit = Some(commit);
+        }
+        let accepted = outcome.committed_events;
+        self.own_station_context = Some(context);
+        if let Some(last) = accepted.last() {
+            let commit = last.commit();
+            self.verified_anchors
+                .insert(request.stream_ref.clone(), commit.clone());
+            self.verified_streams
+                .entry(request.stream_ref.clone())
+                .or_default()
+                .head = Some(CommitStreamHead {
+                stream_ref: commit.stream_ref.clone(),
+                stream_position: commit.stream_position,
+                commit_id: commit.commit_id.clone(),
+            });
+        }
+        self.verified_streams
+            .entry(request.stream_ref.clone())
+            .or_default()
+            .items
+            .extend(accepted.iter().cloned());
+        Ok(VerifiedScanPage {
+            rows: accepted,
+            authority_context: context,
+        })
+    }
+
+    fn require_station_context(&self, context: [u8; 32]) -> Result<()> {
+        if self.authority_request.is_some()
+            || self
+                .own_station_context
+                .is_some_and(|previous| previous != context)
+        {
+            return Err(Error::Protocol(
+                "replica consumption role or Account/request context changed".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
     fn authority_context(&self) -> Result<[u8; 32]> {
         let bundle = self
             .authority
@@ -109,6 +327,7 @@ impl RealmReplica {
             authority_request: None,
             verified_streams: BTreeMap::new(),
             verified_anchors: BTreeMap::new(),
+            own_station_context: None,
         }
     }
 
@@ -129,6 +348,11 @@ impl RealmReplica {
     /// Shape-only staging data. This does not establish authority and cannot
     /// enable [`Self::apply_verified_scan`].
     pub fn install_authority(&mut self, bundle: RealmAuthorityBundle) -> Result<()> {
+        if self.own_station_context.is_some() {
+            return Err(Error::Protocol(
+                "ordinary consumer cannot change to native authority role".to_owned(),
+            ));
+        }
         bundle.validate_shape()?;
         if bundle.realm_id != self.realm_id {
             return Err(Error::Protocol(
@@ -155,6 +379,11 @@ impl RealmReplica {
         freshness: &RealmAuthorityFreshness,
         keys: &dyn RealmAuthorityKeyDirectory,
     ) -> Result<()> {
+        if self.own_station_context.is_some() {
+            return Err(Error::Protocol(
+                "ordinary consumer cannot change to native authority role".to_owned(),
+            ));
+        }
         request.validate()?;
         if request.realm_id != self.realm_id
             || bundle.realm_id != self.realm_id
@@ -371,6 +600,62 @@ impl RealmReplica {
         keys: &dyn RealmAuthorityKeyDirectory,
         dependency_pages: &BTreeMap<CommitStreamRef, Vec<VerifiedScanPage>>,
     ) -> Result<VerifiedFloorSnapshot> {
+        // Verify the whole signed object, including all visible heads and
+        // rows, on an isolated replica. Only this stream's predecessor is
+        // imported: another stream may name another historical snapshot and
+        // must never inherit this head or its replay cursor.
+        let mut candidate = Self::new(self.realm_id.clone());
+        candidate.authority = self.authority.clone();
+        candidate.authority_request = self.authority_request.clone();
+        candidate.install_verified_snapshot_heads(
+            snapshot,
+            &basis.snapshot_ref,
+            freshness,
+            keys,
+        )?;
+        self.finish_floor_predecessor(
+            candidate,
+            stream_ref,
+            basis,
+            floor,
+            snapshot,
+            dependency_pages,
+        )
+    }
+
+    pub(crate) fn consume_station_floor(
+        &mut self,
+        context: [u8; 32],
+        stream_ref: &CommitStreamRef,
+        basis: &StreamWindowStartBasis,
+        floor: &ReadableFloor,
+        snapshot: &RealmStateSnapshot,
+        dependency_pages: &BTreeMap<CommitStreamRef, Vec<VerifiedScanPage>>,
+    ) -> Result<VerifiedFloorSnapshot> {
+        self.require_station_context(context)?;
+        let mut candidate = Self::new(self.realm_id.clone());
+        candidate.consume_station_snapshot(context, snapshot)?;
+        let accepted = self.finish_floor_predecessor(
+            candidate,
+            stream_ref,
+            basis,
+            floor,
+            snapshot,
+            dependency_pages,
+        )?;
+        self.own_station_context = Some(context);
+        Ok(accepted)
+    }
+
+    fn finish_floor_predecessor(
+        &mut self,
+        mut candidate: Self,
+        stream_ref: &CommitStreamRef,
+        basis: &StreamWindowStartBasis,
+        floor: &ReadableFloor,
+        snapshot: &RealmStateSnapshot,
+        dependency_pages: &BTreeMap<CommitStreamRef, Vec<VerifiedScanPage>>,
+    ) -> Result<VerifiedFloorSnapshot> {
         basis
             .validate()
             .map_err(|error| Error::Protocol(error.to_string()))?;
@@ -395,19 +680,6 @@ impl RealmReplica {
                 "floor snapshot cannot replace an established verified stream head".to_owned(),
             ));
         }
-        // Verify the whole signed object, including all visible heads and
-        // rows, on an isolated replica. Only this stream's predecessor is
-        // imported: another stream may name another historical snapshot and
-        // must never inherit this head or its replay cursor.
-        let mut candidate = Self::new(self.realm_id.clone());
-        candidate.authority = self.authority.clone();
-        candidate.authority_request = self.authority_request.clone();
-        candidate.install_verified_snapshot_heads(
-            snapshot,
-            &basis.snapshot_ref,
-            freshness,
-            keys,
-        )?;
         for dependency in basis.accepted_dependency_refs.iter().flatten() {
             if dependency.stream_ref == *stream_ref
                 || dependency.stream_ref.realm_id() != &self.realm_id
@@ -428,7 +700,10 @@ impl RealmReplica {
                 .ok_or_else(|| {
                     Error::Protocol("floor dependency has no verified scan".to_owned())
                 })?;
-            let authority_context = self.authority_context()?;
+            let authority_context = candidate
+                .own_station_context
+                .map(Ok)
+                .unwrap_or_else(|| self.authority_context())?;
             if pages
                 .iter()
                 .any(|page| page.authority_context != authority_context)
@@ -755,6 +1030,35 @@ impl RealmReplica {
     }
 }
 
+pub(crate) fn validate_original_snapshot(
+    snapshot: &RealmStateSnapshot,
+    realm_id: &RealmId,
+    expected: &RealmSnapshotId,
+) -> Result<()> {
+    validate_snapshot(snapshot, realm_id)?;
+    if &snapshot.snapshot_id != expected || snapshot.created_at > chrono::Utc::now() {
+        return Err(Error::Protocol(
+            "snapshot reference or time mismatch".to_owned(),
+        ));
+    }
+    let mut body =
+        serde_json::to_value(snapshot).map_err(|error| Error::Protocol(error.to_string()))?;
+    let object = body
+        .as_object_mut()
+        .ok_or_else(|| Error::Protocol("snapshot is not an object".to_owned()))?;
+    object.remove("signature");
+    object.remove("snapshot_id");
+    let bytes = arkret_canonical::canonical_json_bytes(&body)
+        .map_err(|error| Error::Protocol(error.to_string()))?;
+    if snapshot.snapshot_id != RealmSnapshotId::from_digest(arkret_canonical::sha256_bytes(&bytes))
+    {
+        return Err(Error::Protocol(
+            "snapshot ID differs from canonical content".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
 fn validate_snapshot(snapshot: &RealmStateSnapshot, realm_id: &RealmId) -> Result<()> {
     if &snapshot.realm_id != realm_id
         || snapshot.visible_stream_heads.is_empty()
@@ -860,6 +1164,134 @@ mod tests {
     use ed25519_dalek::SigningKey;
 
     use super::*;
+
+    #[test]
+    fn own_station_scan_keeps_original_ids_continuity_and_context_atomic() {
+        let realm = crate::test_fixtures::realm_id();
+        let stream = crate::test_fixtures::realm_stream();
+        let event =
+            crate::test_fixtures::event(21, EventKind::MessageCreate, serde_json::json!({}));
+        let address = |commit: &mut RealmCommit| {
+            let mut body = serde_json::to_value(&*commit).unwrap();
+            body.as_object_mut().unwrap().remove("commit_id");
+            body.as_object_mut().unwrap().remove("signature");
+            commit.commit_id =
+                arkret_wire::RealmCommitId::from_digest(arkret_canonical::sha256_bytes(
+                    &arkret_canonical::canonical_json_bytes(&body).unwrap(),
+                ));
+        };
+        let mut first = crate::test_fixtures::commit(1, &event, stream.clone(), 0);
+        address(&mut first);
+        let mut second = crate::test_fixtures::commit(2, &event, stream.clone(), 1);
+        second.previous_commit_ref = Some(first.commit_id.clone());
+        address(&mut second);
+        let mut snapshot = RealmStateSnapshot {
+            snapshot_id: RealmSnapshotId::from_digest([0; 32]),
+            realm_id: realm.clone(),
+            governance_generation: 0,
+            visible_stream_heads: vec![CommitStreamHead {
+                stream_ref: stream.clone(),
+                stream_position: 1,
+                commit_id: second.commit_id.clone(),
+            }],
+            current_state_entries: vec![],
+            retention_and_history_floor: arkret_wire::RetentionAndHistoryFloor {
+                history_access: HistoryAccess::AllHistoryForCurrentMembers,
+                stream_floors: vec![arkret_wire::StreamHistoryFloor {
+                    stream_ref: stream.clone(),
+                    oldest_position: 0,
+                }],
+            },
+            created_at: Utc::now() - Duration::seconds(1),
+            signature: crate::test_fixtures::detached_signature(
+                DetachedSignatureContext::RealmSnapshot,
+            ),
+        };
+        let mut body = serde_json::to_value(&snapshot).unwrap();
+        body.as_object_mut().unwrap().remove("snapshot_id");
+        body.as_object_mut().unwrap().remove("signature");
+        snapshot.snapshot_id = RealmSnapshotId::from_digest(arkret_canonical::sha256_bytes(
+            &arkret_canonical::canonical_json_bytes(&body).unwrap(),
+        ));
+        let withheld = |commit| {
+            CommittedEventView::Withheld(arkret_wire::CommittedEventWithheldView {
+                commit,
+                event_disclosure: arkret_wire::EventDisclosure {
+                    status: arkret_wire::EventDisclosureStatus::Withheld,
+                },
+            })
+        };
+        let request = StreamScanRequest {
+            realm_id: realm.clone(),
+            stream_ref: stream.clone(),
+            direction: StreamScanDirection::After(None),
+            limit: 2,
+        };
+        let outcome = StreamScanOutcome {
+            committed_events: vec![withheld(first.clone()), withheld(second.clone())],
+            readable_floor: Some(ReadableFloor {
+                oldest_position: 0,
+                floor_commit_id: first.commit_id.clone(),
+                floor_reason: ReadableFloorReason::StreamStart,
+            }),
+            truncated: false,
+        };
+        let mut replica = RealmReplica::new(realm);
+        let before = replica.clone();
+        let mut corrupted = outcome.clone();
+        if let CommittedEventView::Withheld(row) = &mut corrupted.committed_events[1] {
+            row.commit.committed_at += Duration::seconds(1);
+        }
+        assert!(
+            replica
+                .consume_station_scan([1; 32], &request, corrupted, &snapshot)
+                .is_err()
+        );
+        assert_eq!(replica, before);
+        assert_eq!(
+            replica
+                .consume_station_scan([1; 32], &request, outcome.clone(), &snapshot)
+                .unwrap()
+                .rows()
+                .len(),
+            2
+        );
+        let installed = replica.clone();
+        assert!(
+            replica
+                .consume_station_scan([1; 32], &request, outcome.clone(), &snapshot)
+                .is_err()
+        );
+        assert_eq!(replica, installed);
+        let tail = StreamScanRequest {
+            direction: StreamScanDirection::After(Some(1)),
+            ..request
+        };
+        let empty = StreamScanOutcome {
+            committed_events: vec![],
+            readable_floor: outcome.readable_floor,
+            truncated: false,
+        };
+        assert!(
+            replica
+                .consume_station_scan([2; 32], &tail, empty.clone(), &snapshot)
+                .is_err()
+        );
+        assert_eq!(replica, installed);
+        let mut substituted = snapshot.clone();
+        substituted.visible_stream_heads[0].commit_id = first.commit_id;
+        assert!(
+            replica
+                .consume_station_scan([1; 32], &tail, empty.clone(), &substituted)
+                .is_err()
+        );
+        assert_eq!(replica, installed);
+        assert!(
+            replica
+                .consume_station_scan([1; 32], &tail, empty, &snapshot)
+                .is_ok()
+        );
+    }
 
     #[test]
     fn verified_scan_rejects_uninstalled_authority_without_changing_any_replica_state() {
