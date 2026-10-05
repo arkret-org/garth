@@ -100,6 +100,45 @@ impl fmt::Debug for SessionGrantState {
 }
 
 impl SessionGrantState {
+    /// The state comes from this engine's authenticated Account Authority
+    /// transport. Bind the JWT observation to that exact outcome before use.
+    pub fn agent_participation_observation(
+        &self,
+        now: DateTime<Utc>,
+    ) -> Result<
+        arkret_models_collaboration::governance::agent_participation::AgentParticipationObservation,
+    > {
+        let parts = self.grant_jwt.split('.').collect::<Vec<_>>();
+        if parts.len() != 3 || parts[2].is_empty() {
+            return Err(protocol("Agent session JWT is malformed"));
+        }
+        let bytes =
+            arkret_canonical::base64url_decode(parts[1]).map_err(|e| protocol(e.to_string()))?;
+        let claims: arkret_models_identity::SignedSessionGrantClaims =
+            serde_json::from_slice(&bytes)?;
+        if claims.account_id != self.account_id
+            || claims.grant_id != self.grant_id
+            || claims.audience_id != self.audience_id
+            || claims.expires_at != self.expires_at
+            || claims.scopes != self.granted_scope
+            || now < claims.not_before
+            || now >= claims.expires_at
+            || self.dpop_jkt.as_deref()
+                != Some(
+                    claims
+                        .session_public_key
+                        .thumbprint_sha256()
+                        .map_err(|e| protocol(e.to_string()))?
+                        .as_str(),
+                )
+        {
+            return Err(protocol(
+                "Agent session observation differs from its authenticated exact outcome",
+            ));
+        }
+        arkret_models_collaboration::governance::agent_participation::AgentParticipationObservation::from_authenticated_claims(&claims)
+            .map_err(protocol)
+    }
     pub fn handle(&self) -> SessionHandle {
         SessionHandle {
             access_token: self.grant_jwt.clone(),
@@ -275,6 +314,16 @@ where
     ) -> Result<SessionHandle> {
         let outcome = self.transport.issue_session_grant(request.clone()).await?;
         let state = state_from_issue_outcome(&request, outcome, now)?;
+        if let SessionGrantRequestBody::Agent(agent) = &request {
+            let observation = state.agent_participation_observation(now)?;
+            if observation.agent_key_authorization_ref != agent.agent_key_authorization_ref
+                || observation.verification_method != agent.proof.verification_method
+            {
+                return Err(protocol(
+                    "Agent observation differs from requested runtime authorization",
+                ));
+            }
+        }
         let handle = state.handle();
         *self.state_lock() = Some(state);
         Ok(handle)
@@ -345,8 +394,21 @@ where
             .await?;
         let state =
             state_from_refresh_outcome(&current, &request, &expected_dpop_jkt, outcome, now)?;
+        if current.device_id.is_none() {
+            current
+                .agent_participation_observation(now)?
+                .validate_successor(&state.agent_participation_observation(now)?)
+                .map_err(protocol)?;
+        }
         let handle = state.handle();
-        *self.state_lock() = Some(state);
+        let mut installed = self.state_lock();
+        if installed.as_ref().map(|s| &s.grant_id) != Some(&current.grant_id) {
+            return Err(protocol(
+                "late session refresh cannot replace another active session",
+            ));
+        }
+        *installed = Some(state);
+        drop(installed);
         self.gate_lock().last_success_at = Some(now);
         Ok(handle)
     }
@@ -548,7 +610,7 @@ fn protocol(message: impl Into<String>) -> Error {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
 
@@ -700,6 +762,34 @@ mod tests {
         })
     }
 
+    // The mock transport is the authenticated issuer boundary. Use actual
+    // signed JWT claims so exact-state and overlay checks exercise the codec.
+    pub(crate) fn agent_jwt(label: &str, grant: SessionGrantId, expires: DateTime<Utc>) -> String {
+        use ed25519_dalek::Signer as _;
+        let claims = arkret_models_identity::SignedSessionGrantClaims {
+            kind: arkret_models_identity::SESSION_GRANT_CREDENTIAL_KIND.to_owned(),
+            grant_id: grant, issuer_id: audience(),
+            issuance_nonce: arkret_models_identity::SessionGrantIssuanceNonce::from_bytes([11;32]),
+            account_id: AccountId::new(principal_id(), audience()),
+            session_public_key: session_public_jwk(), audience_id: audience(),
+            scopes: vec!["ak.self.events.stream.subscribe.v1".into()], not_before: now(), expires_at: expires,
+            session_id: label.into(), credential_class: arkret_models_identity::SessionGrantCredentialClass::Standard,
+            holder_binding: arkret_models_identity::SessionGrantHolderBinding::AgentRuntime {
+                agent_id: principal_id(), agent_key_authorization_ref: agent_key_authorization_ref(),
+                verification_method: DidUrl::new("did:webvh:z6mkfixture:agent.example#runtime-key-1").unwrap(),
+            }, device_binding: None, proof_kind: Some(arkret_models_identity::SessionGrantProofKind::AgentKeyProof),
+            scope_details: Some(serde_json::json!({"controller_principal_id":other_principal_id(),"participation":[]}).as_object().unwrap().clone()),
+        };
+        let body = arkret_canonical::base64url_encode(serde_json::to_vec(&claims).unwrap());
+        let header = arkret_canonical::base64url_encode(br#"{"alg":"EdDSA"}"#);
+        let input = format!("{header}.{body}");
+        let signature = ed25519_dalek::SigningKey::from_bytes(&[42; 32]).sign(input.as_bytes());
+        format!(
+            "{input}.{}",
+            arkret_canonical::base64url_encode(signature.to_bytes())
+        )
+    }
+
     fn issue_outcome(
         token: &str,
         grant: SessionGrantId,
@@ -708,8 +798,12 @@ mod tests {
     ) -> SessionGrantOutcome {
         SessionGrantOutcome {
             account_id: AccountId::new(principal_id, audience()),
-            device_id,
-            session_grant: token.to_owned(),
+            device_id: device_id.clone(),
+            session_grant: if device_id.is_none() {
+                agent_jwt(token, grant.clone(), now() + Duration::hours(1))
+            } else {
+                token.to_owned()
+            },
             expires_at: now() + Duration::hours(1),
             session_grant_id: grant,
             session_public_key: session_public_jwk(),
@@ -724,7 +818,7 @@ mod tests {
             account_id: AccountId::new(principal_id(), audience()),
             device_id: None,
             grant_id: grant_id(1),
-            grant_jwt: "grant-1".to_owned(),
+            grant_jwt: agent_jwt("grant-1", grant_id(1), now() + Duration::minutes(20)),
             expires_at: now() + Duration::minutes(20),
             audience_id: audience(),
             granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
@@ -775,15 +869,15 @@ mod tests {
     }
 
     fn refresh_options() -> SessionRefreshOptions {
-        refresh_options_for("grant-1")
+        refresh_options_for(&active_state().grant_jwt)
     }
 
     fn refresh_outcome(token: &str, grant: SessionGrantId) -> SessionGrantOutcome {
         SessionGrantOutcome {
-            session_grant_id: grant,
+            session_grant_id: grant.clone(),
             account_id: AccountId::new(principal_id(), audience()),
             device_id: None,
-            session_grant: token.to_owned(),
+            session_grant: agent_jwt(token, grant, now() + Duration::hours(1)),
             session_public_key: session_public_jwk(),
             expires_at: now() + Duration::hours(1),
             audience_id: audience(),
@@ -804,7 +898,10 @@ mod tests {
 
         let handle = engine.login(agent_login(), now()).await.unwrap();
 
-        assert_eq!(handle.access_token, "grant-agent");
+        assert_eq!(
+            handle.access_token,
+            agent_jwt("grant-agent", grant_id(10), now() + Duration::hours(1))
+        );
         let requests = transport.issue_requests();
         assert_eq!(requests.len(), 1);
         assert!(matches!(requests[0], SessionGrantRequestBody::Agent(_)));
@@ -894,7 +991,10 @@ mod tests {
 
         let handle = engine.login_request(request, now()).await.unwrap();
 
-        assert_eq!(handle.access_token, "grant-authored");
+        assert_eq!(
+            handle.access_token,
+            agent_jwt("grant-authored", grant_id(14), now() + Duration::hours(1))
+        );
         assert_eq!(transport.issue_requests().len(), 1);
         assert_eq!(engine.current_state().unwrap().grant_id, grant_id(14));
     }
@@ -982,13 +1082,16 @@ mod tests {
 
         let handle = engine.refresh_once(refresh_options(), now()).await.unwrap();
 
-        assert_eq!(handle.access_token, "grant-2");
+        assert_eq!(
+            handle.access_token,
+            agent_jwt("grant-2", grant_id(2), now() + Duration::hours(1))
+        );
         let requests = transport.refresh_requests();
         assert_eq!(requests.len(), 1);
         let SessionGrantRefreshRequestBody::Agent(request) = &requests[0] else {
             panic!("test authors the Agent refresh branch");
         };
-        assert_eq!(request.grant_jwt, "grant-1");
+        assert_eq!(request.grant_jwt, active_state().grant_jwt);
         assert_eq!(request.audience_id.as_ref(), Some(&audience()));
         let state = engine.current_state().unwrap();
         assert_eq!(state.grant_id, grant_id(2));
@@ -1053,7 +1156,10 @@ mod tests {
                 error.to_string().contains(expected_error),
                 "expected `{expected_error}`, got `{error}`"
             );
-            assert_eq!(engine.current_state().unwrap().grant_jwt, "grant-1");
+            assert_eq!(
+                engine.current_state().unwrap().grant_jwt,
+                active_state().grant_jwt
+            );
         }
     }
 
@@ -1068,7 +1174,10 @@ mod tests {
             let result = engine.refresh_once(refresh_options(), now()).await;
 
             assert!(result.is_err());
-            assert_eq!(engine.current_state().unwrap().grant_jwt, "grant-1");
+            assert_eq!(
+                engine.current_state().unwrap().grant_jwt,
+                active_state().grant_jwt
+            );
             assert_eq!(transport.refresh_requests().len(), 1);
         }
     }
@@ -1128,15 +1237,21 @@ mod tests {
         // ...then race a second refresh: it must NOT fire a transport call and
         // returns the still-valid current handle instead.
         let loser = engine.refresh_once(refresh_options(), now()).await.unwrap();
-        assert_eq!(loser.access_token, "grant-1");
+        assert_eq!(loser.access_token, active_state().grant_jwt);
         assert_eq!(*refresh_calls.lock().unwrap(), 1);
 
         release.notify_one();
         let winner = winner.await.unwrap().unwrap();
-        assert_eq!(winner.access_token, "grant-2");
+        assert_eq!(
+            winner.access_token,
+            agent_jwt("grant-2", grant_id(2), now() + Duration::hours(1))
+        );
         assert_eq!(*refresh_calls.lock().unwrap(), 1);
         // The winner installed the rotated grant for everyone.
-        assert_eq!(engine.current_state().unwrap().grant_jwt, "grant-2");
+        assert_eq!(
+            engine.current_state().unwrap().grant_jwt,
+            agent_jwt("grant-2", grant_id(2), now() + Duration::hours(1))
+        );
     }
 
     #[tokio::test]
@@ -1159,7 +1274,10 @@ mod tests {
         started.notified().await;
         cancelled.abort();
         assert!(cancelled.await.unwrap_err().is_cancelled());
-        assert_eq!(engine.current_state().unwrap().grant_jwt, "grant-1");
+        assert_eq!(
+            engine.current_state().unwrap().grant_jwt,
+            active_state().grant_jwt
+        );
 
         let retry = {
             let engine = Arc::clone(&engine);
@@ -1167,7 +1285,10 @@ mod tests {
         };
         started.notified().await;
         release.notify_one();
-        assert_eq!(retry.await.unwrap().unwrap().access_token, "grant-2");
+        assert_eq!(
+            retry.await.unwrap().unwrap().access_token,
+            agent_jwt("grant-2", grant_id(2), now() + Duration::hours(1))
+        );
         assert_eq!(*refresh_calls.lock().unwrap(), 2);
     }
 
@@ -1177,21 +1298,34 @@ mod tests {
         // `Due` again (the refresh-treadmill shape).
         let mut short_lived = refresh_outcome("grant-2", grant_id(2));
         short_lived.expires_at = now() + Duration::seconds(30);
+        short_lived.session_grant = agent_jwt("grant-2", grant_id(2), short_lived.expires_at);
         let mut after_cooldown = refresh_outcome("grant-3", grant_id(3));
         after_cooldown.previous_session_grant_id = Some(grant_id(2));
         after_cooldown.expires_at = now() + Duration::seconds(30);
+        after_cooldown.session_grant = agent_jwt("grant-3", grant_id(3), after_cooldown.expires_at);
         let transport =
             MockSessionTransport::with_refresh_responses(vec![Ok(short_lived), Ok(after_cooldown)]);
         let mut due_state = active_state();
         due_state.expires_at = now() + Duration::seconds(30);
+        due_state.grant_jwt = agent_jwt("grant-1", grant_id(1), due_state.expires_at);
         let engine = SessionEngine::with_state(transport.clone(), due_state);
 
         // First call rotates.
         let handle = engine
-            .refresh_if_due(refresh_options(), now())
+            .refresh_if_due(
+                refresh_options_for(&agent_jwt(
+                    "grant-1",
+                    grant_id(1),
+                    now() + Duration::seconds(30),
+                )),
+                now(),
+            )
             .await
             .unwrap();
-        assert_eq!(handle.access_token, "grant-2");
+        assert_eq!(
+            handle.access_token,
+            agent_jwt("grant-2", grant_id(2), now() + Duration::seconds(30))
+        );
         assert_eq!(transport.refresh_requests().len(), 1);
 
         // Still Due, but within the cooldown: no second transport call.
@@ -1199,18 +1333,28 @@ mod tests {
             .refresh_if_due(refresh_options(), now() + Duration::seconds(1))
             .await
             .unwrap();
-        assert_eq!(handle.access_token, "grant-2");
+        assert_eq!(
+            handle.access_token,
+            agent_jwt("grant-2", grant_id(2), now() + Duration::seconds(30))
+        );
         assert_eq!(transport.refresh_requests().len(), 1);
 
         // Past the cooldown the due refresh fires again.
         let handle = engine
             .refresh_if_due(
-                refresh_options_for("grant-2"),
+                refresh_options_for(&agent_jwt(
+                    "grant-2",
+                    grant_id(2),
+                    now() + Duration::seconds(30),
+                )),
                 now() + Duration::seconds(REFRESH_SUCCESS_COOLDOWN_SECS),
             )
             .await
             .unwrap();
-        assert_eq!(handle.access_token, "grant-3");
+        assert_eq!(
+            handle.access_token,
+            agent_jwt("grant-3", grant_id(3), now() + Duration::seconds(30))
+        );
         assert_eq!(transport.refresh_requests().len(), 2);
     }
 }

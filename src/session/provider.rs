@@ -352,7 +352,23 @@ mod tests {
 
         fn build(&self, state: &SessionGrantState) -> Result<Self::Transport> {
             *self.calls.lock().unwrap() += 1;
-            Ok(state.grant_jwt.clone())
+            let payload = state.grant_jwt.split('.').nth(1).unwrap();
+            let claims: arkret_models_identity::SignedSessionGrantClaims =
+                serde_json::from_slice(&arkret_canonical::base64url_decode(payload).unwrap())
+                    .unwrap();
+            Ok(claims.session_id)
+        }
+
+        fn refresh_options(
+            &self,
+            state: &SessionGrantState,
+            fallback: &SessionRefreshOptions,
+        ) -> Result<SessionRefreshOptions> {
+            let mut options = fallback.clone();
+            if let Some(SessionGrantRefreshRequestBody::Agent(request)) = &mut options.request {
+                request.grant_jwt = state.grant_jwt.clone();
+            }
+            Ok(options)
         }
     }
 
@@ -380,6 +396,8 @@ mod tests {
     }
 
     fn state() -> SessionGrantState {
+        let expires =
+            arkret_canonical::normalize_timestamp_canonical(Utc::now()) + Duration::hours(2);
         SessionGrantState {
             account_id: AccountId::new(
                 DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
@@ -389,8 +407,8 @@ mod tests {
             // holder is the principal alone and never carries a Device.
             device_id: None,
             grant_id: grant_id(1),
-            grant_jwt: "grant-1".to_owned(),
-            expires_at: Utc::now() + Duration::hours(2),
+            grant_jwt: super::super::engine::tests::agent_jwt("grant-1", grant_id(1), expires),
+            expires_at: expires,
             audience_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             session_public_key: Some(session_public_jwk().into_string()),
@@ -399,6 +417,8 @@ mod tests {
     }
 
     fn refresh_outcome() -> SessionGrantOutcome {
+        let expires =
+            arkret_canonical::normalize_timestamp_canonical(Utc::now()) + Duration::hours(1);
         SessionGrantOutcome {
             session_grant_id: grant_id(2),
             account_id: AccountId::new(
@@ -406,9 +426,9 @@ mod tests {
                 DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             ),
             device_id: None,
-            session_grant: "grant-2".to_owned(),
+            session_grant: super::super::engine::tests::agent_jwt("grant-2", grant_id(2), expires),
             session_public_key: session_public_jwk(),
-            expires_at: Utc::now() + Duration::hours(1),
+            expires_at: expires,
             audience_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
             previous_session_grant_id: Some(grant_id(1)),

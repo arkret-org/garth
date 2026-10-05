@@ -20,6 +20,7 @@ pub enum ParticipationAction {
 #[derive(Clone, Debug)]
 pub struct ParticipationAdmissionFacts {
     pub selection: ParticipationBits,
+    pub owner_selection_current: bool,
     pub target_policy: ParticipationBits,
     pub target_policy_resolved: bool,
     pub agent_active: bool,
@@ -30,7 +31,7 @@ pub struct ParticipationAdmissionFacts {
 
 impl ParticipationAdmissionFacts {
     pub fn effective_bits(&self) -> Result<ParticipationBits> {
-        if !self.target_policy_resolved {
+        if !self.target_policy_resolved || !self.owner_selection_current {
             return Err(Error::Protocol(
                 "current target participation policy is unresolved".to_owned(),
             ));
