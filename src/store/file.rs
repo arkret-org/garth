@@ -1,5 +1,6 @@
 //! Native durable state shared safely by independent client handles.
 
+use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -54,6 +55,42 @@ impl FileStore {
     /// never authorization to fetch or consume its stream.
     pub fn cursor_scopes(&self) -> Result<Vec<CursorScope>> {
         self.read(|state| state.cursors.keys().cloned().collect())
+    }
+
+    /// Read due heads after selecting the first unacknowledged delivery of
+    /// each exact cursor scope. A deferred head never exposes its successor.
+    /// Filtering before the read bound prevents another scope's backlog from
+    /// hiding an independently ready delivery outside the legacy pending window.
+    pub fn ready_inbox_heads(
+        &self,
+        now_ms: i64,
+        blocked_scopes: &BTreeSet<CursorScope>,
+        limit: usize,
+    ) -> Result<Vec<PendingDelivery<Vec<crate::ClientEvent>>>> {
+        self.read(|state| {
+            let mut observed = BTreeSet::new();
+            state
+                .inbox
+                .values()
+                .filter(|delivery| observed.insert(delivery.scope.clone()))
+                .filter(|delivery| !blocked_scopes.contains(&delivery.scope))
+                .filter(|delivery| delivery.next_attempt_at_ms.is_none_or(|at| at <= now_ms))
+                .take(limit.clamp(1, MAX_PENDING_READ))
+                .cloned()
+                .collect()
+        })
+    }
+
+    /// Pending scope identity is local scheduling state, never authorization.
+    /// Recovery of another scope need not wait for these deliveries to ACK.
+    pub fn pending_cursor_scopes(&self) -> Result<BTreeSet<CursorScope>> {
+        self.read(|state| {
+            state
+                .inbox
+                .values()
+                .map(|delivery| delivery.scope.clone())
+                .collect()
+        })
     }
 
     fn mutate<T>(&self, mutation: impl FnOnce(&mut StoreState) -> Result<(T, bool)>) -> Result<T> {
@@ -450,6 +487,187 @@ mod inbox_tests {
                 .await
                 .unwrap()
                 .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn ready_heads_preserve_account_batch_payload_and_aggregate_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("aggregate-head.json");
+        let store = FileStore::open(&path).unwrap();
+        let payload = vec![
+            crate::ClientEvent::AccountUpdates(Default::default()),
+            crate::ClientEvent::AccountUpdates(Default::default()),
+        ];
+        store
+            .commit_account_batch(
+                scope(),
+                AccountCursorCheckpoint {
+                    cursor: "aggregate-cut".to_owned(),
+                    station_cas: crate::StationCasProjection::default(),
+                },
+                payload,
+            )
+            .unwrap();
+        let head = store.ready_inbox_heads(1000, &BTreeSet::new(), 32).unwrap();
+        assert_eq!(head.len(), 1);
+        assert_eq!(head[0].scope, scope());
+        assert_eq!(head[0].payload.len(), 2);
+        store
+            .retry(
+                head[0].id,
+                Some(2000),
+                DeliveryErrorClass::Processing,
+                "aggregate item remains unresolved".to_owned(),
+            )
+            .await
+            .unwrap();
+        let reopened = FileStore::open(&path).unwrap();
+        assert!(
+            reopened
+                .ready_inbox_heads(1000, &BTreeSet::new(), 32)
+                .unwrap()
+                .is_empty()
+        );
+        let retried = reopened
+            .ready_inbox_heads(2000, &BTreeSet::new(), 32)
+            .unwrap();
+        assert_eq!(retried.len(), 1);
+        assert_eq!(retried[0].id, head[0].id);
+        assert_eq!(retried[0].scope, scope());
+        assert_eq!(retried[0].payload.len(), 2);
+        assert_eq!(retried[0].cursor.as_deref(), Some("aggregate-cut"));
+        assert_eq!(retried[0].attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn ready_heads_reach_private_scope_beyond_pending_window_without_overtaking_retry() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("scope-heads.json");
+        let store = FileStore::open(&path).unwrap();
+        let realm = arkret_wire::RealmId::from_event_id(&EventId::from_digest(
+            arkret_canonical::DigestSuite::Sha256,
+            [11; 32],
+        ));
+        let shared = CursorScope::CommitStream {
+            service_id: None,
+            stream_ref: arkret_wire::CommitStreamRef::Realm {
+                realm_id: realm.clone(),
+            },
+        };
+        let private = CursorScope::CommitStream {
+            service_id: None,
+            stream_ref: arkret_wire::CommitStreamRef::Sidecar {
+                realm_id: realm,
+                sidecar_id: arkret_wire::SidecarId::from_event_id(&EventId::from_digest(
+                    arkret_canonical::DigestSuite::Sha256,
+                    [12; 32],
+                )),
+            },
+        };
+        let payload = vec![crate::ClientEvent::AccountUpdates(Default::default())];
+        let (shared_head, private_head) = store
+            .mutate(|state| {
+                let mut shared_head = None;
+                for index in 0..=MAX_PENDING_READ {
+                    let id = next_inbox_id(state)?;
+                    shared_head.get_or_insert(id);
+                    state.inbox.insert(
+                        id,
+                        PendingDelivery {
+                            id,
+                            scope: shared.clone(),
+                            cursor: Some(format!("shared-{index}")),
+                            payload: payload.clone(),
+                            attempts: 0,
+                            next_attempt_at_ms: (index == 0).then_some(5000),
+                            error_class: None,
+                            last_error: None,
+                        },
+                    );
+                }
+                let id = next_inbox_id(state)?;
+                state.inbox.insert(
+                    id,
+                    PendingDelivery {
+                        id,
+                        scope: private.clone(),
+                        cursor: Some("private-cut".to_owned()),
+                        payload: payload.clone(),
+                        attempts: 0,
+                        next_attempt_at_ms: None,
+                        error_class: None,
+                        last_error: None,
+                    },
+                );
+                Ok(((shared_head.unwrap(), id), true))
+            })
+            .unwrap();
+        let reopened = FileStore::open(&path).unwrap();
+        assert!(
+            reopened
+                .pending(MAX_PENDING_READ)
+                .await
+                .unwrap()
+                .iter()
+                .all(|delivery| delivery.scope == shared)
+        );
+        let ready = reopened
+            .ready_inbox_heads(1000, &BTreeSet::new(), 1)
+            .unwrap();
+        assert_eq!(
+            ready.iter().map(|delivery| delivery.id).collect::<Vec<_>>(),
+            vec![private_head]
+        );
+        assert_eq!(ready[0].cursor.as_deref(), Some("private-cut"));
+        assert_eq!(
+            reopened.pending_cursor_scopes().unwrap(),
+            BTreeSet::from([shared.clone(), private.clone()])
+        );
+        assert!(
+            reopened
+                .ready_inbox_heads(1000, &BTreeSet::from([private.clone()]), 32)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            reopened
+                .ready_inbox_heads(5000, &BTreeSet::new(), 1)
+                .unwrap()[0]
+                .id,
+            shared_head
+        );
+        reopened
+            .retry(
+                shared_head,
+                Some(8000),
+                DeliveryErrorClass::Processing,
+                "unknown current cut".to_owned(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            reopened
+                .ready_inbox_heads(5000, &BTreeSet::new(), 1)
+                .unwrap()[0]
+                .id,
+            private_head
+        );
+        reopened.ack(private_head).await.unwrap();
+        assert!(
+            reopened
+                .ready_inbox_heads(5000, &BTreeSet::new(), 32)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(reopened.pending(1).await.unwrap()[0].id, shared_head);
+        reopened.ack(shared_head).await.unwrap();
+        assert!(
+            reopened
+                .ready_inbox_heads(5000, &BTreeSet::new(), 1)
+                .unwrap()[0]
+                .id
+                > shared_head
         );
     }
 
