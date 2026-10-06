@@ -739,8 +739,10 @@ fn bound_self_agent_pcr_genesis_source(
         return Ok(OriginalSource::Ordinary);
     }
     let payload: arkret_models_collaboration::events_payloads::realm::RealmCreatePayload =
-        serde_json::from_value(serde_json::Value::Object(event.payload.clone()))
-            .map_err(|error| protocol(&error.to_string()))?;
+        serde_json::from_value(
+            serde_json::to_value(&event.payload).map_err(|error| protocol(&error.to_string()))?,
+        )
+        .map_err(|error| protocol(&error.to_string()))?;
     payload
         .object
         .validate()
