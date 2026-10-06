@@ -531,6 +531,9 @@ fn validate_snapshot(snapshot: &RealmStateSnapshot, realm: &RealmId) -> Result<(
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum OriginalSource {
     Ordinary,
+    // A bound self acceptance is only a candidate until the historical key
+    // resolves its original device authorization on this exact PCR stream.
+    BoundSelfHumanPcr,
     BoundSelfAgentPcrGenesis,
 }
 
@@ -586,8 +589,9 @@ async fn verify_row_from_source(
         stream_ref: full.commit.stream_ref.clone(),
         stream_position: full.commit.stream_position,
     };
-    // This entry point consumes ordinary Full originals. Native PCR audit
-    // uses its registered dedicated capability, not this historical query.
+    // Scan/get originals require the ordinary Human fact digest. Bound self
+    // PCR acceptance uses its recipient-limited historical source instead;
+    // neither path grants native PCR audit or history access.
     if source == OriginalSource::Ordinary
         && human.is_some()
         && full.commit.producer_signer_fact_digest.is_none()
@@ -629,6 +633,13 @@ async fn verify_row_from_source(
             "exact historical producer signing key is unavailable",
         ));
     };
+    if source == OriginalSource::BoundSelfHumanPcr
+        && key.authorization_ref.stream_ref != full.commit.stream_ref
+    {
+        return Err(protocol(
+            "bound self Human acceptance lacks its original same-PCR authorization",
+        ));
+    }
     if let Some(human) = human.filter(|_| source == OriginalSource::Ordinary) {
         let fact = arkret_models_collaboration::authority_commit::HumanHistoricalSignerFact {
             event_id: event.event_id.clone(),
@@ -714,13 +725,52 @@ pub async fn consume_bound_submission(
     for original in accepted {
         // Only this real response/frozen single-Event acceptance establishes
         // the self source. Scan and disclosed Full callers retain Ordinary.
-        let source = bound_self_agent_pcr_genesis_source(client, request, &original)?;
+        let source = bound_self_submission_source(client, request, &original)?;
         verify_row_from_source(client, &CommittedEventView::Full(original), source).await?;
         response.value()?;
     }
     client.check_session()?;
     response.value()?;
     Ok(response)
+}
+
+fn bound_self_submission_source(
+    client: &OwnStationResultClient,
+    request: &SelfAuthoritySubmitRequest,
+    original: &arkret_wire::CommittedEventFullView,
+) -> Result<OriginalSource> {
+    let source = bound_self_agent_pcr_genesis_source(client, request, original)?;
+    if source != OriginalSource::Ordinary || original.commit.producer_signer_fact_digest.is_some() {
+        return Ok(source);
+    }
+    let SelfAuthoritySubmitRequest::Event(submission) = request else {
+        return Ok(OriginalSource::Ordinary);
+    };
+    let event = &submission.event;
+    let recipient = client.session()?.account_id();
+    if &original.event != event
+        || event.actor_id.as_account_id() != Some(recipient)
+        || event.actual_signer().as_account_id() != Some(recipient)
+        || event
+            .human_device_producer()
+            .map_err(|error| protocol(&error.to_string()))?
+            .is_none()
+        || event.scope_ref
+            != (arkret_wire::ScopeRef::Realm {
+                realm_id: event.realm_id.clone(),
+            })
+        || original.commit.stream_ref
+            != (CommitStreamRef::Realm {
+                realm_id: event.realm_id.clone(),
+            })
+    {
+        return Ok(OriginalSource::Ordinary);
+    }
+    // This does not classify an arbitrary no-digest business acceptance as
+    // PCR. verify_row_from_source still requires the exact historical result
+    // to bind the original device authorization to this same Realm stream.
+    // No current lookup, PCR scan or Event-kind exception supplies that fact.
+    Ok(OriginalSource::BoundSelfHumanPcr)
 }
 
 // This classifies a source, never supplies historical authority. The existing
@@ -1163,6 +1213,19 @@ mod tests {
                             committed_event_ref.stream_position += 1;
                         }
                     }
+                    if body
+                        .get("__wrong_historical_device")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                        && let SignerKeyQuerySelector::HistoricalEvent {
+                            sender: HistoricalSignerKeyQuerySender::AccountDevice { device_id, .. },
+                        } = &mut selector
+                    {
+                        *device_id = arkret_wire::DeviceId::new(
+                            "ak:device:0196419b-0000-7000-8000-000000000002",
+                        )
+                        .unwrap();
+                    }
                     serde_json::to_value(
                         arkret_models_identity::signer_key_operations::SignerKeysQueryOutcome {
                             request_id: request.request_id,
@@ -1192,6 +1255,15 @@ mod tests {
                         },
                     )
                     .unwrap()
+                } else if let Some(expected) = body.get("__expected_submission") {
+                    let received: serde_json::Value =
+                        serde_json::from_slice(&request_bytes[header_end..header_end + body_len])
+                            .unwrap();
+                    assert_eq!(
+                        &received, expected,
+                        "replay must retain its frozen signed Event"
+                    );
+                    body["__accepted"].clone()
                 } else {
                     body
                 };
@@ -1706,6 +1778,271 @@ mod tests {
         )
         .unwrap();
         commit
+    }
+
+    fn native_human_pcr_successor_fixture(
+        kind: arkret_wire::EventKind,
+        account_name: &str,
+        foreign_station: bool,
+    ) -> (
+        arkret_wire::Event,
+        arkret_wire::RealmCommit,
+        arkret_models_identity::ResolvedSignerKey,
+    ) {
+        use arkret_models_collaboration::events_payloads::key_backup::{
+            ControllerBackupTrustAnchor, UnsignedKeyBackupActiveSeries,
+        };
+        use arkret_signatures::{Ed25519DetachedJwsSigner, SignEventOptions, sign_event};
+        use ed25519_dalek::Signer as _;
+
+        let (genesis, _, mut historical) = native_self_genesis_fixture(account_name);
+        let mut actor = genesis.executed_by.unwrap();
+        if foreign_station {
+            actor = arkret_wire::ActorId::account(arkret_wire::AccountId::new(
+                actor.as_account_id().unwrap().principal_id.clone(),
+                arkret_wire::DidCoreId::new("ak:did_core:web:other.example").unwrap(),
+            ));
+        }
+        let realm = historical.authorization_ref.stream_ref.realm_id().clone();
+        historical.authorization_ref.stream_position = 1;
+        historical.revision.stream_position = 2;
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        let method = arkret_wire::DidUrl::new(format!(
+            "did:web:{account_name}.example#{}",
+            crate::test_fixtures::device_id().as_str(),
+        ))
+        .unwrap();
+        let payload = match kind {
+            arkret_wire::EventKind::KeyBackupActiveSeries => {
+                let unsigned = UnsignedKeyBackupActiveSeries::new(
+                    actor.clone(),
+                    serde_json::from_value(serde_json::json!("secret_storage")).unwrap(),
+                    arkret_wire::BackupSeriesId::new(
+                        "ak:backup_series:0196419b-0000-7000-8000-000000000010",
+                    )
+                    .unwrap(),
+                    1,
+                    vec![],
+                    historical.revision.commit_id.clone(),
+                    crate::test_fixtures::at(2),
+                    method.clone(),
+                    ControllerBackupTrustAnchor {
+                        authorize_event_id: historical.authorization_ref.event_id.clone(),
+                        generation_ref: 1,
+                    },
+                )
+                .unwrap();
+                let signature = signing_key.sign(&unsigned.signing_payload_bytes().unwrap());
+                serde_json::to_value(
+                    unsigned
+                        .attach_signature(
+                            arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
+                                signature.to_bytes(),
+                            ))
+                            .unwrap(),
+                        )
+                        .unwrap(),
+                )
+                .unwrap()
+            }
+            arkret_wire::EventKind::DeviceRevoke => {
+                let payload: arkret_models_collaboration::events_payloads::device_identity::DeviceRevokePayload =
+                    serde_json::from_value(serde_json::json!({
+                        "device_id": "ak:device:0196419b-0000-7000-8000-000000000002",
+                        "revoked_by": crate::test_fixtures::device_id(),
+                        "revoked_at": "2026-09-16T00:00:02.000Z",
+                        "reason": "security_rotation",
+                    })).unwrap();
+                payload.validate().unwrap();
+                serde_json::to_value(payload).unwrap()
+            }
+            _ => unreachable!(),
+        };
+        let mut event = crate::test_fixtures::event(92, kind, payload);
+        event.actor_id = actor;
+        event.realm_id = realm.clone();
+        event.scope_ref = arkret_wire::ScopeRef::Realm {
+            realm_id: realm.clone(),
+        };
+        event.created_at = crate::test_fixtures::at(2);
+        let mut authored = arkret_wire::AuthoredEvent::finalize_with_digest_suite(
+            event,
+            arkret_canonical::DigestSuite::Sha256,
+        )
+        .unwrap();
+        sign_event(
+            &mut authored,
+            &Ed25519DetachedJwsSigner::new(signing_key, method.to_string()),
+            SignEventOptions::new().with_created_at(crate::test_fixtures::at(2)),
+        )
+        .unwrap();
+        let event = authored.into_event();
+        let mut commit =
+            crate::test_fixtures::commit(92, &event, CommitStreamRef::Realm { realm_id: realm }, 3);
+        commit.previous_commit_ref = Some(historical.revision.commit_id.clone());
+        (event, seal_native_fixture_commit(commit), historical)
+    }
+
+    #[tokio::test]
+    async fn bound_self_human_pcr_successors_verify_original_authorization_and_exact_replay() {
+        for kind in [
+            arkret_wire::EventKind::KeyBackupActiveSeries,
+            arkret_wire::EventKind::DeviceRevoke,
+        ] {
+            for refusal in [
+                "none",
+                "replay",
+                "unavailable",
+                "wrong_key",
+                "wrong_target",
+                "wrong_device",
+                "ordinary_authorization",
+                "wrong_account",
+                "wrong_station",
+                "wrong_request",
+                "wrong_session",
+                "wrong_slot",
+                "commit_content",
+                "event_content",
+                "wrong_digest",
+            ] {
+                let (event, mut accepted, mut key) = native_human_pcr_successor_fixture(
+                    kind.clone(),
+                    if refusal == "wrong_account" {
+                        "bob"
+                    } else {
+                        "alice"
+                    },
+                    refusal == "wrong_station",
+                );
+                let mut event = event;
+                if refusal == "event_content" {
+                    event.created_at = crate::test_fixtures::at(4);
+                }
+                if refusal == "wrong_slot" {
+                    accepted.event_ref = arkret_wire::EventId::from_digest(
+                        arkret_canonical::DigestSuite::Sha256,
+                        [98; 32],
+                    );
+                }
+                if refusal == "wrong_digest" {
+                    accepted.producer_signer_fact_digest = Some(
+                        arkret_wire::Hash::new(format!("sha256:{}", "00".repeat(32))).unwrap(),
+                    );
+                }
+                accepted = seal_native_fixture_commit(accepted);
+                if refusal == "commit_content" {
+                    accepted.committed_at = crate::test_fixtures::at(4);
+                }
+                if refusal == "wrong_key" {
+                    key.public_key_b64u =
+                        arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
+                            ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+                                .verifying_key()
+                                .as_bytes(),
+                        ))
+                        .unwrap();
+                }
+                if refusal == "ordinary_authorization" {
+                    key.authorization_ref.stream_ref = CommitStreamRef::Realm {
+                        realm_id: RealmId::from_event_id(&arkret_wire::EventId::from_digest(
+                            arkret_canonical::DigestSuite::Sha256,
+                            [95; 32],
+                        )),
+                    };
+                }
+                let needs_query = matches!(
+                    refusal,
+                    "none"
+                        | "replay"
+                        | "unavailable"
+                        | "wrong_key"
+                        | "wrong_target"
+                        | "wrong_device"
+                        | "ordinary_authorization"
+                        | "wrong_digest"
+                );
+                let request = SelfAuthoritySubmitRequest::Event(
+                    arkret_wire::EventAdmissionSubmission::new(event.clone()),
+                );
+                let outcome = SelfAuthoritySubmitOutcome::Ordinary(
+                    arkret_wire::AuthoritySubmitOutcome::Accepted {
+                        status: arkret_wire::AuthorityCommitStatus::Committed,
+                        commit: accepted.clone(),
+                    },
+                );
+                let mut bodies = vec![serde_json::json!({
+                    "__expected_submission": request, "__accepted": outcome,
+                })];
+                if needs_query {
+                    bodies.push(serde_json::json!({
+                        "__signer_key": key,
+                        "__expected_native_target": CommittedEventRef {
+                            event_id: event.event_id.clone(), commit_id: accepted.commit_id.clone(),
+                            stream_ref: accepted.stream_ref.clone(), stream_position: accepted.stream_position,
+                        },
+                        "__unavailable": refusal == "unavailable",
+                        "__wrong_historical_target": refusal == "wrong_target",
+                        "__wrong_historical_device": refusal == "wrong_device",
+                    }));
+                }
+                let passes = matches!(refusal, "none" | "replay");
+                if refusal == "replay" {
+                    bodies.extend(bodies.clone());
+                }
+                let (source, server, observed) = observed_client(bodies);
+                for _ in 0..if refusal == "replay" { 2 } else { 1 } {
+                    let fetched = source
+                        .submit_to_realm_authority(
+                            &request,
+                            &arkret_http_client::ClientRequestOptions::default(),
+                        )
+                        .await;
+                    if fetched.is_err() {
+                        assert!(!passes, "{kind:?}: {refusal}");
+                        continue;
+                    }
+                    let response = fetched.unwrap();
+                    let mut expected = request.clone();
+                    if refusal == "wrong_request" {
+                        let SelfAuthoritySubmitRequest::Event(value) = &mut expected else {
+                            unreachable!()
+                        };
+                        value.event.created_at = crate::test_fixtures::at(4);
+                    }
+                    let result = if refusal == "wrong_session" {
+                        let (foreign, idle) = client(vec![]);
+                        idle.join().unwrap();
+                        consume_bound_submission(&foreign, &expected, response).await
+                    } else {
+                        consume_bound_submission(&source, &expected, response).await
+                    };
+                    assert_eq!(result.is_ok(), passes, "{kind:?}: {refusal}: {result:?}");
+                    if passes {
+                        assert_eq!(result.unwrap().into_value().unwrap(), outcome);
+                    }
+                }
+                server.join().unwrap();
+                let observed = observed.lock().unwrap();
+                assert_eq!(
+                    observed.len(),
+                    if refusal == "replay" {
+                        4
+                    } else if needs_query {
+                        2
+                    } else {
+                        1
+                    }
+                );
+                assert!(
+                    observed
+                        .iter()
+                        .all(|line| line.starts_with("post /_arkret/self/events ")
+                            || line.starts_with("post /_arkret/self/signer-keys/query ")),
+                    "self acceptance must not open current or PCR scan operations"
+                );
+            }
+        }
     }
 
     #[tokio::test]
