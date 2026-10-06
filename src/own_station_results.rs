@@ -103,6 +103,24 @@ impl OwnStationReplica {
     pub fn snapshot(&self) -> Option<&RealmStateSnapshot> {
         self.snapshot.as_ref()
     }
+    /// Start live consumption at the installed current cut. This admits only
+    /// its exact original head, never the unreadable historical prefix or a
+    /// preview window. Subsequent pages must continue from this head.
+    pub async fn bootstrap_current_head(
+        &mut self,
+        client: &OwnStationResultClient,
+        stream: &CommitStreamRef,
+    ) -> Result<()> {
+        if self.heads.contains_key(stream) {
+            return Err(protocol("live bootstrap would replace an accepted head"));
+        }
+        let expected = self
+            .current_heads
+            .get(stream)
+            .cloned()
+            .ok_or_else(|| protocol("live bootstrap has no installed current head"))?;
+        self.restore_checkpoint_head(client, &expected).await
+    }
     /// Re-admit a durable head using one exact original, never a bare cursor.
     pub async fn restore_checkpoint_head(
         &mut self,
@@ -2428,6 +2446,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn own_station_live_bootstrap_admits_only_current_original_and_continuous_tail() {
+        let origin = commit(0, None);
+        let anchor = commit(5, Some(origin.commit_id.clone()));
+        let next = commit(6, Some(anchor.commit_id.clone()));
+        let floor = ReadableFloor {
+            oldest_position: 5,
+            floor_commit_id: anchor.commit_id.clone(),
+            floor_reason: arkret_wire::ReadableFloorReason::MembershipJoin,
+        };
+        let (client, server) = client(vec![
+            serde_json::to_value(snapshot_at_floor(vec![head(&anchor)], 5)).unwrap(),
+            serde_json::json!({"committed_events":[withheld(anchor.clone())],"readable_floor":floor,"truncated":false}),
+            serde_json::to_value(snapshot_at_floor(vec![head(&next)], 5)).unwrap(),
+            serde_json::json!({"committed_events":[withheld(next.clone())],"readable_floor":floor,"truncated":false}),
+        ]);
+        let mut replica = OwnStationReplica::new(anchor.realm_id.clone());
+        assert!(
+            replica
+                .bootstrap_current_head(&client, &anchor.stream_ref)
+                .await
+                .is_err()
+        );
+        replica
+            .install_bound_snapshot(&client.snapshot_head(&anchor.realm_id).await.unwrap())
+            .unwrap();
+        assert!(replica.head(&anchor.stream_ref).is_none());
+        replica
+            .bootstrap_current_head(&client, &anchor.stream_ref)
+            .await
+            .unwrap();
+        assert_eq!(replica.head(&anchor.stream_ref), Some(&head(&anchor)));
+        assert!(
+            replica
+                .bootstrap_current_head(&client, &anchor.stream_ref)
+                .await
+                .is_err()
+        );
+        replica
+            .install_bound_snapshot(&client.snapshot_head(&anchor.realm_id).await.unwrap())
+            .unwrap();
+        let request = StreamScanRequest {
+            realm_id: anchor.realm_id.clone(),
+            stream_ref: anchor.stream_ref.clone(),
+            direction: StreamScanDirection::After(Some(anchor.stream_position)),
+            limit: 1,
+        };
+        let page = replica
+            .apply_bound_scan(&client, client.scan_commit_stream(&request).await.unwrap())
+            .await
+            .unwrap();
+        assert_eq!(page.rows().unwrap().len(), 1);
+        assert_eq!(page.rows().unwrap()[0].commit().commit_id, next.commit_id);
+        assert_eq!(replica.head(&anchor.stream_ref), Some(&head(&next)));
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
     async fn own_station_empty_limited_scan_cannot_invent_floor_anchor() {
         let (client, server) = client(vec![
             serde_json::json!({"committed_events":[],"readable_floor":{"oldest_position":7,"floor_commit_id":arkret_wire::RealmCommitId::from_digest([7;32]),"floor_reason":"membership_join"},"truncated":false}),
@@ -2453,7 +2528,63 @@ mod tests {
         server.join().unwrap();
     }
 
-    fn snapshot(mut heads: Vec<CommitStreamHead>) -> RealmStateSnapshot {
+    #[tokio::test]
+    async fn own_station_scan_race_requires_a_fresh_covering_bound_current() {
+        let first = commit(0, None);
+        let second = commit(1, Some(first.commit_id.clone()));
+        let old = snapshot(vec![head(&first)]);
+        let current = snapshot(vec![head(&second)]);
+        let page = serde_json::json!({
+            "committed_events": [withheld(first.clone()), withheld(second.clone())],
+            "readable_floor": {"oldest_position":0,"floor_commit_id":first.commit_id,"floor_reason":"stream_start"},
+            "truncated":false
+        });
+        let (client, server) = client(vec![
+            serde_json::to_value(old).unwrap(),
+            page.clone(),
+            page,
+            serde_json::to_value(current).unwrap(),
+        ]);
+        let mut replica = OwnStationReplica::new(first.realm_id.clone());
+        replica
+            .install_bound_snapshot(&client.snapshot_head(&first.realm_id).await.unwrap())
+            .unwrap();
+        let request = StreamScanRequest {
+            realm_id: first.realm_id.clone(),
+            stream_ref: first.stream_ref.clone(),
+            direction: StreamScanDirection::After(None),
+            limit: 2,
+        };
+        let stale_page = client.scan_commit_stream(&request).await.unwrap();
+        let error = replica
+            .apply_bound_scan(&client, stale_page)
+            .await
+            .err()
+            .expect("the pre-scan current must reject a later Commit");
+        assert!(
+            error
+                .to_string()
+                .contains("exceeds or forks its exact current cut")
+        );
+        assert!(replica.head(&request.stream_ref).is_none());
+        let page = client.scan_commit_stream(&request).await.unwrap();
+        replica
+            .install_bound_snapshot(&client.snapshot_head(&first.realm_id).await.unwrap())
+            .unwrap();
+        let admitted = replica.apply_bound_scan(&client, page).await.unwrap();
+        assert_eq!(admitted.rows().unwrap().len(), 2);
+        assert_eq!(replica.head(&request.stream_ref), Some(&head(&second)));
+        server.join().unwrap();
+    }
+
+    fn snapshot(heads: Vec<CommitStreamHead>) -> RealmStateSnapshot {
+        snapshot_at_floor(heads, 0)
+    }
+
+    fn snapshot_at_floor(
+        mut heads: Vec<CommitStreamHead>,
+        oldest_position: u64,
+    ) -> RealmStateSnapshot {
         heads.sort_by(|left, right| left.stream_ref.cmp(&right.stream_ref));
         let mut value = RealmStateSnapshot {
             snapshot_id: RealmSnapshotId::from_digest([1; 32]),
@@ -2465,7 +2596,7 @@ mod tests {
                     .iter()
                     .map(|head| arkret_wire::StreamHistoryFloor {
                         stream_ref: head.stream_ref.clone(),
-                        oldest_position: 0,
+                        oldest_position,
                     })
                     .collect(),
             },
