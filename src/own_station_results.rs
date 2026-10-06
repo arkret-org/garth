@@ -1826,8 +1826,18 @@ mod tests {
     #[tokio::test]
     async fn native_genesis_disclosed_full_remains_ordinary_missing_digest_unavailable() {
         let (event, accepted, _) = native_self_genesis_fixture("alice");
-        let (source, server, observed) =
-            observed_client(vec![serde_json::json!({"event":event,"commit":accepted})]);
+        let (source, server, observed) = observed_client(vec![
+            serde_json::json!({"event":event,"commit":accepted}),
+            serde_json::json!({
+                "committed_events": [{"event":event,"commit":accepted}],
+                "readable_floor": ReadableFloor {
+                    oldest_position: 0,
+                    floor_commit_id: accepted.commit_id.clone(),
+                    floor_reason: arkret_wire::ReadableFloorReason::StreamStart,
+                },
+                "truncated": false,
+            }),
+        ]);
         let reference = CommittedEventRef {
             event_id: event.event_id.clone(),
             commit_id: accepted.commit_id.clone(),
@@ -1844,10 +1854,19 @@ mod tests {
                 .contains("original ordinary Human signer source is unavailable")
         );
         server.join().unwrap();
+        let observed = observed.lock().unwrap();
         assert_eq!(
-            observed.lock().unwrap().len(),
-            1,
-            "no historical or current lookup for ordinary missing digest"
+            observed.len(),
+            2,
+            "GET must confirm its exact original scan row"
+        );
+        assert!(observed[0].starts_with("get /_arkret/self/committed-events/"));
+        assert!(observed[1].starts_with("post /_arkret/self/streams/scan "));
+        assert!(
+            !observed
+                .iter()
+                .any(|path| path.contains("signer-keys") || path.contains("current")),
+            "no historical or current key lookup for ordinary missing digest"
         );
     }
 
