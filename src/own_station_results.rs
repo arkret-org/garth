@@ -528,7 +528,21 @@ fn validate_snapshot(snapshot: &RealmStateSnapshot, realm: &RealmId) -> Result<(
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum OriginalSource {
+    Ordinary,
+    BoundSelfAgentPcrGenesis,
+}
+
 async fn verify_row(client: &OwnStationResultClient, row: &CommittedEventView) -> Result<()> {
+    verify_row_from_source(client, row, OriginalSource::Ordinary).await
+}
+
+async fn verify_row_from_source(
+    client: &OwnStationResultClient,
+    row: &CommittedEventView,
+    source: OriginalSource,
+) -> Result<()> {
     row.validate_shape()
         .map_err(|error| protocol(&error.to_string()))?;
     row.commit()
@@ -574,7 +588,10 @@ async fn verify_row(client: &OwnStationResultClient, row: &CommittedEventView) -
     };
     // This entry point consumes ordinary Full originals. Native PCR audit
     // uses its registered dedicated capability, not this historical query.
-    if human.is_some() && full.commit.producer_signer_fact_digest.is_none() {
+    if source == OriginalSource::Ordinary
+        && human.is_some()
+        && full.commit.producer_signer_fact_digest.is_none()
+    {
         return Err(protocol(
             "original ordinary Human signer source is unavailable",
         ));
@@ -612,7 +629,7 @@ async fn verify_row(client: &OwnStationResultClient, row: &CommittedEventView) -
             "exact historical producer signing key is unavailable",
         ));
     };
-    if let Some(human) = human {
+    if let Some(human) = human.filter(|_| source == OriginalSource::Ordinary) {
         let fact = arkret_models_collaboration::authority_commit::HumanHistoricalSignerFact {
             event_id: event.event_id.clone(),
             actor: event.actual_signer().clone(),
@@ -623,12 +640,13 @@ async fn verify_row(client: &OwnStationResultClient, row: &CommittedEventView) -
         };
         fact.validate_event_binding(event, suite)
             .map_err(|error| protocol(&error.to_string()))?;
-        if full.commit.producer_signer_fact_digest.as_ref()
-            != Some(
-                &fact
-                    .digest()
-                    .map_err(|error| protocol(&error.to_string()))?,
-            )
+        if source == OriginalSource::Ordinary
+            && full.commit.producer_signer_fact_digest.as_ref()
+                != Some(
+                    &fact
+                        .digest()
+                        .map_err(|error| protocol(&error.to_string()))?,
+                )
         {
             return Err(protocol(
                 "ordinary Human source differs from original Commit fact digest",
@@ -694,12 +712,91 @@ pub async fn consume_bound_submission(
     }
     let accepted = crate::authority::accepted_items(response.request(), response.value()?)?;
     for original in accepted {
-        verify_row(client, &CommittedEventView::Full(original)).await?;
+        // Only this real response/frozen single-Event acceptance establishes
+        // the self source. Scan and disclosed Full callers retain Ordinary.
+        let source = bound_self_agent_pcr_genesis_source(client, request, &original)?;
+        verify_row_from_source(client, &CommittedEventView::Full(original), source).await?;
         response.value()?;
     }
     client.check_session()?;
     response.value()?;
     Ok(response)
+}
+
+// This classifies a source, never supplies historical authority. The existing
+// exact HistoricalEvent query must still resolve the immutable self-admission
+// fact (including original provision/controller/delegation) or fail closed.
+fn bound_self_agent_pcr_genesis_source(
+    client: &OwnStationResultClient,
+    request: &SelfAuthoritySubmitRequest,
+    original: &arkret_wire::CommittedEventFullView,
+) -> Result<OriginalSource> {
+    let SelfAuthoritySubmitRequest::Event(submission) = request else {
+        return Ok(OriginalSource::Ordinary);
+    };
+    let event = &submission.event;
+    if event.kind != arkret_wire::EventKind::RealmCreate {
+        return Ok(OriginalSource::Ordinary);
+    }
+    let payload: arkret_models_collaboration::events_payloads::realm::RealmCreatePayload =
+        serde_json::from_value(serde_json::Value::Object(event.payload.clone()))
+            .map_err(|error| protocol(&error.to_string()))?;
+    payload
+        .object
+        .validate()
+        .map_err(|error| protocol(&error.to_string()))?;
+    if payload.object.purpose
+        != arkret_models_collaboration::events_payloads::realm::RealmPurpose::AgentControl
+    {
+        return Ok(OriginalSource::Ordinary);
+    }
+    let session = client.session()?;
+    let controller = session.account_id();
+    let Some(agent) = event.actor_id.as_account_id() else {
+        return Err(protocol(
+            "bound Agent PCR genesis has no full Agent Account",
+        ));
+    };
+    if &original.event != event
+        || event
+            .human_device_producer()
+            .map_err(|error| protocol(&error.to_string()))?
+            .is_none()
+        || submission.approval_signatures.is_some()
+        || event.actual_signer().as_account_id() != Some(controller)
+        || event
+            .executed_by
+            .as_ref()
+            .and_then(|actor| actor.as_account_id())
+            != Some(controller)
+        || agent.station_id != controller.station_id
+        || agent.principal_id == controller.principal_id
+        || event.realm_id != RealmId::from_event_id(&event.event_id)
+        || event.scope_ref != arkret_wire::ScopeRef::RealmGenesis
+        || original.commit.stream_ref
+            != (arkret_wire::CommitStreamRef::Realm {
+                realm_id: event.realm_id.clone(),
+            })
+        || original.commit.stream_position != 0
+        || original.commit.previous_commit_ref.is_some()
+        || event.authorization_ref.is_none()
+        || payload.object.governance_station_id != controller.station_id
+        || payload
+            .object
+            .initial_resolution
+            .as_ref()
+            .map(|resolution| arkret_wire::project_did_to_core_id(&resolution.did))
+            .transpose()
+            .map_err(|error| protocol(&error.to_string()))?
+            .as_ref()
+            != Some(&agent.principal_id)
+        || original.commit.producer_signer_fact_digest.is_some()
+    {
+        return Err(protocol(
+            "bound Agent PCR genesis differs from its exact authenticated self source",
+        ));
+    }
+    Ok(OriginalSource::BoundSelfAgentPcrGenesis)
 }
 
 /// Independently validate one disclosed historical original without advancing
@@ -942,6 +1039,18 @@ mod tests {
     fn client(
         bodies: Vec<serde_json::Value>,
     ) -> (OwnStationResultClient, std::thread::JoinHandle<()>) {
+        let (client, server, _) = observed_client(bodies);
+        (client, server)
+    }
+    fn observed_client(
+        bodies: Vec<serde_json::Value>,
+    ) -> (
+        OwnStationResultClient,
+        std::thread::JoinHandle<()>,
+        Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
+        let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let server_observed = observed.clone();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/", listener.local_addr().unwrap());
         let station = arkret_wire::DidCoreId::new("ak:did_core:web:station.example").unwrap();
@@ -1005,6 +1114,10 @@ mod tests {
                     request_bytes.extend_from_slice(&buffer[..count]);
                 }
                 assert!(headers.contains("authorization: bearer test-grant"));
+                server_observed
+                    .lock()
+                    .unwrap()
+                    .push(headers.lines().next().unwrap().to_owned());
                 let body = if let Some(key) = body.get("__signer_key") {
                     let request: SignerKeysQueryRequestBody =
                         serde_json::from_slice(&request_bytes[header_end..header_end + body_len])
@@ -1012,6 +1125,26 @@ mod tests {
                     let key: arkret_models_identity::signer_key_operations::ResolvedSignerKey =
                         serde_json::from_value(key.clone()).unwrap();
                     let mut selector = request.queries[0].clone();
+                    if let Some(expected) = body.get("__expected_native_target") {
+                        let SignerKeyQuerySelector::HistoricalEvent {
+                            sender:
+                                HistoricalSignerKeyQuerySender::AccountDevice {
+                                    actor,
+                                    committed_event_ref,
+                                    ..
+                                },
+                        } = &selector
+                        else {
+                            panic!("native self source must never use current selector")
+                        };
+                        assert_eq!(actor.as_account_id(), Some(&request.recipient_account_id));
+                        assert_eq!(
+                            serde_json::to_value(committed_event_ref).unwrap(),
+                            *expected
+                        );
+                        assert_ne!(committed_event_ref, &key.authorization_ref);
+                    }
+
                     if body
                         .get("__wrong_historical_target")
                         .and_then(serde_json::Value::as_bool)
@@ -1033,10 +1166,26 @@ mod tests {
                             request_id: request.request_id,
                             realm_id: request.realm_id,
                             recipient_account_id: request.recipient_account_id,
-                            results: vec![SignerKeyQueryResult::HistoricalResolved {
-                                selector,
-                                key,
-                                accepted_at: crate::test_fixtures::at(1),
+                            results: vec![if body
+                                .get("__unavailable")
+                                .and_then(serde_json::Value::as_bool)
+                                == Some(true)
+                            {
+                                SignerKeyQueryResult::Unavailable { selector }
+                            } else {
+                                SignerKeyQueryResult::HistoricalResolved {
+                                    selector,
+                                    key,
+                                    accepted_at: if body
+                                        .get("__distinct_authorization_time")
+                                        .and_then(serde_json::Value::as_bool)
+                                        == Some(true)
+                                    {
+                                        crate::test_fixtures::at(4)
+                                    } else {
+                                        crate::test_fixtures::at(1)
+                                    },
+                                }
                             }],
                         },
                     )
@@ -1056,6 +1205,7 @@ mod tests {
         (
             OwnStationResultClient::new(raw, binding, Arc::new(Source(snapshot))).unwrap(),
             server,
+            observed,
         )
     }
 
@@ -1408,6 +1558,295 @@ mod tests {
             );
             server.join().unwrap();
         }
+    }
+
+    // Transport-source fixture: original authorization coordinates are fixed
+    // independently of the target. This exercises real bound HTTP decoding,
+    // historical query, content IDs and Device Ed, not a PG admission/archive.
+    fn native_self_genesis_fixture(
+        controller_name: &str,
+    ) -> (
+        arkret_wire::Event,
+        arkret_wire::RealmCommit,
+        arkret_models_identity::ResolvedSignerKey,
+    ) {
+        use arkret_models_collaboration::events_payloads::realm::{RealmGenesis, RealmPurpose};
+        use arkret_signatures::{Ed25519DetachedJwsSigner, SignEventOptions, sign_event};
+        let station = arkret_wire::DidCoreId::new("ak:did_core:web:station.example").unwrap();
+        let controller = arkret_wire::AccountId::new(
+            arkret_wire::DidCoreId::new(format!("ak:did_core:web:{controller_name}.example"))
+                .unwrap(),
+            station.clone(),
+        );
+        let endpoint = url::Url::parse("https://agent.example/").unwrap();
+        let next_key = arkret_canonical::ed25519_pubkey_to_did_key_multibase(
+            ed25519_dalek::SigningKey::from_bytes(&[45; 32])
+                .verifying_key()
+                .as_bytes(),
+        );
+        let inception = arkret_signatures::webvh::prepare_agent_inception(
+            &arkret_signatures::webvh::AgentInceptionInput {
+                principal_endpoint: &endpoint,
+                local_id: "fixture-agent",
+                controller_principal_id: &controller.principal_id,
+                version_time: crate::test_fixtures::at(0),
+                root_seed: &[44; 32],
+                next_root_public_key_multibase: &next_key,
+            },
+        )
+        .unwrap();
+        let agent_did = arkret_wire::Did::new(inception.did.clone()).unwrap();
+        let agent_core = arkret_wire::project_did_to_core_id(&agent_did).unwrap();
+        let object = RealmGenesis::new(
+            RealmPurpose::AgentControl,
+            arkret_wire::GenesisSalt::new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap(),
+            arkret_wire::TrustDomainId::new("ak:trust_domain:station.example").unwrap(),
+            arkret_wire::SecurityClass::Standard,
+            station.clone(),
+            arkret_wire::JoinRule::Invite,
+            arkret_wire::HistoryAccess::SinceJoin,
+            arkret_wire::Discoverability::Listed,
+            None,
+            Some(arkret_models_identity::ResolutionCommitment {
+                did: agent_did.clone(),
+                method_history_head: arkret_canonical::canonical_sha256(&inception.log_entry)
+                    .unwrap(),
+                version_id: inception.log_entry["versionId"].as_str().unwrap().into(),
+            }),
+        )
+        .unwrap();
+        let payload =
+            arkret_models_collaboration::events_payloads::realm::RealmCreatePayload::new(object)
+                .to_value()
+                .unwrap();
+        let mut event =
+            crate::test_fixtures::event(91, arkret_wire::EventKind::RealmCreate, payload);
+        event.actor_id =
+            arkret_wire::ActorId::account(arkret_wire::AccountId::new(agent_core, station));
+        event.executed_by = Some(arkret_wire::ActorId::account(controller));
+        event.authorization_ref = Some(arkret_wire::AuthorizationRef::from(
+            arkret_wire::DidUrl::new(format!("{}#managed-controller", agent_did.as_str())).unwrap(),
+        ));
+        event.scope_ref = arkret_wire::ScopeRef::RealmGenesis;
+        event.created_at = crate::test_fixtures::at(2);
+        let mut authored = arkret_wire::AuthoredEvent::finalize_with_digest_suite(
+            event,
+            arkret_canonical::DigestSuite::Sha256,
+        )
+        .unwrap();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        sign_event(
+            &mut authored,
+            &Ed25519DetachedJwsSigner::new(
+                key.clone(),
+                format!(
+                    "did:web:{controller_name}.example#{}",
+                    crate::test_fixtures::device_id().as_str()
+                ),
+            ),
+            SignEventOptions::new().with_created_at(crate::test_fixtures::at(2)),
+        )
+        .unwrap();
+        let event = authored.into_event();
+        let accepted = seal_native_fixture_commit(crate::test_fixtures::commit(
+            91,
+            &event,
+            arkret_wire::CommitStreamRef::Realm {
+                realm_id: event.realm_id.clone(),
+            },
+            0,
+        ));
+        // Three independent coordinates: original device authorization,
+        // original authorizing cut revision and native genesis target.
+        let authorization_event =
+            arkret_wire::EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [81; 32]);
+        let authorization_commit = arkret_wire::RealmCommitId::from_digest([82; 32]);
+        let revision_commit = arkret_wire::RealmCommitId::from_digest([83; 32]);
+        let historical = arkret_models_identity::ResolvedSignerKey {
+            public_key_b64u: arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
+                key.verifying_key().as_bytes(),
+            ))
+            .unwrap(),
+            authorization_ref: CommittedEventRef {
+                event_id: authorization_event.clone(),
+                commit_id: authorization_commit,
+                stream_ref: arkret_wire::CommitStreamRef::Realm {
+                    realm_id: RealmId::from_event_id(&authorization_event),
+                },
+                stream_position: 0,
+            },
+            revision: arkret_wire::CurrentRevision {
+                commit_id: revision_commit,
+                stream_position: 1,
+            },
+            governance_generation: 0,
+        };
+        (event, accepted, historical)
+    }
+    fn seal_native_fixture_commit(
+        mut commit: arkret_wire::RealmCommit,
+    ) -> arkret_wire::RealmCommit {
+        commit.committed_at = crate::test_fixtures::at(3);
+        let mut body = serde_json::to_value(&commit).unwrap();
+        body.as_object_mut().unwrap().remove("commit_id");
+        body.as_object_mut().unwrap().remove("signature");
+        commit.commit_id = arkret_wire::RealmCommitId::from_digest(arkret_canonical::sha256_bytes(
+            &arkret_canonical::canonical_json_bytes(&body).unwrap(),
+        ));
+        let mut unsigned = serde_json::to_value(&commit).unwrap();
+        unsigned.as_object_mut().unwrap().remove("signature");
+        commit.signature = arkret_signatures::detached_object::sign_detached_object(
+            &unsigned,
+            arkret_wire::DetachedSignatureContext::RealmCommit,
+            arkret_wire::DidUrl::new("did:web:station.example#notary").unwrap(),
+            commit.committed_at,
+            &ed25519_dalek::SigningKey::from_bytes(&[43; 32]),
+        )
+        .unwrap();
+        commit
+    }
+
+    #[tokio::test]
+    async fn bound_self_agent_genesis_actual_historical_ed_and_closed_source_refusals() {
+        for refusal in [
+            "none",
+            "unavailable",
+            "bad_ed",
+            "wrong_target",
+            "wrong_session",
+            "wrong_request",
+            "wrong_account",
+            "wrong_slot",
+            "nonzero_position",
+            "distinct_authorization_time",
+        ] {
+            let (event, mut accepted, mut key) =
+                native_self_genesis_fixture(if refusal == "wrong_account" {
+                    "bob"
+                } else {
+                    "alice"
+                });
+            if refusal == "wrong_slot" {
+                accepted.event_ref = arkret_wire::EventId::from_digest(
+                    arkret_canonical::DigestSuite::Sha256,
+                    [98; 32],
+                );
+            }
+            if refusal == "nonzero_position" {
+                accepted.stream_position = 1;
+                accepted.previous_commit_ref =
+                    Some(arkret_wire::RealmCommitId::from_digest([99; 32]));
+            }
+            accepted = seal_native_fixture_commit(accepted);
+            let request = SelfAuthoritySubmitRequest::Event(
+                arkret_wire::EventAdmissionSubmission::new(event.clone()),
+            );
+            let outcome = SelfAuthoritySubmitOutcome::Ordinary(
+                arkret_wire::AuthoritySubmitOutcome::Accepted {
+                    status: arkret_wire::AuthorityCommitStatus::Committed,
+                    commit: accepted.clone(),
+                },
+            );
+            let needs_query = matches!(
+                refusal,
+                "none" | "unavailable" | "bad_ed" | "wrong_target" | "distinct_authorization_time"
+            );
+            if refusal == "bad_ed" {
+                key.public_key_b64u =
+                    arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
+                        ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+                            .verifying_key()
+                            .as_bytes(),
+                    ))
+                    .unwrap();
+            }
+            let mut bodies = vec![serde_json::to_value(outcome).unwrap()];
+            if needs_query {
+                bodies.push(serde_json::json!({"__signer_key":key,"__expected_native_target":CommittedEventRef{event_id:event.event_id.clone(),commit_id:accepted.commit_id.clone(),stream_ref:accepted.stream_ref.clone(),stream_position:accepted.stream_position},"__distinct_authorization_time":refusal=="distinct_authorization_time","__unavailable":refusal=="unavailable","__wrong_historical_target":refusal=="wrong_target"}));
+            }
+            let (source, server, observed) = observed_client(bodies);
+            let fetched = source
+                .submit_to_realm_authority(
+                    &request,
+                    &arkret_http_client::ClientRequestOptions::default(),
+                )
+                .await;
+            if refusal == "wrong_slot" && fetched.is_err() {
+                server.join().unwrap();
+                assert_eq!(observed.lock().unwrap().len(), 1);
+                continue;
+            }
+            let response = fetched.unwrap();
+            let mut expected = request.clone();
+            if refusal == "wrong_request" {
+                let SelfAuthoritySubmitRequest::Event(value) = &mut expected else {
+                    unreachable!()
+                };
+                value.event.created_at = crate::test_fixtures::at(4);
+            }
+            let result = if refusal == "wrong_session" {
+                let (foreign, idle) = client(vec![]);
+                idle.join().unwrap();
+                consume_bound_submission(&foreign, &expected, response).await
+            } else {
+                consume_bound_submission(&source, &expected, response).await
+            };
+            assert_eq!(
+                result.is_ok(),
+                matches!(refusal, "none" | "distinct_authorization_time"),
+                "closed self genesis source: {refusal}"
+            );
+            if refusal == "unavailable" {
+                assert!(
+                    result
+                        .unwrap_err()
+                        .to_string()
+                        .contains("exact historical producer signing key is unavailable")
+                );
+            }
+            server.join().unwrap();
+            let observed = observed.lock().unwrap();
+            assert_eq!(observed.len(), if needs_query { 2 } else { 1 });
+            assert!(observed[0].starts_with("post /_arkret/self/events "));
+            if needs_query {
+                assert!(observed[1].starts_with("post /_arkret/self/signer-keys/query "));
+            }
+            assert!(
+                !observed
+                    .iter()
+                    .any(|path| path.contains("scan") || path.contains("current"))
+            );
+            // This consumer takes no replica/install capability. These
+            // transport tests do not claim before/after existing-head proof.
+        }
+    }
+
+    #[tokio::test]
+    async fn native_genesis_disclosed_full_remains_ordinary_missing_digest_unavailable() {
+        let (event, accepted, _) = native_self_genesis_fixture("alice");
+        let (source, server, observed) =
+            observed_client(vec![serde_json::json!({"event":event,"commit":accepted})]);
+        let reference = CommittedEventRef {
+            event_id: event.event_id.clone(),
+            commit_id: accepted.commit_id.clone(),
+            stream_ref: accepted.stream_ref.clone(),
+            stream_position: 0,
+        };
+        let response = source.committed_event_get(&event.event_id).await.unwrap();
+        let error = consume_bound_event(&source, &reference, response)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("original ordinary Human signer source is unavailable")
+        );
+        server.join().unwrap();
+        assert_eq!(
+            observed.lock().unwrap().len(),
+            1,
+            "no historical or current lookup for ordinary missing digest"
+        );
     }
 
     #[tokio::test]
