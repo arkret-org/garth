@@ -199,6 +199,28 @@ impl SendQueue {
         }
     }
 
+    /// Retry the frozen request after a local failure left its authority outcome unknown.
+    pub fn retry_unknown(&mut self, event_id: &EventId, now: DateTime<Utc>) -> Result<bool> {
+        let Some(item) = self
+            .items
+            .iter_mut()
+            .find(|item| item.event_id() == event_id)
+        else {
+            return Ok(false);
+        };
+        if !matches!(
+            item.status,
+            SendQueueStatus::Failed | SendQueueStatus::Cancelled
+        ) || item.submission.state != SubmissionState::Queued
+        {
+            return Ok(false);
+        }
+        item.status = SendQueueStatus::Queued;
+        item.next_attempt_at_ms = now.timestamp_millis();
+        item.settled_at = None;
+        Ok(true)
+    }
+
     /// Claim the oldest item whose next attempt is due, marking it forwarding.
     fn claim_due(&mut self, now: DateTime<Utc>) -> Option<SendQueueItem> {
         let now_ms = now.timestamp_millis();
@@ -226,6 +248,33 @@ impl SendQueue {
             .ok_or_else(|| {
                 Error::Storage("the outbound item disappeared while in flight".to_owned())
             })?;
+        if item.status == SendQueueStatus::Committed
+            && status == SendQueueStatus::Committed
+            && submission.as_ref().is_some_and(|incoming| {
+                match (&incoming.state, &item.submission.state) {
+                    (
+                        SubmissionState::Committed { commit: new, .. },
+                        SubmissionState::Committed { commit: old, .. },
+                    ) => new != old,
+                    (
+                        SubmissionState::UnitCommitted { outcome: new },
+                        SubmissionState::UnitCommitted { outcome: old },
+                    ) => new != old,
+                    _ => true,
+                }
+            })
+        {
+            return Err(Error::Protocol(
+                "late accepted outcome conflicts with retained Commit".into(),
+            ));
+        }
+        if item.status == SendQueueStatus::Committed && status != SendQueueStatus::Committed {
+            item.last_error =
+                Some(error.unwrap_or_else(|| {
+                    "late outcome conflicts with retained accepted Commit".into()
+                }));
+            return Ok(item.clone());
+        }
         if let Some(submission) = submission {
             item.submission = submission;
         }
@@ -451,13 +500,13 @@ where
                         ));
                     }
                 };
-                let state = submission.state.clone();
                 let item = self
                     .store
                     .mutate_outbound(move |queue| {
                         queue.settle(&event_id, status, Some(submission), None, None, settled_at)
                     })
                     .await?;
+                let state = item.submission.state.clone();
                 Ok(match state {
                     SubmissionState::Committed { commit, .. } => OutboundEngineOutcome::Committed {
                         item: Box::new(item),
@@ -517,6 +566,12 @@ where
                         Ok(item)
                     })
                     .await?;
+                if let Some(commit) = item.commit().cloned() {
+                    return Ok(OutboundEngineOutcome::Committed {
+                        item: Box::new(item),
+                        commit: Box::new(commit),
+                    });
+                }
                 Ok(OutboundEngineOutcome::Failed {
                     item: Box::new(item),
                     error: message,
@@ -554,6 +609,12 @@ where
                 )
             })
             .await?;
+        if let Some(commit) = item.commit().cloned() {
+            return Ok(OutboundEngineOutcome::Committed {
+                item: Box::new(item),
+                commit: Box::new(commit),
+            });
+        }
         Ok(OutboundEngineOutcome::Retry {
             item: Box::new(item),
             delay,
@@ -659,7 +720,94 @@ mod tests {
         .unwrap()
     }
 
+    #[test]
+    fn accepted_queue_item_survives_late_failure_and_refuses_another_commit() {
+        let original = submission(3);
+        let mut queue = SendQueue::default();
+        queue
+            .enqueue(original.clone(), crate::test_fixtures::at(0))
+            .unwrap();
+        let stream = CommitStreamRef::from_scope(
+            &original.primary_event().scope_ref,
+            Some(original.primary_event().realm_id.clone()),
+        )
+        .unwrap();
+        let first = commit(7, original.primary_event(), stream.clone(), 1);
+        let mut accepted = original.clone();
+        accepted
+            .apply_outcome(AuthoritySubmitOutcome::Accepted {
+                status: AuthorityCommitStatus::Committed,
+                commit: first.clone(),
+            })
+            .unwrap();
+        queue
+            .settle(
+                &original.event_id,
+                SendQueueStatus::Committed,
+                Some(accepted.clone()),
+                None,
+                None,
+                crate::test_fixtures::at(1),
+            )
+            .unwrap();
+        let late = queue
+            .settle(
+                &original.event_id,
+                SendQueueStatus::Failed,
+                Some(original.clone()),
+                Some("lost response followed by 409".into()),
+                None,
+                crate::test_fixtures::at(2),
+            )
+            .unwrap();
+        assert_eq!(late.commit(), Some(&first));
+        let mut conflicting = original.clone();
+        conflicting
+            .apply_outcome(AuthoritySubmitOutcome::Accepted {
+                status: AuthorityCommitStatus::Committed,
+                commit: commit(8, original.primary_event(), stream, 2),
+            })
+            .unwrap();
+        assert!(
+            queue
+                .settle(
+                    &original.event_id,
+                    SendQueueStatus::Committed,
+                    Some(conflicting),
+                    None,
+                    None,
+                    crate::test_fixtures::at(3)
+                )
+                .is_err()
+        );
+        assert_eq!(
+            queue.get(&original.event_id).unwrap().commit(),
+            Some(&first)
+        );
+        accepted
+            .apply_outcome(AuthoritySubmitOutcome::Accepted {
+                status: AuthorityCommitStatus::Duplicate,
+                commit: first.clone(),
+            })
+            .unwrap();
+        assert_eq!(
+            queue
+                .settle(
+                    &original.event_id,
+                    SendQueueStatus::Committed,
+                    Some(accepted),
+                    None,
+                    None,
+                    crate::test_fixtures::at(4)
+                )
+                .unwrap()
+                .commit(),
+            Some(&first)
+        );
+    }
+
     enum Scripted {
+        LateFailure(MemoryOutboundQueueStore, u16),
         Accept,
         Reject,
         #[cfg(feature = "native")]
@@ -692,7 +840,52 @@ mod tests {
             let AuthoritySubmitRequest::Event(submission) = request else {
                 panic!("the fixture only submits ordinary Events");
             };
-            match self.script {
+            match &self.script {
+                Scripted::LateFailure(store, status) => {
+                    let mut accepted = QueuedSubmission::new(request.clone()).unwrap();
+                    accepted
+                        .apply_outcome(AuthoritySubmitOutcome::Accepted {
+                            status: AuthorityCommitStatus::Committed,
+                            commit: commit(
+                                7,
+                                &submission.event,
+                                CommitStreamRef::Realm {
+                                    realm_id: submission.event.realm_id.clone(),
+                                },
+                                1,
+                            ),
+                        })
+                        .unwrap();
+                    let event_id = accepted.event_id.clone();
+                    store
+                        .mutate_outbound(move |queue| {
+                            queue.settle(
+                                &event_id,
+                                SendQueueStatus::Committed,
+                                Some(accepted),
+                                None,
+                                None,
+                                crate::test_fixtures::at(1),
+                            )
+                        })
+                        .await
+                        .unwrap();
+                    if *status == 0 {
+                        Ok(AuthoritySubmitOutcome::Rejected {
+                            status: AuthorityRejectionStatus::Rejected,
+                            reason_code: "late_rejection".into(),
+                        })
+                    } else {
+                        Err(Error::Api {
+                            status: *status,
+                            error: Box::new(Problem::new(
+                                "param_invalid",
+                                *status,
+                                "late transport error",
+                            )),
+                        })
+                    }
+                }
                 Scripted::Accept => Ok(AuthoritySubmitOutcome::Accepted {
                     status: AuthorityCommitStatus::Committed,
                     commit: commit(
@@ -751,6 +944,55 @@ mod tests {
 
     fn engine() -> OutboundEngine<MemoryOutboundQueueStore, FixedClock> {
         OutboundEngine::new(MemoryOutboundQueueStore::new(), FixedClock)
+    }
+
+    #[tokio::test]
+    async fn an_in_flight_late_error_or_rejection_returns_the_durable_original_acceptance() {
+        for status in [0, 400, 503] {
+            let engine = engine();
+            engine.enqueue(submission(3)).await.unwrap();
+            let authority = AuthorityClient::new(ScriptedTransport::new(Scripted::LateFailure(
+                engine.store.clone(),
+                status,
+            )));
+            let outcome = engine
+                .submit_next(&authority, &ClientRequestOptions::default())
+                .await
+                .unwrap();
+            let OutboundEngineOutcome::Committed { item, commit } = outcome else {
+                panic!("late outcome replaced durable acceptance")
+            };
+            assert_eq!(item.status, SendQueueStatus::Committed);
+            assert_eq!(item.commit(), Some(commit.as_ref()));
+            assert_eq!(commit.stream_position, 1);
+        }
+    }
+
+    #[test]
+    fn unknown_failure_retries_the_original_frozen_request() {
+        let original = submission(3);
+        let mut queue = SendQueue::default();
+        queue
+            .enqueue(original.clone(), crate::test_fixtures::at(0))
+            .unwrap();
+        queue
+            .settle(
+                &original.event_id,
+                SendQueueStatus::Failed,
+                None,
+                Some("409 without finality".into()),
+                None,
+                crate::test_fixtures::at(1),
+            )
+            .unwrap();
+        assert!(
+            queue
+                .retry_unknown(&original.event_id, crate::test_fixtures::at(2))
+                .unwrap()
+        );
+        let recovered = queue.claim_due(crate::test_fixtures::at(2)).unwrap();
+        assert_eq!(recovered.request(), &original.request);
+        assert_eq!(recovered.submission.state, SubmissionState::Queued);
     }
 
     #[tokio::test]

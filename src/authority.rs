@@ -558,6 +558,27 @@ impl QueuedSubmission {
             }
         };
         outcome.validate_for_request(&ordinary)?;
+        if let SubmissionState::Committed {
+            commit: installed, ..
+        } = &self.state
+        {
+            match &outcome {
+                AuthoritySubmitOutcome::Accepted { commit, .. } if installed.as_ref() != commit => {
+                    return Err(Error::Protocol(
+                        "conflicting accepted outcomes for the frozen Event".into(),
+                    ));
+                }
+                AuthoritySubmitOutcome::Rejected {
+                    status: arkret_wire::AuthorityRejectionStatus::Rejected,
+                    ..
+                } => {
+                    return Err(Error::Protocol(
+                        "authority rejection conflicts with the retained accepted Commit".into(),
+                    ));
+                }
+                _ => return Ok(()),
+            }
+        }
         self.state = match outcome {
             AuthoritySubmitOutcome::Accepted { status, commit } => SubmissionState::Committed {
                 status,

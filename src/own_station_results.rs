@@ -584,6 +584,67 @@ async fn verify_row_from_source(
         .producer_proof
         .as_ref()
         .ok_or_else(|| protocol("disclosed Event has no producer proof"))?;
+    if matches!(event.actual_signer(), arkret_wire::ActorId::Service { .. })
+        && event.applet_id.is_some()
+    {
+        let selector = SignerKeyQuerySelector::HistoricalEvent {
+            sender: HistoricalSignerKeyQuerySender::Service {
+                actor: event.actual_signer().clone(),
+                verification_method: proof.verification_method.clone(),
+                committed_event_ref: CommittedEventRef {
+                    event_id: event.event_id.clone(),
+                    commit_id: full.commit.commit_id.clone(),
+                    stream_ref: full.commit.stream_ref.clone(),
+                    stream_position: full.commit.stream_position,
+                },
+            },
+        };
+        let request = SignerKeysQueryRequestBody {
+            request_id: request_id()?,
+            realm_id: event.realm_id.clone(),
+            recipient_account_id: client.session()?.account_id().clone(),
+            queries: vec![selector],
+        };
+        let outcome = client.signer_keys_query(&request).await?;
+        outcome
+            .value()?
+            .validate_for_request(&request)
+            .map_err(|e| protocol(&e.to_string()))?;
+        let Some(SignerKeyQueryResult::HistoricalServiceResolved {
+            key, accepted_at, ..
+        }) = outcome.value()?.results.first()
+        else {
+            return Err(protocol(
+                "exact historical Service signing key is unavailable",
+            ));
+        };
+        let fact = arkret_models_collaboration::authority_commit::ServiceHistoricalSignerFact {
+            event_id: event.event_id.clone(),
+            actor: event.actual_signer().clone(),
+            verification_method: proof.verification_method.clone(),
+            key: key.clone(),
+            accepted_at: *accepted_at,
+        };
+        fact.validate_commit_binding(full, suite)
+            .map_err(|e| protocol(&e.to_string()))?;
+        let material = arkret_signatures::PublicKeyMaterial::Ed25519Raw {
+            bytes: arkret_canonical::base64url_decode(key.public_key_b64u.as_str())
+                .map_err(|e| protocol(&e.to_string()))?,
+        };
+        let bytes = arkret_signatures::EventProofBuilder::new()
+            .envelope_bytes(event)
+            .map_err(|e| protocol(&e.to_string()))?;
+        arkret_signatures::verify_ed25519_detached_jws_proof_with_digest_suite(
+            proof,
+            &bytes,
+            &event.actor_id,
+            &material,
+            suite,
+        )
+        .map_err(|e| protocol(&e.to_string()))?;
+        client.check_session()?;
+        return Ok(());
+    }
     if event.actual_signer().as_account_id().is_none() {
         // A service-generated franking original may be retained in an
         // ordinary timeline. This verifies its content/proof consistency and
@@ -1188,7 +1249,38 @@ mod tests {
                     .lock()
                     .unwrap()
                     .push(headers.lines().next().unwrap().to_owned());
-                let body = if let Some(key) = body.get("__signer_key") {
+                let body = if let Some(key) = body.get("__service_key") {
+                    let request: SignerKeysQueryRequestBody =
+                        serde_json::from_slice(&request_bytes[header_end..header_end + body_len])
+                            .unwrap();
+                    let selector = request.queries[0].clone();
+                    assert!(matches!(
+                        selector,
+                        SignerKeyQuerySelector::HistoricalEvent {
+                            sender: HistoricalSignerKeyQuerySender::Service { .. }
+                        }
+                    ));
+                    let result = if body
+                        .get("__unavailable")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true)
+                    {
+                        SignerKeyQueryResult::Unavailable { selector }
+                    } else {
+                        SignerKeyQueryResult::HistoricalServiceResolved {
+                            selector,
+                            key: serde_json::from_value(key.clone()).unwrap(),
+                            accepted_at: crate::test_fixtures::at(3),
+                        }
+                    };
+                    serde_json::to_value(arkret_models_identity::SignerKeysQueryOutcome {
+                        request_id: request.request_id,
+                        realm_id: request.realm_id,
+                        recipient_account_id: request.recipient_account_id,
+                        results: vec![result],
+                    })
+                    .unwrap()
+                } else if let Some(key) = body.get("__signer_key") {
                     let request: SignerKeysQueryRequestBody =
                         serde_json::from_slice(&request_bytes[header_end..header_end + body_len])
                             .unwrap();
@@ -1899,6 +1991,102 @@ mod tests {
             crate::test_fixtures::commit(92, &event, CommitStreamRef::Realm { realm_id: realm }, 3);
         commit.previous_commit_ref = Some(historical.revision.commit_id.clone());
         (event, seal_native_fixture_commit(commit), historical)
+    }
+
+    #[tokio::test]
+    async fn ordinary_applet_service_consumption_verifies_the_original_ed25519_and_minimal_binding()
+    {
+        use arkret_models_collaboration::authority_commit::ServiceHistoricalSignerFact;
+        use arkret_models_identity::ServiceHistoricalSigningKey;
+        let suite = arkret_canonical::DigestSuite::Sha256;
+        let mut event = crate::test_fixtures::event(
+            71,
+            arkret_wire::EventKind::MessageCreate,
+            serde_json::json!({"content":{"kind":"ak.content.text","body":"original Service"}}),
+        );
+        let coordinate = |byte| CommittedEventRef {
+            event_id: arkret_wire::EventId::from_digest(suite, [byte; 32]),
+            commit_id: arkret_wire::RealmCommitId::from_digest([byte; 32]),
+            stream_ref: crate::test_fixtures::realm_stream(),
+            stream_position: 0,
+        };
+        event.applet_id = Some(
+            arkret_wire::AppletId::new("ak:applet:019b0000-0000-7000-8000-000000000071").unwrap(),
+        );
+        event.authorization_ref =
+            Some(arkret_wire::GrantId::from_event_id(&coordinate(72).event_id).into());
+        let method = arkret_wire::DidUrl::new("did:web:alice.example#producer").unwrap();
+        let mut authored =
+            arkret_wire::AuthoredEvent::finalize_with_digest_suite(event, suite).unwrap();
+        arkret_signatures::sign_event(
+            &mut authored,
+            &arkret_signatures::Ed25519DetachedJwsSigner::from_seed([73; 32], method.to_string()),
+            arkret_signatures::SignEventOptions::new().with_created_at(crate::test_fixtures::at(0)),
+        )
+        .unwrap();
+        let event = authored.into_event();
+        let fact = ServiceHistoricalSignerFact {
+            event_id: event.event_id.clone(),
+            actor: event.actual_signer().clone(),
+            verification_method: method,
+            key: ServiceHistoricalSigningKey {
+                public_key_b64u: arkret_wire::Base64UrlString::new(
+                    arkret_canonical::base64url_encode(
+                        ed25519_dalek::SigningKey::from_bytes(&[73; 32])
+                            .verifying_key()
+                            .as_bytes(),
+                    ),
+                )
+                .unwrap(),
+                applet_id: event.applet_id.clone().unwrap(),
+                registration_epoch: arkret_wire::Hash::new(format!("sha256:{}", "74".repeat(32)))
+                    .unwrap(),
+                registration_ref: coordinate(71),
+                authorization_ref: coordinate(72),
+                effective_scope: event.scope_ref.clone(),
+            },
+            accepted_at: crate::test_fixtures::at(3),
+        };
+        let mut accepted =
+            crate::test_fixtures::commit(75, &event, crate::test_fixtures::realm_stream(), 2);
+        accepted.producer_signer_fact_digest = Some(fact.digest().unwrap());
+        let full = arkret_wire::CommittedEventFullView {
+            event,
+            commit: seal_native_fixture_commit(accepted),
+        };
+        for refusal in [
+            "none",
+            "unavailable",
+            "wrong_key",
+            "wrong_epoch",
+            "wrong_grant",
+        ] {
+            let mut key = fact.key.clone();
+            match refusal {
+                "wrong_key" => {
+                    key.public_key_b64u =
+                        arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
+                            ed25519_dalek::SigningKey::from_bytes(&[76; 32])
+                                .verifying_key()
+                                .as_bytes(),
+                        ))
+                        .unwrap()
+                }
+                "wrong_epoch" => {
+                    key.registration_epoch =
+                        arkret_wire::Hash::new(format!("sha256:{}", "76".repeat(32))).unwrap()
+                }
+                "wrong_grant" => key.authorization_ref = coordinate(76),
+                _ => {}
+            }
+            let (client, server, observed) = observed_client(vec![
+                serde_json::json!({"__service_key":key,"__unavailable":refusal=="unavailable"}),
+            ]);
+            let result = verify_row(&client, &CommittedEventView::Full(full.clone())).await;
+            assert_eq!(result.is_ok(), refusal == "none", "{refusal}: {result:?}");
+            server.join().unwrap();
+            assert_eq!(observed.lock().unwrap().len(), 1);
+        }
     }
 
     #[tokio::test]
