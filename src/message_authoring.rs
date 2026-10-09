@@ -576,10 +576,10 @@ impl DomainRevisionContext {
         selector: &arkret_wire::CurrentSelector,
         stream: &arkret_wire::CommitStreamRef,
         expected: Option<arkret_wire::CurrentRevision>,
-        current: Option<&arkret_wire::TypedCurrentResult>,
+        current: Option<&arkret_wire::TypedCurrentRow>,
     ) -> Result<Self> {
         let current = match current {
-            Some(arkret_wire::TypedCurrentResult::Value {
+            Some(arkret_wire::TypedCurrentRow::Value {
                 selector: actual_selector,
                 source_stream_ref,
                 revision,
@@ -1016,7 +1016,7 @@ mod tests {
     #[test]
     fn domain_failed_precondition_requires_explicit_exact_revision_context() {
         use arkret_wire::{
-            CommitStreamRef, CurrentRevision, CurrentSelector, RealmCommitId, TypedCurrentResult,
+            CommitStreamRef, CurrentRevision, CurrentSelector, RealmCommitId, TypedCurrentRow,
         };
         let selector = CurrentSelector::DeviceGeneration;
         let stream = CommitStreamRef::Realm {
@@ -1030,7 +1030,7 @@ mod tests {
             commit_id: RealmCommitId::from_digest([2; 32]),
             stream_position: 7,
         };
-        let current = TypedCurrentResult::Value {
+        let current = TypedCurrentRow::Value {
             selector: selector.clone(),
             source_stream_ref: stream.clone(),
             revision: current_revision.clone(),

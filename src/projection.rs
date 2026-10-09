@@ -16,7 +16,7 @@ use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountSubscribeFrameKind, AgentDraftPendingIntentContainer, NotificationDelta, RealmSyncEntry,
     StationCasAccountDataContainer,
 };
-use arkret_models_collaboration::sync_frames::current_results::AccountCurrentResult;
+use arkret_models_collaboration::sync_frames::current_results::AccountCurrentView;
 use arkret_wire::{
     CommitStreamHead, CommitStreamRef, CommittedEventRef, CommittedEventView, Event, EventKind,
     RealmCommit, RealmId, RealmStateSnapshot,
@@ -89,7 +89,7 @@ pub enum ClientEvent {
     RealmProjection {
         realm_id: RealmId,
         incremental: bool,
-        value: Box<AccountCurrentResult>,
+        value: Box<AccountCurrentView>,
     },
     /// The current signed typed snapshot the Station published for a Realm.
     RealmSnapshot(Box<RealmStateSnapshot>),
@@ -614,8 +614,8 @@ mod tests {
         }
     }
 
-    fn current(heads: Vec<CommitStreamHead>) -> AccountCurrentResult {
-        AccountCurrentResult {
+    fn current(heads: Vec<CommitStreamHead>) -> AccountCurrentView {
+        AccountCurrentView {
             realm_id: realm_id(),
             governance_generation: 7,
             stream_heads: heads,
@@ -719,7 +719,7 @@ mod tests {
         let foreign_realm =
             RealmId::from_event_id(&EventId::from_digest(DigestSuite::Sha256, [0x66; 32]));
         let entry = RealmSyncEntry {
-            current: Some(AccountCurrentResult {
+            current: Some(AccountCurrentView {
                 realm_id: foreign_realm,
                 governance_generation: 7,
                 stream_heads: Vec::new(),

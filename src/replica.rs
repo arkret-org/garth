@@ -9,7 +9,7 @@ use arkret_models_collaboration::sync_frames::account_sync::StreamWindowStartBas
 use arkret_wire::{
     AuthorityBundleRequest, CommitStreamHead, CommitStreamRef, CommittedEventView, HistoryAccess,
     ReadableFloor, RealmAuthorityBundle, RealmCommit, RealmId, RealmSnapshotId, RealmStateSnapshot,
-    StreamScanDirection, StreamScanOutcome, StreamScanRequest, TypedCurrentResult,
+    StreamScanDirection, StreamScanOutcome, StreamScanRequest, TypedCurrentRow,
 };
 
 use crate::{Error, Result};
@@ -34,18 +34,18 @@ pub struct VerifiedScanPage {
 /// when the signed snapshot covers several independent streams.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VerifiedFloorSnapshot {
-    rows: Vec<TypedCurrentResult>,
+    rows: Vec<TypedCurrentRow>,
     head: CommitStreamHead,
     governance_generation: u64,
     history_access: HistoryAccess,
 }
 
 impl VerifiedFloorSnapshot {
-    pub fn rows(&self) -> &[TypedCurrentResult] {
+    pub fn rows(&self) -> &[TypedCurrentRow] {
         &self.rows
     }
 
-    pub fn into_rows(self) -> Vec<TypedCurrentResult> {
+    pub fn into_rows(self) -> Vec<TypedCurrentRow> {
         self.rows
     }
 
@@ -505,7 +505,7 @@ impl RealmReplica {
                 .current_state_entries
                 .iter()
                 .filter(|row| match row {
-                    TypedCurrentResult::Value {
+                    TypedCurrentRow::Value {
                         source_stream_ref, ..
                     } => source_stream_ref == stream_ref,
                 })
@@ -822,7 +822,7 @@ pub(crate) fn validate_snapshot(snapshot: &RealmStateSnapshot, realm_id: &RealmI
     let mut commits = BTreeMap::new();
     for row in &snapshot.current_state_entries {
         let (selector, source_stream_ref, revision) = match row {
-            arkret_wire::TypedCurrentResult::Value {
+            arkret_wire::TypedCurrentRow::Value {
                 selector,
                 source_stream_ref,
                 revision,
@@ -1087,7 +1087,7 @@ mod tests {
             )
             .unwrap();
         };
-        let row = arkret_wire::TypedCurrentResult::Value {
+        let row = arkret_wire::TypedCurrentRow::Value {
             selector: arkret_wire::CurrentSelector::RealmProfile,
             source_stream_ref: stream_ref.clone(),
             revision: arkret_wire::CurrentRevision {
@@ -1121,7 +1121,7 @@ mod tests {
             {
                 let mut value = snapshot.clone();
                 let mut wrong_source = row.clone();
-                let arkret_wire::TypedCurrentResult::Value {
+                let arkret_wire::TypedCurrentRow::Value {
                     source_stream_ref, ..
                 } = &mut wrong_source;
                 *source_stream_ref = CommitStreamRef::Realm {
@@ -1136,8 +1136,7 @@ mod tests {
             {
                 let mut value = snapshot.clone();
                 let mut other_head_commit = row.clone();
-                let arkret_wire::TypedCurrentResult::Value { revision, .. } =
-                    &mut other_head_commit;
+                let arkret_wire::TypedCurrentRow::Value { revision, .. } = &mut other_head_commit;
                 revision.commit_id = genesis_commit.commit_id.clone();
                 value.current_state_entries = vec![other_head_commit];
                 value
@@ -1147,11 +1146,11 @@ mod tests {
                 let mut first = row.clone();
                 let mut second = row.clone();
                 for (row, commit) in [(&mut first, [0x61; 32]), (&mut second, [0x62; 32])] {
-                    let arkret_wire::TypedCurrentResult::Value { revision, .. } = row;
+                    let arkret_wire::TypedCurrentRow::Value { revision, .. } = row;
                     revision.stream_position = 0;
                     revision.commit_id = arkret_wire::RealmCommitId::from_digest(commit);
                 }
-                let arkret_wire::TypedCurrentResult::Value { selector, .. } = &mut second;
+                let arkret_wire::TypedCurrentRow::Value { selector, .. } = &mut second;
                 *selector = arkret_wire::CurrentSelector::RealmDiscovery;
                 value.current_state_entries = vec![first, second];
                 value
@@ -1159,7 +1158,7 @@ mod tests {
             {
                 let mut value = snapshot.clone();
                 let mut future_row = row.clone();
-                let arkret_wire::TypedCurrentResult::Value { revision, .. } = &mut future_row;
+                let arkret_wire::TypedCurrentRow::Value { revision, .. } = &mut future_row;
                 revision.stream_position = snapshot_head.stream_position + 1;
                 value.current_state_entries = vec![future_row];
                 value
@@ -1265,13 +1264,13 @@ mod tests {
             stream_position: 0,
         };
         let signed_rows = vec![
-            arkret_wire::TypedCurrentResult::Value {
+            arkret_wire::TypedCurrentRow::Value {
                 selector: arkret_wire::CurrentSelector::RealmGenesis,
                 source_stream_ref: stream_ref.clone(),
                 revision: genesis_revision.clone(),
                 value: serde_json::to_value(genesis_value).unwrap(),
             },
-            arkret_wire::TypedCurrentResult::Value {
+            arkret_wire::TypedCurrentRow::Value {
                 selector: arkret_wire::CurrentSelector::RealmAuthorityRoot,
                 source_stream_ref: stream_ref.clone(),
                 revision: genesis_revision,
@@ -1388,7 +1387,7 @@ mod tests {
             stream_position: 0,
             commit_id: arkret_wire::RealmCommitId::from_digest([0x55; 32]),
         };
-        let circle_row = TypedCurrentResult::Value {
+        let circle_row = TypedCurrentRow::Value {
             selector: arkret_wire::CurrentSelector::Circle { circle_id },
             source_stream_ref: circle_stream.clone(),
             revision: arkret_wire::CurrentRevision {
