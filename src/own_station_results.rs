@@ -12,13 +12,13 @@ use arkret_models_collaboration::authority_commit::{
 };
 use arkret_models_collaboration::sync_frames::account_sync::StreamWindowStartBasis;
 use arkret_models_identity::signer_key_operations::{
-    HistoricalSignerKeyQuerySender, SignerKeyQueryResult, SignerKeyQuerySelector,
+    HistoricalSignerKeyQuerySender, SignerKeyQueryOutcome, SignerKeyQuerySelector,
     SignerKeysQueryRequestBody,
 };
 use arkret_wire::{
     CommitStreamHead, CommitStreamRef, CommittedEventRef, CommittedEventView, EventId,
     ReadableFloor, RealmId, RealmSnapshotId, RealmStateSnapshot, RequestId, StreamScanDirection,
-    StreamScanOutcome, StreamScanRequest, TypedCurrentResult,
+    StreamScanOutcome, StreamScanRequest, TypedCurrentRow,
 };
 
 use crate::{Error, Result};
@@ -61,14 +61,14 @@ impl OwnStationFloorSnapshot {
     pub fn history_access(&self) -> Result<arkret_wire::HistoryAccess> {
         Ok(self.snapshot()?.retention_and_history_floor.history_access)
     }
-    pub fn rows(&self) -> Result<Vec<TypedCurrentResult>> {
+    pub fn rows(&self) -> Result<Vec<TypedCurrentRow>> {
         Ok(self
             .response
             .value()?
             .current_state_entries
             .iter()
             .filter(|row| match row {
-                TypedCurrentResult::Value {
+                TypedCurrentRow::Value {
                     source_stream_ref, ..
                 } => source_stream_ref == &self.stream_ref,
             })
@@ -610,7 +610,7 @@ async fn verify_row_from_source(
             .value()?
             .validate_for_request(&request)
             .map_err(|e| protocol(&e.to_string()))?;
-        let Some(SignerKeyQueryResult::HistoricalServiceResolved {
+        let Some(SignerKeyQueryOutcome::HistoricalServiceResolved {
             key, accepted_at, ..
         }) = outcome.value()?.results.first()
         else {
@@ -704,7 +704,7 @@ async fn verify_row_from_source(
         .value()?
         .validate_for_request(&request)
         .map_err(|error| protocol(&error.to_string()))?;
-    let Some(SignerKeyQueryResult::HistoricalResolved {
+    let Some(SignerKeyQueryOutcome::HistoricalResolved {
         key, accepted_at, ..
     }) = outcome.value()?.results.first()
     else {
@@ -1265,9 +1265,9 @@ mod tests {
                         .and_then(serde_json::Value::as_bool)
                         == Some(true)
                     {
-                        SignerKeyQueryResult::Unavailable { selector }
+                        SignerKeyQueryOutcome::Unavailable { selector }
                     } else {
-                        SignerKeyQueryResult::HistoricalServiceResolved {
+                        SignerKeyQueryOutcome::HistoricalServiceResolved {
                             selector,
                             key: serde_json::from_value(key.clone()).unwrap(),
                             accepted_at: crate::test_fixtures::at(3),
@@ -1346,9 +1346,9 @@ mod tests {
                                 .and_then(serde_json::Value::as_bool)
                                 == Some(true)
                             {
-                                SignerKeyQueryResult::Unavailable { selector }
+                                SignerKeyQueryOutcome::Unavailable { selector }
                             } else {
-                                SignerKeyQueryResult::HistoricalResolved {
+                                SignerKeyQueryOutcome::HistoricalResolved {
                                     selector,
                                     key,
                                     accepted_at: if body
