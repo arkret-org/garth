@@ -177,6 +177,7 @@ jobs:
         run: ./scripts/build-soland-image.ps1 -ImageTag cotest-soland:compatibility
 
       - name: Prepare Linux joint prerequisites
+        id: joint_prerequisites
         run: bash cotest/scripts/prepare-linux-joint-e2e.sh setup
 
       - name: Run ordered wire and joint contract gates
@@ -188,7 +189,7 @@ jobs:
           --category contract
 
       - name: Restore Linux hosts permissions
-        if: always()
+        if: always() && steps.joint_prerequisites.outcome != 'skipped' && steps.joint_prerequisites.outcome != ''
         run: bash cotest/scripts/prepare-linux-joint-e2e.sh restore
 
       - name: Preserve joint failure evidence
