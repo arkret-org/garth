@@ -171,7 +171,7 @@ where
         let mut stream_gap_retries = 0;
         while !self.control.is_cancelled() {
             let result = match transport.subscribe(&request).await {
-                Err(Error::StreamPositionGap { .. }) if stream_gap_retries < 3 => {
+                Err(error) if error.is_stream_interruption() && stream_gap_retries < 3 => {
                     stream_gap_retries += 1;
                     self.executor.sleep(Duration::from_secs(1)).await;
                     continue;
@@ -222,7 +222,7 @@ where
                         )
                         .await;
                     match projected {
-                        Err(Error::StreamPositionGap { .. }) if stream_gap_retries < 3 => {
+                        Err(error) if error.is_stream_interruption() && stream_gap_retries < 3 => {
                             // The candidate never crossed the durable barrier.
                             // Reuse the last cursor so the projector independently
                             // refetches snapshot/tail without clearing other streams

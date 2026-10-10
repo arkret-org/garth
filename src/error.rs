@@ -39,6 +39,11 @@ pub enum Error {
         expected: u64,
         actual: u64,
     },
+    /// The declared window extends beyond the verified readable tail.
+    #[error("stream {stream_ref:?} has an incomplete readable tail")]
+    StreamTailIncomplete {
+        stream_ref: arkret_wire::CommitStreamRef,
+    },
     #[error("protocol error: {0}")]
     Protocol(String),
     #[error("storage error: {0}")]
@@ -46,6 +51,13 @@ pub enum Error {
 }
 
 impl Error {
+    pub fn is_stream_interruption(&self) -> bool {
+        matches!(
+            self,
+            Self::StreamPositionGap { .. } | Self::StreamTailIncomplete { .. }
+        )
+    }
+
     pub fn is_invalid_cursor(&self) -> bool {
         let Self::Api { error, .. } = self else {
             return false;

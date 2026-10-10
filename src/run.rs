@@ -184,8 +184,9 @@ pub fn classify_error(error: &Error) -> RunErrorClass {
         Error::ExactSnapshotRefused(crate::exact_snapshot::ExactSnapshotRefusal::Unavailable) => {
             RunErrorClass::RetryableTransport
         }
-        Error::ExactSnapshotRefused(_) | Error::StreamPositionGap { .. } => {
-            RunErrorClass::ProtocolViolation
+        Error::ExactSnapshotRefused(_) => RunErrorClass::ProtocolViolation,
+        Error::StreamPositionGap { .. } | Error::StreamTailIncomplete { .. } => {
+            RunErrorClass::RetryableTransport
         }
     }
 }
