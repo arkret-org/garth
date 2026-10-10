@@ -33,6 +33,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           path: candidate-source
+          persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
 
       - name: Checkout compatibility manifest source
@@ -40,6 +41,7 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/arkret-rust-sdk
           path: .compatibility-source
+          persist-credentials: false
           ref: ${{ inputs.manifest_ref || 'main' }}
           token: ${{ secrets.CI_REPO_TOKEN || github.token }}
 
@@ -48,9 +50,13 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gate_source=.compatibility-source
+          resolver_root="$RUNNER_TEMP/compatibility-resolver-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          mkdir -p "$resolver_root"
+          mv -- "$GITHUB_WORKSPACE/candidate-source" "$resolver_root/candidate-source"
+          mv -- "$GITHUB_WORKSPACE/.compatibility-source" "$resolver_root/manifest-source"
+          gate_source="$resolver_root/manifest-source"
           if [ "$CANDIDATE_REPOSITORY" = "arkret-rust-sdk" ]; then
-            gate_source=candidate-source
+            gate_source="$resolver_root/candidate-source"
           fi
           python "$gate_source/tools/compatibility_gate.py" resolve             --manifest "$gate_source/compatibility/manifest.json"             --candidate "$CANDIDATE_REPOSITORY=$CANDIDATE_SHA"             --output "${{ runner.temp }}/resolved-compatibility-manifest.json"             --github-output "$GITHUB_OUTPUT"
 
