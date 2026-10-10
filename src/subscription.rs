@@ -169,8 +169,14 @@ where
         request.validate()?;
 
         let mut stream_gap_retries = 0;
+        let mut revision_stale_retries = 0;
         while !self.control.is_cancelled() {
             let result = match transport.subscribe(&request).await {
+                Err(error) if error.is_revision_stale() && revision_stale_retries < 3 => {
+                    revision_stale_retries += 1;
+                    self.executor.sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
                 Err(error) if error.is_stream_interruption() && stream_gap_retries < 3 => {
                     stream_gap_retries += 1;
                     self.executor.sleep(Duration::from_secs(1)).await;
@@ -235,6 +241,7 @@ where
                         other => other?,
                     }
                     stream_gap_retries = 0;
+                    revision_stale_retries = 0;
                     station_cas = next_station_cas;
                     request.after = Some(batch.cursor);
                     request.catchup = Some(false);
@@ -406,6 +413,77 @@ mod tests {
             service_id: None,
             actor_id: actor_id(),
             device_id: device_id(),
+        }
+    }
+
+    #[tokio::test]
+    async fn revision_stale_waits_with_the_exact_checkpoint_and_never_resets_baseline() {
+        for failures in [1, 4] {
+            let store = crate::MemoryStore::new();
+            let checkpoint = AccountCursorCheckpoint {
+                cursor: "ak:cursor:durable".into(),
+                station_cas: Default::default(),
+            };
+            store
+                .save_account_checkpoint(scope(), checkpoint.clone())
+                .await
+                .unwrap();
+            let subscription = AccountSubscription::new(ImmediateExecutor, store.clone());
+            let transport = ScriptedTransport::new(Vec::new());
+            for _ in 0..failures {
+                transport
+                    .responses
+                    .lock()
+                    .unwrap()
+                    .push_back(Err(Error::Api {
+                        status: 409,
+                        error: Box::new(arkret_wire::Problem::new(
+                            "revision_stale",
+                            409,
+                            "verified frontier is behind",
+                        )),
+                    }));
+            }
+            if failures == 1 {
+                transport.responses.lock().unwrap().push_back(Ok(
+                    AccountSubscribeSnapshotResult::Batch(AccountSubscribeBatch {
+                        frames: Vec::new(),
+                        cursor: "ak:cursor:caught-up".into(),
+                    }),
+                ));
+            }
+            let projector = Projector::new((failures == 1).then(|| subscription.control()), false);
+            let result = subscription
+                .run(
+                    &transport,
+                    &projector,
+                    None,
+                    actor_id(),
+                    device_id(),
+                    SyncRequestBody::default(),
+                )
+                .await;
+            if failures == 1 {
+                assert!(result.is_ok());
+                assert_eq!(
+                    store.load(scope()).await.unwrap().as_deref(),
+                    Some("ak:cursor:caught-up")
+                );
+                assert_eq!(projector.calls.load(Ordering::SeqCst), 1);
+            } else {
+                assert!(result.unwrap_err().is_revision_stale());
+                assert_eq!(
+                    store.load_account_checkpoint(scope()).await.unwrap(),
+                    Some(checkpoint)
+                );
+                assert_eq!(projector.calls.load(Ordering::SeqCst), 0);
+            }
+            assert_eq!(projector.resets.load(Ordering::SeqCst), 0);
+            let requests = transport.requests.lock().unwrap();
+            assert_eq!(requests.len(), if failures == 1 { 2 } else { 4 });
+            assert!(requests.iter().all(|request| request.after.as_deref()
+                == Some("ak:cursor:durable")
+                && request.catchup == Some(false)));
         }
     }
 

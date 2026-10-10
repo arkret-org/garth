@@ -51,6 +51,12 @@ pub enum Error {
 }
 
 impl Error {
+    pub fn is_revision_stale(&self) -> bool {
+        matches!(self, Self::Api { status: 409, error }
+            if error.status == 409
+                && error.error_code() == Some(arkret_wire::ErrorCode::RevisionStale))
+    }
+
     pub fn is_stream_interruption(&self) -> bool {
         matches!(
             self,
@@ -91,6 +97,29 @@ impl Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn causal_frontier_lag_is_not_a_generic_conflict_or_cursor_reset() {
+        for (code, status, expected) in [
+            ("revision_stale", 409, true),
+            ("cas_conflict", 409, false),
+            ("revision_stale", 400, false),
+            ("cursor_integrity_invalid", 400, false),
+        ] {
+            let failure = Error::Api {
+                status,
+                error: Box::new(Problem::new(code, status, "classified test refusal")),
+            };
+            assert_eq!(failure.is_revision_stale(), expected);
+            if expected {
+                assert!(!failure.is_invalid_cursor());
+                assert_eq!(
+                    crate::run::classify_error(&failure),
+                    crate::RunErrorClass::RetryableTransport
+                );
+            }
+        }
+    }
 
     #[test]
     fn canonical_cursor_constraint_messages_keep_their_reset_semantics() {
