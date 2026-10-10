@@ -147,7 +147,7 @@ jobs:
       - name: Install Linux desktop dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev dbus-x11 gnome-keyring libsecret-tools
 
       - name: Run ordered compile matrix
         run: >-
@@ -172,6 +172,7 @@ jobs:
 
       - name: Run ordered wire and joint contract gates
         run: >-
+          bash inkson/scripts/with-native-keystore.sh
           python arkret-rust-sdk/tools/compatibility_gate.py run
           --manifest "${{ runner.temp }}/resolved-compatibility-manifest.json"
           --workspace-root .
