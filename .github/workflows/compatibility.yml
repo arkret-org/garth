@@ -58,7 +58,16 @@ jobs:
           if [ "$CANDIDATE_REPOSITORY" = "arkret-rust-sdk" ]; then
             gate_source="$resolver_root/candidate-source"
           fi
-          python "$gate_source/tools/compatibility_gate.py" resolve             --manifest "$gate_source/compatibility/manifest.json"             --candidate "$CANDIDATE_REPOSITORY=$CANDIDATE_SHA"             --output "${{ runner.temp }}/resolved-compatibility-manifest.json"             --github-output "$GITHUB_OUTPUT"
+          candidate_args=(--candidate "$CANDIDATE_REPOSITORY=$CANDIDATE_SHA")
+          if [ "$CANDIDATE_REPOSITORY" != "arkret-rust-sdk" ]; then
+            sdk_source_sha="$(git -C "$gate_source" rev-parse --verify HEAD)"
+            candidate_args+=(--candidate "arkret-rust-sdk=$sdk_source_sha")
+          fi
+          python "$gate_source/tools/compatibility_gate.py" resolve \
+            --manifest "$gate_source/compatibility/manifest.json" \
+            "${candidate_args[@]}" \
+            --output "${{ runner.temp }}/resolved-compatibility-manifest.json" \
+            --github-output "$GITHUB_OUTPUT"
 
       - name: Preserve resolved manifest
         uses: actions/upload-artifact@v4
