@@ -176,6 +176,9 @@ jobs:
         shell: pwsh
         run: ./scripts/build-soland-image.ps1 -ImageTag cotest-soland:compatibility
 
+      - name: Prepare Linux joint prerequisites
+        run: bash cotest/scripts/prepare-linux-joint-e2e.sh setup
+
       - name: Run ordered wire and joint contract gates
         run: >-
           bash inkson/scripts/with-native-keystore.sh
@@ -183,6 +186,10 @@ jobs:
           --manifest "${{ runner.temp }}/resolved-compatibility-manifest.json"
           --workspace-root .
           --category contract
+
+      - name: Restore Linux hosts permissions
+        if: always()
+        run: bash cotest/scripts/prepare-linux-joint-e2e.sh restore
 
       - name: Preserve joint failure evidence
         if: always()
