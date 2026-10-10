@@ -65,7 +65,6 @@ impl Error {
         const CODES: &[&str] = &[
             "cursor_expired",
             "cursor_integrity_invalid",
-            "cursor_unrecognized",
             "cursor_invalid",
             "invalid_cursor",
             "stream_resync_required",
@@ -115,6 +114,11 @@ mod tests {
             )),
         };
         assert!(!revoked.is_invalid_cursor());
+        let unverifiable_issuer = Error::Api {
+            status: 400,
+            error: Box::new(Problem::new("cursor_unrecognized", 400, "unknown code")),
+        };
+        assert!(!unverifiable_issuer.is_invalid_cursor());
     }
 }
 
