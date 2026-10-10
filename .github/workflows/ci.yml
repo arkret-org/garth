@@ -34,16 +34,19 @@ jobs:
           path: arkret-rust-sdk
           token: ${{ secrets.CI_REPO_TOKEN || github.token }}
 
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rustfmt
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.98"
-          components: rustfmt, clippy
+          components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: garth
       - name: Formatting
         working-directory: garth
-        run: cargo fmt --all -- --check
+        run: cargo +nightly fmt --all -- --check
       - name: Native check
         working-directory: garth
         run: cargo check --features native
@@ -90,6 +93,15 @@ jobs:
         with:
           toolchain: "1.98"
           targets: aarch64-linux-android
+      - name: Configure Android NDK compiler
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          test -x "$toolchain/aarch64-linux-android21-clang"
+          echo "CC_aarch64_linux_android=$toolchain/aarch64-linux-android21-clang" >> "$GITHUB_ENV"
+          echo "AR_aarch64_linux_android=$toolchain/llvm-ar" >> "$GITHUB_ENV"
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=$toolchain/aarch64-linux-android21-clang" >> "$GITHUB_ENV"
       - name: Check Android library surface
         working-directory: garth
         run: cargo check --lib --target aarch64-linux-android

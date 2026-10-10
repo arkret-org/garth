@@ -11,8 +11,7 @@ use arkret_models_collaboration::sync_frames::account_subscribe::{
 use arkret_wire::{ActorId, DeviceId, DidCoreId};
 
 use crate::{
-    AccountCursorCheckpoint, CursorScope, CursorStore, Error, Executor, MaybeSend, MaybeSendSync,
-    Result,
+    AccountCursorCheckpoint, CursorScope, CursorStore, Executor, MaybeSend, MaybeSendSync, Result,
 };
 
 pub trait AccountSubscribeTransport: MaybeSendSync {
@@ -705,12 +704,14 @@ mod tests {
             )
             .await
             .unwrap();
-        let requests = transport.requests.lock().unwrap();
-        assert_eq!(requests.len(), 2);
-        assert_eq!(requests[0].after.as_deref(), Some("ak:cursor:expired"));
-        assert_eq!(requests[1].after, None);
-        assert_eq!(requests[1].catchup, Some(true));
-        assert_eq!(requests[1].replace_filter, None);
+        {
+            let requests = transport.requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(requests[0].after.as_deref(), Some("ak:cursor:expired"));
+            assert_eq!(requests[1].after, None);
+            assert_eq!(requests[1].catchup, Some(true));
+            assert_eq!(requests[1].replace_filter, None);
+        }
         assert_eq!(projector.resets.load(Ordering::SeqCst), 1);
         assert_eq!(
             store.load(scope()).await.unwrap().as_deref(),

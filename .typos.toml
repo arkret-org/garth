@@ -7,3 +7,10 @@ extend-exclude = [
     "Cargo.lock",
     "target",
 ]
+[default]
+extend-ignore-re = [
+    # Content-addressed fixture IDs and encoded protocol challenge tokens.
+    "ak:[a-z_]+:[A-Za-z0-9_-]{43}",
+    "Y29ubmVjdGlvbi0wMTIzNDU2Nzg5YWJjZGVm",
+    "cGluZy0wMTIzNDU2Nzg5YWJjZGVm",
+]

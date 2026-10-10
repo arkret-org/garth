@@ -367,10 +367,10 @@ impl RealmReplica {
         basis: &StreamWindowStartBasis,
         floor: &ReadableFloor,
         snapshot: &RealmStateSnapshot,
-        freshness: &RealmAuthorityFreshness,
-        keys: &dyn RealmAuthorityKeyDirectory,
+        verification: (&RealmAuthorityFreshness, &dyn RealmAuthorityKeyDirectory),
         dependency_pages: &BTreeMap<CommitStreamRef, Vec<VerifiedScanPage>>,
     ) -> Result<VerifiedFloorSnapshot> {
+        let (freshness, keys) = verification;
         // Verify the whole signed object, including all visible heads and
         // rows, on an isolated replica. Only this stream's predecessor is
         // imported: another stream may name another historical snapshot and
@@ -1061,7 +1061,7 @@ mod tests {
         identity.as_object_mut().unwrap().remove("signature");
         identity.as_object_mut().unwrap().remove("snapshot_id");
         snapshot.snapshot_id = RealmSnapshotId::from_digest(arkret_canonical::sha256_bytes(
-            &arkret_canonical::canonical_json_bytes(&identity).unwrap(),
+            arkret_canonical::canonical_json_bytes(&identity).unwrap(),
         ));
         snapshot.signature = sign_detached_object(
             &arkret_canonical::unsigned_value(&snapshot, &["signature"]).unwrap(),
@@ -1076,7 +1076,7 @@ mod tests {
             identity.as_object_mut().unwrap().remove("signature");
             identity.as_object_mut().unwrap().remove("snapshot_id");
             snapshot.snapshot_id = RealmSnapshotId::from_digest(arkret_canonical::sha256_bytes(
-                &arkret_canonical::canonical_json_bytes(&identity).unwrap(),
+                arkret_canonical::canonical_json_bytes(&identity).unwrap(),
             ));
             snapshot.signature = sign_detached_object(
                 &arkret_canonical::unsigned_value(snapshot, &["signature"]).unwrap(),
@@ -1307,8 +1307,7 @@ mod tests {
                     &floor_start_basis,
                     &floor_start,
                     &current_snapshot,
-                    &freshness,
-                    &keys,
+                    (&freshness, &keys),
                     &BTreeMap::new(),
                 )
                 .is_err()
@@ -1339,8 +1338,7 @@ mod tests {
                     &prefix_basis,
                     &prefix_floor,
                     &bad_signature,
-                    &freshness,
-                    &keys,
+                    (&freshness, &keys),
                     &BTreeMap::new(),
                 )
                 .is_err()
@@ -1353,8 +1351,7 @@ mod tests {
                 &prefix_basis,
                 &prefix_floor,
                 &current_snapshot,
-                &freshness,
-                &keys,
+                (&freshness, &keys),
                 &BTreeMap::new(),
             )
             .unwrap();
@@ -1491,8 +1488,7 @@ mod tests {
                 &dependent_basis,
                 &circle_floor,
                 &dependency_snapshot,
-                &freshness,
-                &keys,
+                (&freshness, &keys),
                 &proof,
             )
             .unwrap();
@@ -1529,8 +1525,7 @@ mod tests {
                         &basis,
                         &circle_floor,
                         &multi,
-                        &freshness,
-                        &keys,
+                        (&freshness, &keys),
                         &proof,
                     )
                     .is_err()
@@ -1546,8 +1541,7 @@ mod tests {
                     &dependent_basis,
                     &circle_floor,
                     &dependency_snapshot,
-                    &freshness,
-                    &keys,
+                    (&freshness, &keys),
                     &short_proof,
                 )
                 .is_err()
@@ -1562,8 +1556,7 @@ mod tests {
                     &dependent_basis,
                     &circle_floor,
                     &dependency_snapshot,
-                    &freshness,
-                    &keys,
+                    (&freshness, &keys),
                     &wrong_context,
                 )
                 .is_err()
@@ -1584,8 +1577,7 @@ mod tests {
                     &invented_dependency,
                     &circle_floor,
                     &dependency_snapshot,
-                    &freshness,
-                    &keys,
+                    (&freshness, &keys),
                     &BTreeMap::new(),
                 )
                 .is_err()
@@ -1597,8 +1589,7 @@ mod tests {
                 &circle_basis,
                 &circle_floor,
                 &multi,
-                &freshness,
-                &keys,
+                (&freshness, &keys),
                 &BTreeMap::new(),
             )
             .unwrap();
@@ -1625,8 +1616,7 @@ mod tests {
                     floor_reason: ReadableFloorReason::StreamStart,
                 },
                 &multi,
-                &freshness,
-                &keys,
+                (&freshness, &keys),
                 &BTreeMap::new(),
             )
             .unwrap();
@@ -1643,8 +1633,7 @@ mod tests {
                 &realm_basis,
                 &prefix_floor,
                 &multi,
-                &freshness,
-                &keys,
+                (&freshness, &keys),
                 &BTreeMap::new(),
             )
             .unwrap();
@@ -1813,8 +1802,7 @@ mod tests {
                         &forged_basis,
                         &forged_floor,
                         &current_snapshot,
-                        &freshness,
-                        &keys,
+                        (&freshness, &keys),
                         &BTreeMap::new(),
                     )
                     .is_err()
@@ -1828,8 +1816,7 @@ mod tests {
                 &basis,
                 &restricted_floor,
                 &snapshot,
-                &freshness,
-                &keys,
+                (&freshness, &keys),
                 &BTreeMap::new(),
             )
             .unwrap();
@@ -1847,8 +1834,7 @@ mod tests {
                     &forged_basis,
                     &restricted_floor,
                     &snapshot,
-                    &freshness,
-                    &keys,
+                    (&freshness, &keys),
                     &BTreeMap::new(),
                 )
                 .is_err()

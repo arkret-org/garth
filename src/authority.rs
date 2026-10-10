@@ -886,7 +886,7 @@ mod acceptance_proof_tests {
         locator_page.committed_events.clear();
         assert!(authority_locator_did(&locator_request, &locator_page).is_err());
         let freshness = RealmAuthorityFreshness::new(now, nonce);
-        verify_accepted_items(&[item.clone()], &bundle, &freshness, &keys).unwrap();
+        verify_accepted_items(std::slice::from_ref(&item), &bundle, &freshness, &keys).unwrap();
         let mut forged = item.clone();
         forged.commit.signature.sig =
             arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode([0_u8; 64]))

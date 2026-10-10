@@ -816,14 +816,16 @@ mod tests {
             .run(&provider, &projector, scope(), RunOptions::default())
             .await
             .unwrap();
-        let batches = projector.batches.lock().unwrap();
-        assert!(matches!(
-            batches.as_slice(),
-            [events] if matches!(
-                events.as_slice(),
-                [ClientEvent::AccountUpdates(context)] if context.to_device_lost
-            )
-        ));
+        {
+            let batches = projector.batches.lock().unwrap();
+            assert!(matches!(
+                batches.as_slice(),
+                [events] if matches!(
+                    events.as_slice(),
+                    [ClientEvent::AccountUpdates(context)] if context.to_device_lost
+                )
+            ));
+        }
         assert_eq!(
             store.load(scope()).await.unwrap().as_deref(),
             Some("ak:cursor:bG9zdC0x")

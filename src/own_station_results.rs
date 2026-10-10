@@ -320,16 +320,15 @@ impl OwnStationReplica {
                     "ordinary scan has a fork, gap, mixed generation or rollback",
                 ));
             }
-            if let Some((cap, current_generation)) = cap {
-                if commit.governance_generation > current_generation
+            if let Some((cap, current_generation)) = cap
+                && (commit.governance_generation > current_generation
                     || commit.stream_position > cap.stream_position
                     || (commit.stream_position == cap.stream_position
-                        && commit.commit_id != cap.commit_id)
-                {
-                    return Err(protocol(
-                        "ordinary scan exceeds or forks its exact current cut",
-                    ));
-                }
+                        && commit.commit_id != cap.commit_id))
+            {
+                return Err(protocol(
+                    "ordinary scan exceeds or forks its exact current cut",
+                ));
             }
             verify_row(client, row).await?;
             previous_id = Some(commit.commit_id.clone());
@@ -1029,14 +1028,14 @@ pub struct OwnStationAgentInteraction {
 }
 
 enum OwnStationAgentInteractionSource {
-    Snapshot(BoundOwnStationResponse<RealmId, RealmStateSnapshot>),
+    Snapshot(Box<BoundOwnStationResponse<RealmId, RealmStateSnapshot>>),
     Exact {
-        before: BoundOwnStationResponse<RealmId, RealmStateSnapshot>,
-        response: BoundOwnStationResponse<
+        before: Box<BoundOwnStationResponse<RealmId, RealmStateSnapshot>>,
+        response: Box<BoundOwnStationResponse<
             (arkret_models_collaboration::exact_current_results::ExactCurrentResultsReadRequestBody, u64),
             arkret_models_collaboration::exact_current_results::ExactCurrentResultsReadOutcome,
-        >,
-        after: BoundOwnStationResponse<RealmId, RealmStateSnapshot>,
+        >>,
+        after: Box<BoundOwnStationResponse<RealmId, RealmStateSnapshot>>,
     },
 }
 
@@ -1098,7 +1097,7 @@ pub async fn read_own_station_agent_interaction(
         before.value()?;
         return Ok(OwnStationAgentInteraction {
             value,
-            source: OwnStationAgentInteractionSource::Snapshot(before),
+            source: OwnStationAgentInteractionSource::Snapshot(Box::new(before)),
         });
     }
     let stream = CommitStreamRef::Realm {
@@ -1143,9 +1142,9 @@ pub async fn read_own_station_agent_interaction(
     Ok(OwnStationAgentInteraction {
         value: result.value()?.clone(),
         source: OwnStationAgentInteractionSource::Exact {
-            before,
-            response: result,
-            after,
+            before: Box::new(before),
+            response: Box::new(result),
+            after: Box::new(after),
         },
     })
 }
@@ -1311,17 +1310,15 @@ mod tests {
                         .get("__wrong_historical_target")
                         .and_then(serde_json::Value::as_bool)
                         == Some(true)
-                    {
-                        if let SignerKeyQuerySelector::HistoricalEvent {
+                        && let SignerKeyQuerySelector::HistoricalEvent {
                             sender:
                                 arkret_models_identity::HistoricalSignerKeyQuerySender::AccountDevice {
                                     committed_event_ref,
                                     ..
                                 },
                         } = &mut selector
-                        {
-                            committed_event_ref.stream_position += 1;
-                        }
+                    {
+                        committed_event_ref.stream_position += 1;
                     }
                     if body
                         .get("__wrong_historical_device")
@@ -1409,7 +1406,7 @@ mod tests {
         body.as_object_mut().unwrap().remove("commit_id");
         body.as_object_mut().unwrap().remove("signature");
         value.commit_id = arkret_wire::RealmCommitId::from_digest(arkret_canonical::sha256_bytes(
-            &arkret_canonical::canonical_json_bytes(&body).unwrap(),
+            arkret_canonical::canonical_json_bytes(&body).unwrap(),
         ));
         value
     }
@@ -1507,7 +1504,7 @@ mod tests {
         body.as_object_mut().unwrap().remove("commit_id");
         body.as_object_mut().unwrap().remove("signature");
         accepted.commit_id = arkret_wire::RealmCommitId::from_digest(
-            arkret_canonical::sha256_bytes(&arkret_canonical::canonical_json_bytes(&body).unwrap()),
+            arkret_canonical::sha256_bytes(arkret_canonical::canonical_json_bytes(&body).unwrap()),
         );
         let mut reference = CommittedEventRef {
             event_id: event.event_id.clone(),
@@ -1531,7 +1528,7 @@ mod tests {
             .remove("signature");
         authorization.commit_id =
             arkret_wire::RealmCommitId::from_digest(arkret_canonical::sha256_bytes(
-                &arkret_canonical::canonical_json_bytes(&authorization_body).unwrap(),
+                arkret_canonical::canonical_json_bytes(&authorization_body).unwrap(),
             ));
         let authorization_ref = CommittedEventRef {
             event_id: authorization.event_ref.clone(),
@@ -1573,7 +1570,7 @@ mod tests {
         body.as_object_mut().unwrap().remove("commit_id");
         body.as_object_mut().unwrap().remove("signature");
         accepted.commit_id = arkret_wire::RealmCommitId::from_digest(
-            arkret_canonical::sha256_bytes(&arkret_canonical::canonical_json_bytes(&body).unwrap()),
+            arkret_canonical::sha256_bytes(arkret_canonical::canonical_json_bytes(&body).unwrap()),
         );
         reference.commit_id = accepted.commit_id.clone();
         assert_ne!(authorization_ref, reference);
@@ -1632,7 +1629,7 @@ mod tests {
         legacy_body.as_object_mut().unwrap().remove("commit_id");
         legacy_body.as_object_mut().unwrap().remove("signature");
         legacy.commit_id = arkret_wire::RealmCommitId::from_digest(arkret_canonical::sha256_bytes(
-            &arkret_canonical::canonical_json_bytes(&legacy_body).unwrap(),
+            arkret_canonical::canonical_json_bytes(&legacy_body).unwrap(),
         ));
         let legacy_ref = CommittedEventRef {
             commit_id: legacy.commit_id.clone(),
@@ -1875,7 +1872,7 @@ mod tests {
         body.as_object_mut().unwrap().remove("commit_id");
         body.as_object_mut().unwrap().remove("signature");
         commit.commit_id = arkret_wire::RealmCommitId::from_digest(arkret_canonical::sha256_bytes(
-            &arkret_canonical::canonical_json_bytes(&body).unwrap(),
+            arkret_canonical::canonical_json_bytes(&body).unwrap(),
         ));
         let mut unsigned = serde_json::to_value(&commit).unwrap();
         unsigned.as_object_mut().unwrap().remove("signature");
@@ -2799,7 +2796,7 @@ mod tests {
         body.as_object_mut().unwrap().remove("snapshot_id");
         body.as_object_mut().unwrap().remove("signature");
         value.snapshot_id = RealmSnapshotId::from_digest(arkret_canonical::sha256_bytes(
-            &arkret_canonical::canonical_json_bytes(&body).unwrap(),
+            arkret_canonical::canonical_json_bytes(&body).unwrap(),
         ));
         value
     }

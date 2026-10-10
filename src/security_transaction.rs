@@ -628,7 +628,7 @@ mod tests {
         let receipt = completed_recovery_receipt();
         let digest = |value: &serde_json::Value| {
             arkret_wire::Hash::new(arkret_canonical::sha256_digest(
-                &arkret_canonical::canonical_json_bytes(value).unwrap(),
+                arkret_canonical::canonical_json_bytes(value).unwrap(),
             ))
             .unwrap()
         };

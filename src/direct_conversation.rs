@@ -11,7 +11,7 @@ pub enum DirectConversationAction {
     /// Author the profile's creation Events and submit them through the
     /// governance authority transport.
     SubmitCreation {
-        next_founding_input: DirectConversationFoundingInput,
+        next_founding_input: Box<DirectConversationFoundingInput>,
     },
     /// Creation cannot be authored yet; surface the blockers to the holder.
     Blocked {
@@ -35,7 +35,7 @@ pub fn direct_conversation_action(
         DirectConversationResolveOutcome::CreationRequired {
             next_founding_input,
         } => DirectConversationAction::SubmitCreation {
-            next_founding_input: next_founding_input.clone(),
+            next_founding_input: Box::new(next_founding_input.clone()),
         },
         DirectConversationResolveOutcome::CreationBlocked { blockers } => {
             DirectConversationAction::Blocked {

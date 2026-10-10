@@ -259,10 +259,9 @@ pub fn signed_welcome_consume(
         domain: NonEmptyString::new(
             DomainSeparationId::MLS_RECIPIENT_DURABLE_RECEIPT_V1.to_owned(),
         )
-        .map_err(|error| refused(&error.to_string()))?,
+        .map_err(&refused)?,
         claim_request_id: outcome.claim_request_id.clone(),
-        key_package_ref: NonEmptyString::new(record.keypackage_ref.clone())
-            .map_err(|error| refused(&error.to_string()))?,
+        key_package_ref: NonEmptyString::new(record.keypackage_ref.clone()).map_err(&refused)?,
         recipient,
         recipient_id: local_station.clone(),
         realm_id: welcome.realm_id.clone(),
@@ -273,11 +272,9 @@ pub fn signed_welcome_consume(
         durable_at,
         // Replaced by the endpoint signature below; the signing input omits it.
         signature: KeyOperationSignature {
-            kid: NonEmptyString::new(method.clone())
-                .map_err(|error| refused(&error.to_string()))?,
+            kid: NonEmptyString::new(method.clone()).map_err(&refused)?,
             signature_algorithm: None,
-            sig: Base64UrlString::new("AA".to_owned())
-                .map_err(|error| refused(&error.to_string()))?,
+            sig: Base64UrlString::new("AA".to_owned()).map_err(&refused)?,
         },
     };
     receipt.signature = sign(
@@ -630,7 +627,7 @@ mod tests {
                 kid: NonEmptyString::new(method.to_owned()).unwrap(),
                 signature_algorithm: Some(NonEmptyString::new("Ed25519").unwrap()),
                 sig: Base64UrlString::new(arkret_canonical::base64url_encode(
-                    &key.sign(input).to_bytes(),
+                    key.sign(input).to_bytes(),
                 ))
                 .unwrap(),
             })
