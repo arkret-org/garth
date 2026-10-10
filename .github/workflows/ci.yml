@@ -34,6 +34,13 @@ jobs:
           path: arkret-rust-sdk
           token: ${{ secrets.CI_REPO_TOKEN || github.token }}
 
+      - name: Checkout Spec fixtures
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/arkret-spec
+          path: arkret-spec
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+
       - uses: dtolnay/rust-toolchain@nightly
         with:
           components: rustfmt
