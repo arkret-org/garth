@@ -223,7 +223,8 @@ where
                         .await;
                     match projected {
                         Err(error) if error.is_stream_interruption() && stream_gap_retries < 3 => {
-                            // The candidate never crossed the durable barrier.
+                            // The Account checkpoint never crossed the durable
+                            // barrier. Independent verified history may be durable.
                             // Reuse the last cursor so the projector independently
                             // refetches snapshot/tail without clearing other streams
                             // or recipient delivery state. Persistent gaps fail closed.
