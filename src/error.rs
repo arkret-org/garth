@@ -31,6 +31,14 @@ pub enum Error {
     /// authority cut. Nothing was installed; restart with fresh authority.
     #[error("Realm scan requires a newer verified authority cut")]
     AuthorityCutBehind,
+    /// Keep the durable Account cut and refetch the affected stream's
+    /// authenticated snapshot and tail; never reset the Account baseline.
+    #[error("stream {stream_ref:?} skipped readable position {expected}; received {actual}")]
+    StreamPositionGap {
+        stream_ref: arkret_wire::CommitStreamRef,
+        expected: u64,
+        actual: u64,
+    },
     #[error("protocol error: {0}")]
     Protocol(String),
     #[error("storage error: {0}")]
@@ -123,6 +131,15 @@ impl From<arkret_models_collaboration::sync_frames::account_subscribe::StreamTra
 impl From<arkret_http_client::Error> for Error {
     fn from(error: arkret_http_client::Error) -> Self {
         match error {
+            arkret_http_client::Error::Wire(arkret_wire::WireError::StreamPositionGap {
+                stream_ref,
+                expected,
+                actual,
+            }) => Self::StreamPositionGap {
+                stream_ref,
+                expected,
+                actual,
+            },
             arkret_http_client::Error::Api { status, error } => Self::Api { status, error },
             arkret_http_client::Error::Http(message) => Self::Http(message),
             arkret_http_client::Error::InsecureUrl(message) => Self::InsecureUrl(message),

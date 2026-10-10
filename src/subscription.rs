@@ -11,7 +11,8 @@ use arkret_models_collaboration::sync_frames::account_subscribe::{
 use arkret_wire::{ActorId, DeviceId, DidCoreId};
 
 use crate::{
-    AccountCursorCheckpoint, CursorScope, CursorStore, Executor, MaybeSend, MaybeSendSync, Result,
+    AccountCursorCheckpoint, CursorScope, CursorStore, Error, Executor, MaybeSend, MaybeSendSync,
+    Result,
 };
 
 pub trait AccountSubscribeTransport: MaybeSendSync {
@@ -167,8 +168,14 @@ where
         // after restoring it, so a resumed demand replacement has its cursor.
         request.validate()?;
 
+        let mut stream_gap_retries = 0;
         while !self.control.is_cancelled() {
             let result = match transport.subscribe(&request).await {
+                Err(Error::StreamPositionGap { .. }) if stream_gap_retries < 3 => {
+                    stream_gap_retries += 1;
+                    self.executor.sleep(Duration::from_secs(1)).await;
+                    continue;
+                }
                 Err(error) if error.is_invalid_cursor() => {
                     projector.reset_baseline().await?;
                     self.cursors.clear(scope.clone()).await?;
@@ -203,7 +210,7 @@ where
                         }
                         return Err(error);
                     }
-                    projector
+                    let projected = projector
                         .project_and_checkpoint(
                             &batch,
                             scope.clone(),
@@ -213,7 +220,20 @@ where
                             },
                             &self.cursors,
                         )
-                        .await?;
+                        .await;
+                    match projected {
+                        Err(Error::StreamPositionGap { .. }) if stream_gap_retries < 3 => {
+                            // The candidate never crossed the durable barrier.
+                            // Reuse the last cursor so the projector independently
+                            // refetches snapshot/tail without clearing other streams
+                            // or recipient delivery state. Persistent gaps fail closed.
+                            stream_gap_retries += 1;
+                            self.executor.sleep(Duration::from_secs(1)).await;
+                            continue;
+                        }
+                        other => other?,
+                    }
+                    stream_gap_retries = 0;
                     station_cas = next_station_cas;
                     request.after = Some(batch.cursor);
                     request.catchup = Some(false);
@@ -386,6 +406,77 @@ mod tests {
             actor_id: actor_id(),
             device_id: device_id(),
         }
+    }
+
+    #[tokio::test]
+    async fn persistent_stream_gap_is_bounded_without_discarding_the_durable_cursor() {
+        let store = crate::MemoryStore::new();
+        store
+            .save_account_checkpoint(
+                scope(),
+                AccountCursorCheckpoint {
+                    cursor: "ak:cursor:durable".into(),
+                    station_cas: Default::default(),
+                },
+            )
+            .await
+            .unwrap();
+        let subscription = AccountSubscription::new(ImmediateExecutor, store.clone());
+        let transport = ScriptedTransport::new(Vec::new());
+        for _ in 0..4 {
+            transport
+                .responses
+                .lock()
+                .unwrap()
+                .push_back(Err(Error::StreamPositionGap {
+                    stream_ref: arkret_wire::CommitStreamRef::Realm {
+                        realm_id: arkret_wire::RealmId::from_event_id(
+                            &arkret_wire::EventId::from_digest(
+                                arkret_canonical::DigestSuite::Sha256,
+                                [7; 32],
+                            ),
+                        ),
+                    },
+                    expected: 1,
+                    actual: 2,
+                }));
+        }
+        let projector = Projector::new(None, false);
+        assert!(matches!(
+            subscription
+                .run(
+                    &transport,
+                    &projector,
+                    None,
+                    actor_id(),
+                    device_id(),
+                    SyncRequestBody::default()
+                )
+                .await,
+            Err(Error::StreamPositionGap {
+                expected: 1,
+                actual: 2,
+                ..
+            })
+        ));
+        assert_eq!(transport.calls.load(Ordering::SeqCst), 4);
+        assert_eq!(projector.resets.load(Ordering::SeqCst), 0);
+        assert_eq!(projector.calls.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            store.load(scope()).await.unwrap().as_deref(),
+            Some("ak:cursor:durable")
+        );
+        assert!(
+            transport
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .all(
+                    |request| request.after.as_deref() == Some("ak:cursor:durable")
+                        && request.catchup == Some(false)
+                )
+        );
     }
 
     #[tokio::test]
