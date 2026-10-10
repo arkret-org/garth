@@ -172,7 +172,11 @@ where
         let mut revision_stale_retries = 0;
         while !self.control.is_cancelled() {
             let result = match transport.subscribe(&request).await {
-                Err(error) if error.is_revision_stale() && revision_stale_retries < 3 => {
+                Err(error) if error.is_revision_stale() => {
+                    error.validate_account_stale_continuation(request.after.as_deref())?;
+                    if revision_stale_retries == 3 {
+                        return Err(error);
+                    }
                     revision_stale_retries += 1;
                     self.executor.sleep(Duration::from_secs(1)).await;
                     continue;
@@ -437,10 +441,10 @@ mod tests {
                     .unwrap()
                     .push_back(Err(Error::Api {
                         status: 409,
-                        error: Box::new(arkret_wire::Problem::new(
-                            "revision_stale",
-                            409,
+                        error: Box::new(arkret_wire::Problem::account_revision_stale(
                             "verified frontier is behind",
+                            arkret_wire::AccountRevisionStaleProblem::new("ak:cursor:durable")
+                                .unwrap(),
                         )),
                     }));
             }
@@ -484,6 +488,54 @@ mod tests {
             assert!(requests.iter().all(|request| request.after.as_deref()
                 == Some("ak:cursor:durable")
                 && request.catchup == Some(false)));
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_stale_continuation_never_retries_resets_or_projects() {
+        for continuation in [None, Some("ak:cursor:replaced"), Some("not-a-cursor")] {
+            let store = crate::MemoryStore::new();
+            let checkpoint = AccountCursorCheckpoint {
+                cursor: "ak:cursor:durable".into(),
+                station_cas: Default::default(),
+            };
+            store
+                .save_account_checkpoint(scope(), checkpoint.clone())
+                .await
+                .unwrap();
+            let subscription = AccountSubscription::new(ImmediateExecutor, store.clone());
+            let transport = ScriptedTransport::new(Vec::new());
+            let mut problem = arkret_wire::Problem::from_code("revision_stale", "refusal");
+            if let Some(cursor) = continuation {
+                problem = problem.with_extension("continuation_cursor", serde_json::json!(cursor));
+            }
+            transport
+                .responses
+                .lock()
+                .unwrap()
+                .push_back(Err(Error::Api {
+                    status: 409,
+                    error: Box::new(problem),
+                }));
+            let projector = Projector::new(None, false);
+            let result = subscription
+                .run(
+                    &transport,
+                    &projector,
+                    None,
+                    actor_id(),
+                    device_id(),
+                    SyncRequestBody::default(),
+                )
+                .await;
+            assert!(matches!(result, Err(Error::Protocol(_))));
+            assert_eq!(
+                store.load_account_checkpoint(scope()).await.unwrap(),
+                Some(checkpoint)
+            );
+            assert_eq!(projector.resets.load(Ordering::SeqCst), 0);
+            assert_eq!(projector.calls.load(Ordering::SeqCst), 0);
+            assert_eq!(transport.requests.lock().unwrap().len(), 1);
         }
     }
 

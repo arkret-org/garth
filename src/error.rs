@@ -57,6 +57,21 @@ impl Error {
                 && error.error_code() == Some(arkret_wire::ErrorCode::RevisionStale))
     }
 
+    pub(crate) fn validate_account_stale_continuation(&self, after: Option<&str>) -> Result<()> {
+        let Self::Api { status: 409, error } = self else {
+            return Err(Self::Protocol("Account recovery requires HTTP 409".into()));
+        };
+        let after =
+            after.ok_or_else(|| Self::Protocol("Account recovery has no original after".into()))?;
+        let details = error
+            .account_revision_stale_details()
+            .map_err(|error| Self::Protocol(error.to_string()))?
+            .ok_or_else(|| Self::Protocol("Account recovery has the wrong Problem type".into()))?;
+        details
+            .validate_after(after)
+            .map_err(|error| Self::Protocol(error.to_string()))
+    }
+
     pub fn is_stream_interruption(&self) -> bool {
         matches!(
             self,
@@ -115,7 +130,7 @@ mod tests {
                 assert!(!failure.is_invalid_cursor());
                 assert_eq!(
                     crate::run::classify_error(&failure),
-                    crate::RunErrorClass::RetryableTransport
+                    crate::RunErrorClass::ProtocolViolation
                 );
             }
         }

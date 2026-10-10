@@ -154,7 +154,6 @@ pub type RunResult<T> = std::result::Result<T, RunError>;
 
 pub fn classify_error(error: &Error) -> RunErrorClass {
     match error {
-        error if error.is_revision_stale() => RunErrorClass::RetryableTransport,
         Error::Http(_) | Error::AuthorityCutBehind => RunErrorClass::RetryableTransport,
         Error::Api { status: 429, .. } => RunErrorClass::RateLimited,
         Error::Api { status: 401, .. } => RunErrorClass::Unauthorized,
@@ -254,6 +253,7 @@ where
             || (None, crate::StationCasProjection::default()),
             |checkpoint| (Some(checkpoint.cursor), checkpoint.station_cas),
         );
+        let mut revision_stale_retries = 0;
 
         loop {
             if self.control.is_cancelled() {
@@ -325,6 +325,7 @@ where
                             .map_err(|error| fail(provider, RunErrorClass::StoreFailure, error))?;
                     }
                     provider.observe(RunEvent::Checkpointed);
+                    revision_stale_retries = 0;
                     station_cas = next_station_cas;
                     after = Some(batch.cursor);
                     if let Some(reason) = self.wait(provider, options.beat).await {
@@ -385,6 +386,18 @@ where
                         return Ok(stop(provider, reason));
                     }
                 }
+                Err(error) if error.is_revision_stale() => {
+                    error
+                        .validate_account_stale_continuation(request.after.as_deref())
+                        .map_err(|error| fail(provider, RunErrorClass::ProtocolViolation, error))?;
+                    if revision_stale_retries == 3 {
+                        return Err(fail(provider, RunErrorClass::RetryableTransport, error));
+                    }
+                    revision_stale_retries += 1;
+                    if let Some(reason) = self.backoff(provider, backoff.next_delay()).await {
+                        return Ok(stop(provider, reason));
+                    }
+                }
                 Err(error) if is_retryable(&error) => {
                     if let Some(reason) = self.backoff(provider, backoff.next_delay()).await {
                         return Ok(stop(provider, reason));
@@ -439,8 +452,8 @@ mod tests {
     use std::cell::Cell;
     use std::collections::VecDeque;
     use std::rc::Rc;
-    use std::sync::Mutex;
     use std::sync::atomic::AtomicUsize;
+    use std::sync::{Arc, Mutex};
 
     use arkret_models_collaboration::sync_frames::account_subscribe::{
         AccountSubscribeBatch, AccountSubscribeFrame, AccountSubscribeFrameKind,
@@ -461,13 +474,15 @@ mod tests {
     #[derive(Debug)]
     struct ScriptedTransport {
         response: Mutex<Option<Result<AccountSubscribeSnapshotResult>>>,
+        requests: Arc<Mutex<Vec<SyncRequestBody>>>,
     }
 
     impl AccountSubscribeTransport for ScriptedTransport {
         async fn subscribe(
             &self,
-            _request: &SyncRequestBody,
+            request: &SyncRequestBody,
         ) -> Result<AccountSubscribeSnapshotResult> {
+            self.requests.lock().unwrap().push(request.clone());
             self.response
                 .lock()
                 .unwrap()
@@ -487,6 +502,7 @@ mod tests {
         recovered: AtomicUsize,
         recovers: bool,
         provides: AtomicUsize,
+        requests: Arc<Mutex<Vec<SyncRequestBody>>>,
     }
 
     impl Provider {
@@ -501,6 +517,7 @@ mod tests {
                 recovered: AtomicUsize::new(0),
                 recovers: false,
                 provides: AtomicUsize::new(0),
+                requests: Arc::new(Mutex::new(Vec::new())),
             }
         }
 
@@ -521,6 +538,7 @@ mod tests {
             }
             Ok(ScriptedTransport {
                 response: Mutex::new(next),
+                requests: self.requests.clone(),
             })
         }
 
@@ -980,5 +998,104 @@ mod tests {
             store.load(scope()).await.unwrap().as_deref(),
             Some("ak:cursor:after-retry")
         );
+    }
+
+    #[tokio::test]
+    async fn account_stale_recovery_keeps_the_request_and_has_a_retry_budget() {
+        for failures in [1, 4] {
+            let store = MemoryStore::new();
+            let checkpoint = AccountCursorCheckpoint {
+                cursor: "ak:cursor:durable".into(),
+                station_cas: Default::default(),
+            };
+            store
+                .save_account_checkpoint(scope(), checkpoint.clone())
+                .await
+                .unwrap();
+            let runner = AccountRunner::new(ImmediateExecutor, store.clone());
+            let mut responses: Vec<_> = (0..failures)
+                .map(|_| {
+                    Err(Error::Api {
+                        status: 409,
+                        error: Box::new(arkret_wire::Problem::account_revision_stale(
+                            "recoverable lag",
+                            arkret_wire::AccountRevisionStaleProblem::new("ak:cursor:durable")
+                                .unwrap(),
+                        )),
+                    })
+                })
+                .collect();
+            if failures == 1 {
+                responses.push(batch("ak:cursor:caught-up"));
+            }
+            let provider = Provider::new(runner.control(), responses);
+            let projector = Projector::default();
+            let result = runner
+                .run(&provider, &projector, scope(), RunOptions::default())
+                .await;
+            if failures == 1 {
+                assert!(result.is_ok());
+                assert_eq!(
+                    store.load(scope()).await.unwrap().as_deref(),
+                    Some("ak:cursor:caught-up")
+                );
+                assert_eq!(projector.projected(), 1);
+            } else {
+                assert_eq!(result.unwrap_err().class, RunErrorClass::RetryableTransport);
+                assert_eq!(
+                    store.load_account_checkpoint(scope()).await.unwrap(),
+                    Some(checkpoint)
+                );
+                assert_eq!(projector.projected(), 0);
+            }
+            assert!(!provider.events().contains(&RunEvent::CursorReset));
+            let requests = provider.requests.lock().unwrap();
+            assert_eq!(requests.len(), if failures == 1 { 2 } else { 4 });
+            assert!(
+                requests
+                    .iter()
+                    .all(|request| request.after.as_deref() == Some("ak:cursor:durable"))
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn account_stale_invalid_carrier_fails_without_any_state_change() {
+        for continuation in [None, Some("ak:cursor:replaced"), Some("not-a-cursor")] {
+            let store = MemoryStore::new();
+            let checkpoint = AccountCursorCheckpoint {
+                cursor: "ak:cursor:durable".into(),
+                station_cas: Default::default(),
+            };
+            store
+                .save_account_checkpoint(scope(), checkpoint.clone())
+                .await
+                .unwrap();
+            let runner = AccountRunner::new(ImmediateExecutor, store.clone());
+            let mut problem = arkret_wire::Problem::from_code("revision_stale", "refusal");
+            if let Some(cursor) = continuation {
+                problem = problem.with_extension("continuation_cursor", serde_json::json!(cursor));
+            }
+            let provider = Provider::new(
+                runner.control(),
+                vec![Err(Error::Api {
+                    status: 409,
+                    error: Box::new(problem),
+                })],
+            );
+            let projector = Projector::default();
+            let failure = runner
+                .run(&provider, &projector, scope(), RunOptions::default())
+                .await
+                .unwrap_err();
+            assert_eq!(failure.class, RunErrorClass::ProtocolViolation);
+            assert_eq!(
+                store.load_account_checkpoint(scope()).await.unwrap(),
+                Some(checkpoint)
+            );
+            assert_eq!(projector.projected(), 0);
+            assert_eq!(provider.requests.lock().unwrap().len(), 1);
+            assert!(!provider.events().contains(&RunEvent::CursorReset));
+        }
     }
 }
