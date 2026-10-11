@@ -247,11 +247,6 @@ pub fn signed_welcome_consume(
             recipient_agent_verification_method,
             ..
         } => recipient_agent_verification_method,
-        RecipientMlsDurableSigner::MinimalMetadataPairwise { .. } => {
-            return Err(refused(
-                "a pairwise endpoint never consumes a Welcome claim",
-            ));
-        }
     }
     .as_str()
     .to_owned();
@@ -445,7 +440,6 @@ mod tests {
             device_id: Some(device_id()),
             agent_id: None,
             agent_verification_method: None,
-            pairwise_verification_method: None,
             keypackage: arkret_canonical::base64url_encode(KEYPACKAGE),
             capabilities: vec!["ak.content.v1".to_owned()],
             device_authorize_event_id: Some(authorization()),
@@ -474,7 +468,6 @@ mod tests {
             target_agent_id: None,
             target_agent_verification_method: None,
             target_agent_key_authorize_event_id: None,
-            target_pairwise_verification_method: None,
             timeout_ms: None,
             strand_id: None,
             pair_key: None,
@@ -690,8 +683,7 @@ mod tests {
         }
     }
 
-    /// A Welcome whose claim the outcome does not hold, or a pairwise
-    /// endpoint, never yields a consume command.
+    /// A Welcome whose claim the outcome does not hold never yields a consume command.
     #[test]
     fn a_welcome_consume_needs_its_claim_and_an_endpoint_key() {
         let commit = accepted_commit(KEYPACKAGE);
@@ -702,23 +694,6 @@ mod tests {
                 &welcome,
                 &outcome(Vec::new()),
                 device_signer(),
-                &station(),
-                1,
-                at(20),
-                signer(&inputs),
-            )
-            .is_err()
-        );
-        assert!(
-            signed_welcome_consume(
-                &welcome,
-                &outcome(vec![claim_record()]),
-                RecipientMlsDurableSigner::MinimalMetadataPairwise {
-                    recipient_pairwise_verification_method: DidUrl::new(
-                        "did:web:bob.example#pairwise"
-                    )
-                    .unwrap(),
-                },
                 &station(),
                 1,
                 at(20),
