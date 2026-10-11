@@ -65,6 +65,7 @@ getrandom = { version = "0.4.3", default-features = false, features = ["wasm_js"
 gloo-timers = { version = "0.4", default-features = false, features = ["futures"], optional = true }
 
 [dev-dependencies]
+arkret-test-kit = { path = "../arkret-rust-sdk/crates/test-kit" }
 arkret-signatures = { version = "0.3.0", path = "../arkret-rust-sdk/crates/signatures", default-features = false, features = ["collaboration", "webvh"] }
 arkret-wire = { version = "0.3.0", path = "../arkret-rust-sdk/crates/wire", default-features = false, features = ["test-support"] }
 rand_chacha = "0.10"
