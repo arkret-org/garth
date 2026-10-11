@@ -1150,7 +1150,7 @@ pub async fn read_own_station_agent_interaction(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use std::io::{Read, Write};
     use std::sync::Arc;
 
@@ -1172,7 +1172,7 @@ mod tests {
         let (client, server, _) = observed_client(bodies);
         (client, server)
     }
-    fn observed_client(
+    pub(crate) fn observed_client(
         bodies: Vec<serde_json::Value>,
     ) -> (
         OwnStationResultClient,

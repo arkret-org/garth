@@ -40,6 +40,7 @@ pub mod signal_message_stream;
 pub mod stamp;
 pub mod station_cas_projection;
 pub mod store;
+pub mod stream_discovery;
 pub mod submission_queue;
 pub mod subscription;
 pub mod websocket;
@@ -170,6 +171,7 @@ pub use store::{
     SecureKeyStore, SecureKeyStoreBackendInfo, SecureKeyStoreError, SecureKeyStoreResult,
     account_id_storage_digest, device_storage_digest,
 };
+pub use stream_discovery::discover_realm_streams;
 pub use submission_queue::{MemorySubmissionQueueStore, SubmissionQueueStore, SubmissionWorker};
 pub use subscription::{
     AccountBatchProjector, AccountSubscribeTransport, AccountSubscription, SubscriptionControl,
