@@ -77,6 +77,7 @@ impl OwnStationFloorSnapshot {
     }
 }
 
+#[derive(Clone)]
 pub struct OwnStationReplica {
     realm_id: RealmId,
     context: Option<OwnStationSessionSnapshot>,

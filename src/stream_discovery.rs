@@ -32,12 +32,12 @@ impl Enumeration {
             }
             previous = Some(key);
         }
-        if let Some(cursor) = &page.next_cursor {
-            if !self.cursors.insert(cursor.clone()) {
-                return Err(Error::Protocol(
-                    "stream discovery cursor repeats".to_owned(),
-                ));
-            }
+        if let Some(cursor) = &page.next_cursor
+            && !self.cursors.insert(cursor.clone())
+        {
+            return Err(Error::Protocol(
+                "stream discovery cursor repeats".to_owned(),
+            ));
         }
         self.previous_key = previous;
         self.rows.extend(page.streams);
