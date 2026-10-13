@@ -36,6 +36,10 @@ pub struct CommittedDelta {
 impl CommittedDelta {
     /// Build one delta from a committed-event view, preserving withheld Events.
     pub fn from_committed_event_view(realm_id: RealmId, view: CommittedEventView) -> Result<Self> {
+        if let Some(event) = view.reducer_input() {
+            arkret_event_draft::validate_event_for_submit(event)
+                .map_err(|error| Error::Protocol(error.to_string()))?;
+        }
         view.validate_shape()?;
         if view.commit().stream_ref.realm_id() != &realm_id {
             return Err(Error::Protocol(
@@ -104,6 +108,31 @@ pub enum ClientEvent {
     /// Producer-signed MLS Welcome from the shared recipient queue. Hosts must
     /// verify and durably admit it before acknowledging the account cursor.
     MlsWelcome(Box<arkret_wire::MlsWelcomeDelivery>),
+}
+
+pub(crate) fn validate_client_event_payloads(events: &[ClientEvent]) -> Result<()> {
+    let validate = |event: &Event| {
+        arkret_event_draft::validate_event_for_submit(event)
+            .map_err(|error| Error::Protocol(error.to_string()))
+    };
+    for event in events {
+        match event {
+            ClientEvent::AccountUpdates(context) => {
+                for event in &context.account_data {
+                    validate(event)?;
+                }
+            }
+            ClientEvent::Committed(delta) => {
+                if let Some(event) = delta.event() {
+                    validate(event)?;
+                }
+            }
+            ClientEvent::Message(message) => validate(&message.event)?,
+            ClientEvent::Event(event) => validate(event)?,
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 /// Account-subscribe batch metadata that is not emitted as a granular event.
@@ -198,15 +227,9 @@ impl InboundDecoder {
         Self
     }
 
-    /// Decode, degrading to an undecoded Event when the payload does not parse.
-    pub fn decode_event(&self, event: Event) -> DecodedInbound {
-        match self.try_decode_event(event.clone()) {
-            Ok(decoded) => decoded,
-            Err(_) => DecodedInbound::Event(Box::new(event)),
-        }
-    }
-
     pub fn try_decode_event(&self, event: Event) -> Result<DecodedInbound> {
+        arkret_event_draft::validate_event_for_submit(&event)
+            .map_err(|error| Error::Protocol(error.to_string()))?;
         match event.kind {
             EventKind::MessageCreate
             | EventKind::MessageRevise
@@ -297,6 +320,10 @@ impl RealmProjectionState {
     /// one position after the installed tail of that same stream; positions on
     /// other streams are irrelevant and are never consulted.
     pub fn apply(&mut self, delta: &CommittedDelta) -> Result<()> {
+        if let Some(event) = delta.event() {
+            arkret_event_draft::validate_event_for_submit(event)
+                .map_err(|error| Error::Protocol(error.to_string()))?;
+        }
         let stream_ref = delta.stream_ref().clone();
         let position = delta.stream_position();
         match self.stream_positions.get(&stream_ref).copied() {
@@ -364,6 +391,7 @@ pub fn account_frame_to_client_events(
             realm_events.extend(realm_entry_to_client_events(&realm_id, entry)?);
         }
     }
+    validate_client_event_payloads(&[ClientEvent::AccountUpdates(context.clone())])?;
     batch.push(ClientEvent::AccountUpdates(context));
     batch.extend(realm_events);
 
@@ -411,7 +439,7 @@ fn realm_entry_to_client_events(
         for item in committed_events {
             let delta = CommittedDelta::from_committed_event_view(realm_id.clone(), item.clone())?;
             if let Some(event) = delta.event() {
-                match decoder.decode_event(event.clone()) {
+                match decoder.try_decode_event(event.clone())? {
                     DecodedInbound::Message(message) => batch.push(ClientEvent::Message(message)),
                     DecodedInbound::Event(_) => {}
                 }
@@ -424,6 +452,8 @@ fn realm_entry_to_client_events(
         .iter()
         .flat_map(|container| container.events.iter())
     {
+        arkret_event_draft::validate_event_for_submit(event)
+            .map_err(|error| Error::Protocol(error.to_string()))?;
         batch.push(ClientEvent::Event(Box::new(event.clone())));
     }
     Ok(batch)

@@ -1486,6 +1486,7 @@ pub(crate) mod tests {
             arkret_wire::DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
             arkret_wire::DidCoreId::new("ak:did_core:web:station.example").unwrap(),
         ));
+        event.producer_proof = None;
         let mut authored = arkret_wire::AuthoredEvent::finalize_with_digest_suite(
             event,
             arkret_canonical::DigestSuite::Sha256,
@@ -1811,6 +1812,7 @@ pub(crate) mod tests {
         ));
         event.scope_ref = arkret_wire::ScopeRef::RealmGenesis;
         event.created_at = crate::test_fixtures::at(2);
+        event.producer_proof = None;
         let mut authored = arkret_wire::AuthoredEvent::finalize_with_digest_suite(
             event,
             arkret_canonical::DigestSuite::Sha256,
@@ -1973,6 +1975,7 @@ pub(crate) mod tests {
             realm_id: realm.clone(),
         };
         event.created_at = crate::test_fixtures::at(2);
+        event.producer_proof = None;
         let mut authored = arkret_wire::AuthoredEvent::finalize_with_digest_suite(
             event,
             arkret_canonical::DigestSuite::Sha256,
@@ -2014,6 +2017,7 @@ pub(crate) mod tests {
         event.authorization_ref =
             Some(arkret_wire::GrantId::from_event_id(&coordinate(72).event_id).into());
         let method = arkret_wire::DidUrl::new("did:web:alice.example#producer").unwrap();
+        event.producer_proof = None;
         let mut authored =
             arkret_wire::AuthoredEvent::finalize_with_digest_suite(event, suite).unwrap();
         arkret_signatures::sign_event(

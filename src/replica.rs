@@ -536,6 +536,12 @@ impl RealmReplica {
         request: &StreamScanRequest,
         outcome: StreamScanOutcome,
     ) -> Result<()> {
+        for item in &outcome.committed_events {
+            if let Some(event) = item.reducer_input() {
+                arkret_event_draft::validate_event_for_submit(event)
+                    .map_err(|error| Error::Protocol(error.to_string()))?;
+            }
+        }
         outcome.validate_for_request(request)?;
         if request.realm_id != self.realm_id {
             return Err(Error::Protocol(
@@ -577,6 +583,12 @@ impl RealmReplica {
         freshness: &RealmAuthorityFreshness,
         keys: &dyn RealmAuthorityKeyDirectory,
     ) -> Result<VerifiedScanPage> {
+        for item in &outcome.committed_events {
+            if let Some(event) = item.reducer_input() {
+                arkret_event_draft::validate_event_for_submit(event)
+                    .map_err(|error| Error::Protocol(error.to_string()))?;
+            }
+        }
         outcome.validate_for_request(request)?;
         if request.realm_id != self.realm_id {
             return Err(Error::Protocol(
@@ -936,8 +948,6 @@ mod tests {
             0xA1,
         );
         let now = Utc::now();
-        let realm_id = crate::test_fixtures::realm_id();
-        let stream_ref = crate::test_fixtures::realm_stream();
         let method = DidUrl::new("did:web:station-a.example#signing-1").unwrap();
         let station =
             project_did_to_core_id(&Did::new("did:web:station-a.example").unwrap()).unwrap();
@@ -947,18 +957,53 @@ mod tests {
                 bytes: route.signing_key.verifying_key().to_bytes().to_vec(),
             },
         );
-        let scope = ScopeRef::Realm {
-            realm_id: realm_id.clone(),
-        };
+        let genesis_value = arkret_models_collaboration::events_payloads::realm::RealmGenesis::new(
+            arkret_models_collaboration::events_payloads::realm::RealmPurpose::Collaboration,
+            arkret_wire::GenesisSalt::new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap(),
+            arkret_wire::TrustDomainId::new("ak:trust_domain:server.example").unwrap(),
+            arkret_wire::SecurityClass::Standard,
+            station.clone(),
+            arkret_wire::JoinRule::Invite,
+            arkret_wire::HistoryAccess::SinceJoin,
+            arkret_wire::Discoverability::Listed,
+            None,
+            None,
+        )
+        .unwrap();
         let genesis = arkret_wire::test_support::raw_event_at(
             EventKind::RealmCreate.as_str(),
-            scope.clone(),
+            ScopeRef::RealmGenesis,
             arkret_wire::DidCoreId::new("ak:did_core:web:founder.example").unwrap(),
             station.clone(),
-            serde_json::json!({}),
+            serde_json::to_value(
+                arkret_models_collaboration::events_payloads::realm::RealmCreatePayload::new(
+                    genesis_value,
+                ),
+            )
+            .unwrap(),
             now - Duration::seconds(2),
         )
         .unwrap();
+        let producer = arkret_signatures::Ed25519PayloadSigner::from_did_key_seed(
+            [0x17; 32],
+            Did::new("did:web:founder.example").unwrap(),
+            DidUrl::new("did:web:founder.example#runtime-1").unwrap(),
+        );
+        let genesis = arkret_test_kit::sign_verifiable_event(
+            genesis,
+            &producer,
+            arkret_canonical::DigestSuite::Sha256,
+        )
+        .unwrap()
+        .event()
+        .clone();
+        let realm_id = genesis.realm_id.clone();
+        let stream_ref = CommitStreamRef::Realm {
+            realm_id: realm_id.clone(),
+        };
+        let scope = ScopeRef::Realm {
+            realm_id: realm_id.clone(),
+        };
         let seal = |mut commit: RealmCommit, key: &SigningKey| {
             commit.commit_id =
                 arkret_wire::RealmCommitId::from_digest(arkret_canonical::sha256_bytes(
@@ -1000,6 +1045,14 @@ mod tests {
             now - Duration::seconds(1),
         )
         .unwrap();
+        let ordinary = arkret_test_kit::sign_verifiable_event(
+            ordinary,
+            &producer,
+            arkret_canonical::DigestSuite::Sha256,
+        )
+        .unwrap()
+        .event()
+        .clone();
         let mut ordinary_commit = crate::test_fixtures::commit(2, &ordinary, stream_ref.clone(), 1);
         ordinary_commit.authority_ref =
             RealmCommitAuthorityRef::GenesisOrChangeEvent(genesis.event_id.clone());
@@ -1700,10 +1753,18 @@ mod tests {
                 scoped_scope,
                 arkret_wire::DidCoreId::new("ak:did_core:web:founder.example").unwrap(),
                 project_did_to_core_id(&Did::new("did:web:station-a.example").unwrap()).unwrap(),
-                serde_json::json!({}),
+                crate::test_fixtures::message_payload(seed),
                 now - Duration::seconds(1),
             )
             .unwrap();
+            let scoped_event = arkret_test_kit::sign_verifiable_event(
+                scoped_event,
+                &producer,
+                arkret_canonical::DigestSuite::Sha256,
+            )
+            .unwrap()
+            .event()
+            .clone();
             let mut scoped_commit =
                 crate::test_fixtures::commit(seed, &scoped_event, scoped_stream.clone(), 1);
             scoped_commit.authority_ref =
@@ -2328,10 +2389,18 @@ mod tests {
                 .unwrap()
                 .current_service_id
                 .clone(),
-            serde_json::json!({}),
+            crate::test_fixtures::message_payload(3),
             now,
         )
         .unwrap();
+        let successor_event = arkret_test_kit::sign_verifiable_event(
+            successor_event,
+            &producer,
+            arkret_canonical::DigestSuite::Sha256,
+        )
+        .unwrap()
+        .event()
+        .clone();
         let mut successor_commit =
             crate::test_fixtures::commit(3, &successor_event, stream_ref.clone(), 2);
         successor_commit.governance_generation = 1;

@@ -88,7 +88,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
 
     use arkret_canonical::DigestSuite;
     use arkret_signatures::{Ed25519DetachedJwsSigner, SignEventOptions};
@@ -118,7 +117,8 @@ mod tests {
                 external_ref: None,
                 created_at: chrono::Utc.with_ymd_and_hms(2026, 9, 16, 0, 0, 0).unwrap(),
                 semantic_refs: Vec::new(),
-                payload: BTreeMap::from([("seed".to_owned(), serde_json::json!(seed))]),
+                payload: serde_json::from_value(crate::test_fixtures::message_payload(seed))
+                    .unwrap(),
                 producer_proof: None,
             },
             DigestSuite::Sha256,

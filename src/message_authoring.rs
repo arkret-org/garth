@@ -730,7 +730,6 @@ fn classify_reason(
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
 
     use arkret_canonical::DigestSuite;
     use arkret_signatures::Ed25519DetachedJwsSigner;
@@ -756,7 +755,7 @@ mod tests {
             external_ref: None,
             created_at: chrono::Utc.with_ymd_and_hms(2026, 9, 16, 0, 0, 0).unwrap(),
             semantic_refs: Vec::new(),
-            payload: BTreeMap::from([("body".to_owned(), json!("hello"))]),
+            payload: serde_json::from_value(crate::test_fixtures::message_payload(7)).unwrap(),
             producer_proof: None,
         };
         AuthoredEvent::finalize_with_digest_suite(event, DigestSuite::Sha256).unwrap()

@@ -471,13 +471,29 @@ impl QueuedSubmission {
 
     fn from_self(request: SelfAuthoritySubmitRequest) -> Result<Self> {
         request.validate()?;
+        let validate = |event: &arkret_wire::Event| {
+            arkret_event_draft::validate_event_for_submit(event)
+                .map_err(|error| Error::Protocol(error.to_string()))
+        };
         let event_id = match &request {
-            SelfAuthoritySubmitRequest::Event(value) => value.event.event_id.clone(),
-            SelfAuthoritySubmitRequest::MlsCommit(value) => value.commit_event.event_id.clone(),
+            SelfAuthoritySubmitRequest::Event(value) => {
+                validate(&value.event)?;
+                value.event.event_id.clone()
+            }
+            SelfAuthoritySubmitRequest::MlsCommit(value) => {
+                validate(&value.commit_event)?;
+                value.commit_event.event_id.clone()
+            }
             SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(value) => {
+                for item in &value.events {
+                    validate(&item.event)?;
+                }
                 value.events[0].event.event_id.clone()
             }
             SelfAuthoritySubmitRequest::DirectConversationFounding(value) => {
+                for item in &value.events {
+                    validate(&item.event)?;
+                }
                 value.events[0].event.event_id.clone()
             }
             _ => {

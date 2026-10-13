@@ -32,7 +32,7 @@ pub fn actor_id() -> ActorId {
 }
 
 pub fn event(seed: u8, kind: EventKind, payload: Value) -> Event {
-    Event {
+    let mut event = Event {
         event_id: EventId::from_digest(DigestSuite::Sha256, [seed; 32]),
         kind,
         realm_id: realm_id(),
@@ -48,7 +48,60 @@ pub fn event(seed: u8, kind: EventKind, payload: Value) -> Event {
         semantic_refs: Vec::new(),
         payload: serde_json::from_value(payload).unwrap(),
         producer_proof: None,
-    }
+    };
+    // Shape fixtures do not claim producer signature verification.
+    let digest = Hash::new(format!("sha256:{}", "00".repeat(32))).unwrap();
+    event.producer_proof = Some(arkret_wire::ProducerEventProof {
+        kind: "detached_jws".into(),
+        verification_method: DidUrl::new("did:web:alice.example#runtime-1").unwrap(),
+        event_digest: digest.clone(),
+        created_at: at(0),
+        domain: Some("arkret-event-v1".into()),
+        audience: None,
+        proof_purpose: None,
+        jws: arkret_wire::test_support::structural_only_detached_jws(&digest),
+    });
+    event
+}
+
+pub fn message_payload(seed: u8) -> Value {
+    serde_json::json!({
+        "strand_id": arkret_wire::StrandId::from_event_id(&EventId::from_digest(DigestSuite::Sha256, [2; 32])),
+        "track_name": "discussion",
+        "content": {"kind": "ak.content.text", "body": format!("fixture message {seed}")}
+    })
+}
+
+pub fn genesis_payload(seed: u8, realm: RealmId) -> Value {
+    let payload = arkret_models_collaboration::events_payloads::MlsGenesisPayload {
+        cipher_suite: arkret_wire::NonEmptyString::new(
+            "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519",
+        )
+        .unwrap(),
+        group_info_ref: arkret_wire::BlobRef::new(format!("ak:blob:sha256:{seed:064x}")).unwrap(),
+        ratchet_tree_ref: arkret_wire::BlobRef::new(format!(
+            "ak:blob:sha256:{:064x}",
+            seed.wrapping_add(1)
+        ))
+        .unwrap(),
+        creator_leaf_authority:
+            arkret_models_collaboration::events_payloads::MlsGenesisCreatorLeafAuthority {
+                leaf_signature_key_b64u: Base64UrlString::new(arkret_canonical::base64url_encode(
+                    [3; 32],
+                ))
+                .unwrap(),
+                endpoint: arkret_wire::MlsWelcomeRecipientEndpoint::Device {
+                    device_id: device_id(),
+                },
+                authorization_event_ref: EventId::from_digest(DigestSuite::Sha256, [4; 32]),
+            },
+        governance_binding: arkret_models_crypto::MlsGovernanceBindingPayload::realm(
+            realm, None, 0, 0, 0,
+        )
+        .unwrap(),
+        created_at: at(0),
+    };
+    serde_json::to_value(payload).unwrap()
 }
 
 pub fn commit(seed: u8, event: &Event, stream_ref: CommitStreamRef, position: u64) -> RealmCommit {

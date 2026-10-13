@@ -113,6 +113,7 @@ impl FileStore {
         checkpoint: AccountCursorCheckpoint,
         events: Vec<crate::ClientEvent>,
     ) -> Result<()> {
+        crate::projection::validate_client_event_payloads(&events)?;
         self.mutate(|state| {
             if state.account_checkpoints.get(&scope) == Some(&checkpoint) {
                 return Ok(((), false));
@@ -191,6 +192,7 @@ impl DurableInboxStore<Vec<crate::ClientEvent>> for FileStore {
         cursor: Option<OpaqueCursor>,
         payload: Vec<crate::ClientEvent>,
     ) -> Result<DeliveryId> {
+        crate::projection::validate_client_event_payloads(&payload)?;
         self.mutate(|state| {
             if state.inbox.len() >= MAX_PENDING_DELIVERIES {
                 return Err(Error::Storage("durable account inbox is full".to_owned()));
@@ -334,6 +336,9 @@ impl crate::OutboundQueueStore for FileStore {
                 let mut queue =
                     crate::SendQueue::from_snapshot(std::mem::take(&mut state.outbound));
                 let value = mutation(&mut queue)?;
+                for item in queue.items() {
+                    item.submission.validate_queued_request()?;
+                }
                 state.outbound = queue.snapshot();
                 Ok((value, true))
             })

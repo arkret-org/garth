@@ -624,7 +624,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use arkret_canonical::DigestSuite;
@@ -671,7 +670,8 @@ mod tests {
                 external_ref: None,
                 created_at: crate::test_fixtures::at(0),
                 semantic_refs: Vec::new(),
-                payload: BTreeMap::from([("seed".to_owned(), serde_json::json!(seed))]),
+                payload: serde_json::from_value(crate::test_fixtures::message_payload(seed))
+                    .unwrap(),
                 producer_proof: None,
             },
             DigestSuite::Sha256,
@@ -693,7 +693,9 @@ mod tests {
                 event_id: EventId::from_digest(DigestSuite::Sha256, [seed; 32]),
                 kind: EventKind::MlsGenesis,
                 realm_id: realm_id.clone(),
-                scope_ref: ScopeRef::Realm { realm_id },
+                scope_ref: ScopeRef::Realm {
+                    realm_id: realm_id.clone(),
+                },
                 actor_id: ActorId::service(
                     DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
                 ),
@@ -703,7 +705,10 @@ mod tests {
                 external_ref: None,
                 created_at: crate::test_fixtures::at(0),
                 semantic_refs: Vec::new(),
-                payload: BTreeMap::from([("seed".to_owned(), serde_json::json!(seed))]),
+                payload: serde_json::from_value(crate::test_fixtures::genesis_payload(
+                    seed, realm_id,
+                ))
+                .unwrap(),
                 producer_proof: None,
             },
             DigestSuite::Sha256,
