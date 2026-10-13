@@ -959,16 +959,18 @@ mod tests {
             now - Duration::seconds(2),
         )
         .unwrap();
-        let ordinary = arkret_wire::test_support::raw_event_at(
-            EventKind::MessageCreate.as_str(),
-            scope,
-            arkret_wire::DidCoreId::new("ak:did_core:web:founder.example").unwrap(),
-            station.clone(),
-            serde_json::json!({}),
-            now - Duration::seconds(1),
-        )
-        .unwrap();
         let seal = |mut commit: RealmCommit, key: &SigningKey| {
+            commit.commit_id =
+                arkret_wire::RealmCommitId::from_digest(arkret_canonical::sha256_bytes(
+                    arkret_canonical::canonical_json_bytes(
+                        &arkret_canonical::canonical::unsigned_value(
+                            &commit,
+                            &["commit_id", "signature"],
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap(),
+                ));
             let unsigned =
                 arkret_canonical::canonical::unsigned_value(&commit, &["signature"]).unwrap();
             commit.signature = sign_detached_object(
@@ -985,9 +987,23 @@ mod tests {
         genesis_commit.authority_ref =
             RealmCommitAuthorityRef::GenesisOrChangeEvent(genesis.event_id.clone());
         let genesis_commit = seal(genesis_commit, &route.signing_key);
+        let ordinary = arkret_wire::test_support::raw_event_at(
+            EventKind::RealmGovernanceStationChange.as_str(),
+            scope,
+            arkret_wire::DidCoreId::new("ak:did_core:web:founder.example").unwrap(),
+            station.clone(),
+            serde_json::json!({
+                "expected_governance_generation": 0,
+                "expected_realm_stream_commit_id": genesis_commit.commit_id,
+                "new_governance_station_id": "ak:did_core:web:station-b.example"
+            }),
+            now - Duration::seconds(1),
+        )
+        .unwrap();
         let mut ordinary_commit = crate::test_fixtures::commit(2, &ordinary, stream_ref.clone(), 1);
         ordinary_commit.authority_ref =
             RealmCommitAuthorityRef::GenesisOrChangeEvent(genesis.event_id.clone());
+        ordinary_commit.previous_commit_ref = Some(genesis_commit.commit_id.clone());
         let ordinary_commit = seal(ordinary_commit, &route.signing_key);
         let head = CommitStreamHead {
             stream_ref: stream_ref.clone(),
@@ -1692,6 +1708,7 @@ mod tests {
                 crate::test_fixtures::commit(seed, &scoped_event, scoped_stream.clone(), 1);
             scoped_commit.authority_ref =
                 RealmCommitAuthorityRef::GenesisOrChangeEvent(genesis.event_id.clone());
+            scoped_commit.previous_commit_ref = Some(scoped_floor.floor_commit_id.clone());
             let scoped_commit = seal(scoped_commit, &route.signing_key);
             let page = multi_replica
                 .apply_verified_scan(
@@ -2320,6 +2337,18 @@ mod tests {
         successor_commit.governance_generation = 1;
         successor_commit.authority_ref = RealmCommitAuthorityRef::Handoff(handoff.handoff_id);
         successor_commit.committed_at = now;
+        successor_commit.previous_commit_ref = Some(snapshot_head.commit_id.clone());
+        successor_commit.commit_id =
+            arkret_wire::RealmCommitId::from_digest(arkret_canonical::sha256_bytes(
+                arkret_canonical::canonical_json_bytes(
+                    &arkret_canonical::unsigned_value(
+                        &successor_commit,
+                        &["commit_id", "signature"],
+                    )
+                    .unwrap(),
+                )
+                .unwrap(),
+            ));
         successor_commit.signature = sign_detached_object(
             &arkret_canonical::unsigned_value(&successor_commit, &["signature"]).unwrap(),
             DetachedSignatureContext::RealmCommit,

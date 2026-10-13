@@ -788,6 +788,17 @@ mod acceptance_proof_tests {
         )
         .unwrap();
         let seal = |mut commit: RealmCommit, key: &SigningKey| {
+            commit.commit_id =
+                arkret_wire::RealmCommitId::from_digest(arkret_canonical::sha256_bytes(
+                    arkret_canonical::canonical_json_bytes(
+                        &arkret_canonical::canonical::unsigned_value(
+                            &commit,
+                            &["commit_id", "signature"],
+                        )
+                        .unwrap(),
+                    )
+                    .unwrap(),
+                ));
             let unsigned =
                 arkret_canonical::canonical::unsigned_value(&commit, &["signature"]).unwrap();
             commit.signature = sign_detached_object(
