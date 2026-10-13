@@ -851,7 +851,7 @@ pub(super) mod tests {
     fn agent_login() -> LoginKind {
         LoginKind::AgentKeyProof(AgentKeyProofLogin {
             principal_id: principal_id(),
-            requested_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
+            requested_scope: vec!["ak.self.committed_event.stream.subscribe.v1".to_owned()],
             agent_key_authorization_ref: agent_key_authorization_ref(),
             agent_scope_request: SessionGrantAgentScopeRequest {
                 realm_ids: vec![
@@ -893,13 +893,13 @@ pub(super) mod tests {
             issuance_nonce: arkret_models_identity::SessionGrantIssuanceNonce::from_bytes([11;32]),
             account_id: AccountId::new(principal_id(), audience()),
             session_public_key: session_public_jwk(), audience_id: audience(),
-            scopes: vec!["ak.self.events.stream.subscribe.v1".into()], not_before, expires_at: expires,
+            scopes: vec!["ak.self.committed_event.stream.subscribe.v1".into()], not_before, expires_at: expires,
             session_id: label.into(), credential_class: arkret_models_identity::SessionGrantCredentialClass::Standard,
             holder_binding: arkret_models_identity::SessionGrantHolderBinding::AgentRuntime {
                 agent_id: principal_id(), agent_key_authorization_ref: agent_key_authorization_ref(),
                 verification_method: DidUrl::new("did:webvh:z6mkfixture:agent.example#runtime-key-1").unwrap(),
             }, device_binding: None, proof_kind: Some(arkret_models_identity::SessionGrantProofKind::AgentKeyProof),
-            scope_details: Some(serde_json::json!({"controller_principal_id":other_principal_id(),"participation":[]}).as_object().unwrap().clone()),
+            scope_details: Some(serde_json::json!({"controller_principal_id":other_principal_id(),"participations":[]}).as_object().unwrap().clone()),
         };
         let body = arkret_canonical::base64url_encode(serde_json::to_vec(&claims).unwrap());
         let header = arkret_canonical::base64url_encode(br#"{"alg":"EdDSA"}"#);
@@ -929,7 +929,7 @@ pub(super) mod tests {
             session_grant_id: grant,
             session_public_key: session_public_jwk(),
             audience_id: audience(),
-            granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
+            granted_scope: vec!["ak.self.committed_event.stream.subscribe.v1".to_owned()],
             previous_session_grant_id: None,
         }
     }
@@ -942,7 +942,7 @@ pub(super) mod tests {
             grant_jwt: agent_jwt("grant-1", grant_id(1), now() + Duration::minutes(20)),
             expires_at: now() + Duration::minutes(20),
             audience_id: audience(),
-            granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
+            granted_scope: vec!["ak.self.committed_event.stream.subscribe.v1".to_owned()],
             session_public_key: Some(session_public_jwk().into_string()),
             dpop_jkt: Some(session_dpop_jkt()),
         }
@@ -1002,7 +1002,7 @@ pub(super) mod tests {
             session_public_key: session_public_jwk(),
             expires_at: now() + Duration::hours(1),
             audience_id: audience(),
-            granted_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
+            granted_scope: vec!["ak.self.committed_event.stream.subscribe.v1".to_owned()],
             previous_session_grant_id: Some(grant_id(1)),
         }
     }
@@ -1330,7 +1330,7 @@ pub(super) mod tests {
 
         let mut widened_scope = refresh_outcome("grant-widened-scope", grant_id(34));
         widened_scope.granted_scope = vec![
-            "ak.self.events.stream.subscribe.v1".to_owned(),
+            "ak.self.committed_event.stream.subscribe.v1".to_owned(),
             "ak.self.events.command.submit.v1".to_owned(),
         ];
 
@@ -1449,7 +1449,9 @@ pub(super) mod tests {
             })
         };
         // Wait until the winner's transport call is in flight...
-        started.notified().await;
+        tokio::time::timeout(std::time::Duration::from_secs(15), started.notified())
+            .await
+            .expect("the valid refresh request reaches transport");
         // ...then race a second refresh: it must NOT fire a transport call and
         // returns the still-valid current handle instead.
         let loser = engine
@@ -1494,7 +1496,9 @@ pub(super) mod tests {
                     .await
             })
         };
-        started.notified().await;
+        tokio::time::timeout(std::time::Duration::from_secs(15), started.notified())
+            .await
+            .expect("the valid refresh request reaches transport");
         cancelled.abort();
         assert!(cancelled.await.unwrap_err().is_cancelled());
         assert_eq!(
@@ -1510,7 +1514,9 @@ pub(super) mod tests {
                     .await
             })
         };
-        started.notified().await;
+        tokio::time::timeout(std::time::Duration::from_secs(15), started.notified())
+            .await
+            .expect("the retried refresh request reaches transport");
         release.notify_one();
         assert_eq!(
             retry.await.unwrap().unwrap().access_token,

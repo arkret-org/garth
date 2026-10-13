@@ -78,7 +78,7 @@ mod tests {
     fn agent_key_proof_login_builds_bound_request() {
         let request = LoginKind::AgentKeyProof(AgentKeyProofLogin {
             principal_id: principal_id(),
-            requested_scope: vec!["ak.self.events.stream.subscribe.v1".to_owned()],
+            requested_scope: vec!["ak.self.committed_event.stream.subscribe.v1".to_owned()],
             agent_key_authorization_ref: agent_key_authorization_ref(),
             agent_scope_request: SessionGrantAgentScopeRequest {
                 realm_ids: vec![

@@ -619,7 +619,7 @@ mod tests {
             Self {
                 grants: SharedCell::new(VecDeque::from([
                     "ak.session.grant.fixture.websocket.v1".to_owned(),
-                    "ak.session.grant.fixture.websocket.v2".to_owned(),
+                    "ak.session.grant.fixture.websocket.second.v1".to_owned(),
                 ])),
                 proof_requests: SharedCell::new(Vec::new()),
             }
