@@ -47,6 +47,8 @@ pub enum SignalReceiveOutcome {
         /// high-water was enforced against. Downstream projections key on this
         /// rather than re-deriving sender facts from the plaintext.
         domain: Box<SignalSequenceDomain>,
+        /// Exact accepted signer method, for holder-private device filtering.
+        signer_verification_method: arkret_wire::DidUrl,
         /// Exact governance basis authenticated by the producer proof and AEAD.
         product_authority: Option<Box<arkret_models_collaboration::SignalProductAuthority>>,
         authority_commit_id: arkret_wire::RealmCommitId,
@@ -126,6 +128,7 @@ impl SignalReceiver {
 
         Ok(SignalReceiveOutcome::Accepted {
             domain: Box::new(domain),
+            signer_verification_method: delivery_authority.key.verification_method.clone(),
             product_authority: delivery_authority.product_authority.clone(),
             authority_commit_id: envelope.authority_commit_id.clone(),
             parent_realm_authority_commit_id: envelope.parent_realm_authority_commit_id.clone(),
