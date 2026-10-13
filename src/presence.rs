@@ -49,6 +49,7 @@ impl PresenceProjection {
             domain,
             plaintext: SignalPlaintext::Presence(presence),
             effective_expires_at,
+            ..
         } = outcome
         else {
             return Ok(false);

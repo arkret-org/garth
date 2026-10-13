@@ -46,6 +46,9 @@ pub enum SignalReceiveOutcome {
         /// high-water was enforced against. Downstream projections key on this
         /// rather than re-deriving sender facts from the plaintext.
         domain: Box<SignalSequenceDomain>,
+        /// Exact governance basis authenticated by the producer proof and AEAD.
+        authority_commit_id: arkret_wire::RealmCommitId,
+        parent_realm_authority_commit_id: Option<arkret_wire::RealmCommitId>,
         plaintext: SignalPlaintext,
         effective_expires_at: DateTime<Utc>,
     },
@@ -97,6 +100,12 @@ impl SignalReceiver {
             ));
         }
 
+        let effective_expires_at =
+            plaintext.effective_expires_at(envelope.sent_at, envelope.expires_at);
+        if effective_expires_at <= now {
+            return Ok(SignalReceiveOutcome::Expired);
+        }
+
         let agent_key_digest = envelope
             .sender_device_id
             .is_none()
@@ -113,10 +122,10 @@ impl SignalReceiver {
             return Ok(SignalReceiveOutcome::StaleSequence);
         }
 
-        let effective_expires_at =
-            plaintext.effective_expires_at(envelope.sent_at, envelope.expires_at);
         Ok(SignalReceiveOutcome::Accepted {
             domain: Box::new(domain),
+            authority_commit_id: envelope.authority_commit_id.clone(),
+            parent_realm_authority_commit_id: envelope.parent_realm_authority_commit_id.clone(),
             plaintext,
             effective_expires_at,
         })
