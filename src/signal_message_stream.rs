@@ -297,6 +297,11 @@ impl MessageStreamProjection {
             .get(&preview_key(sender_actor_id, sender_endpoint, message_id).ok()?)
     }
 
+    /// Remove previews whose host has observed revoked or unavailable product authority.
+    pub fn retain_previews(&mut self, mut eligible: impl FnMut(&MessageStreamPreview) -> bool) {
+        self.previews.retain(|_, preview| eligible(preview));
+    }
+
     pub fn previews(&self) -> impl Iterator<Item = &MessageStreamPreview> {
         self.previews.values()
     }

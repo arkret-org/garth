@@ -7,8 +7,9 @@ use arkret_models_collaboration::signal_plaintext::{
     SignalPlaintext, SignalSequenceDecision, SignalSequenceDomain, SignalSequenceHighWater,
     open_signal_plaintext,
 };
+use arkret_models_collaboration::{SignalDeliveryAuthority, SignalStreamFrame};
 use arkret_signatures::{PublicKeyMaterial, verify_ed25519_signal_proof};
-use arkret_wire::{SignalDeliveryAuthority, SignalEnvelope, SignalStreamFrame};
+use arkret_wire::SignalEnvelope;
 use chrono::{DateTime, Utc};
 
 use crate::{Error, MaybeSend, MaybeSendSync, Result};
@@ -47,6 +48,7 @@ pub enum SignalReceiveOutcome {
         /// rather than re-deriving sender facts from the plaintext.
         domain: Box<SignalSequenceDomain>,
         /// Exact governance basis authenticated by the producer proof and AEAD.
+        product_authority: Option<Box<arkret_models_collaboration::SignalProductAuthority>>,
         authority_commit_id: arkret_wire::RealmCommitId,
         parent_realm_authority_commit_id: Option<arkret_wire::RealmCommitId>,
         plaintext: SignalPlaintext,
@@ -124,6 +126,7 @@ impl SignalReceiver {
 
         Ok(SignalReceiveOutcome::Accepted {
             domain: Box::new(domain),
+            product_authority: delivery_authority.product_authority.clone(),
             authority_commit_id: envelope.authority_commit_id.clone(),
             parent_realm_authority_commit_id: envelope.parent_realm_authority_commit_id.clone(),
             plaintext,
