@@ -4,6 +4,7 @@
 pub mod backup_selection;
 #[path = "mls/backup_series.rs"]
 pub mod backup_series;
+pub mod creator;
 #[path = "mls/key_package.rs"]
 pub mod key_package;
 #[path = "mls/self_preservation.rs"]
