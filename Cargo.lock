@@ -47,6 +47,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "anyhow"
+version = "1.0.104"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
+
+[[package]]
 name = "arkret-auth"
 version = "0.3.0"
 dependencies = [
@@ -360,16 +366,23 @@ dependencies = [
 name = "arkret-test-kit"
 version = "0.3.0"
 dependencies = [
+ "anyhow",
  "arkret-canonical",
  "arkret-event-draft",
  "arkret-identifiers",
+ "arkret-identity",
+ "arkret-models-collaboration",
+ "arkret-models-identity",
  "arkret-signatures",
  "arkret-wire",
  "chrono",
  "ed25519-dalek",
+ "rand_chacha",
+ "rand_core",
  "serde",
  "serde_json",
  "sha2",
+ "url",
 ]
 
 [[package]]
