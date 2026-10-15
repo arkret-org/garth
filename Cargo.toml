@@ -38,6 +38,7 @@ chacha20poly1305 = { version = "0.11", default-features = false, features = ["al
 hkdf = "0.13"
 sha2 = "0.11"
 hex = "0.4.3"
+im = { version = "15.1", features = ["serde"] }
 getrandom = { version = "0.4.3", default-features = false, features = ["std", "sys_rng"] }
 arkret-auth = { version = "0.3.0", path = "../arkret-rust-sdk/crates/auth", default-features = false }
 arkret-canonical = { version = "0.3.0", path = "../arkret-rust-sdk/crates/canonical", default-features = false }
