@@ -38,6 +38,30 @@ impl OwnStationScanPage {
     }
 }
 
+/// An exact accepted original, admitted without replaying private governance
+/// history or advancing any stream checkpoint. Only the authenticated read
+/// path below can construct this local consumption proof.
+pub struct OwnStationWindowDependency {
+    response: BoundOwnStationResponse<EventId, CommittedEventView>,
+}
+
+pub async fn read_window_dependency(
+    client: &OwnStationResultClient,
+    reference: &CommittedEventRef,
+) -> Result<OwnStationWindowDependency> {
+    let response = client.committed_event_get(&reference.event_id).await?;
+    let response = consume_bound_event(client, reference, response).await?;
+    Ok(OwnStationWindowDependency { response })
+}
+
+impl OwnStationWindowDependency {
+    pub(crate) fn encoded_len(&self) -> Result<usize> {
+        Ok(serde_json::to_vec(self.response.value()?)
+            .map_err(|error| protocol(&error.to_string()))?
+            .len())
+    }
+}
+
 /// Separate from `VerifiedFloorSnapshot`: this is ordinary local consumption,
 /// not independently audited or portable evidence.
 pub struct OwnStationFloorSnapshot {
@@ -402,7 +426,7 @@ impl OwnStationReplica {
         basis: &StreamWindowStartBasis,
         floor: &ReadableFloor,
         response: BoundOwnStationResponse<(RealmId, RealmSnapshotId), RealmStateSnapshot>,
-        dependencies: &BTreeMap<CommitStreamRef, Vec<OwnStationScanPage>>,
+        dependencies: &BTreeMap<CommittedEventRef, OwnStationWindowDependency>,
     ) -> Result<OwnStationFloorSnapshot> {
         self.check_context(response.session())?;
         basis
@@ -449,44 +473,28 @@ impl OwnStationReplica {
                 .iter()
                 .find(|head| head.stream_ref == dependency.stream_ref)
                 .ok_or_else(|| protocol("dependency has no current covering head"))?;
-            let pages = dependencies
-                .get(&dependency.stream_ref)
+            let original = dependencies
+                .get(dependency)
                 .ok_or_else(|| protocol("floor dependency lacks original accepted history"))?;
-            let mut previous = None;
-            let mut position = 0;
-            let mut found = false;
-            let mut reached = false;
-            for page in pages {
-                if page.session() != response.session() {
-                    return Err(protocol(
-                        "floor dependency uses another authenticated cut/session",
-                    ));
-                }
-                for row in page.rows()? {
-                    let commit = row.commit();
-                    if commit.stream_ref != dependency.stream_ref
-                        || commit.stream_position != position
-                        || commit.previous_commit_ref != previous
-                        || commit.governance_generation > basis.governance_generation
-                        || commit.stream_position > cap.stream_position
-                    {
-                        return Err(protocol(
-                            "floor dependency is not a continuous accepted prefix",
-                        ));
-                    }
-                    if dependency.matches(row) {
-                        found = matches!(row, CommittedEventView::Full(_));
-                    }
-                    if commit.stream_position == cap.stream_position {
-                        reached = commit.commit_id == cap.commit_id;
-                    }
-                    previous = Some(commit.commit_id.clone());
-                    position = position
-                        .checked_add(1)
-                        .ok_or_else(|| protocol("floor dependency position overflow"))?;
-                }
-            }
-            if !found || !reached {
+            let row = original.response.value()?;
+            let commit = row.commit();
+            if original.response.session() != response.session()
+                || original.response.request() != &dependency.event_id
+                || !dependency.matches(row)
+                || !matches!(row, CommittedEventView::Full(_))
+                || commit.governance_generation > basis.governance_generation
+                || commit.stream_position > cap.stream_position
+                || (commit.stream_position == cap.stream_position
+                    && commit.commit_id != cap.commit_id)
+                || !snapshot
+                    .retention_and_history_floor
+                    .stream_floors
+                    .iter()
+                    .any(|floor| {
+                        floor.stream_ref == dependency.stream_ref
+                            && floor.oldest_position <= commit.stream_position
+                    })
+            {
                 return Err(protocol(
                     "floor dependency is not covered by its exact snapshot",
                 ));
@@ -1499,7 +1507,7 @@ pub(crate) mod tests {
         )
         .unwrap();
         let event = authored.into_event();
-        let mut accepted = commit(0, None);
+        let mut accepted = commit(7, Some(arkret_wire::RealmCommitId::from_digest([6; 32])));
         accepted.event_ref = event.event_id.clone();
         accepted.committed_at = crate::test_fixtures::at(2);
         let mut body = serde_json::to_value(&accepted).unwrap();
@@ -1512,7 +1520,7 @@ pub(crate) mod tests {
             event_id: event.event_id.clone(),
             commit_id: accepted.commit_id.clone(),
             stream_ref: accepted.stream_ref.clone(),
-            stream_position: 0,
+            stream_position: 7,
         };
         let mut authorization = commit(0, None);
         authorization.realm_id = arkret_wire::RealmId::from_event_id(&authorization.event_ref);
@@ -1600,9 +1608,9 @@ pub(crate) mod tests {
                 serde_json::json!({
                     "committed_events":[{"commit":accepted,"event":event}],
                     "readable_floor": ReadableFloor {
-                        oldest_position: 0,
+                        oldest_position: 7,
                         floor_commit_id: accepted.commit_id.clone(),
-                        floor_reason: arkret_wire::ReadableFloorReason::StreamStart,
+                        floor_reason: arkret_wire::ReadableFloorReason::MembershipJoin,
                     },
                     "truncated":false
                 }),
@@ -1616,7 +1624,7 @@ pub(crate) mod tests {
             assert_eq!(
                 result.is_ok(),
                 valid_key,
-                "real detached producer signature gate"
+                "real detached producer signature gate: {result:?}"
             );
             assert_eq!(
                 replica.head(&accepted.stream_ref).is_some(),
@@ -1625,6 +1633,7 @@ pub(crate) mod tests {
             );
             server.join().unwrap();
         }
+        assert_bounded_window_dependencies(&event, &accepted, &original_fact.key).await;
         let mut legacy = accepted.clone();
         legacy.producer_signer_fact_digest = None;
         let mut legacy_body = serde_json::to_value(&legacy).unwrap();
@@ -1639,7 +1648,7 @@ pub(crate) mod tests {
         };
         let (source, server) = client(vec![
             serde_json::json!({"commit":legacy,"event":event}),
-            serde_json::json!({"committed_events":[{"commit":legacy,"event":event}],"readable_floor":{"oldest_position":0,"floor_commit_id":legacy.commit_id,"floor_reason":"stream_start"},"truncated":false}),
+            serde_json::json!({"committed_events":[{"commit":legacy,"event":event}],"readable_floor":{"oldest_position":7,"floor_commit_id":legacy.commit_id,"floor_reason":"membership_join"},"truncated":false}),
         ]);
         let mut legacy_replica = OwnStationReplica::new(event.realm_id.clone());
         let original = source.committed_event_get(&event.event_id).await.unwrap();
@@ -1740,6 +1749,128 @@ pub(crate) mod tests {
                 "acceptance consumption never advances history"
             );
             server.join().unwrap();
+        }
+    }
+
+    async fn assert_bounded_window_dependencies(
+        event: &arkret_wire::Event,
+        accepted: &arkret_wire::RealmCommit,
+        key: &arkret_models_identity::ResolvedSignerKey,
+    ) {
+        let reference = CommittedEventRef {
+            event_id: event.event_id.clone(),
+            commit_id: accepted.commit_id.clone(),
+            stream_ref: accepted.stream_ref.clone(),
+            stream_position: accepted.stream_position,
+        };
+        let circle = CommitStreamRef::Circle {
+            realm_id: event.realm_id.clone(),
+            circle_id: arkret_wire::CircleId::from_event_id(&event.event_id),
+        };
+        let sidecar = CommitStreamRef::Sidecar {
+            realm_id: event.realm_id.clone(),
+            sidecar_id: arkret_wire::SidecarId::from_event_id(&event.event_id),
+        };
+        for stream in [circle, sidecar] {
+            for failure in ["none", "withheld", "wrong_ref", "wrong_key"] {
+                let anchor = CommitStreamHead {
+                    stream_ref: stream.clone(),
+                    stream_position: 9,
+                    commit_id: arkret_wire::RealmCommitId::from_digest([9; 32]),
+                };
+                let mut tail = commit(10, Some(anchor.commit_id.clone()));
+                tail.stream_ref = stream.clone();
+                tail = seal_native_fixture_commit(tail);
+                let old = snapshot_at_floor(vec![head(accepted), anchor.clone()], 7);
+                let current = snapshot_at_floor(vec![head(accepted), head(&tail)], 7);
+                let mut dependency = reference.clone();
+                if failure == "wrong_ref" {
+                    dependency.commit_id = arkret_wire::RealmCommitId::from_digest([90; 32]);
+                }
+                let basis = StreamWindowStartBasis {
+                    anchor_position: anchor.stream_position,
+                    anchor_commit_ref: anchor.commit_id,
+                    snapshot_ref: old.snapshot_id.clone(),
+                    governance_generation: 0,
+                    accepted_dependency_refs: Some(vec![dependency]),
+                };
+                let window =
+                    arkret_models_collaboration::sync_frames::account_sync::RealmStreamWindow {
+                        stream_ref: stream.clone(),
+                        head_commit_ref: tail.commit_id.clone(),
+                        next_position: 11,
+                        limited: true,
+                        window_limit: 1,
+                        complete: true,
+                        preview_only: None,
+                        window_start_basis: Some(basis),
+                        e2ee_epoch: None,
+                    };
+                let original = serde_json::json!({"commit":accepted,"event":event});
+                let mut bodies = vec![
+                    serde_json::to_value(current).unwrap(),
+                    serde_json::to_value(old).unwrap(),
+                    if failure == "withheld" {
+                        withheld(accepted.clone())
+                    } else {
+                        original.clone()
+                    },
+                ];
+                if !matches!(failure, "withheld" | "wrong_ref") {
+                    bodies.push(serde_json::json!({"committed_events":[original],"readable_floor":{
+                        "oldest_position":7,"floor_commit_id":accepted.commit_id,"floor_reason":"membership_join"},"truncated":false}));
+                    let mut key = key.clone();
+                    if failure == "wrong_key" {
+                        key.public_key_b64u =
+                            arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
+                                ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+                                    .verifying_key()
+                                    .as_bytes(),
+                            ))
+                            .unwrap();
+                    }
+                    bodies.push(serde_json::json!({"__signer_key":key}));
+                }
+                if failure == "none" {
+                    bodies.push(serde_json::json!({"committed_events":[withheld(tail.clone())],"readable_floor":{
+                        "oldest_position":7,"floor_commit_id":arkret_wire::RealmCommitId::from_digest([7;32]),"floor_reason":"membership_join"},"truncated":false}));
+                }
+                let (source, server, observed) = observed_client(bodies);
+                let current = source.snapshot_head(&event.realm_id).await.unwrap();
+                let mut replica = OwnStationReplica::new(event.realm_id.clone());
+                let outcome = crate::history_recovery::window_pages(
+                    &source,
+                    &event.realm_id,
+                    &current,
+                    &mut replica,
+                    &window,
+                )
+                .await;
+                assert_eq!(outcome.is_ok(), failure == "none", "{stream:?} {failure}");
+                assert!(
+                    replica.head(&accepted.stream_ref).is_none(),
+                    "dependency admission must never advance another stream"
+                );
+                if failure == "none" {
+                    let pages = outcome.unwrap().unwrap();
+                    assert_eq!(pages.len(), 1);
+                    assert_eq!(pages[0].rows().unwrap()[0].commit(), &tail);
+                    assert_eq!(replica.head(&stream), Some(&head(&tail)));
+                } else {
+                    assert!(replica.head(&stream).is_none());
+                }
+                server.join().unwrap();
+                let requests = observed.lock().unwrap();
+                assert_eq!(
+                    requests.len(),
+                    match failure {
+                        "none" => 6,
+                        "wrong_key" => 5,
+                        _ => 3,
+                    },
+                    "exact dependency admission must stay bounded independently of the missing prefix: {requests:?}"
+                );
+            }
         }
     }
 

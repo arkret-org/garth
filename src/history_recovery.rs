@@ -27,6 +27,7 @@ pub async fn window_pages(
     replica: &mut OwnStationReplica,
     window: &arkret_models_collaboration::sync_frames::account_sync::RealmStreamWindow,
 ) -> crate::Result<Option<Vec<OwnStationScanPage>>> {
+    replica.install_bound_snapshot(current)?;
     let mut after = None;
     let mut pages = Vec::new();
     let mut retained_bytes = 0usize;
@@ -34,32 +35,29 @@ pub async fn window_pages(
     let mut floor_response = None;
     let mut dependencies = BTreeMap::new();
     if let Some(basis) = basis {
+        basis.validate().map_err(protocol)?;
         let response = client.snapshot_by_ref(realm, &basis.snapshot_ref).await?;
         crate::own_station_results::consume_bound_snapshot(&response, realm)?;
         for dependency in basis.accepted_dependency_refs.iter().flatten() {
-            if dependencies.contains_key(&dependency.stream_ref) {
+            if dependency.stream_ref == window.stream_ref
+                || dependency.stream_ref.realm_id() != realm
+            {
+                return Err(protocol("own Station floor dependency has wrong scope"));
+            }
+            if dependencies.contains_key(dependency) {
                 continue;
             }
-            let cap = response
-                .value()?
-                .visible_stream_heads
-                .iter()
-                .find(|head| head.stream_ref == dependency.stream_ref)
-                .ok_or_else(|| protocol("own Station floor dependency has no covering head"))?;
-            let mut dependency_replica = OwnStationReplica::new(realm.clone());
-            dependency_replica.install_bound_snapshot(current)?;
-            let dependency_pages = genesis_pages(
-                client,
-                realm,
-                &dependency.stream_ref,
-                cap.stream_position
-                    .checked_add(1)
-                    .ok_or_else(|| protocol("dependency position overflow"))?,
-                &mut dependency_replica,
-            )
-            .await?
-            .ok_or_else(|| protocol("floor dependency lacks its original readable prefix"))?;
-            dependencies.insert(dependency.stream_ref.clone(), dependency_pages);
+            let original =
+                crate::own_station_results::read_window_dependency(client, dependency).await?;
+            retained_bytes = retained_bytes
+                .checked_add(original.encoded_len()?)
+                .ok_or_else(|| protocol("own-Station dependency capacity overflow"))?;
+            if retained_bytes > MAX_PREFIX_BYTES {
+                return Err(protocol(
+                    "own-Station dependencies exceed bounded candidate capacity",
+                ));
+            }
+            dependencies.insert(dependency.clone(), original);
         }
         after = Some(basis.anchor_position);
         floor_response = Some(response);
