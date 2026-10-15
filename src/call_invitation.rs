@@ -67,18 +67,18 @@ pub async fn read_holder_call_consent(
         peer: arkret_models_collaboration::events_payloads::consent::ConsentPeer::Actor {
             actor_id: invitation.inviter_actor_id.clone(),
         },
-        consent_scope: invitation.media.consent_scope()?,
+        consent_scope: invitation.media.consent_scope(),
         audience_actor_id: ActorId::service(holder.station_id.clone()),
         nonce,
     };
-    let response = client.consent_current_read(&request).await?;
+    let response = client.consent_current(&request).await?;
     if response.session().account_id() != holder {
         return Err(invalid(
             "call Consent response belongs to another authenticated account",
         ));
     }
     let snapshot = response.value()?;
-    snapshot.validate_for_request(&request, Utc::now())?;
+    snapshot.validate_for_request(&request, snapshot.governance_generation, Utc::now())?;
     if &snapshot.realm_id != pcr {
         return Err(invalid(
             "Consent current read belongs to another holder PCR",
@@ -111,7 +111,11 @@ impl HolderCallConsent {
         now: DateTime<Utc>,
     ) -> Result<bool> {
         let snapshot = self.response.value()?;
-        snapshot.validate_for_request(self.response.request(), now)?;
+        snapshot.validate_for_request(
+            self.response.request(),
+            snapshot.governance_generation,
+            now,
+        )?;
         check_heads(snapshot, current_generation, current_heads)?;
         if self.invitation.expires_at <= now {
             return Ok(false);
