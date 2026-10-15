@@ -51,6 +51,8 @@ pub enum SignalReceiveOutcome {
         signer_verification_method: arkret_wire::DidUrl,
         /// Exact governance basis authenticated by the producer proof and AEAD.
         product_authority: Option<Box<arkret_models_collaboration::SignalProductAuthority>>,
+        call_invitation:
+            Option<Box<arkret_models_collaboration::call_invitation::CallInvitationDeliveryView>>,
         authority_commit_id: arkret_wire::RealmCommitId,
         parent_realm_authority_commit_id: Option<arkret_wire::RealmCommitId>,
         plaintext: Box<SignalPlaintext>,
@@ -130,6 +132,7 @@ impl SignalReceiver {
             domain: Box::new(domain),
             signer_verification_method: delivery_authority.key.verification_method.clone(),
             product_authority: delivery_authority.product_authority.clone(),
+            call_invitation: delivery_authority.call_invitation.clone(),
             authority_commit_id: envelope.authority_commit_id.clone(),
             parent_realm_authority_commit_id: envelope.parent_realm_authority_commit_id.clone(),
             plaintext: Box::new(plaintext),

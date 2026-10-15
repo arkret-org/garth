@@ -540,6 +540,48 @@ pub fn validate_floor_product_rows(
                     closed_current_value(value, "call_state")?;
                 current.validate().map_err(protocol)?;
             }
+            CurrentSelector::CallFocus { call_id }
+            | CurrentSelector::CallRoster { call_id }
+            | CurrentSelector::CallModeration { call_id } => {
+                if !rows.iter().any(|row| {
+                    matches!(row,
+                        arkret_wire::TypedCurrentRow::Value {
+                            selector: CurrentSelector::CallState {call_id: found},
+                            source_stream_ref: stream, ..
+                        } if found == call_id && stream == source_stream_ref
+                    )
+                }) {
+                    return Err(protocol(
+                        "signed Call axis has no lifecycle in its exact scope",
+                    ));
+                }
+                match selector {
+                    CurrentSelector::CallFocus { .. } => {
+                        closed_current_value::<
+                            arkret_models_collaboration::events_payloads::call::CallFocus,
+                        >(value, "call_focus")?;
+                    }
+                    CurrentSelector::CallRoster { .. } => {
+                        let roster: arkret_models_collaboration::events_payloads::call::CallRosterCurrentValue =
+                            closed_current_value(value, "call_roster")?;
+                        roster
+                            .validate_sources(source_stream_ref, revision)
+                            .map_err(protocol)?;
+                    }
+                    _ => {
+                        let moderation: arkret_models_collaboration::events_payloads::call::CallModerationCurrentValue =
+                            closed_current_value(value, "call_moderation")?;
+                        moderation
+                            .validate_sources(source_stream_ref, revision)
+                            .map_err(protocol)?;
+                    }
+                }
+            }
+            CurrentSelector::RealmMediaService => {
+                let descriptor: arkret_models_collaboration::events_payloads::realm::RealmMediaServiceValue =
+                    closed_current_value(value, "realm_media_service")?;
+                descriptor.validate().map_err(protocol)?;
+            }
             CurrentSelector::ModerationFrankingProof { event_id } => {
                 // This is authenticated current state of the receipt, not an
                 // independently verified moderation evidence package. Garth
