@@ -1,12 +1,16 @@
 //! Host-neutral MLS installation queue and provider-opaque local state.
 
+pub mod accepted_artifact;
 #[path = "mls/backup_selection.rs"]
 pub mod backup_selection;
 #[path = "mls/backup_series.rs"]
 pub mod backup_series;
+pub mod checkpoint;
+pub mod checkpoint_port;
 pub mod creator;
 #[path = "mls/key_package.rs"]
 pub mod key_package;
+pub mod membership;
 #[path = "mls/self_preservation.rs"]
 pub mod self_preservation;
 #[path = "mls/status.rs"]
@@ -44,6 +48,17 @@ use crate::{
     Error, MaybeSend, MaybeSendSync, PutSecretOptions, Result, SecretClass, SecretDurability,
     SecureKeyStore, SecureKeyStoreError,
 };
+
+/// What one install attempt did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MlsInstallOutcome {
+    /// Provider state advanced and was persisted with its accepted Event.
+    Applied,
+    /// This device already holds an equal-or-newer epoch for the group.
+    AlreadyCurrent,
+    /// The transition's base epoch is not installed yet, so it stays pending.
+    BaseEpochMissing,
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AcceptedMlsArtifact {

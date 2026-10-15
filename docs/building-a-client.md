@@ -84,9 +84,16 @@ must not be written to `FileStore`.
 `CursorScope::Account` and `CursorScope::DeviceMessages` cover aggregate and
 device-message delivery.
 
-## 6. Author messages and coordinate recovery
+## 6. Author Events and coordinate recovery
 
-Finalize a content-bound `AuthoredEvent`, then call `author_message` with the
+For any finalized unsigned `AuthoredEvent`, use
+`event_authoring::EventAuthoringSession::new(event).sign_with(host_signer)`.
+The signer may attach a proof but cannot replace the finalized bytes or Event
+identity. `event_authoring::event_submission` freezes the signed Event for the
+existing durable outbound engine. Encryption, key access and product-specific
+authorization remain host adapters.
+
+For message-specific preparation, finalize a content-bound `AuthoredEvent`, then call `author_message` with the
 host signer. Garth attaches the producer proof and returns the exact
 `MessageSubmitRequestBody`; `queue_authored_message` freezes it for authority
 submission and byte-identical retry.
@@ -104,6 +111,18 @@ after observing a terminal authoritative resource.
 provider-opaque checkpoint, and only then removes the queue item. Use
 `SecureMlsLocalStateStore` and `MlsDeviceSecretStore` with a platform secure
 store for checkpoints and device material.
+
+`mls::checkpoint` owns the encrypted v1 local envelope without linking an MLS
+provider. The host obtains its checkpoint secret and restores the SDK provider.
+`mls::checkpoint_port::install_checkpoint` stages a scope-keyed install through
+`MlsCheckpointPort`, waits for its durability, then asks the staged guard to
+publish. The guard must release store borrows before awaiting, fence session
+replacement at publication, and keep pending consume intents out of delivery
+until the checkpoint/consume tuple is durable. Cancellation retains the exact
+tuple for recovery rather than erasing an already durable consume obligation.
+The host may recover an unpublished checkpoint on restart. Realm and Circle keys are their canonical scope keys; Sidecar keys
+also distinguish the group incarnation. No storage key or envelope version
+changes when moving a host onto these ports.
 
 A Welcome arrives as a producer-signed `MlsWelcomeDelivery` alongside its
 accepted Commit, never as an Event. Pass it through `admit_welcome` with your
@@ -152,3 +171,29 @@ selected binding and close-code vocabulary come from the SDK.
 - Browser hosts implement storage with IndexedDB and may use `WasmExecutor`.
 - Swift and Kotlin shells should expose a small Rust-owned command facade;
   async Rust traits are not a stable foreign-language ABI.
+
+## 9. Consume current cuts and recover historical tails
+
+`current_ingest` validates typed current rows and their cross-row subjects,
+then decodes committed Event batches for the existing `ClientProjector` seam.
+SDK models and reducers remain the protocol owners; the projector owns the
+host's durable index, notification and UI state.
+
+`history_recovery` drives bounded snapshot-anchored windows and live replay
+through `OwnStationResultClient`. A limited preview never becomes a durable
+historical prefix. A durable cursor is restored from its exact original,
+while a current-head bootstrap establishes current state without inventing
+historical rows. Hosts commit the returned admitted pages before moving cursors.
+
+`historical_agent_keys` resolves only accepted Event coordinates through a
+`HistoricalAgentKeyPort`. It keeps recipient AccountId, receiver Station,
+actual Agent ActorId, signer method and historical target separate from current
+key inventory. The host stores results only if the captured session is still
+current. `mls::membership` reconciles typed roster hints with accepted host
+facts; a roster hint does not authorize a membership-changing Commit.
+
+Run `python scripts/check_layering.py --inkson-root ../inkson` in a sibling
+workspace to check the dependency closure and concrete consumer wiring.
+`tests/host_ports.rs` runs the same checkpoint and Event-signing inputs on
+native and wasm; the browser host adapter is exercised by Inkson's
+`wasm_host_ports` integration target with `spec-conformance` enabled.

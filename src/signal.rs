@@ -53,7 +53,7 @@ pub enum SignalReceiveOutcome {
         product_authority: Option<Box<arkret_models_collaboration::SignalProductAuthority>>,
         authority_commit_id: arkret_wire::RealmCommitId,
         parent_realm_authority_commit_id: Option<arkret_wire::RealmCommitId>,
-        plaintext: SignalPlaintext,
+        plaintext: Box<SignalPlaintext>,
         effective_expires_at: DateTime<Utc>,
     },
     StaleSequence,
@@ -132,7 +132,7 @@ impl SignalReceiver {
             product_authority: delivery_authority.product_authority.clone(),
             authority_commit_id: envelope.authority_commit_id.clone(),
             parent_realm_authority_commit_id: envelope.parent_realm_authority_commit_id.clone(),
-            plaintext,
+            plaintext: Box::new(plaintext),
             effective_expires_at,
         })
     }

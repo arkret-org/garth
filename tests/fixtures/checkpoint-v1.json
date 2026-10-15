@@ -1,0 +1,14 @@
+{
+  "realm_id": "ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO",
+  "group_id": "QjKOSorlqs3IquY7OikTUTy_Z0mMiL0X2mK4jAOT4R4",
+  "epoch": 7,
+  "admission_epoch": 7,
+  "group_state_event_id": null,
+  "salt_hex": "000102030405060708090a0b0c0d0e0f",
+  "ciphertext_hex": "6706a8fea77c83bb17f7a13c8782306da82f28809d020b51a1b1c2af196c62d0413fafd5ce0efef6e6e1c35198a9c31ba9bdbb",
+  "mac_hex": "000102030405060708090a0b",
+  "recorded_at": "2026-09-21T14:13:20Z",
+  "epoch_started_at": "2026-09-21T14:13:20Z",
+  "app_messages_observed": 3,
+  "aead_version": 1
+}

@@ -59,6 +59,9 @@ jobs:
       - name: Clippy
         working-directory: garth
         run: cargo clippy --features native --all-targets -- -D warnings
+      - name: Runtime layering
+        working-directory: garth
+        run: python scripts/check_layering.py
       - name: Tests
         working-directory: garth
         run: cargo test --features native
