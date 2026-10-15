@@ -534,18 +534,18 @@ pub fn validate_floor_product_rows(
             }
             CurrentSelector::CallFocus { .. } => {
                 let _: arkret_models_collaboration::events_payloads::call::CallFocus =
-                    closed_value(value, "call_focus")?;
+                    closed_current_value(value, "call_focus")?;
             }
             CurrentSelector::CallRoster { .. } => {
                 let current: arkret_models_collaboration::events_payloads::call::CallRosterCurrentValue =
-                    closed_value(value, "call_roster")?;
+                    closed_current_value(value, "call_roster")?;
                 current
                     .validate_for_axis(source_stream_ref, revision)
                     .map_err(protocol)?;
             }
             CurrentSelector::CallModeration { .. } => {
                 let current: arkret_models_collaboration::events_payloads::call::CallModerationCurrentValue =
-                    closed_value(value, "call_moderation")?;
+                    closed_current_value(value, "call_moderation")?;
                 current
                     .validate_for_axis(source_stream_ref, revision)
                     .map_err(protocol)?;
