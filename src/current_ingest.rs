@@ -215,6 +215,13 @@ pub fn validate_floor_product_rows(
                 }
                 root = true;
             }
+            CurrentSelector::RealmMediaService => {
+                closed_current_value::<
+                    arkret_models_collaboration::events_payloads::RealmMediaServiceValue,
+                >(value, "realm_media_service")?
+                .validate()
+                .map_err(protocol)?;
+            }
             CurrentSelector::RealmReadReceiptPolicy => {
                 closed_current_value::<
                     arkret_models_collaboration::events_payloads::ReadReceiptPolicyPayload,
