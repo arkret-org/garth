@@ -51,6 +51,8 @@ pub enum SignalReceiveOutcome {
         signer_verification_method: arkret_wire::DidUrl,
         /// Exact governance basis authenticated by the producer proof and AEAD.
         product_authority: Option<Box<arkret_models_collaboration::SignalProductAuthority>>,
+        call_invitation:
+            Option<Box<arkret_models_collaboration::call_invitation::CallInvitationDeliveryView>>,
         authority_commit_id: arkret_wire::RealmCommitId,
         parent_realm_authority_commit_id: Option<arkret_wire::RealmCommitId>,
         plaintext: SignalPlaintext,
@@ -103,6 +105,24 @@ impl SignalReceiver {
                 "Signal plaintext class does not match its authenticated envelope".to_owned(),
             ));
         }
+        if let Some(delivery) = &delivery_authority.call_invitation {
+            arkret_signatures::call_invitation::verify_call_invitation(
+                &delivery.invitation,
+                envelope,
+                &public_key,
+                now,
+            )
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+            let SignalPlaintext::CallSignal(call) = &plaintext else {
+                return Err(Error::Protocol(
+                    "call invitation delivery contains another plaintext kind".into(),
+                ));
+            };
+            delivery
+                .invitation
+                .validate_plaintext(call)
+                .map_err(|error| Error::Protocol(error.to_string()))?;
+        }
 
         let effective_expires_at =
             plaintext.effective_expires_at(envelope.sent_at, envelope.expires_at);
@@ -130,6 +150,7 @@ impl SignalReceiver {
             domain: Box::new(domain),
             signer_verification_method: delivery_authority.key.verification_method.clone(),
             product_authority: delivery_authority.product_authority.clone(),
+            call_invitation: delivery_authority.call_invitation.clone(),
             authority_commit_id: envelope.authority_commit_id.clone(),
             parent_realm_authority_commit_id: envelope.parent_realm_authority_commit_id.clone(),
             plaintext,

@@ -2219,6 +2219,7 @@ mod tests {
         }
         sign_snapshot(&mut handoff_snapshot);
         let mut handoff = arkret_wire::RealmAuthorityHandoff {
+            pcr_private_state_digest: None,
             handoff_id: arkret_wire::RealmAuthorityHandoffId::from_digest([0x31; 32]),
             realm_id: request.realm_id.clone(),
             from_generation: 0,
@@ -2313,6 +2314,7 @@ mod tests {
             },
         );
         arkret_models_collaboration::authority_commit::AuthorityHandoffRequest {
+            pcr_private_state: None,
             handoff: handoff.clone(),
             final_stream_heads: handoff_snapshot.visible_stream_heads.clone(),
             snapshot: handoff_snapshot,
