@@ -1,11 +1,10 @@
 //! Revision-safe consumer for Station-CAS account-data rows.
 
-use std::collections::{BTreeMap, BTreeSet};
-
 use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountSubscribeFrame, StationCasAccountDataContainer,
 };
 use arkret_models_collaboration::sync_frames::demand_sync::AccountBaselineChannel;
+use im::{OrdMap as BTreeMap, OrdSet as BTreeSet};
 
 use crate::{Error, Result};
 
@@ -39,6 +38,83 @@ pub struct StationCasProjection {
 }
 
 impl StationCasProjection {
+    /// Visit only changed local checkpoint records. Hosts may put these records
+    /// in the same physical transaction as their Account cursor. Paths are
+    /// local serde coordinates, never protocol selectors or wire objects.
+    pub fn visit_checkpoint_changes(
+        &self,
+        previous: &Self,
+        mut visit: impl FnMut(Vec<String>, Option<serde_json::Value>) -> Result<()>,
+    ) -> Result<()> {
+        fn revisions(
+            path: Vec<String>,
+            old: &BTreeMap<String, Revision>,
+            new: &BTreeMap<String, Revision>,
+            visit: &mut impl FnMut(Vec<String>, Option<serde_json::Value>) -> Result<()>,
+        ) -> Result<()> {
+            for delta in old.diff(new) {
+                let (key, value) = match delta {
+                    im::ordmap::DiffItem::Add(key, value) => (key, Some(value)),
+                    im::ordmap::DiffItem::Remove(key, _) => (key, None),
+                    im::ordmap::DiffItem::Update {
+                        new: (key, value), ..
+                    } => (key, Some(value)),
+                };
+                let mut row = path.clone();
+                row.push(key.clone());
+                visit(row, value.map(serde_json::to_value).transpose()?)?;
+            }
+            Ok(())
+        }
+        revisions(
+            vec!["revisions".into()],
+            &previous.revisions,
+            &self.revisions,
+            &mut visit,
+        )?;
+        let old = previous.pending_baseline.as_ref();
+        let new = self.pending_baseline.as_ref();
+        if old.map(|p| &p.snapshot_cursor) != new.map(|p| &p.snapshot_cursor) {
+            visit(
+                vec!["pending_baseline".into()],
+                Some(match new {
+                    None => serde_json::Value::Null,
+                    Some(p) => {
+                        serde_json::json!({"snapshot_cursor":p.snapshot_cursor,"revisions":{},"live_overrides":[]})
+                    }
+                }),
+            )?;
+        }
+        let empty = BTreeMap::new();
+        revisions(
+            vec!["pending_baseline".into(), "revisions".into()],
+            old.map_or(&empty, |p| &p.revisions),
+            new.map_or(&empty, |p| &p.revisions),
+            &mut visit,
+        )?;
+        // Overrides are independently keyed set records, so a long baseline
+        // never serializes its entire accumulated key set on a one-key delta.
+        let empty = BTreeSet::new();
+        let a = old.map_or(&empty, |p| &p.live_overrides);
+        let b = new.map_or(&empty, |p| &p.live_overrides);
+        for key in a.clone().symmetric_difference(b.clone()) {
+            let path = vec![
+                "pending_baseline".into(),
+                "live_overrides".into(),
+                key.clone(),
+            ];
+            visit(
+                path,
+                if b.contains(&key) {
+                    Some(serde_json::Value::String(key))
+                } else {
+                    None
+                },
+            )?;
+        }
+        Ok(())
+    }
+
     pub fn reset_for_initial_sync(&mut self) {
         self.revisions.clear();
         self.pending_baseline = None;
