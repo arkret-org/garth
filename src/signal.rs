@@ -105,6 +105,24 @@ impl SignalReceiver {
                 "Signal plaintext class does not match its authenticated envelope".to_owned(),
             ));
         }
+        if let Some(delivery) = &delivery_authority.call_invitation {
+            arkret_signatures::call_invitation::verify_call_invitation(
+                &delivery.invitation,
+                envelope,
+                &public_key,
+                now,
+            )
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+            let SignalPlaintext::CallSignal(call) = &plaintext else {
+                return Err(Error::Protocol(
+                    "call invitation delivery contains another plaintext kind".into(),
+                ));
+            };
+            delivery
+                .invitation
+                .validate_plaintext(call)
+                .map_err(|error| Error::Protocol(error.to_string()))?;
+        }
 
         let effective_expires_at =
             plaintext.effective_expires_at(envelope.sent_at, envelope.expires_at);

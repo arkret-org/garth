@@ -14,6 +14,7 @@ pub mod actor_profile_directory;
 pub mod agent_draft_pending_intent_projection;
 pub mod agent_interaction;
 pub mod authority;
+pub mod call_invitation;
 pub mod current_ingest;
 pub mod direct_conversation;
 pub mod direct_structure;

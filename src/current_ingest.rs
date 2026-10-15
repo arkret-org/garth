@@ -215,6 +215,13 @@ pub fn validate_floor_product_rows(
                 }
                 root = true;
             }
+            CurrentSelector::RealmMediaService => {
+                closed_current_value::<
+                    arkret_models_collaboration::events_payloads::RealmMediaServiceValue,
+                >(value, "realm_media_service")?
+                .validate()
+                .map_err(protocol)?;
+            }
             CurrentSelector::RealmReadReceiptPolicy => {
                 closed_current_value::<
                     arkret_models_collaboration::events_payloads::ReadReceiptPolicyPayload,
@@ -531,6 +538,24 @@ pub fn validate_floor_product_rows(
                 closed_current_value::<
                     arkret_models_collaboration::agent_interaction::AgentInteractionCurrentValue,
                 >(value, "agent_interaction")?;
+            }
+            CurrentSelector::CallFocus { .. } => {
+                let _: arkret_models_collaboration::events_payloads::call::CallFocus =
+                    closed_current_value(value, "call_focus")?;
+            }
+            CurrentSelector::CallRoster { .. } => {
+                let current: arkret_models_collaboration::events_payloads::call::CallRosterCurrentValue =
+                    closed_current_value(value, "call_roster")?;
+                current
+                    .validate_for_axis(source_stream_ref, revision)
+                    .map_err(protocol)?;
+            }
+            CurrentSelector::CallModeration { .. } => {
+                let current: arkret_models_collaboration::events_payloads::call::CallModerationCurrentValue =
+                    closed_current_value(value, "call_moderation")?;
+                current
+                    .validate_for_axis(source_stream_ref, revision)
+                    .map_err(protocol)?;
             }
             CurrentSelector::CallState { .. } => {
                 // Install the authenticated lifecycle axis as current state.
