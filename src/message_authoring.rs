@@ -84,7 +84,6 @@ impl MessageAuthoringPreparation {
 #[derive(Debug)]
 pub struct MessageAuthoringSession {
     event: AuthoredEvent,
-    unsigned_bytes: Vec<u8>,
 }
 
 impl MessageAuthoringSession {
@@ -95,11 +94,7 @@ impl MessageAuthoringSession {
             ));
         }
         event.verify_identity()?;
-        let unsigned_bytes = arkret_canonical::canonical_json_bytes(event.event())?;
-        Ok(Self {
-            event,
-            unsigned_bytes,
-        })
+        Ok(Self { event })
     }
 
     pub fn from_prepared(
@@ -129,15 +124,8 @@ impl MessageAuthoringSession {
     where
         F: FnOnce(&mut AuthoredEvent) -> Result<()>,
     {
-        signer(&mut self.event)?;
-        self.event.verify_identity()?;
-        let mut unsigned = self.event.event().clone();
-        unsigned.producer_proof = None;
-        if arkret_canonical::canonical_json_bytes(&unsigned)? != self.unsigned_bytes {
-            return Err(Error::Protocol(
-                "message signer rewrote the frozen intent".to_owned(),
-            ));
-        }
+        self.event =
+            crate::event_authoring::EventAuthoringSession::new(self.event)?.sign_with(signer)?;
         FrozenMessageSubmission::from_signed_request(MessageSubmitRequestBody {
             submission: EventAdmissionSubmission::new(self.event.into_event()),
         })

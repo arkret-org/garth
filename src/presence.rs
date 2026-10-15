@@ -47,11 +47,14 @@ impl PresenceProjection {
     ) -> Result<bool> {
         let SignalReceiveOutcome::Accepted {
             domain,
-            plaintext: SignalPlaintext::Presence(presence),
+            plaintext,
             effective_expires_at,
             ..
         } = outcome
         else {
+            return Ok(false);
+        };
+        let SignalPlaintext::Presence(presence) = plaintext.as_ref() else {
             return Ok(false);
         };
         if domain.sender_actor_id != presence.actor_id || *effective_expires_at <= sent_at {

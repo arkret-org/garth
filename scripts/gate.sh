@@ -11,8 +11,8 @@ cd "$(dirname "$0")/.."
 
 # Scoped to this package on purpose. The SDK is a sibling path dependency, and
 # `cargo fmt --all` reaches into that repository and rewrites it.
-echo "==> cargo fmt -- --check"
-cargo fmt -- --check
+echo "==> cargo +nightly fmt -- --check"
+cargo +nightly fmt -- --check
 
 echo "==> cargo check --workspace --all-features"
 cargo check --workspace --all-features
@@ -27,5 +27,7 @@ if [ "$quick" -eq 0 ]; then
     echo "==> cargo check --target wasm32-unknown-unknown --no-default-features --features wasm"
     cargo check --target wasm32-unknown-unknown --no-default-features --features wasm
 fi
+
+python3 scripts/check_layering.py
 
 echo "gate: PASS"

@@ -113,41 +113,32 @@ or persist local runtime state.
 | `direct_conversation_founding_action` and its founding-unit carrier | The closed four-Event founding carrier is gone from the SDK. Creation is authored from `DirectConversationAction::SubmitCreation` and submitted through the governance authority like any other producer Event. |
 | `src/projection/security_state.rs`'s encryption reads | Whether a scope is encrypted is no longer a projection flag. It is `InstalledMlsEpoch`: installed at an epoch, an authoritative "no accepted genesis" (still plaintext), or not delivered yet. |
 
-## Downstream call-point coverage
+## Downstream host boundaries (2026-10-15)
 
-`inkson` is the primary consumer and still compiles against the pre-migration
-surface, so its call sites are the sharpest test of what was actually lost. Of
-its 171 distinct `garth::` head symbols, 98 resolve against the crate as it
-stands. The 73 that do not fall into exactly the categories the removal table
-above accounts for:
+The earlier 171-symbol inventory described the old authority-commit transition;
+it is no longer a description of the current Inkson source. The retained
+removal table above explains historical protocol retirements. Current host
+convergence is checked at real production callers:
 
-- the historical key exchange family (`HistoryRuntime*`, `HistorySource*`,
-  `HistoryCandidate*`, `StagedHistoryCandidate`, `QueuedMlsHistorySecret`);
-- the encryption-profile and Cell projection reads
-  (`realm_projection_is_encrypted`, `encryption_profile_is_encrypted`,
-  `security_projection_for_scope_id`, `installed_cell_value`,
-  `realm_authority_root_*`, `LocalSealView`);
-- the client-computed coverage planner (`CurrentRealmProgress`,
-  `plan_current_install`, `plan_current_entry`);
-- the previous queued-record vocabulary (`QueuedRecord`, `QueuedSdkEvent`,
-  `AuthoringGeneration`, `AuthoringAuthorityModel`,
-  `ScheduledSendSubmissionState`), superseded by `QueuedSubmission` and
-  `SendQueueItem`;
-- the Realm-wide-cursor sync client (`SubscriptionEngine`, `sync_client`,
-  `subscribe`, `EventsScanTransport`, `AccountFrameTransport`,
-  `account_updates_to_events`), superseded by `AccountRunner`,
-  `AuthorityClient::scan` and `account_batch_to_client_events`;
-- the Welcome-as-Event MLS artifact machinery (`AcceptedMlsArtifact*`,
-  `QueuedMlsWelcomes`, `QueuedMlsLocalCheckpoint`), superseded by
-  `MlsInstallQueue`, `QueuedMlsInstall` and `admit_welcome`;
-- the client-side Signal sender-key resolver, superseded by the
-  Station-delivered `SignalDeliveryAuthority`;
-- two constants that are now SDK enum accessors
-  (`SIGNAL_PLAINTEXT_KIND_PRESENCE`, `SIGNAL_PLAINTEXT_KIND_CALL` become
-  `SignalPlaintextKind::Presence.as_str()` and
-  `SignalPlaintextKind::CallSignal.as_str()`).
+| Shared engine | Inkson host boundary |
+|---|---|
+| `event_authoring::EventAuthoringSession`, `event_submission`, `OutboundEngine` | `event_submit` supplies the signer, product authorization and durable queue adapter; `app::runtime_adapter` captures Dioxus context. |
+| `mls::checkpoint`, `mls::checkpoint_port`, `mls::accepted_artifact` | SDK provider restore and device-secret access remain in the host; accepted transition and Welcome installation enter the shared staged durability engine. |
+| `current_ingest`, `history_recovery`, `OwnStationReplica`, `ClientProjector` | Local current/history transactions, view wakeups and session cancellation remain host adapters. |
+| `historical_agent_keys` | The host supplies accepted candidates and an account/session-fenced cache; shared resolution never substitutes current keys. |
+| `mls::membership` | Raw host operation records and Session/SyncSignal wakeups remain in Inkson. |
+| `SignalReceiver` | Product moderation, calls, Typing and display projections remain host adapters; no view helper is required by the receive engine. |
 
-None of these needs a garth change. Each one is a downstream migration.
+The unused `WelcomeApplyOutcome` and the duplicate host accepted-artifact
+parser were removed. The old RHRK, Seal and merged-stream surfaces remain
+retired; the new helpers consume the SDK's current snapshot and per-stream
+contracts.
+
+`python scripts/check_layering.py --inkson-root ../inkson` checks the native
+and wasm normal dependency closure for OpenMLS/Dioxus leakage and verifies
+actual host call sites. `tests/host_ports.rs` supplies portable behavioral
+vectors. Runtime success is recorded by the owning task's execution evidence,
+not inferred from the existence of a module or test.
 
 ## Self-check
 
