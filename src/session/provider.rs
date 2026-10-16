@@ -190,6 +190,11 @@ where
         &self.session
     }
 
+    /// Access the host's factory without changing this provider's frozen grant.
+    pub fn factory(&self) -> &F {
+        &self.factory
+    }
+
     /// Bind a factory-built authenticated client to this provider's live grant.
     /// The source remains shared with every login, rotation and invalidation.
     pub fn own_station_result_client(

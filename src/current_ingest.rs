@@ -483,6 +483,20 @@ pub fn validate_floor_product_rows(
                     value, "invite_live_target",
                 )?;
             }
+            CurrentSelector::Policy { policy_id } => {
+                let policy: arkret_models_collaboration::governance::operation_wire::PolicySetValue =
+                    closed_current_value(value, "policy")?;
+                policy.validate().map_err(protocol)?;
+                if policy.policy_id() != policy_id
+                    || matches!(&policy,
+                        arkret_models_collaboration::governance::operation_wire::PolicySetValue::Governance(value)
+                            if value.realm_id.as_ref().is_some_and(|id| id != realm_id))
+                {
+                    return Err(protocol(
+                        "signed Policy differs from its registered Realm subject",
+                    ));
+                }
+            }
             CurrentSelector::CapabilityGrant { grant_id } => {
                 let grant: arkret_models_collaboration::governance::grant_constraint::CapabilityGrant =
                     closed_current_value(value, "capability_grant")?;
@@ -774,4 +788,118 @@ pub fn validate_current_product(
         object,
         &actor,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use arkret_wire::{CurrentRevision, CurrentSelector, RealmCommitId, TypedCurrentRow};
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn signed_agent_policy_floor_preserves_sync_and_rejects_subject_rebinding() {
+        let realm = crate::test_fixtures::realm_id();
+        let actor = crate::test_fixtures::actor_id();
+        let stream = CommitStreamRef::Realm {
+            realm_id: realm.clone(),
+        };
+        let genesis = serde_json::to_value(
+            arkret_models_collaboration::events_payloads::realm::RealmGenesis::new(
+                arkret_models_collaboration::events_payloads::realm::RealmPurpose::Collaboration,
+                arkret_wire::GenesisSalt::new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+                    .unwrap(),
+                arkret_wire::TrustDomainId::new("ak:trust_domain:server.example").unwrap(),
+                arkret_wire::SecurityClass::Standard,
+                arkret_wire::DidCoreId::new("ak:did_core:web:station.example").unwrap(),
+                arkret_wire::JoinRule::Invite,
+                arkret_wire::HistoryAccess::SinceJoin,
+                arkret_wire::Discoverability::Listed,
+                None,
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let origin = CurrentRevision {
+            commit_id: RealmCommitId::from_digest([1; 32]),
+            stream_position: 0,
+        };
+        let revision = CurrentRevision {
+            commit_id: RealmCommitId::from_digest([2; 32]),
+            stream_position: 1,
+        };
+        let head = arkret_wire::CommitStreamHead {
+            stream_ref: stream.clone(),
+            stream_position: 1,
+            commit_id: revision.commit_id.clone(),
+        };
+        let policy_id =
+            arkret_wire::PolicyId::new("ak:policy:0196419b-0000-7000-8000-000000000001").unwrap();
+        let policy = json!({
+            "schema":"ak.schema.policy.v1", "id":policy_id, "realm_id":realm,
+            "policy_kind":"agent", "rules":[{"kind":"agent", "rule_id":"owned_join", "effect":"allow", "agent_target":{"kind":"all"}, "agent_operations":["join"]}],
+            "default_effect":"deny", "created_by":actor, "created_at":"2026-09-16T00:00:00.000Z"
+        });
+        let rows = vec![
+            TypedCurrentRow::Value {
+                selector: CurrentSelector::RealmGenesis,
+                source_stream_ref: stream.clone(),
+                revision: origin.clone(),
+                value: genesis.clone(),
+            },
+            TypedCurrentRow::Value {
+                selector: CurrentSelector::RealmAuthorityRoot,
+                source_stream_ref: stream.clone(),
+                revision: origin.clone(),
+                value: json!({"controller_actor_id":actor,"controller_epoch":0,"authority_generation":0,"authority_event_ref":realm.event_id()}),
+            },
+            TypedCurrentRow::Value {
+                selector: CurrentSelector::Policy {
+                    policy_id: policy_id.clone(),
+                },
+                source_stream_ref: stream,
+                revision,
+                value: policy,
+            },
+        ];
+        let validate = |rows: &[TypedCurrentRow]| {
+            validate_floor_product_rows(
+                &realm,
+                &head,
+                arkret_wire::HistoryAccess::SinceJoin,
+                rows,
+                &origin,
+                &genesis,
+                &actor,
+            )
+        };
+        validate(&rows).unwrap();
+        for (field, value) in [
+            (
+                "id",
+                json!("ak:policy:0196419b-0000-7000-8000-000000000002"),
+            ),
+            (
+                "realm_id",
+                json!(arkret_wire::RealmId::from_event_id(
+                    &arkret_wire::EventId::from_digest(
+                        arkret_canonical::DigestSuite::Sha256,
+                        [9; 32]
+                    )
+                )),
+            ),
+            ("schema", json!("ak.schema.unknown.v1")),
+        ] {
+            let mut changed = rows.clone();
+            let TypedCurrentRow::Value { value: policy, .. } = &mut changed[2] else {
+                unreachable!()
+            };
+            policy[field] = value;
+            assert!(
+                validate(&changed).is_err(),
+                "accepted Policy rebinding: {field}"
+            );
+        }
+    }
 }
