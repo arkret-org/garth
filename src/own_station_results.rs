@@ -728,14 +728,15 @@ async fn verify_row_from_source(
         ));
     }
     if let Some(human) = human.filter(|_| source == OriginalSource::Ordinary) {
-        let fact = arkret_models_collaboration::authority_commit::HumanHistoricalSignerFact {
-            event_id: event.event_id.clone(),
-            actor: event.actual_signer().clone(),
-            device_id: human.device_id,
-            verification_method: proof.verification_method.clone(),
-            key: key.clone(),
-            accepted_at: *accepted_at,
-        };
+        let fact =
+            arkret_models_collaboration::authority_commit::AccountDeviceHistoricalSignerFact {
+                event_id: event.event_id.clone(),
+                actor: event.actual_signer().clone(),
+                device_id: human.device_id,
+                verification_method: proof.verification_method.clone(),
+                key: key.clone(),
+                accepted_at: *accepted_at,
+            };
         fact.validate_event_binding(event, suite)
             .map_err(|error| protocol(&error.to_string()))?;
         if source == OriginalSource::Ordinary
@@ -1559,7 +1560,7 @@ pub(crate) mod tests {
             governance_generation: 0,
         };
         let original_fact =
-            arkret_models_collaboration::authority_commit::HumanHistoricalSignerFact {
+            arkret_models_collaboration::authority_commit::AccountDeviceHistoricalSignerFact {
                 event_id: event.event_id.clone(),
                 actor: event.actual_signer().clone(),
                 device_id: crate::test_fixtures::device_id(),
