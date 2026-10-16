@@ -161,6 +161,35 @@ pub trait SecureKeyStore: MaybeSendSync + 'static {
 
     fn get_secret_bytes(&self, key: &str) -> SecureKeyStoreResult<Option<KeyBytes>>;
 
+    /// Read the first present known key without requiring key enumeration.
+    /// Errors and present values stop the priority search.
+    fn get_first_secret_bytes(
+        &self,
+        keys: &[&str],
+    ) -> SecureKeyStoreResult<Option<(usize, KeyBytes)>> {
+        for (index, key) in keys.iter().enumerate() {
+            if let Some(bytes) = self.get_secret_bytes(key)? {
+                return Ok(Some((index, bytes)));
+            }
+        }
+        Ok(None)
+    }
+
+    fn get_first_secret(&self, keys: &[&str]) -> SecureKeyStoreResult<Option<(usize, String)>> {
+        self.get_first_secret_bytes(keys)?
+            .map(|(index, bytes)| {
+                if index >= keys.len() {
+                    return Err(SecureKeyStoreError::Backend(
+                        "priority secret index is out of bounds".to_owned(),
+                    ));
+                }
+                str::from_utf8(bytes.as_slice())
+                    .map(|value| (index, value.to_owned()))
+                    .map_err(|err| SecureKeyStoreError::Backend(format!("utf8 secret: {err}")))
+            })
+            .transpose()
+    }
+
     /// Read the committed backend value rather than an instance-local cache.
     /// Backends without this capability must fail instead of emulating a read.
     fn read_secret_bytes_durable<'a>(
@@ -329,6 +358,12 @@ impl<S> KeyStore for SdkKeyStoreAdapter<S>
 where
     S: SecureKeyStore + Send + Sync,
 {
+    fn load_first(&self, ids: &[&str]) -> Result<Option<(usize, KeyBytes)>, KeyStoreError> {
+        self.inner
+            .get_first_secret_bytes(ids)
+            .map_err(|err| KeyStoreError::backend(err.to_string()))
+    }
+
     fn load(&self, id: &str) -> Result<KeyBytes, KeyStoreError> {
         let bytes = self.inner.get_secret_bytes(id).map_err(|err| match err {
             SecureKeyStoreError::NotFound => KeyStoreError::not_found(id),
@@ -375,6 +410,15 @@ impl<K> SecureKeyStore for SdkKeyStoreSecureAdapter<K>
 where
     K: KeyStore + Send + Sync + 'static,
 {
+    fn get_first_secret_bytes(
+        &self,
+        keys: &[&str],
+    ) -> SecureKeyStoreResult<Option<(usize, KeyBytes)>> {
+        self.inner
+            .load_first(keys)
+            .map_err(|err| SecureKeyStoreError::Backend(err.to_string()))
+    }
+
     fn store_secret_bytes(&self, key: &str, value: &[u8]) -> SecureKeyStoreResult<()> {
         self.inner
             .store(key, value)
@@ -424,6 +468,39 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn priority_adapters_preserve_order_utf8_errors_and_backend_failures() {
+        let memory = MemorySecureKeyStore::new();
+        memory.store_secret_bytes("older", &[0xff]).unwrap();
+        memory.store_secret("newer", "current").unwrap();
+        let sdk = SdkKeyStoreAdapter::new(memory.clone());
+        let adapter = SdkKeyStoreSecureAdapter::new(sdk);
+        assert_eq!(
+            adapter
+                .get_first_secret(&["absent", "newer", "older"])
+                .unwrap(),
+            Some((1, "current".to_owned()))
+        );
+        assert!(adapter.get_first_secret(&["older", "newer"]).is_err());
+        memory.store_secret("newer", "").unwrap();
+        assert_eq!(
+            adapter.get_first_secret(&["newer", "older"]).unwrap(),
+            Some((0, String::new()))
+        );
+        assert!(adapter.get_first_secret(&[]).unwrap().is_none());
+        assert!(
+            SdkKeyStoreSecureAdapter::new(MissingKeyStore)
+                .get_first_secret(&["missing"])
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            SdkKeyStoreSecureAdapter::new(BackendTextKeyStore)
+                .get_first_secret(&["missing"])
+                .is_err()
+        );
+    }
 
     #[tokio::test]
     async fn unsupported_backends_cannot_emulate_atomic_secret_updates() {
