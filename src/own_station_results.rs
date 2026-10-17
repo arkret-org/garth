@@ -374,11 +374,18 @@ impl OwnStationReplica {
         Ok(OwnStationScanPage { response })
     }
 
-    pub fn install_bound_snapshot<Q>(
+    /// Install current coverage only from the head operation. Exact by-ref
+    /// responses have a different request type and belong to historical bases.
+    pub fn install_bound_snapshot(
         &mut self,
-        response: &BoundOwnStationResponse<Q, RealmStateSnapshot>,
+        response: &BoundOwnStationResponse<RealmId, RealmStateSnapshot>,
     ) -> Result<()> {
         self.check_context(response.session())?;
+        if response.request() != &self.realm_id {
+            return Err(protocol(
+                "ordinary current snapshot request has another Realm",
+            ));
+        }
         let snapshot = response.value()?;
         validate_snapshot(snapshot, &self.realm_id)?;
         if self
@@ -420,6 +427,9 @@ impl OwnStationReplica {
         Ok(())
     }
 
+    /// Admit the exact historical prefix without replacing current coverage.
+    /// Native governance proof and current whole-original disclosure belong to
+    /// the authenticated Account Station, including after a planned handoff.
     pub fn install_bound_floor_predecessor(
         &mut self,
         stream_ref: &CommitStreamRef,
@@ -2903,15 +2913,20 @@ pub(crate) mod tests {
         snapshot_at_floor(heads, 0)
     }
 
-    fn snapshot_at_floor(
+    fn snapshot_at_floor(heads: Vec<CommitStreamHead>, oldest_position: u64) -> RealmStateSnapshot {
+        snapshot_at_floor_and_generation(heads, oldest_position, 0)
+    }
+
+    fn snapshot_at_floor_and_generation(
         mut heads: Vec<CommitStreamHead>,
         oldest_position: u64,
+        governance_generation: u64,
     ) -> RealmStateSnapshot {
         heads.sort_by(|left, right| left.stream_ref.cmp(&right.stream_ref));
         let mut value = RealmStateSnapshot {
             snapshot_id: RealmSnapshotId::from_digest([1; 32]),
             realm_id: crate::test_fixtures::realm_id(),
-            governance_generation: 0,
+            governance_generation,
             retention_and_history_floor: arkret_wire::RetentionAndHistoryFloor {
                 history_access: arkret_wire::HistoryAccess::SinceJoin,
                 stream_floors: heads
@@ -2936,6 +2951,117 @@ pub(crate) mod tests {
             arkret_canonical::canonical_json_bytes(&body).unwrap(),
         ));
         value
+    }
+
+    #[tokio::test]
+    async fn own_station_historical_snapshot_basis_preserves_newer_current_after_handoff() {
+        let anchor = head(&commit(5, None));
+        let current_head = head(&commit(8, None));
+        let historical = snapshot_at_floor_and_generation(vec![anchor.clone()], 3, 1);
+        let current = snapshot_at_floor_and_generation(vec![current_head.clone()], 3, 2);
+        let basis = StreamWindowStartBasis {
+            anchor_position: anchor.stream_position,
+            anchor_commit_ref: anchor.commit_id.clone(),
+            snapshot_ref: historical.snapshot_id.clone(),
+            governance_generation: historical.governance_generation,
+            accepted_dependency_refs: None,
+        };
+        let floor = ReadableFloor {
+            oldest_position: 3,
+            floor_commit_id: arkret_wire::RealmCommitId::from_digest([3; 32]),
+            floor_reason: arkret_wire::ReadableFloorReason::MembershipJoin,
+        };
+        let (client, server) = client(vec![
+            serde_json::to_value(&current).unwrap(),
+            serde_json::to_value(&current).unwrap(),
+            serde_json::to_value(&historical).unwrap(),
+            serde_json::to_value(&historical).unwrap(),
+            serde_json::to_value(&historical).unwrap(),
+            serde_json::to_value(&historical).unwrap(),
+        ]);
+        let mut replica = OwnStationReplica::new(historical.realm_id.clone());
+        replica
+            .install_bound_snapshot(&client.snapshot_head(&historical.realm_id).await.unwrap())
+            .unwrap();
+        let state = |replica: &OwnStationReplica| {
+            (
+                replica.heads.clone(),
+                replica.generations.clone(),
+                replica.current_heads.clone(),
+                replica.snapshot.clone(),
+            )
+        };
+        let before = state(&replica);
+        let wrong = client
+            .snapshot_by_ref(&historical.realm_id, &historical.snapshot_id)
+            .await;
+        assert!(
+            wrong.is_err(),
+            "current head cannot answer an exact historical ref"
+        );
+        assert_eq!(state(&replica), before);
+        let original = client
+            .snapshot_by_ref(&historical.realm_id, &historical.snapshot_id)
+            .await
+            .unwrap();
+        let mut wrong_basis = basis.clone();
+        wrong_basis.governance_generation = 2;
+        assert!(
+            replica
+                .install_bound_floor_predecessor(
+                    &anchor.stream_ref,
+                    &wrong_basis,
+                    &floor,
+                    original,
+                    &BTreeMap::new()
+                )
+                .is_err()
+        );
+        assert_eq!(state(&replica), before);
+        let original = client
+            .snapshot_by_ref(&historical.realm_id, &historical.snapshot_id)
+            .await
+            .unwrap();
+        let installed = replica
+            .install_bound_floor_predecessor(
+                &anchor.stream_ref,
+                &basis,
+                &floor,
+                original,
+                &BTreeMap::new(),
+            )
+            .unwrap();
+        assert_eq!(installed.governance_generation().unwrap(), 1);
+        assert_eq!(replica.head(&anchor.stream_ref), Some(&anchor));
+        assert_eq!(replica.snapshot(), Some(&current));
+        assert_eq!(
+            replica.current_heads.get(&anchor.stream_ref),
+            Some(&current_head)
+        );
+        let installed_state = state(&replica);
+        assert!(
+            replica
+                .install_bound_snapshot(&client.snapshot_head(&historical.realm_id).await.unwrap())
+                .is_err()
+        );
+        assert_eq!(state(&replica), installed_state);
+        let original = client
+            .snapshot_by_ref(&historical.realm_id, &historical.snapshot_id)
+            .await
+            .unwrap();
+        assert!(
+            replica
+                .install_bound_floor_predecessor(
+                    &anchor.stream_ref,
+                    &basis,
+                    &floor,
+                    original,
+                    &BTreeMap::new()
+                )
+                .is_err()
+        );
+        assert_eq!(state(&replica), installed_state);
+        server.join().unwrap();
     }
 
     #[tokio::test]
