@@ -7,6 +7,8 @@
 //! fresh nonce-bound authority bundle and a historical Station key directory
 //! (see [`crate::historical_station_keys`]).
 
+#[cfg(test)]
+use arkret_identity::VerifiedSubmission;
 use arkret_models_discovery::ServiceDescribe;
 use arkret_wire::{
     BindingKind, ErrorCode, Problem, RealmId, RealmSnapshotId, RealmStateSnapshot, ServiceKind,
@@ -120,7 +122,7 @@ mod tests {
     impl AuthorityTransport for ByRefTransport {
         async fn submit(
             &self,
-            _request: &AuthoritySubmitRequest,
+            _request: &VerifiedSubmission<AuthoritySubmitRequest>,
             _options: &ClientRequestOptions,
         ) -> Result<AuthoritySubmitOutcome> {
             unreachable!("by-ref reads never submit")

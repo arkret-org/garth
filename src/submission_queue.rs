@@ -70,14 +70,28 @@ where
         Self { authority, queue }
     }
 
-    pub async fn submit_next(
+    pub async fn submit_next<G, F>(
         &self,
         options: &ClientRequestOptions,
-    ) -> Result<Option<QueuedSubmission>> {
+        verify: G,
+    ) -> Result<Option<QueuedSubmission>>
+    where
+        G: FnOnce(arkret_models_collaboration::authority_commit::SelfAuthoritySubmitRequest) -> F,
+        F: Future<
+            Output = Result<
+                arkret_identity::VerifiedSubmission<
+                    arkret_models_collaboration::authority_commit::SelfAuthoritySubmitRequest,
+                >,
+            >,
+        >,
+    {
         let Some(mut queued) = self.queue.front().await? else {
             return Ok(None);
         };
-        self.authority.submit(&mut queued, options).await?;
+        let verified = verify(queued.request.clone()).await?;
+        self.authority
+            .submit(&mut queued, &verified, options)
+            .await?;
         self.queue.replace_front(queued.clone()).await?;
         if !matches!(queued.state, SubmissionState::Queued) {
             self.queue.pop_front().await?;

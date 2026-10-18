@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 
+use arkret_identity::VerifiedSubmission;
 use arkret_models_crypto::ClientStepAttestationArtifact;
 pub use arkret_models_crypto::{
     ClientStepAttestation, PcrPolicyRecoveryPlan, RecoveryReceipt, RecoveryTerminalCommit,
@@ -25,7 +26,7 @@ use crate::{Error, MaybeSend, MaybeSendSync, Result};
 pub trait SecurityTransactionTransport: MaybeSendSync {
     fn create<'a>(
         &'a self,
-        request: &'a SecurityTransactionCreateRequest,
+        request: &'a VerifiedSubmission<SecurityTransactionCreateRequest>,
     ) -> impl Future<Output = Result<SecurityTransaction>> + MaybeSend + 'a;
 
     fn get<'a>(
@@ -305,7 +306,7 @@ where
 
     pub async fn create_or_resume(
         &self,
-        request: &SecurityTransactionCreateRequest,
+        request: &VerifiedSubmission<SecurityTransactionCreateRequest>,
         staged_secret_ref: Option<String>,
     ) -> Result<SecurityTransaction> {
         request.validate()?;

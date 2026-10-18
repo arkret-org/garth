@@ -1180,6 +1180,30 @@ pub(crate) mod tests {
 
     use super::*;
 
+    fn verified_test_submission(
+        request: &SelfAuthoritySubmitRequest,
+    ) -> arkret_identity::Result<arkret_identity::VerifiedSubmission<SelfAuthoritySubmitRequest>>
+    {
+        // These producers are authored locally by the fixture's Device key;
+        // server-returned signer projections remain independent negative inputs.
+        let key = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        arkret_identity::VerifiedSubmission::verify(request.clone(), |event| {
+            Ok(arkret_identity::ProducerVerificationContext {
+                actor: event.actual_signer().clone(),
+                verification_method: event
+                    .producer_proof
+                    .as_ref()
+                    .unwrap()
+                    .verification_method
+                    .clone(),
+                public_key: arkret_signatures::PublicKeyMaterial::Ed25519Raw {
+                    bytes: key.verifying_key().as_bytes().to_vec(),
+                },
+                digest_suite: arkret_canonical::DigestSuite::Sha256,
+            })
+        })
+    }
+
     struct Source(OwnStationSessionSnapshot);
     impl OwnStationSessionSource for Source {
         fn snapshot(&self) -> arkret_http_client::Result<OwnStationSessionSnapshot> {
@@ -1696,6 +1720,10 @@ pub(crate) mod tests {
             let request = SelfAuthoritySubmitRequest::Event(
                 arkret_wire::EventAdmissionSubmission::new(frozen_event),
             );
+            if refusal == "event_content" {
+                assert!(verified_test_submission(&request).is_err());
+                continue;
+            }
             let mut supplied = accepted.clone();
             if refusal == "commit_content" {
                 supplied.committed_at = crate::test_fixtures::at(3);
@@ -1730,7 +1758,7 @@ pub(crate) mod tests {
             let (source, server) = client(bodies);
             let response = source
                 .submit_to_realm_authority(
-                    &request,
+                    &verified_test_submission(&request).unwrap(),
                     &arkret_http_client::ClientRequestOptions::default(),
                 )
                 .await
@@ -2268,6 +2296,11 @@ pub(crate) mod tests {
                 let mut event = event;
                 if refusal == "event_content" {
                     event.created_at = crate::test_fixtures::at(4);
+                    let rejected = SelfAuthoritySubmitRequest::Event(
+                        arkret_wire::EventAdmissionSubmission::new(event),
+                    );
+                    assert!(verified_test_submission(&rejected).is_err());
+                    continue;
                 }
                 if refusal == "wrong_slot" {
                     accepted.event_ref = arkret_wire::EventId::from_digest(
@@ -2344,7 +2377,7 @@ pub(crate) mod tests {
                 for _ in 0..if refusal == "replay" { 2 } else { 1 } {
                     let fetched = source
                         .submit_to_realm_authority(
-                            &request,
+                            &verified_test_submission(&request).unwrap(),
                             &arkret_http_client::ClientRequestOptions::default(),
                         )
                         .await;
@@ -2456,7 +2489,7 @@ pub(crate) mod tests {
             let (source, server, observed) = observed_client(bodies);
             let fetched = source
                 .submit_to_realm_authority(
-                    &request,
+                    &verified_test_submission(&request).unwrap(),
                     &arkret_http_client::ClientRequestOptions::default(),
                 )
                 .await;

@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use arkret_http_client::ClientRequestOptions;
+#[cfg(test)]
+use arkret_identity::VerifiedSubmission;
 use arkret_models_collaboration::authority_commit::{
     SelfAuthoritySubmitOutcome, SelfAuthoritySubmitRequest,
 };
@@ -438,13 +440,23 @@ where
     }
 
     /// Forward the oldest due item and durably record its authority outcome.
-    pub async fn submit_next<T: AuthorityTransport>(
+    pub async fn submit_next<T, G, F>(
         &self,
         authority: &AuthorityClient<T>,
         options: &ClientRequestOptions,
-    ) -> Result<OutboundEngineOutcome> {
-        self.submit_next_checked(authority, options, |_| async { Ok(()) })
-            .await
+        verify: G,
+    ) -> Result<OutboundEngineOutcome>
+    where
+        T: AuthorityTransport,
+        G: FnOnce(SelfAuthoritySubmitRequest) -> F,
+        F: Future<
+            Output = std::result::Result<
+                arkret_identity::VerifiedSubmission<SelfAuthoritySubmitRequest>,
+                String,
+            >,
+        >,
+    {
+        self.submit_next_checked(authority, options, verify).await
     }
 
     /// Recheck host authorization on the exact frozen request before forwarding.
@@ -459,7 +471,12 @@ where
     where
         T: AuthorityTransport,
         G: FnOnce(SelfAuthoritySubmitRequest) -> F,
-        F: Future<Output = std::result::Result<(), String>>,
+        F: Future<
+            Output = std::result::Result<
+                arkret_identity::VerifiedSubmission<SelfAuthoritySubmitRequest>,
+                String,
+            >,
+        >,
     {
         let now = self.clock.now();
         let Some(claimed) = self
@@ -473,10 +490,11 @@ where
         let mut submission = claimed.submission.clone();
         let event_id = submission.event_id.clone();
         let settled_at = self.clock.now();
-        if let Err(reason) = gate(submission.request.clone()).await {
-            return self.defer_claimed(claimed, reason, settled_at).await;
-        }
-        match authority.submit(&mut submission, options).await {
+        let verified = match gate(submission.request.clone()).await {
+            Ok(verified) => verified,
+            Err(reason) => return self.defer_claimed(claimed, reason, settled_at).await,
+        };
+        match authority.submit(&mut submission, &verified, options).await {
             Ok(()) => {
                 if let SubmissionState::Rejected {
                     status,
@@ -648,6 +666,23 @@ mod tests {
         fn now(&self) -> DateTime<Utc> {
             crate::test_fixtures::at(0)
         }
+    }
+
+    async fn verify_fixture(
+        request: SelfAuthoritySubmitRequest,
+    ) -> std::result::Result<VerifiedSubmission<SelfAuthoritySubmitRequest>, String> {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+        let context = arkret_identity::ProducerVerificationContext {
+            actor: ActorId::service(DidCoreId::new("ak:did_core:web:alice.example").unwrap()),
+            verification_method: arkret_wire::DidUrl::new("did:web:alice.example#key-1".to_owned())
+                .unwrap(),
+            public_key: arkret_signatures::PublicKeyMaterial::Ed25519Raw {
+                bytes: key.verifying_key().as_bytes().to_vec(),
+            },
+            digest_suite: DigestSuite::Sha256,
+        };
+        VerifiedSubmission::verify(request, |_| Ok(context.clone()))
+            .map_err(|error| error.to_string())
     }
 
     /// One genuinely authored and signed producer submission, so the engine
@@ -838,16 +873,16 @@ mod tests {
     impl AuthorityTransport for ScriptedTransport {
         async fn submit(
             &self,
-            request: &AuthoritySubmitRequest,
+            request: &VerifiedSubmission<AuthoritySubmitRequest>,
             _options: &ClientRequestOptions,
         ) -> Result<AuthoritySubmitOutcome> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            let AuthoritySubmitRequest::Event(submission) = request else {
+            let AuthoritySubmitRequest::Event(submission) = request.wire() else {
                 panic!("the fixture only submits ordinary Events");
             };
             match &self.script {
                 Scripted::LateFailure(store, status) => {
-                    let mut accepted = QueuedSubmission::new(request.clone()).unwrap();
+                    let mut accepted = QueuedSubmission::new(request.wire().clone()).unwrap();
                     accepted
                         .apply_outcome(AuthoritySubmitOutcome::Accepted {
                             status: AuthorityCommitStatus::Committed,
@@ -961,7 +996,7 @@ mod tests {
                 status,
             )));
             let outcome = engine
-                .submit_next(&authority, &ClientRequestOptions::default())
+                .submit_next(&authority, &ClientRequestOptions::default(), verify_fixture)
                 .await
                 .unwrap();
             let OutboundEngineOutcome::Committed { item, commit } = outcome else {
@@ -1006,7 +1041,7 @@ mod tests {
         let authority = AuthorityClient::new(ScriptedTransport::new(Scripted::Accept));
         assert_eq!(
             engine
-                .submit_next(&authority, &ClientRequestOptions::default())
+                .submit_next(&authority, &ClientRequestOptions::default(), verify_fixture)
                 .await
                 .unwrap(),
             OutboundEngineOutcome::Idle
@@ -1019,7 +1054,7 @@ mod tests {
         engine.enqueue(submission(3)).await.unwrap();
         let authority = AuthorityClient::new(ScriptedTransport::new(Scripted::Accept));
         let outcome = engine
-            .submit_next(&authority, &ClientRequestOptions::default())
+            .submit_next(&authority, &ClientRequestOptions::default(), verify_fixture)
             .await
             .unwrap();
         let OutboundEngineOutcome::Committed { item, commit } = outcome else {
@@ -1036,7 +1071,7 @@ mod tests {
         engine.enqueue(submission(3)).await.unwrap();
         let authority = AuthorityClient::new(ScriptedTransport::new(Scripted::Reject));
         let outcome = engine
-            .submit_next(&authority, &ClientRequestOptions::default())
+            .submit_next(&authority, &ClientRequestOptions::default(), verify_fixture)
             .await
             .unwrap();
         let OutboundEngineOutcome::Rejected { item, reason_code } = outcome else {
@@ -1112,6 +1147,7 @@ mod tests {
             .submit_next(
                 &AuthorityClient::new(client),
                 &ClientRequestOptions::default(),
+                verify_fixture,
             )
             .await;
         running.store(false, Ordering::SeqCst);
@@ -1154,7 +1190,7 @@ mod tests {
         engine.enqueue(queued).await.unwrap();
         let authority = AuthorityClient::new(ScriptedTransport::new(Scripted::Retryable));
         let outcome = engine
-            .submit_next(&authority, &ClientRequestOptions::default())
+            .submit_next(&authority, &ClientRequestOptions::default(), verify_fixture)
             .await
             .unwrap();
         assert!(matches!(outcome, OutboundEngineOutcome::Retry { .. }));
@@ -1179,7 +1215,7 @@ mod tests {
         );
         let accepting = AuthorityClient::new(ScriptedTransport::new(Scripted::Accept));
         let OutboundEngineOutcome::Committed { item, .. } = reopened
-            .submit_next(&accepting, &ClientRequestOptions::default())
+            .submit_next(&accepting, &ClientRequestOptions::default(), verify_fixture)
             .await
             .unwrap()
         else {
@@ -1199,7 +1235,7 @@ mod tests {
         engine.enqueue(submission(3)).await.unwrap();
         let authority = AuthorityClient::new(ScriptedTransport::new(Scripted::Transport));
         let outcome = engine
-            .submit_next(&authority, &ClientRequestOptions::default())
+            .submit_next(&authority, &ClientRequestOptions::default(), verify_fixture)
             .await
             .unwrap();
         let OutboundEngineOutcome::Retry { item, delay } = outcome else {
@@ -1212,7 +1248,7 @@ mod tests {
         // The item is no longer due at the fixed clock, so the engine idles.
         assert_eq!(
             engine
-                .submit_next(&authority, &ClientRequestOptions::default())
+                .submit_next(&authority, &ClientRequestOptions::default(), verify_fixture)
                 .await
                 .unwrap(),
             OutboundEngineOutcome::Idle
@@ -1225,7 +1261,7 @@ mod tests {
         engine.enqueue(submission(3)).await.unwrap();
         let authority = AuthorityClient::new(ScriptedTransport::new(Scripted::Protocol));
         let outcome = engine
-            .submit_next(&authority, &ClientRequestOptions::default())
+            .submit_next(&authority, &ClientRequestOptions::default(), verify_fixture)
             .await
             .unwrap();
         let OutboundEngineOutcome::Failed { item, problem, .. } = outcome else {
@@ -1327,7 +1363,7 @@ mod tests {
                         arkret_canonical::canonical_json_bytes(&request).unwrap(),
                         expected
                     );
-                    Ok(())
+                    verify_fixture(request).await
                 },
             )
             .await
@@ -1413,7 +1449,7 @@ mod tests {
         let authority = AuthorityClient::new(ScriptedTransport::new(Scripted::Accept));
         assert_eq!(
             engine
-                .submit_next(&authority, &ClientRequestOptions::default())
+                .submit_next(&authority, &ClientRequestOptions::default(), verify_fixture)
                 .await
                 .unwrap(),
             OutboundEngineOutcome::Idle

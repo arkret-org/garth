@@ -4,7 +4,8 @@ use std::future::Future;
 
 use arkret_http_client::{Client, ClientRequestOptions};
 use arkret_identity::{
-    RealmAuthorityFreshness, RealmAuthorityKeyDirectory, verify_realm_authority_bundle,
+    RealmAuthorityFreshness, RealmAuthorityKeyDirectory, VerifiedSubmission,
+    verify_realm_authority_bundle,
 };
 use arkret_models_collaboration::authority_commit::{
     AuthorityHandoffRequest, DirectConversationFoundingUnitSubmission,
@@ -29,17 +30,17 @@ use crate::{Error, MaybeSend, MaybeSendSync, Result};
 pub trait AuthorityTransport: MaybeSendSync {
     fn submit<'a>(
         &'a self,
-        request: &'a AuthoritySubmitRequest,
+        request: &'a VerifiedSubmission<AuthoritySubmitRequest>,
         options: &'a ClientRequestOptions,
     ) -> impl Future<Output = Result<AuthoritySubmitOutcome>> + MaybeSend + 'a;
 
     fn submit_self<'a>(
         &'a self,
-        request: &'a SelfAuthoritySubmitRequest,
+        request: &'a VerifiedSubmission<SelfAuthoritySubmitRequest>,
         options: &'a ClientRequestOptions,
     ) -> impl Future<Output = Result<SelfAuthoritySubmitOutcome>> + MaybeSend + 'a {
         async move {
-            let request = match request {
+            let wire = match request.wire() {
                 SelfAuthoritySubmitRequest::Event(value) => {
                     AuthoritySubmitRequest::Event(value.clone())
                 }
@@ -52,6 +53,9 @@ pub trait AuthorityTransport: MaybeSendSync {
                     ));
                 }
             };
+            let request = request
+                .rebind(wire)
+                .map_err(|e| Error::Protocol(e.to_string()))?;
             self.submit(&request, options)
                 .await
                 .map(SelfAuthoritySubmitOutcome::Ordinary)
@@ -87,10 +91,10 @@ pub trait AuthorityTransport: MaybeSendSync {
 impl AuthorityTransport for Client {
     async fn submit(
         &self,
-        request: &AuthoritySubmitRequest,
+        request: &VerifiedSubmission<AuthoritySubmitRequest>,
         options: &ClientRequestOptions,
     ) -> Result<AuthoritySubmitOutcome> {
-        let request = match request {
+        let wire = match request.wire() {
             AuthoritySubmitRequest::Event(value) => {
                 SelfAuthoritySubmitRequest::Event(value.clone())
             }
@@ -98,6 +102,9 @@ impl AuthorityTransport for Client {
                 SelfAuthoritySubmitRequest::MlsCommit(value.clone())
             }
         };
+        let request = request
+            .rebind(wire)
+            .map_err(|e| Error::Protocol(e.to_string()))?;
         match AuthorityTransport::submit_self(self, &request, options).await? {
             SelfAuthoritySubmitOutcome::Ordinary(outcome) => Ok(outcome),
             _ => Err(crate::Error::Protocol(
@@ -108,7 +115,7 @@ impl AuthorityTransport for Client {
 
     async fn submit_self(
         &self,
-        request: &SelfAuthoritySubmitRequest,
+        request: &VerifiedSubmission<SelfAuthoritySubmitRequest>,
         options: &ClientRequestOptions,
     ) -> Result<SelfAuthoritySubmitOutcome> {
         let outcome = self.submit_to_realm_authority(request, options).await?;
@@ -209,10 +216,10 @@ impl AuthorityTransport for Client {
 impl AuthorityTransport for arkret_http_client::own_station_results::OwnStationResultClient {
     async fn submit(
         &self,
-        request: &AuthoritySubmitRequest,
+        request: &VerifiedSubmission<AuthoritySubmitRequest>,
         options: &ClientRequestOptions,
     ) -> Result<AuthoritySubmitOutcome> {
-        let request = match request {
+        let wire = match request.wire() {
             AuthoritySubmitRequest::Event(value) => {
                 SelfAuthoritySubmitRequest::Event(value.clone())
             }
@@ -220,6 +227,9 @@ impl AuthorityTransport for arkret_http_client::own_station_results::OwnStationR
                 SelfAuthoritySubmitRequest::MlsCommit(value.clone())
             }
         };
+        let request = request
+            .rebind(wire)
+            .map_err(|e| Error::Protocol(e.to_string()))?;
         match AuthorityTransport::submit_self(self, &request, options).await? {
             SelfAuthoritySubmitOutcome::Ordinary(value) => Ok(value),
             _ => Err(Error::Protocol(
@@ -230,7 +240,7 @@ impl AuthorityTransport for arkret_http_client::own_station_results::OwnStationR
 
     async fn submit_self(
         &self,
-        request: &SelfAuthoritySubmitRequest,
+        request: &VerifiedSubmission<SelfAuthoritySubmitRequest>,
         options: &ClientRequestOptions,
     ) -> Result<SelfAuthoritySubmitOutcome> {
         let response = self.submit_to_realm_authority(request, options).await?;
@@ -631,9 +641,15 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
     pub async fn submit(
         &self,
         queued: &mut QueuedSubmission,
+        verified: &VerifiedSubmission<SelfAuthoritySubmitRequest>,
         options: &ClientRequestOptions,
     ) -> Result<()> {
         queued.validate_queued_request()?;
+        if verified.wire() != &queued.request {
+            return Err(Error::Protocol(
+                "verified submission differs from the frozen queue item".to_owned(),
+            ));
+        }
         let options = match &queued.request {
             SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(unit) => options
                 .clone()
@@ -643,10 +659,7 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
                 .idempotency_key(unit.idempotency_key.as_uuid().to_string()),
             _ => options.clone(),
         };
-        let outcome = self
-            .transport
-            .submit_self(&queued.request, &options)
-            .await?;
+        let outcome = self.transport.submit_self(verified, &options).await?;
         queued.apply_self_outcome(outcome)
     }
 
