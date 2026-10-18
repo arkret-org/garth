@@ -239,7 +239,7 @@ pub fn verify_event_producer(selector: &EventAgentSelector, key: &[u8; 32]) -> b
 pub fn event_agent_identity(envelope: &Value) -> Option<(arkret_wire::Event, DidCoreId, DidUrl)> {
     let event: arkret_wire::Event = serde_json::from_value(envelope.clone()).ok()?;
     if event.actual_signer().as_account_id().is_none()
-        || event.human_device_producer().ok().flatten().is_some()
+        || event.account_device_producer().ok().flatten().is_some()
     {
         return None;
     }

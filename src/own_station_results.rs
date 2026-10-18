@@ -850,7 +850,7 @@ fn bound_self_submission_source(
         || event.actor_id.as_account_id() != Some(recipient)
         || event.actual_signer().as_account_id() != Some(recipient)
         || event
-            .human_device_producer()
+            .account_device_producer()
             .map_err(|error| protocol(&error.to_string()))?
             .is_none()
         || event.scope_ref
@@ -909,7 +909,7 @@ fn bound_self_agent_pcr_genesis_source(
     };
     if &original.event != event
         || event
-            .human_device_producer()
+            .account_device_producer()
             .map_err(|error| protocol(&error.to_string()))?
             .is_none()
         || submission.approval_signatures.is_some()
