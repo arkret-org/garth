@@ -215,10 +215,13 @@ pub fn validate_floor_product_rows(
                 }
                 root = true;
             }
-            CurrentSelector::RealmReadReceiptPolicy => {
+            CurrentSelector::ScopeReadReceiptPolicy { scope_ref } => {
+                if scope_ref != &source_stream_ref.scope_ref() {
+                    return Err(protocol("receipt policy selector/source scope mismatch"));
+                }
                 closed_current_value::<
                     arkret_models_collaboration::events_payloads::ReadReceiptPolicyPayload,
-                >(value, "realm_read_receipt_policy")?
+                >(value, "scope_read_receipt_policy")?
                 .validate()
                 .map_err(protocol)?;
             }
