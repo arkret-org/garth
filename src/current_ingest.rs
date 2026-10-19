@@ -309,9 +309,12 @@ pub fn validate_floor_product_rows(
                 .map_err(protocol)?;
             }
             CurrentSelector::ObjectRedaction { target_ref } => {
-                // Only a Message redaction has a product installer; its
-                // assertions all redact exactly the selected Message.
-                if arkret_wire::MessageId::new(target_ref.as_str()).is_err() {
+                // Message termination and Event field cropping are independent
+                // subjects. Hosts retain the latter for their original-byte
+                // disclosure gates; never retype it into a Message tombstone.
+                if arkret_wire::MessageId::new(target_ref.as_str()).is_err()
+                    && arkret_wire::EventId::new(target_ref.as_str()).is_err()
+                {
                     return Err(protocol(
                         "signed object redaction subject has no product installer",
                     ));
