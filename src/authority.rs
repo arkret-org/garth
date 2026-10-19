@@ -784,8 +784,6 @@ mod acceptance_proof_tests {
             0xA1,
         );
         let now = Utc::now();
-        let realm_id = crate::test_fixtures::realm_id();
-        let stream_ref = crate::test_fixtures::realm_stream();
         let method = DidUrl::new("did:web:station-a.example#signing-1").unwrap();
         let station =
             project_did_to_core_id(&Did::new("did:web:station-a.example").unwrap()).unwrap();
@@ -795,18 +793,22 @@ mod acceptance_proof_tests {
                 bytes: route.signing_key.verifying_key().to_bytes().to_vec(),
             },
         );
-        let scope = ScopeRef::Realm {
-            realm_id: realm_id.clone(),
-        };
         let genesis = arkret_wire::test_support::raw_event_at(
             EventKind::RealmCreate.as_str(),
-            scope.clone(),
+            ScopeRef::RealmGenesis,
             arkret_wire::DidCoreId::new("ak:did_core:web:founder.example").unwrap(),
             station.clone(),
-            serde_json::json!({}),
+            serde_json::json!({"object": {"purpose": "collaboration", "governance_station_id": station}}),
             now - Duration::seconds(2),
         )
         .unwrap();
+        let realm_id = RealmId::from_event_id(&genesis.event_id);
+        let stream_ref = arkret_wire::CommitStreamRef::Realm {
+            realm_id: realm_id.clone(),
+        };
+        let scope = ScopeRef::Realm {
+            realm_id: realm_id.clone(),
+        };
         let ordinary = arkret_wire::test_support::raw_event_at(
             EventKind::MessageCreate.as_str(),
             scope,
@@ -843,10 +845,13 @@ mod acceptance_proof_tests {
         let mut genesis_commit = crate::test_fixtures::commit(1, &genesis, stream_ref.clone(), 0);
         genesis_commit.authority_ref =
             RealmCommitAuthorityRef::GenesisOrChangeEvent(genesis.event_id.clone());
+        genesis_commit.committed_at = now;
         let genesis_commit = seal(genesis_commit, &route.signing_key);
         let mut ordinary_commit = crate::test_fixtures::commit(2, &ordinary, stream_ref.clone(), 1);
         ordinary_commit.authority_ref =
             RealmCommitAuthorityRef::GenesisOrChangeEvent(genesis.event_id.clone());
+        ordinary_commit.committed_at = now;
+        ordinary_commit.previous_commit_ref = Some(genesis_commit.commit_id.clone());
         let ordinary_commit = seal(ordinary_commit, &route.signing_key);
         let head = CommitStreamHead {
             stream_ref: stream_ref.clone(),
@@ -927,6 +932,19 @@ mod acceptance_proof_tests {
         assert!(authority_locator_did(&locator_request, &locator_page).is_err());
         let freshness = RealmAuthorityFreshness::new(now, nonce);
         verify_accepted_items(std::slice::from_ref(&item), &bundle, &freshness, &keys).unwrap();
+        let mut malformed_genesis = bundle.clone();
+        malformed_genesis.genesis_event.scope_ref = ScopeRef::Realm {
+            realm_id: realm_id.clone(),
+        };
+        assert!(
+            verify_accepted_items(
+                std::slice::from_ref(&item),
+                &malformed_genesis,
+                &freshness,
+                &keys
+            )
+            .is_err()
+        );
         let mut forged = item.clone();
         forged.commit.signature.sig =
             arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode([0_u8; 64]))
