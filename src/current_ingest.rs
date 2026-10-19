@@ -217,7 +217,7 @@ pub fn validate_floor_product_rows(
             }
             CurrentSelector::ScopeReadReceiptPolicy { scope_ref } => {
                 if source_stream_ref.scope_ref() != *scope_ref {
-                    return Err(protocol("read receipt policy scope differs"));
+                    return Err(protocol("receipt policy source differs from its scope"));
                 }
                 closed_current_value::<
                     arkret_models_collaboration::events_payloads::ReadReceiptPolicyPayload,
@@ -584,6 +584,13 @@ pub fn validate_floor_product_rows(
                         roster
                             .validate_for_axis(source_stream_ref, revision)
                             .map_err(protocol)?;
+                        let CurrentSelector::CallRoster { call_id } = selector else {
+                            unreachable!()
+                        };
+                        arkret_signatures::media::verify_call_roster_bindings(
+                            realm_id, call_id, &roster,
+                        )
+                        .map_err(protocol)?;
                     }
                     _ => {
                         let moderation: arkret_models_collaboration::events_payloads::call::CallModerationCurrentValue =
@@ -736,6 +743,27 @@ pub fn validate_current_product(
     snapshot: &arkret_wire::RealmStateSnapshot,
     realm: &arkret_wire::RealmId,
 ) -> crate::Result<()> {
+    for row in &snapshot.current_state_entries {
+        let arkret_wire::TypedCurrentRow::Value {
+            selector,
+            source_stream_ref,
+            revision,
+            value,
+        } = row;
+        if let arkret_wire::CurrentSelector::ScopeReadReceiptPolicy { scope_ref } = selector {
+            if scope_ref.realm_id_opt() != Some(realm) {
+                return Err(protocol("receipt policy belongs to another Realm"));
+            }
+            let current =
+                arkret_models_collaboration::events_payloads::ScopeReadReceiptPolicyCurrent {
+                    selector: selector.clone(),
+                    source_stream_ref: source_stream_ref.clone(),
+                    revision: revision.clone(),
+                    value: closed_current_value(value, "scope_read_receipt_policy")?,
+                };
+            current.validate().map_err(protocol)?;
+        }
+    }
     let stream = CommitStreamRef::Realm {
         realm_id: realm.clone(),
     };

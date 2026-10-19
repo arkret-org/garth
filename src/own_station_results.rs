@@ -109,6 +109,7 @@ pub struct OwnStationReplica {
     current_heads: BTreeMap<CommitStreamRef, CommitStreamHead>,
     generations: BTreeMap<CommitStreamRef, u64>,
     snapshot: Option<RealmStateSnapshot>,
+    call_axis_stamps: BTreeMap<Vec<u8>, (CommitStreamRef, arkret_wire::CurrentRevision, String)>,
 }
 
 impl OwnStationReplica {
@@ -120,6 +121,7 @@ impl OwnStationReplica {
             current_heads: BTreeMap::new(),
             generations: BTreeMap::new(),
             snapshot: None,
+            call_axis_stamps: BTreeMap::new(),
         }
     }
     pub fn head(&self, stream: &CommitStreamRef) -> Option<&CommitStreamHead> {
@@ -395,6 +397,50 @@ impl OwnStationReplica {
         {
             return Err(protocol("ordinary current generation rollback"));
         }
+        let mut incoming_axes = BTreeMap::new();
+        for row in &snapshot.current_state_entries {
+            let TypedCurrentRow::Value {
+                selector,
+                source_stream_ref,
+                revision,
+                value,
+            } = row;
+            if !matches!(
+                selector,
+                arkret_wire::CurrentSelector::CallRoster { .. }
+                    | arkret_wire::CurrentSelector::CallModeration { .. }
+            ) {
+                continue;
+            }
+            let key = arkret_canonical::canonical_json_bytes(selector)
+                .map_err(|error| protocol(&error.to_string()))?;
+            let digest = arkret_canonical::canonical_sha256(value)
+                .map_err(|error| protocol(&error.to_string()))?;
+            incoming_axes.insert(key, (source_stream_ref.clone(), revision.clone(), digest));
+        }
+        for (key, (stream, revision, digest)) in &self.call_axis_stamps {
+            let Some((next_stream, next_revision, next_digest)) = incoming_axes.get(key) else {
+                if snapshot
+                    .visible_stream_heads
+                    .iter()
+                    .any(|head| &head.stream_ref == stream)
+                {
+                    return Err(protocol(
+                        "complete current snapshot omits an initialized Call axis",
+                    ));
+                }
+                continue;
+            };
+            if next_stream != stream
+                || next_revision.stream_position < revision.stream_position
+                || (next_revision.stream_position == revision.stream_position
+                    && (next_revision != revision || next_digest != digest))
+            {
+                return Err(protocol(
+                    "Call current revision, source, value or issuer key conflicts",
+                ));
+            }
+        }
         for incoming in &snapshot.visible_stream_heads {
             if self.heads.get(&incoming.stream_ref).is_some_and(|old| {
                 incoming.stream_position < old.stream_position
@@ -421,6 +467,7 @@ impl OwnStationReplica {
             self.current_heads
                 .insert(incoming.stream_ref.clone(), incoming.clone());
         }
+        self.call_axis_stamps.extend(incoming_axes);
         self.context = Some(response.session().clone());
         self.snapshot = Some(snapshot.clone());
         // Snapshot heads are current coverage, not downloaded predecessors.
@@ -830,15 +877,19 @@ async fn verify_row_from_source(
 /// used by ordinary session clients, never through a cached runtime key.
 pub struct OwnStationDeviceEvent {
     response: arkret_http_client::own_station_device_results::BoundOwnStationDeviceResponse<
-        EventId,
-        CommittedEventView,
+        StreamScanRequest,
+        StreamScanOutcome,
     >,
     producer_key: Option<arkret_signatures::PublicKeyMaterial>,
 }
 
 impl OwnStationDeviceEvent {
     pub fn view(&self) -> Result<&CommittedEventView> {
-        Ok(self.response.value()?)
+        self.response
+            .value()?
+            .committed_events
+            .first()
+            .ok_or_else(|| protocol("native historical source lost its exact accepted stream row"))
     }
 
     pub fn full(&self) -> Result<&arkret_wire::CommittedEventFullView> {
@@ -924,12 +975,38 @@ pub async fn consume_own_station_device_event(
             "Device original differs from its authenticated data scope",
         ));
     }
-    let producer_key =
-        verify_row_from_source(client, response.value()?, OriginalSource::Ordinary).await?;
+    // GET supplies a candidate, never the historical selector's source.
+    // The exact scope is already fixed by the native transport. Obtain its
+    // original stream row before constructing any historical signer query.
+    let candidate = response.value()?;
+    let commit = candidate.commit();
+    let before = commit
+        .stream_position
+        .checked_add(1)
+        .ok_or_else(|| protocol("native historical row position overflow"))?;
+    let request = StreamScanRequest {
+        realm_id: commit.realm_id.clone(),
+        stream_ref: commit.stream_ref.clone(),
+        direction: StreamScanDirection::Before(Some(before)),
+        limit: 1,
+    };
+    let original = client.scan_commit_stream(&request).await?;
+    let [row] = original.value()?.committed_events.as_slice() else {
+        return Err(protocol(
+            "native historical source requires one exact stream row",
+        ));
+    };
+    if row != candidate || !matches!(row, CommittedEventView::Full(_)) {
+        return Err(protocol(
+            "native GET differs from its exact accepted stream original",
+        ));
+    }
+    let producer_key = verify_row_from_source(client, row, OriginalSource::Ordinary).await?;
     client.check_context()?;
     response.value()?;
+    original.value()?;
     Ok(OwnStationDeviceEvent {
-        response,
+        response: original,
         producer_key,
     })
 }
@@ -3247,6 +3324,149 @@ pub(crate) mod tests {
                 .is_err()
         );
         assert_eq!(state(&replica), installed_state);
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn call_current_cut_rejects_changed_same_revision_key_partial_and_delayed_results() {
+        let fixture =
+            arkret_schema_conformance::spec_json_artifact("fixtures/call-current-fixture.json")
+                .expect("the pinned Call fixture must be available");
+        let initial: RealmStateSnapshot =
+            serde_json::from_value(fixture["checkpoints"][10].clone()).unwrap();
+        let resign_identity = |mut snapshot: RealmStateSnapshot| {
+            let mut core = serde_json::to_value(&snapshot).unwrap();
+            core.as_object_mut().unwrap().remove("snapshot_id");
+            core.as_object_mut().unwrap().remove("signature");
+            snapshot.snapshot_id = RealmSnapshotId::from_digest(arkret_canonical::sha256_bytes(
+                arkret_canonical::canonical_json_bytes(&core).unwrap(),
+            ));
+            snapshot
+        };
+        let mut changed_key = initial.clone();
+        let arkret_wire::TypedCurrentRow::Value { value, .. } = changed_key
+            .current_state_entries
+            .iter_mut()
+            .find(|row| {
+                matches!(
+                    row,
+                    arkret_wire::TypedCurrentRow::Value {
+                        selector: arkret_wire::CurrentSelector::CallRoster { .. },
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        value["entries"][0]["participant_signing_key"]["public_key_b64u"] =
+            serde_json::json!(arkret_canonical::base64url_encode([42; 32]));
+        let changed_key = resign_identity(changed_key);
+        let mut partial = initial.clone();
+        partial.current_state_entries.retain(|row| {
+            !matches!(
+                row,
+                arkret_wire::TypedCurrentRow::Value {
+                    selector: arkret_wire::CurrentSelector::CallRoster { .. },
+                    ..
+                }
+            )
+        });
+        let partial = resign_identity(partial);
+        let delayed: RealmStateSnapshot =
+            serde_json::from_value(fixture["checkpoints"][9].clone()).unwrap();
+        let (client, server) = client(vec![
+            serde_json::to_value(&initial).unwrap(),
+            serde_json::to_value(changed_key).unwrap(),
+            serde_json::to_value(partial).unwrap(),
+            serde_json::to_value(delayed).unwrap(),
+        ]);
+        let mut replica = OwnStationReplica::new(initial.realm_id.clone());
+        replica
+            .install_bound_snapshot(&client.snapshot_head(&initial.realm_id).await.unwrap())
+            .unwrap();
+        for _ in 0..3 {
+            assert!(
+                replica
+                    .install_bound_snapshot(&client.snapshot_head(&initial.realm_id).await.unwrap())
+                    .is_err()
+            );
+            assert_eq!(replica.snapshot().unwrap(), &initial);
+        }
+        server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn hidden_call_stream_keeps_axis_integrity_when_it_reappears_at_a_newer_head() {
+        let fixture =
+            arkret_schema_conformance::spec_json_artifact("fixtures/call-current-fixture.json")
+                .expect("the pinned Call fixture must be available");
+        let initial: RealmStateSnapshot =
+            serde_json::from_value(fixture["checkpoints"][10].clone()).unwrap();
+        let fix_identity = |mut snapshot: RealmStateSnapshot| {
+            let core =
+                arkret_canonical::unsigned_value(&snapshot, &["snapshot_id", "signature"]).unwrap();
+            snapshot.snapshot_id = RealmSnapshotId::from_digest(arkret_canonical::sha256_bytes(
+                arkret_canonical::canonical_json_bytes(&core).unwrap(),
+            ));
+            snapshot
+        };
+        let mut hidden = initial.clone();
+        let circle = CommitStreamRef::Circle {
+            realm_id: initial.realm_id.clone(),
+            circle_id: arkret_wire::CircleId::from_event_id(&EventId::from_digest(
+                arkret_canonical::DigestSuite::Sha256,
+                [71; 32],
+            )),
+        };
+        hidden.visible_stream_heads = vec![CommitStreamHead {
+            stream_ref: circle.clone(),
+            stream_position: 0,
+            commit_id: arkret_wire::RealmCommitId::from_digest([72; 32]),
+        }];
+        hidden.retention_and_history_floor.stream_floors = vec![arkret_wire::StreamHistoryFloor {
+            stream_ref: circle,
+            oldest_position: 0,
+        }];
+        hidden.current_state_entries.clear();
+        let hidden = fix_identity(hidden);
+        let mut regressed = initial.clone();
+        let old = fixture["checkpoints"][7]["current_state_entries"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| row["selector"]["kind"] == "call_roster")
+            .unwrap();
+        *regressed
+            .current_state_entries
+            .iter_mut()
+            .find(|row| {
+                matches!(
+                    row,
+                    TypedCurrentRow::Value {
+                        selector: arkret_wire::CurrentSelector::CallRoster { .. },
+                        ..
+                    }
+                )
+            })
+            .unwrap() = serde_json::from_value(old.clone()).unwrap();
+        let regressed = fix_identity(regressed);
+        let (client, server) = client(vec![
+            serde_json::to_value(&initial).unwrap(),
+            serde_json::to_value(&hidden).unwrap(),
+            serde_json::to_value(regressed).unwrap(),
+        ]);
+        let mut replica = OwnStationReplica::new(initial.realm_id.clone());
+        replica
+            .install_bound_snapshot(&client.snapshot_head(&initial.realm_id).await.unwrap())
+            .unwrap();
+        replica
+            .install_bound_snapshot(&client.snapshot_head(&initial.realm_id).await.unwrap())
+            .unwrap();
+        assert!(
+            replica
+                .install_bound_snapshot(&client.snapshot_head(&initial.realm_id).await.unwrap())
+                .is_err()
+        );
+        assert_eq!(replica.snapshot().unwrap(), &hidden);
         server.join().unwrap();
     }
 
