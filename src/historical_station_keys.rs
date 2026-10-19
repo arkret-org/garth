@@ -24,8 +24,8 @@ use chrono::{DateTime, Utc};
 
 use crate::{Error, Result};
 
-struct SignedStationMethod<'a> {
-    signature: &'a DetachedObjectSignature,
+struct SignedStationMethod {
+    signature: DetachedObjectSignature,
     accepted_at: DateTime<Utc>,
 }
 
@@ -33,18 +33,18 @@ fn protocol(error: impl std::fmt::Display) -> Error {
     Error::Protocol(error.to_string())
 }
 
-fn signed_methods<'a>(
-    bundle: &'a RealmAuthorityBundle,
-    scan: Option<&'a StreamScanOutcome>,
-    snapshot: Option<&'a RealmStateSnapshot>,
-) -> Vec<SignedStationMethod<'a>> {
+fn signed_methods(
+    bundle: &RealmAuthorityBundle,
+    scan: Option<&StreamScanOutcome>,
+    snapshot: Option<&RealmStateSnapshot>,
+) -> Result<Vec<SignedStationMethod>> {
     let mut methods = vec![SignedStationMethod {
-        signature: &bundle.genesis_commit.signature,
+        signature: bundle.genesis_commit.signature.clone(),
         accepted_at: bundle.genesis_commit.committed_at,
     }];
     for transition in &bundle.authority_transitions {
         methods.push(SignedStationMethod {
-            signature: &transition.change_commit.signature,
+            signature: transition.change_commit.signature.clone(),
             accepted_at: transition.change_commit.committed_at,
         });
         for signature in [
@@ -52,7 +52,7 @@ fn signed_methods<'a>(
             &transition.handoff.new_authority_acceptance_signature,
         ] {
             methods.push(SignedStationMethod {
-                signature,
+                signature: signature.clone(),
                 accepted_at: signature
                     .created_at
                     .max(transition.change_commit.committed_at),
@@ -60,14 +60,14 @@ fn signed_methods<'a>(
         }
     }
     methods.push(SignedStationMethod {
-        signature: &bundle.current_assertion.signature,
+        signature: bundle.current_assertion.signature.clone(),
         accepted_at: bundle.bundle_issued_at,
     });
     if let Some(scan) = scan {
         methods.extend(scan.committed_events.iter().map(|item| {
             let commit = item.commit();
             SignedStationMethod {
-                signature: &commit.signature,
+                signature: commit.signature.clone(),
                 accepted_at: commit.committed_at,
             }
         }));
@@ -77,11 +77,22 @@ fn signed_methods<'a>(
     // signer governed the Snapshot's generation.
     if let Some(snapshot) = snapshot {
         methods.push(SignedStationMethod {
-            signature: &snapshot.signature,
+            signature: snapshot.signature.clone(),
             accepted_at: snapshot.signature.created_at,
         });
     }
-    methods
+    if let Some(snapshot) = snapshot {
+        let commits =
+            arkret_models_collaboration::events_payloads::call::call_current_source_commits(
+                &snapshot.current_state_entries,
+            )
+            .map_err(protocol)?;
+        methods.extend(commits.into_iter().map(|commit| SignedStationMethod {
+            signature: commit.signature,
+            accepted_at: commit.committed_at,
+        }));
+    }
+    Ok(methods)
 }
 
 pub(crate) fn station_id_for_signature(signature: &DetachedObjectSignature) -> Result<DidCoreId> {
@@ -127,9 +138,9 @@ pub fn required_historical_station_ids(
     scan: Option<&StreamScanOutcome>,
     snapshot: Option<&RealmStateSnapshot>,
 ) -> Result<Vec<DidCoreId>> {
-    let mut ids = signed_methods(bundle, scan, snapshot)
+    let mut ids = signed_methods(bundle, scan, snapshot)?
         .iter()
-        .map(|entry| station_id_for_signature(entry.signature))
+        .map(|entry| station_id_for_signature(&entry.signature))
         .collect::<Result<Vec<_>>>()?;
     ids.sort();
     ids.dedup();
@@ -145,16 +156,17 @@ pub fn historical_station_key_directory(
     snapshot: Option<&RealmStateSnapshot>,
     resolutions: &BTreeMap<DidCoreId, AuthenticatedServiceResolution>,
 ) -> Result<RealmAuthorityKeyMap> {
-    key_directory_for_methods(signed_methods(bundle, scan, snapshot), resolutions)
+    key_directory_for_methods(signed_methods(bundle, scan, snapshot)?, resolutions)
 }
 
 fn key_directory_for_methods(
-    methods: Vec<SignedStationMethod<'_>>,
+    methods: Vec<SignedStationMethod>,
     resolutions: &BTreeMap<DidCoreId, AuthenticatedServiceResolution>,
 ) -> Result<RealmAuthorityKeyMap> {
     let mut keys = RealmAuthorityKeyMap::new();
+    let mut latest = BTreeMap::new();
     for entry in methods {
-        let service_id = station_id_for_signature(entry.signature)?;
+        let service_id = station_id_for_signature(&entry.signature)?;
         let resolution = resolutions.get(&service_id).ok_or_else(|| {
             Error::Protocol(format!(
                 "missing historical Station resolution {service_id}"
@@ -162,13 +174,21 @@ fn key_directory_for_methods(
         })?;
         let method = &entry.signature.verification_method;
         let material =
-            historical_key_for_signature(resolution, entry.signature, entry.accepted_at)?;
-        if let Some(previous) = keys.insert(method, material.clone())
-            && previous != material
+            historical_key_for_signature(resolution, &entry.signature, entry.accepted_at)?;
+        if let Some(previous) = keys.insert_at(method, entry.signature.created_at, material.clone())
         {
-            return Err(Error::Protocol(
-                "historical Station method changed key material".to_owned(),
-            ));
+            if previous != material {
+                return Err(protocol(
+                    "historical Station signature coordinate has conflicting key material",
+                ));
+            }
+        }
+        if latest
+            .get(method)
+            .is_none_or(|previous| *previous <= entry.accepted_at)
+        {
+            keys.insert(method, material);
+            latest.insert(method.clone(), entry.accepted_at);
         }
     }
     if keys.is_empty() {
@@ -189,7 +209,7 @@ pub async fn fetch_historical_station_key_directory(
     scan: Option<&StreamScanOutcome>,
     snapshot: Option<&RealmStateSnapshot>,
 ) -> Result<RealmAuthorityKeyMap> {
-    fetch_keys_for_methods(http, bundle, signed_methods(bundle, scan, snapshot)).await
+    fetch_keys_for_methods(http, bundle, signed_methods(bundle, scan, snapshot)?).await
 }
 
 /// Include accepted receipts at their own historical signing coordinates.
@@ -198,9 +218,9 @@ pub async fn fetch_historical_station_keys_for_commits(
     bundle: &RealmAuthorityBundle,
     commits: &[&RealmCommit],
 ) -> Result<RealmAuthorityKeyMap> {
-    let mut methods = signed_methods(bundle, None, None);
+    let mut methods = signed_methods(bundle, None, None)?;
     methods.extend(commits.iter().map(|commit| SignedStationMethod {
-        signature: &commit.signature,
+        signature: commit.signature.clone(),
         accepted_at: commit.committed_at,
     }));
     fetch_keys_for_methods(http, bundle, methods).await
@@ -209,7 +229,7 @@ pub async fn fetch_historical_station_keys_for_commits(
 async fn fetch_keys_for_methods(
     http: &Client,
     bundle: &RealmAuthorityBundle,
-    methods: Vec<SignedStationMethod<'_>>,
+    methods: Vec<SignedStationMethod>,
 ) -> Result<RealmAuthorityKeyMap> {
     fetch_keys_for_methods_with_resolver(bundle, methods, |did| async move {
         http.resolve_service_from_did(&did, arkret_wire::ServiceKind::Station)
@@ -221,7 +241,7 @@ async fn fetch_keys_for_methods(
 
 async fn fetch_keys_for_methods_with_resolver<F, Fut>(
     bundle: &RealmAuthorityBundle,
-    methods: Vec<SignedStationMethod<'_>>,
+    methods: Vec<SignedStationMethod>,
     mut resolve: F,
 ) -> Result<RealmAuthorityKeyMap>
 where
@@ -242,7 +262,7 @@ where
     let mut resolutions = BTreeMap::from([(current.service_id.clone(), current)]);
     let mut ids = methods
         .iter()
-        .map(|entry| station_id_for_signature(entry.signature))
+        .map(|entry| station_id_for_signature(&entry.signature))
         .collect::<Result<Vec<_>>>()?;
     ids.sort();
     ids.dedup();
@@ -250,10 +270,10 @@ where
         if resolutions.contains_key(&service_id) {
             continue;
         }
-        let signature = methods
+        let signature = &methods
             .iter()
             .find(|entry| {
-                station_id_for_signature(entry.signature).ok().as_ref() == Some(&service_id)
+                station_id_for_signature(&entry.signature).ok().as_ref() == Some(&service_id)
             })
             .ok_or_else(|| protocol("historical Station has no signed DID locator"))?
             .signature;
@@ -532,7 +552,7 @@ mod tests {
         let mut calls = 0;
         let error = fetch_keys_for_methods_with_resolver(
             &bundle,
-            signed_methods(&bundle, None, Some(&snapshot)),
+            signed_methods(&bundle, None, Some(&snapshot)).unwrap(),
             |did| {
                 calls += 1;
                 assert_eq!(did, old_did);

@@ -299,7 +299,10 @@ impl RealmReplica {
             ));
         }
         let key = keys
-            .public_key(&snapshot.signature.verification_method)
+            .public_key_at(
+                &snapshot.signature.verification_method,
+                snapshot.signature.created_at,
+            )
             .ok_or_else(|| {
                 Error::Protocol("snapshot signing method has no verified key".to_owned())
             })?;
@@ -312,6 +315,21 @@ impl RealmReplica {
             &key,
         )
         .map_err(|error| Error::Protocol(error.to_string()))?;
+        for commit in
+            arkret_models_collaboration::events_payloads::call::call_current_source_commits(
+                &snapshot.current_state_entries,
+            )
+            .map_err(|e| Error::Protocol(e.to_string()))?
+        {
+            if commit.governance_generation > snapshot.governance_generation {
+                return Err(Error::Protocol(
+                    "Call source is from a future governance generation".into(),
+                ));
+            }
+            verified
+                .verify_commit(&commit, keys)
+                .map_err(|e| Error::Protocol(e.to_string()))?;
+        }
         if !self.verified_streams.is_empty() {
             return Err(Error::Protocol(
                 "snapshot cannot replace an established verified replay head".to_owned(),
@@ -873,6 +891,33 @@ pub(crate) fn validate_snapshot(snapshot: &RealmStateSnapshot, realm_id: &RealmI
                 "Realm snapshot repeats a typed current subject".to_owned(),
             ));
         }
+    }
+    for commit in arkret_models_collaboration::events_payloads::call::call_current_source_commits(
+        &snapshot.current_state_entries,
+    )
+    .map_err(|e| Error::Protocol(e.to_string()))?
+    {
+        if commit.governance_generation > snapshot.governance_generation {
+            return Err(Error::Protocol(
+                "Call source is from a future governance generation".into(),
+            ));
+        }
+    }
+    for row in &snapshot.current_state_entries {
+        let arkret_wire::TypedCurrentRow::Value {
+            selector: arkret_wire::CurrentSelector::CallRoster { call_id },
+            source_stream_ref,
+            value,
+            ..
+        } = row
+        else {
+            continue;
+        };
+        if !snapshot.current_state_entries.iter().any(|row|matches!(row,arkret_wire::TypedCurrentRow::Value {selector:arkret_wire::CurrentSelector::CallState {call_id:found},source_stream_ref:stream,..} if found==call_id && stream==source_stream_ref)) {return Err(Error::Protocol("Call roster has no lifecycle in its exact scope".into()));}
+        let roster =
+            serde_json::from_value(value.clone()).map_err(|e| Error::Protocol(e.to_string()))?;
+        arkret_signatures::media::verify_call_roster_bindings(realm_id, call_id, &roster)
+            .map_err(|e| Error::Protocol(e.to_string()))?;
     }
     Ok(())
 }

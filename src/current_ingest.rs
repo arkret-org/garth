@@ -581,6 +581,13 @@ pub fn validate_floor_product_rows(
                         roster
                             .validate_for_axis(source_stream_ref, revision)
                             .map_err(protocol)?;
+                        let CurrentSelector::CallRoster { call_id } = selector else {
+                            unreachable!()
+                        };
+                        arkret_signatures::media::verify_call_roster_bindings(
+                            realm_id, call_id, &roster,
+                        )
+                        .map_err(protocol)?;
                     }
                     _ => {
                         let moderation: arkret_models_collaboration::events_payloads::call::CallModerationCurrentValue =
