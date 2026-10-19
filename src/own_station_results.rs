@@ -573,22 +573,68 @@ enum OriginalSource {
     BoundSelfAgentPcrGenesis,
 }
 
+trait HistoricalSignerReadSource: crate::MaybeSendSync {
+    fn recipient_account(&self) -> Result<arkret_wire::AccountId>;
+    fn check_read_source(&self) -> Result<()>;
+    fn read_historical_signers<'a>(
+        &'a self,
+        request: &'a SignerKeysQueryRequestBody,
+    ) -> impl std::future::Future<
+        Output = Result<arkret_models_identity::signer_key_operations::SignerKeysQueryOutcome>,
+    > + crate::MaybeSend
+    + 'a;
+}
+
+impl HistoricalSignerReadSource for OwnStationResultClient {
+    fn recipient_account(&self) -> Result<arkret_wire::AccountId> {
+        Ok(self.session()?.account_id().clone())
+    }
+    fn check_read_source(&self) -> Result<()> {
+        self.check_session().map_err(Into::into)
+    }
+    async fn read_historical_signers<'a>(
+        &'a self,
+        request: &'a SignerKeysQueryRequestBody,
+    ) -> Result<arkret_models_identity::signer_key_operations::SignerKeysQueryOutcome> {
+        Ok(self.signer_keys_query(request).await?.into_value()?)
+    }
+}
+
+impl HistoricalSignerReadSource
+    for arkret_http_client::own_station_device_results::OwnStationDeviceClient
+{
+    fn recipient_account(&self) -> Result<arkret_wire::AccountId> {
+        Ok(self.context()?.account_id().clone())
+    }
+    fn check_read_source(&self) -> Result<()> {
+        self.check_context().map_err(Into::into)
+    }
+    async fn read_historical_signers<'a>(
+        &'a self,
+        request: &'a SignerKeysQueryRequestBody,
+    ) -> Result<arkret_models_identity::signer_key_operations::SignerKeysQueryOutcome> {
+        Ok(self.signer_keys_query(request).await?.into_value()?)
+    }
+}
+
 async fn verify_row(client: &OwnStationResultClient, row: &CommittedEventView) -> Result<()> {
-    verify_row_from_source(client, row, OriginalSource::Ordinary).await
+    verify_row_from_source(client, row, OriginalSource::Ordinary)
+        .await
+        .map(|_| ())
 }
 
 async fn verify_row_from_source(
-    client: &OwnStationResultClient,
+    client: &impl HistoricalSignerReadSource,
     row: &CommittedEventView,
     source: OriginalSource,
-) -> Result<()> {
+) -> Result<Option<arkret_signatures::PublicKeyMaterial>> {
     row.validate_shape()
         .map_err(|error| protocol(&error.to_string()))?;
     row.commit()
         .verify_commit_id_matches_content()
         .map_err(|error| protocol(&error.to_string()))?;
     let CommittedEventView::Full(full) = row else {
-        return Ok(());
+        return Ok(None);
     };
     let event = &full.event;
     let suite = event.realm_id.digest_suite_code().digest_suite();
@@ -620,17 +666,16 @@ async fn verify_row_from_source(
         let request = SignerKeysQueryRequestBody {
             request_id: request_id()?,
             realm_id: event.realm_id.clone(),
-            recipient_account_id: client.session()?.account_id().clone(),
+            recipient_account_id: client.recipient_account()?,
             queries: vec![selector],
         };
-        let outcome = client.signer_keys_query(&request).await?;
+        let outcome = client.read_historical_signers(&request).await?;
         outcome
-            .value()?
             .validate_for_request(&request)
             .map_err(|e| protocol(&e.to_string()))?;
         let Some(SignerKeyQueryOutcome::HistoricalServiceResolved {
             key, accepted_at, ..
-        }) = outcome.value()?.results.first()
+        }) = outcome.results.first()
         else {
             return Err(protocol(
                 "exact historical Service signing key is unavailable",
@@ -660,8 +705,8 @@ async fn verify_row_from_source(
             suite,
         )
         .map_err(|e| protocol(&e.to_string()))?;
-        client.check_session()?;
-        return Ok(());
+        client.check_read_source()?;
+        return Ok(Some(material));
     }
     if event.actual_signer().as_account_id().is_none() {
         // A service-generated franking original may be retained in an
@@ -677,8 +722,8 @@ async fn verify_row_from_source(
         proof
             .validate_production()
             .map_err(|error| protocol(&error.to_string()))?;
-        client.check_session()?;
-        return Ok(());
+        client.check_read_source()?;
+        return Ok(None);
     }
     let reference = CommittedEventRef {
         event_id: event.event_id.clone(),
@@ -714,17 +759,16 @@ async fn verify_row_from_source(
     let request = SignerKeysQueryRequestBody {
         request_id: request_id()?,
         realm_id: event.realm_id.clone(),
-        recipient_account_id: client.session()?.account_id().clone(),
+        recipient_account_id: client.recipient_account()?,
         queries: vec![SignerKeyQuerySelector::HistoricalEvent { sender }],
     };
-    let outcome = client.signer_keys_query(&request).await?;
+    let outcome = client.read_historical_signers(&request).await?;
     outcome
-        .value()?
         .validate_for_request(&request)
         .map_err(|error| protocol(&error.to_string()))?;
     let Some(SignerKeyQueryOutcome::HistoricalResolved {
         key, accepted_at, ..
-    }) = outcome.value()?.results.first()
+    }) = outcome.results.first()
     else {
         return Err(protocol(
             "exact historical producer signing key is unavailable",
@@ -777,8 +821,117 @@ async fn verify_row_from_source(
         suite,
     )
     .map_err(|error| protocol(&error.to_string()))?;
-    client.check_session()?;
-    Ok(())
+    client.check_read_source()?;
+    Ok(Some(material))
+}
+
+/// One original Event from a real Device's accepted Station and current host
+/// context. Its producer key is resolved through the same historical verifier
+/// used by ordinary session clients, never through a cached runtime key.
+pub struct OwnStationDeviceEvent {
+    response: arkret_http_client::own_station_device_results::BoundOwnStationDeviceResponse<
+        EventId,
+        CommittedEventView,
+    >,
+    producer_key: Option<arkret_signatures::PublicKeyMaterial>,
+}
+
+impl OwnStationDeviceEvent {
+    pub fn view(&self) -> Result<&CommittedEventView> {
+        Ok(self.response.value()?)
+    }
+
+    pub fn full(&self) -> Result<&arkret_wire::CommittedEventFullView> {
+        match self.view()? {
+            CommittedEventView::Full(full) => Ok(full),
+            _ => Err(protocol(
+                "native consumer requires the exact disclosed Full Event",
+            )),
+        }
+    }
+
+    /// Verify the independently signed recipient delivery before any MLS
+    /// decryption. The caller must additionally check its own claim receipt,
+    /// complete roster and durable checkpoint before acknowledging it.
+    pub fn verify_welcome(&self, welcome: &arkret_wire::MlsWelcomeDelivery) -> Result<()> {
+        let full = self.full()?;
+        let context = self.response.context();
+        crate::mls::admit_welcome(
+            welcome,
+            &crate::mls::LocalMlsEndpoint::device(
+                welcome.realm_id.clone(),
+                arkret_wire::ActorId::account(context.account_id().clone()),
+                context.device_id().clone(),
+            ),
+            &full.event.event_id,
+        )?;
+        let proof = full
+            .event
+            .producer_proof
+            .as_ref()
+            .ok_or_else(|| protocol("MLS Commit producer proof is unavailable"))?;
+        if full.event.kind != arkret_wire::EventKind::MlsCommit
+            || welcome.effective_scope != full.event.scope_ref
+            || &welcome.effective_scope != context.effective_scope()
+            || welcome.producer_proof.verification_method != proof.verification_method
+        {
+            return Err(protocol(
+                "Welcome differs from its original producer or exact scope",
+            ));
+        }
+        let key = self
+            .producer_key
+            .as_ref()
+            .ok_or_else(|| protocol("Welcome has no verified original producer key"))?;
+        let mut unsigned =
+            serde_json::to_value(welcome).map_err(|error| protocol(&error.to_string()))?;
+        unsigned
+            .as_object_mut()
+            .ok_or_else(|| protocol("Welcome is not an object"))?
+            .remove("producer_proof");
+        arkret_signatures::detached_object::verify_detached_object_signature(
+            &welcome.producer_proof,
+            &unsigned,
+            arkret_wire::DetachedSignatureContext::MlsWelcomeDelivery,
+            key,
+        )
+        .map_err(|error| protocol(&error.to_string()))?;
+        self.response.value()?;
+        Ok(())
+    }
+}
+
+pub async fn consume_own_station_device_event(
+    client: &arkret_http_client::own_station_device_results::OwnStationDeviceClient,
+    event_id: &EventId,
+    response: arkret_http_client::own_station_device_results::BoundOwnStationDeviceResponse<
+        EventId,
+        CommittedEventView,
+    >,
+) -> Result<OwnStationDeviceEvent> {
+    if response.context() != client.context()? || response.request() != event_id {
+        return Err(protocol(
+            "Device original belongs to another request or endpoint context",
+        ));
+    }
+    if &response
+        .value()?
+        .disclosure_scope()
+        .map_err(|error| protocol(&error.to_string()))?
+        != client.context()?.effective_scope()
+    {
+        return Err(protocol(
+            "Device original differs from its authenticated data scope",
+        ));
+    }
+    let producer_key =
+        verify_row_from_source(client, response.value()?, OriginalSource::Ordinary).await?;
+    client.check_context()?;
+    response.value()?;
+    Ok(OwnStationDeviceEvent {
+        response,
+        producer_key,
+    })
 }
 
 fn request_id() -> Result<RequestId> {
