@@ -23,6 +23,12 @@ use arkret_wire::{
 
 use crate::{Error, Result};
 
+#[path = "own_station_device_replica.rs"]
+mod device_replica;
+pub use device_replica::{
+    OwnStationDeviceReplica, OwnStationDeviceScanPage, consume_own_station_device_snapshot,
+};
+
 pub struct OwnStationScanPage {
     response: BoundOwnStationResponse<StreamScanRequest, StreamScanOutcome>,
 }
@@ -101,10 +107,16 @@ impl OwnStationFloorSnapshot {
     }
 }
 
+#[derive(Clone, PartialEq, Eq)]
+enum ReplicaContext {
+    Session(OwnStationSessionSnapshot),
+    Device(arkret_http_client::own_station_device_results::OwnStationDeviceSnapshot),
+}
+
 #[derive(Clone)]
 pub struct OwnStationReplica {
     realm_id: RealmId,
-    context: Option<OwnStationSessionSnapshot>,
+    context: Option<ReplicaContext>,
     heads: BTreeMap<CommitStreamRef, CommitStreamHead>,
     current_heads: BTreeMap<CommitStreamRef, CommitStreamHead>,
     generations: BTreeMap<CommitStreamRef, u64>,
@@ -178,8 +190,24 @@ impl OwnStationReplica {
         if response.session() != client.session()? {
             return Err(protocol("checkpoint response belongs to another session"));
         }
-        let request = response.request();
-        let outcome = response.value()?;
+        let mut candidate = self.clone();
+        candidate
+            .restore_scan_head(client, expected, response.request(), response.value()?)
+            .await?;
+        response.value()?;
+        client.check_session()?;
+        candidate.context = Some(ReplicaContext::Session(response.session().clone()));
+        *self = candidate;
+        Ok(())
+    }
+
+    async fn restore_scan_head(
+        &mut self,
+        client: &impl HistoricalSignerReadSource,
+        expected: &CommitStreamHead,
+        request: &StreamScanRequest,
+        outcome: &StreamScanOutcome,
+    ) -> Result<()> {
         outcome
             .validate_for_request(request)
             .map_err(|error| protocol(&error.to_string()))?;
@@ -203,11 +231,8 @@ impl OwnStationReplica {
                 "checkpoint restoration changed its accepted original",
             ));
         }
-        verify_row(client, row).await?;
+        verify_row_from_source(client, row, OriginalSource::Ordinary).await?;
         self.check_head(row.commit())?;
-        response.value()?;
-        client.check_session()?;
-        self.context = Some(response.session().clone());
         self.generations.insert(
             expected.stream_ref.clone(),
             row.commit().governance_generation,
@@ -217,9 +242,12 @@ impl OwnStationReplica {
         Ok(())
     }
     fn check_context(&self, session: &OwnStationSessionSnapshot) -> Result<()> {
-        if self.context.as_ref().is_some_and(|saved| saved != session) {
+        self.check_source_context(&ReplicaContext::Session(session.clone()))
+    }
+    fn check_source_context(&self, context: &ReplicaContext) -> Result<()> {
+        if self.context.as_ref().is_some_and(|saved| saved != context) {
             return Err(protocol(
-                "ordinary replica belongs to another local session",
+                "ordinary replica belongs to another local read context",
             ));
         }
         Ok(())
@@ -257,7 +285,7 @@ impl OwnStationReplica {
         self.check_head(commit)?;
         response.value()?;
         client.check_session()?;
-        self.context = Some(response.session().clone());
+        self.context = Some(ReplicaContext::Session(response.session().clone()));
         self.generations
             .insert(commit.stream_ref.clone(), commit.governance_generation);
         self.heads.insert(commit.stream_ref.clone(), head(commit));
@@ -275,8 +303,23 @@ impl OwnStationReplica {
                 "ordinary scan is from another authenticated session",
             ));
         }
-        let request = response.request();
-        let outcome = response.value()?;
+        let mut candidate = self.clone();
+        candidate
+            .apply_verified_scan(client, response.request(), response.value()?)
+            .await?;
+        response.value()?;
+        client.check_session()?;
+        candidate.context = Some(ReplicaContext::Session(response.session().clone()));
+        *self = candidate;
+        Ok(OwnStationScanPage { response })
+    }
+
+    async fn apply_verified_scan(
+        &mut self,
+        client: &impl HistoricalSignerReadSource,
+        request: &StreamScanRequest,
+        outcome: &StreamScanOutcome,
+    ) -> Result<()> {
         outcome
             .validate_for_request(request)
             .map_err(|error| protocol(&error.to_string()))?;
@@ -357,23 +400,20 @@ impl OwnStationReplica {
                     "ordinary scan exceeds or forks its exact current cut",
                 ));
             }
-            verify_row(client, row).await?;
+            verify_row_from_source(client, row, OriginalSource::Ordinary).await?;
             previous_id = Some(commit.commit_id.clone());
             position = position
                 .checked_add(1)
                 .ok_or_else(|| protocol("stream position overflow"))?;
             generation = commit.governance_generation;
         }
-        response.value()?;
-        client.check_session()?;
         if let Some(last) = outcome.committed_events.last() {
             self.heads
                 .insert(request.stream_ref.clone(), head(last.commit()));
             self.generations
                 .insert(request.stream_ref.clone(), generation);
         }
-        self.context = Some(response.session().clone());
-        Ok(OwnStationScanPage { response })
+        Ok(())
     }
 
     /// Install current coverage only from the head operation. Exact by-ref
@@ -388,7 +428,15 @@ impl OwnStationReplica {
                 "ordinary current snapshot request has another Realm",
             ));
         }
-        let snapshot = response.value()?;
+        let mut candidate = self.clone();
+        candidate.install_snapshot_value(response.value()?)?;
+        response.value()?;
+        candidate.context = Some(ReplicaContext::Session(response.session().clone()));
+        *self = candidate;
+        Ok(())
+    }
+
+    fn install_snapshot_value(&mut self, snapshot: &RealmStateSnapshot) -> Result<()> {
         validate_snapshot(snapshot, &self.realm_id)?;
         if self
             .snapshot
@@ -468,9 +516,8 @@ impl OwnStationReplica {
                 .insert(incoming.stream_ref.clone(), incoming.clone());
         }
         self.call_axis_stamps.extend(incoming_axes);
-        self.context = Some(response.session().clone());
         self.snapshot = Some(snapshot.clone());
-        // Snapshot heads are current coverage, not downloaded predecessors.
+        // Current coverage never pretends the original predecessors were read.
         Ok(())
     }
 
@@ -558,7 +605,7 @@ impl OwnStationReplica {
             }
         }
         response.value()?;
-        self.context = Some(response.session().clone());
+        self.context = Some(ReplicaContext::Session(response.session().clone()));
         self.generations
             .insert(stream_ref.clone(), snapshot.governance_generation);
         self.heads.insert(stream_ref.clone(), target.clone());
