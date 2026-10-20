@@ -109,26 +109,42 @@ pub fn retain_admissible_welcomes(
         .collect()
 }
 
+/// The authenticated route used to read the recipient's original claim.
+/// Realm authority must already have passed fresh, nonce-bound chain verification.
+pub enum WelcomeClaimAuthority<'a> {
+    AccountStation(&'a DidCoreId),
+    Realm {
+        current_station: &'a DidCoreId,
+        authority: &'a arkret_identity::VerifiedRealmAuthority,
+    },
+}
+
+impl<'a> From<&'a DidCoreId> for WelcomeClaimAuthority<'a> {
+    fn from(station: &'a DidCoreId) -> Self {
+        Self::AccountStation(station)
+    }
+}
+
 /// The claim a Welcome names, verified before the Welcome is decrypted
 /// (device-lifecycle.md §9 `claims/query` and §9.2.4, encryption-and-audit.md
 /// §2.6.1).
 ///
 /// `outcome` is the exact claim outcome this endpoint read from its own
-/// Account Station through `ak.self.keys.keypackages.read.claim.v1`, whose
-/// `claim_receipt` signature the caller has already verified under that
-/// Station's service key. `accepted_commit` is the accepted `ak.mls.commit`
-/// the Welcome names and `endpoint_authorization` the endpoint's current
-/// `ak.device.authorize` (or `ak.agent.key.authorize`) Event. The recomputed
+/// Account Station or verified current Realm governor through
+/// `ak.self.keys.keypackages.read.claim.v1`. The caller has verified the
+/// original receipt signature with its issuer's authenticated historical key. `accepted_commit` is
+/// the accepted `ak.mls.commit` the Welcome names and `endpoint_authorization` the endpoint's
+/// current `ak.device.authorize` (or `ak.agent.key.authorize`) Event. The recomputed
 /// `claims_digest`, the destination, the claim record's endpoint, KeyPackage
 /// digest and authority, the receipt's requester, target, Realm and group,
 /// and the claimed KeyPackage being one inline Add of the Commit must all
 /// hold, or the Welcome stays undecrypted.
-pub fn verify_welcome_claim(
+pub fn verify_welcome_claim<'a>(
     welcome: &MlsWelcomeDelivery,
     endpoint: &LocalMlsEndpoint,
     accepted_commit: &Event,
     outcome: &KeyPackagesClaimOutcome,
-    local_station: &DidCoreId,
+    authority: impl Into<WelcomeClaimAuthority<'a>>,
     endpoint_authorization: &EventId,
 ) -> Result<KeyPackageClaimRecord> {
     let refused = |detail: &str| Error::Protocol(format!("MLS Welcome claim: {detail}"));
@@ -137,12 +153,28 @@ pub fn verify_welcome_claim(
         .validate_shape()
         .map_err(|error| refused(&format!("claim outcome is invalid: {error}")))?;
     let receipt = &outcome.claim_receipt;
-    let recipient = welcome
-        .recipient_actor_id
-        .as_account_id()
-        .ok_or_else(|| refused("the recipient is not an Account"))?;
-    if &receipt.destination_id != local_station || &recipient.station_id != local_station {
-        return Err(refused("the claim was not made at this endpoint's Station"));
+    match (&welcome.recipient_actor_id, authority.into()) {
+        (ActorId::Account { account_id }, WelcomeClaimAuthority::AccountStation(station))
+            if &receipt.destination_id == station && &account_id.station_id == station => {}
+        (
+            ActorId::Realm { realm_actor_id },
+            WelcomeClaimAuthority::Realm {
+                current_station,
+                authority,
+            },
+        ) if realm_actor_id.realm_id == welcome.realm_id
+            && authority.realm_id() == &realm_actor_id.realm_id
+            && authority.current_service_id() == current_station
+            && authority.authorizes_issuer_at(
+                &receipt.destination_id,
+                receipt.claim_authority_ref.as_ref(),
+                receipt.claimed_at,
+            ) => {}
+        _ => {
+            return Err(refused(
+                "the claim issuer is not authorized for this endpoint",
+            ));
+        }
     }
     let record = outcome
         .claims
@@ -177,15 +209,34 @@ pub fn verify_welcome_claim(
         return Err(refused("the claimed KeyPackage does not match its digest"));
     }
     let request = &receipt.request;
-    let target_matches = match (&request.target_account_id, &request.target_agent_id) {
-        (Some(account), None) => account == recipient,
-        (None, Some(agent_id)) => agent_id == &recipient.principal_id,
+    let target_matches = match (
+        &request.target_account_id,
+        &request.target_actor_id,
+        &request.target_agent_id,
+        &welcome.recipient_actor_id,
+    ) {
+        (Some(account), None, None, ActorId::Account { account_id }) => account == account_id,
+        (None, Some(actor), None, ActorId::Realm { .. }) => actor == &welcome.recipient_actor_id,
+        (None, None, Some(agent), ActorId::Account { account_id }) => {
+            agent == &account_id.principal_id
+        }
+        _ => false,
+    };
+    let requester_matches = match (
+        &request.requester_account_id,
+        &request.requester_actor_id,
+        &accepted_commit.actor_id,
+    ) {
+        (Some(account), None, ActorId::Account { account_id }) => account == account_id,
+        (None, Some(actor), ActorId::Realm { realm_actor_id }) => {
+            actor == &accepted_commit.actor_id && realm_actor_id.realm_id == welcome.realm_id
+        }
         _ => false,
     };
     if accepted_commit.kind != EventKind::MlsCommit
         || request.intended_realm_id != welcome.realm_id
         || request.mls_group_id != mls_group_id_for_scope(&welcome.effective_scope)?
-        || request.requester_account_id.as_ref() != accepted_commit.actor_id.as_account_id()
+        || !requester_matches
         || !target_matches
     {
         return Err(refused(
@@ -196,6 +247,14 @@ pub fn verify_welcome_claim(
         accepted_commit.payload.clone().into_iter().collect(),
     ))
     .map_err(|error| refused(&format!("the accepted Commit payload is invalid: {error}")))?;
+    payload.validate()?;
+    if payload.governance_binding().effective_scope() != &welcome.effective_scope
+        || accepted_commit.scope_ref != welcome.effective_scope
+    {
+        return Err(refused(
+            "the Commit and Welcome have different effective scopes",
+        ));
+    }
     let commit_bytes = arkret_canonical::base64url_decode(payload.commit_bytes_b64())
         .map_err(|_| refused("the accepted Commit bytes are not base64url"))?;
     // An inline Add proposal carries the added KeyPackage's exact TLS
@@ -238,8 +297,66 @@ pub fn signed_welcome_consume(
         .iter()
         .find(|record| record.claim_id == welcome.keypackage_claim_ref.as_str())
         .ok_or_else(|| refused("the outcome does not hold the Welcome's claim"))?;
+    outcome
+        .validate_shape()
+        .map_err(|e| refused(&e.to_string()))?;
+    if local_station != &outcome.claim_receipt.destination_id {
+        return Err(refused(
+            "durable receipt must preserve the original claim destination",
+        ));
+    }
+    let signer_matches = match (
+        &recipient,
+        &welcome.recipient_actor_id,
+        &welcome.recipient_endpoint,
+    ) {
+        (
+            RecipientMlsDurableSigner::Device {
+                recipient_account_id,
+                recipient_device_id,
+                ..
+            },
+            ActorId::Account { account_id },
+            MlsWelcomeRecipientEndpoint::Device { device_id },
+        ) => recipient_account_id == account_id && recipient_device_id == device_id,
+        (
+            RecipientMlsDurableSigner::RealmDevice {
+                recipient_actor_id,
+                recipient_device_id,
+                ..
+            },
+            ActorId::Realm { .. },
+            MlsWelcomeRecipientEndpoint::Device { device_id },
+        ) => recipient_actor_id == &welcome.recipient_actor_id && recipient_device_id == device_id,
+        (
+            RecipientMlsDurableSigner::Agent {
+                recipient_agent_id,
+                recipient_agent_verification_method,
+                agent_key_authorize_event_id,
+            },
+            ActorId::Account { account_id },
+            MlsWelcomeRecipientEndpoint::AgentRuntime {
+                verification_method,
+            },
+        ) => {
+            recipient_agent_id == &account_id.principal_id
+                && recipient_agent_verification_method == verification_method
+                && record.agent_key_authorize_event_id.as_ref()
+                    == Some(agent_key_authorize_event_id)
+        }
+        _ => false,
+    };
+    if !signer_matches || record.actor_id != welcome.recipient_actor_id {
+        return Err(refused(
+            "durable signer differs from the claimed Welcome endpoint",
+        ));
+    }
     let method = match &recipient {
         RecipientMlsDurableSigner::Device {
+            device_verification_method,
+            ..
+        }
+        | RecipientMlsDurableSigner::RealmDevice {
             device_verification_method,
             ..
         } => device_verification_method,
@@ -398,8 +515,12 @@ mod tests {
 
     /// The accepted Commit whose inline Add carries `added`.
     fn accepted_commit(added: &[u8]) -> Event {
+        accepted_commit_in(realm_id(), added)
+    }
+
+    fn accepted_commit_in(realm: RealmId, added: &[u8]) -> Event {
         let binding = arkret_models_crypto::MlsGovernanceBindingPayload::realm(
-            realm_id(),
+            realm.clone(),
             Some(EventId::from_digest(DigestSuite::Sha256, [5; 32])),
             0,
             1,
@@ -428,6 +549,8 @@ mod tests {
             serde_json::to_value(payload).unwrap(),
         );
         event.actor_id = ActorId::account(committer());
+        event.realm_id = realm.clone();
+        event.scope_ref = ScopeRef::Realm { realm_id: realm };
         event
     }
 
@@ -457,7 +580,9 @@ mod tests {
         let request = arkret_models_crypto::PeerKeyPackagesClaimUnsignedRequest {
             claim_request_id: claim_request_id.clone(),
             target_account_id: recipient().as_account_id().cloned(),
+            target_actor_id: None,
             requester_account_id: Some(committer()),
+            requester_actor_id: None,
             intended_realm_id: realm_id(),
             mls_group_id: mls_group_id_for_realm(&realm_id()).unwrap(),
             claim_purpose: arkret_models_crypto::PeerKeyPackageClaimPurpose::RealmMembership,
@@ -485,6 +610,7 @@ mod tests {
                 .unwrap(),
                 source_id: DidCoreId::new("ak:did_core:web:governance.example").unwrap(),
                 destination_id: station(),
+                claim_authority_ref: None,
                 request,
                 claimed_at: at(10),
                 expires_at: at(30),
@@ -598,6 +724,322 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("does not add"), "{error}");
+    }
+
+    fn realm_actor(label: &str) -> ActorId {
+        ActorId::realm(arkret_wire::RealmActorId {
+            realm_id: realm_id(),
+            principal_id: DidCoreId::new(format!("ak:did_core:webvh:z{label}")).unwrap(),
+        })
+    }
+
+    #[test]
+    fn realm_committer_is_bound_as_a_full_actor_for_an_ordinary_recipient() {
+        let mut commit = accepted_commit(KEYPACKAGE);
+        commit.actor_id = realm_actor("Committer");
+        let welcome = recipient_welcome(&commit);
+        let mut claims = outcome(vec![claim_record()]);
+        claims.claim_receipt.request.requester_account_id = None;
+        claims.claim_receipt.request.requester_actor_id = Some(commit.actor_id.clone());
+        verify_welcome_claim(
+            &welcome,
+            &recipient_endpoint(),
+            &commit,
+            &claims,
+            &station(),
+            &authorization(),
+        )
+        .unwrap();
+        let mut wrong = claims.clone();
+        wrong.claim_receipt.request.requester_actor_id = Some(realm_actor("Other"));
+        assert!(
+            verify_welcome_claim(
+                &welcome,
+                &recipient_endpoint(),
+                &commit,
+                &wrong,
+                &station(),
+                &authorization()
+            )
+            .is_err()
+        );
+        let mut mixed = claims.clone();
+        mixed.claim_receipt.request.requester_account_id = Some(committer());
+        assert!(
+            verify_welcome_claim(
+                &welcome,
+                &recipient_endpoint(),
+                &commit,
+                &mixed,
+                &station(),
+                &authorization()
+            )
+            .is_err()
+        );
+        let mut wrong_realm = claims;
+        wrong_realm.claim_receipt.request.requester_actor_id =
+            Some(ActorId::realm(arkret_wire::RealmActorId {
+                realm_id: RealmId::from_event_id(&EventId::from_digest(
+                    DigestSuite::Sha256,
+                    [44; 32],
+                )),
+                principal_id: commit.actor_id.signing_principal_id().clone(),
+            }));
+        assert!(
+            verify_welcome_claim(
+                &welcome,
+                &recipient_endpoint(),
+                &commit,
+                &wrong_realm,
+                &station(),
+                &authorization()
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn realm_recipient_requires_verified_governance_and_preserves_original_claim_destination() {
+        let commit = accepted_commit(KEYPACKAGE);
+        let actor = realm_actor("Recipient");
+        let mut welcome = recipient_welcome(&commit);
+        welcome.recipient_actor_id = actor.clone();
+        let mut record = claim_record();
+        record.actor_id = actor.clone();
+        record.principal_id = actor.signing_principal_id().clone();
+        let mut claims = outcome(vec![record]);
+        claims.claim_receipt.request.target_account_id = None;
+        claims.claim_receipt.request.target_actor_id = Some(actor.clone());
+        claims.claim_receipt.claim_authority_ref = Some(
+            arkret_wire::RealmCommitAuthorityRef::GenesisOrChangeEvent(authorization()),
+        );
+        let endpoint = LocalMlsEndpoint::device(realm_id(), actor.clone(), device_id());
+        assert!(
+            verify_welcome_claim(
+                &welcome,
+                &endpoint,
+                &commit,
+                &claims,
+                &station(),
+                &authorization()
+            )
+            .is_err()
+        );
+        let recipient = RecipientMlsDurableSigner::RealmDevice {
+            recipient_actor_id: actor.clone(),
+            recipient_device_id: device_id(),
+            device_verification_method: DidUrl::new("did:webvh:zRecipient:host.example#device")
+                .unwrap(),
+        };
+        let inputs = std::cell::RefCell::new(Vec::new());
+        let command = signed_welcome_consume(
+            &welcome,
+            &claims,
+            recipient.clone(),
+            &station(),
+            1,
+            at(20),
+            signer(&inputs),
+        )
+        .unwrap();
+        assert_eq!(
+            command.recipient_durable_receipt.recipient_id,
+            claims.claim_receipt.destination_id
+        );
+        let successor = DidCoreId::new("ak:did_core:web:successor.example").unwrap();
+        assert!(
+            signed_welcome_consume(
+                &welcome,
+                &claims,
+                recipient,
+                &successor,
+                1,
+                at(20),
+                signer(&inputs)
+            )
+            .is_err()
+        );
+        assert!(
+            signed_welcome_consume(
+                &welcome,
+                &claims,
+                device_signer(),
+                &station(),
+                1,
+                at(20),
+                signer(&inputs)
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn consume_rejects_another_device_before_signing() {
+        let commit = accepted_commit(KEYPACKAGE);
+        let welcome = recipient_welcome(&commit);
+        let mut recipient = device_signer();
+        if let RecipientMlsDurableSigner::Device {
+            recipient_device_id,
+            ..
+        } = &mut recipient
+        {
+            *recipient_device_id =
+                DeviceId::new("ak:device:0196419b-0000-7000-8000-000000000099").unwrap();
+        }
+        let inputs = std::cell::RefCell::new(Vec::new());
+        assert!(
+            signed_welcome_consume(
+                &welcome,
+                &outcome(vec![claim_record()]),
+                recipient,
+                &station(),
+                1,
+                at(20),
+                signer(&inputs)
+            )
+            .is_err()
+        );
+        assert!(inputs.into_inner().is_empty());
+    }
+
+    fn verified_governance() -> (
+        arkret_identity::VerifiedRealmAuthority,
+        arkret_wire::EventId,
+    ) {
+        use arkret_wire::{
+            CommitStreamHead, DetachedSignatureContext, RealmAuthorityBundle,
+            RealmAuthorityCurrentAssertion, RealmCommitAuthorityRef,
+        };
+        let now = chrono::Utc::now();
+        let route = crate::service_route_material::test_fixture::current_web_route_fixture(
+            "recipient-station.example",
+            "station",
+            81,
+        );
+        let method = DidUrl::new("did:web:recipient-station.example#signing-1").unwrap();
+        let genesis = arkret_wire::test_support::raw_event_at(EventKind::RealmCreate.as_str(), ScopeRef::RealmGenesis,
+            committer().principal_id, station(), serde_json::json!({"object":{"purpose":"collaboration","governance_station_id":station()}}),at(0)).unwrap();
+        let realm = genesis.realm_id.clone();
+        let commit = arkret_test_kit::authority_objects::signed_commit(
+            &method,
+            &route.signing_key,
+            &genesis,
+            0,
+            None,
+            genesis.event_id.clone(),
+            None,
+        )
+        .unwrap();
+        let head = CommitStreamHead {
+            stream_ref: commit.stream_ref.clone(),
+            stream_position: 0,
+            commit_id: commit.commit_id.clone(),
+        };
+        let nonce = Base64UrlString::new("BBBBBBBBBBBBBBBBBBBBBB").unwrap();
+        let mut assertion = RealmAuthorityCurrentAssertion {
+            realm_id: realm.clone(),
+            current_generation: 0,
+            current_service_id: station(),
+            last_handoff_ref: None,
+            realm_stream_head: head.clone(),
+            nonce: nonce.clone(),
+            expires_at: now + chrono::Duration::minutes(1),
+            signature: detached_signature(DetachedSignatureContext::RealmAuthorityCurrentAssertion),
+        };
+        assertion.signature = arkret_signatures::detached_object::sign_detached_object(
+            &arkret_canonical::unsigned_value(&assertion, &["signature"]).unwrap(),
+            DetachedSignatureContext::RealmAuthorityCurrentAssertion,
+            method.clone(),
+            now,
+            &route.signing_key,
+        )
+        .unwrap();
+        let bundle = RealmAuthorityBundle {
+            realm_id: realm,
+            genesis_event: genesis.clone(),
+            genesis_commit: commit,
+            authority_transitions: vec![],
+            current_generation: 0,
+            current_service_id: station(),
+            current_route_record: serde_json::to_value(route.resolution).unwrap(),
+            realm_stream_head: head,
+            bundle_issued_at: now,
+            current_assertion: assertion,
+        };
+        let keys = arkret_identity::RealmAuthorityKeyMap::new().with_key(
+            &method,
+            arkret_signatures::PublicKeyMaterial::Ed25519Raw {
+                bytes: route.signing_key.verifying_key().as_bytes().to_vec(),
+            },
+        );
+        let authority = arkret_identity::verify_realm_authority_bundle(
+            &bundle,
+            &arkret_identity::RealmAuthorityFreshness::new(now, nonce),
+            &keys,
+        )
+        .unwrap();
+        assert!(authority.binds_current_authority(
+            0,
+            &RealmCommitAuthorityRef::GenesisOrChangeEvent(genesis.event_id.clone())
+        ));
+        (authority, genesis.event_id)
+    }
+
+    #[test]
+    fn realm_recipient_binds_claim_to_verified_governance_and_exact_tenure() {
+        let (authority, genesis) = verified_governance();
+        let realm = authority.realm_id().clone();
+        let actor = ActorId::realm(arkret_wire::RealmActorId {
+            realm_id: realm.clone(),
+            principal_id: realm_actor("Recipient").signing_principal_id().clone(),
+        });
+        let commit = accepted_commit_in(realm.clone(), KEYPACKAGE);
+        let mut welcome = recipient_welcome(&commit);
+        welcome.realm_id = realm.clone();
+        welcome.effective_scope = commit.scope_ref.clone();
+        welcome.recipient_actor_id = actor.clone();
+        let mut record = claim_record();
+        record.actor_id = actor.clone();
+        record.principal_id = actor.signing_principal_id().clone();
+        let mut claims = outcome(vec![record]);
+        claims.claim_receipt.request.target_account_id = None;
+        claims.claim_receipt.request.target_actor_id = Some(actor.clone());
+        claims.claim_receipt.request.intended_realm_id = realm.clone();
+        claims.claim_receipt.request.mls_group_id = mls_group_id_for_realm(&realm).unwrap();
+        claims.claim_receipt.claim_authority_ref = Some(
+            arkret_wire::RealmCommitAuthorityRef::GenesisOrChangeEvent(genesis),
+        );
+        let endpoint = LocalMlsEndpoint::device(realm, actor, device_id());
+        let current = station();
+        let verify = |claims: &KeyPackagesClaimOutcome, current_station: &DidCoreId| {
+            verify_welcome_claim(
+                &welcome,
+                &endpoint,
+                &commit,
+                claims,
+                WelcomeClaimAuthority::Realm {
+                    current_station,
+                    authority: &authority,
+                },
+                &authorization(),
+            )
+        };
+        verify(&claims, &current).unwrap();
+        let mut wrong = claims.clone();
+        wrong.claim_receipt.claim_authority_ref = Some(
+            arkret_wire::RealmCommitAuthorityRef::GenesisOrChangeEvent(authorization()),
+        );
+        assert!(verify(&wrong, &current).is_err());
+        wrong = claims.clone();
+        wrong.claim_receipt.claimed_at = at(0) - chrono::Duration::seconds(1);
+        assert!(verify(&wrong, &current).is_err());
+        assert!(
+            verify(
+                &claims,
+                &DidCoreId::new("ak:did_core:web:wrong-route.example").unwrap()
+            )
+            .is_err()
+        );
     }
 
     fn device_signer() -> RecipientMlsDurableSigner {

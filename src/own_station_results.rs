@@ -668,7 +668,7 @@ enum OriginalSource {
 }
 
 trait HistoricalSignerReadSource: crate::MaybeSendSync {
-    fn recipient_account(&self) -> Result<arkret_wire::AccountId>;
+    fn recipient_actor(&self) -> Result<arkret_wire::ActorId>;
     fn check_read_source(&self) -> Result<()>;
     fn read_historical_signers<'a>(
         &'a self,
@@ -680,8 +680,10 @@ trait HistoricalSignerReadSource: crate::MaybeSendSync {
 }
 
 impl HistoricalSignerReadSource for OwnStationResultClient {
-    fn recipient_account(&self) -> Result<arkret_wire::AccountId> {
-        Ok(self.session()?.account_id().clone())
+    fn recipient_actor(&self) -> Result<arkret_wire::ActorId> {
+        Ok(arkret_wire::ActorId::account(
+            self.session()?.account_id().clone(),
+        ))
     }
     fn check_read_source(&self) -> Result<()> {
         self.check_session().map_err(Into::into)
@@ -697,8 +699,8 @@ impl HistoricalSignerReadSource for OwnStationResultClient {
 impl HistoricalSignerReadSource
     for arkret_http_client::own_station_device_results::OwnStationDeviceClient
 {
-    fn recipient_account(&self) -> Result<arkret_wire::AccountId> {
-        Ok(self.context()?.account_id().clone())
+    fn recipient_actor(&self) -> Result<arkret_wire::ActorId> {
+        Ok(self.context()?.actor_id().clone())
     }
     fn check_read_source(&self) -> Result<()> {
         self.check_context().map_err(Into::into)
@@ -760,7 +762,11 @@ async fn verify_row_from_source(
         let request = SignerKeysQueryRequestBody {
             request_id: request_id()?,
             realm_id: event.realm_id.clone(),
-            recipient_account_id: client.recipient_account()?,
+            recipient_account_id: client.recipient_actor()?.as_account_id().cloned(),
+            recipient_actor_id: client
+                .recipient_actor()?
+                .as_realm_actor_id()
+                .map(|actor| arkret_wire::ActorId::realm(actor.clone())),
             queries: vec![selector],
         };
         let outcome = client.read_historical_signers(&request).await?;
@@ -784,6 +790,79 @@ async fn verify_row_from_source(
         };
         fact.validate_commit_binding(full, suite)
             .map_err(|e| protocol(&e.to_string()))?;
+        let material = arkret_signatures::PublicKeyMaterial::Ed25519Raw {
+            bytes: arkret_canonical::base64url_decode(key.public_key_b64u.as_str())
+                .map_err(|e| protocol(&e.to_string()))?,
+        };
+        let bytes = arkret_signatures::EventProofBuilder::new()
+            .envelope_bytes(event)
+            .map_err(|e| protocol(&e.to_string()))?;
+        arkret_signatures::verify_ed25519_detached_jws_proof_with_digest_suite(
+            proof,
+            &bytes,
+            &event.actor_id,
+            &material,
+            suite,
+        )
+        .map_err(|e| protocol(&e.to_string()))?;
+        client.check_read_source()?;
+        return Ok(Some(material));
+    }
+    if let Some(actor) = event.actual_signer().as_realm_actor_id() {
+        if actor.realm_id != event.realm_id
+            || event.executed_by.is_some()
+            || full.commit.producer_signer_fact_digest.is_none()
+            || !matches!(
+                event.scope_ref,
+                arkret_wire::ScopeRef::Realm { .. } | arkret_wire::ScopeRef::Circle { .. }
+            )
+        {
+            return Err(protocol(
+                "Realm Device original has no exact public committed source",
+            ));
+        }
+        let device_id = proof
+            .verification_method
+            .as_str()
+            .rsplit_once('#')
+            .and_then(|(_, fragment)| arkret_wire::DeviceId::new(fragment).ok())
+            .ok_or_else(|| protocol("Realm Device original has no complete device method"))?;
+        let recipient = client.recipient_actor()?;
+        let request = SignerKeysQueryRequestBody {
+            request_id: request_id()?,
+            realm_id: event.realm_id.clone(),
+            recipient_account_id: recipient.as_account_id().cloned(),
+            recipient_actor_id: recipient.as_realm_actor_id().map(|_| recipient.clone()),
+            queries: vec![SignerKeyQuerySelector::HistoricalRealmDevice {
+                sender_kind: arkret_models_identity::RealmDeviceSignerKind::RealmDevice,
+                actor_id: event.actor_id.clone(),
+                device_id,
+                verification_method: proof.verification_method.clone(),
+                committed_event_ref: CommittedEventRef {
+                    event_id: event.event_id.clone(),
+                    commit_id: full.commit.commit_id.clone(),
+                    stream_ref: full.commit.stream_ref.clone(),
+                    stream_position: full.commit.stream_position,
+                },
+            }],
+        };
+        let outcome = client.read_historical_signers(&request).await?;
+        outcome
+            .validate_for_request(&request)
+            .map_err(|e| protocol(&e.to_string()))?;
+        let Some(SignerKeyQueryOutcome::HistoricalRealmDeviceResolved {
+            key, accepted_at, ..
+        }) = outcome.results.first()
+        else {
+            return Err(protocol("exact historical Realm Device key is unavailable"));
+        };
+        if *accepted_at != full.commit.committed_at {
+            return Err(protocol(
+                "Realm Device key belongs to a different acceptance coordinate",
+            ));
+        }
+        // The bound Station query verifies the private fact at this exact Commit.
+        // Its minimal response deliberately does not disclose control-stream metadata.
         let material = arkret_signatures::PublicKeyMaterial::Ed25519Raw {
             bytes: arkret_canonical::base64url_decode(key.public_key_b64u.as_str())
                 .map_err(|e| protocol(&e.to_string()))?,
@@ -853,7 +932,11 @@ async fn verify_row_from_source(
     let request = SignerKeysQueryRequestBody {
         request_id: request_id()?,
         realm_id: event.realm_id.clone(),
-        recipient_account_id: client.recipient_account()?,
+        recipient_account_id: client.recipient_actor()?.as_account_id().cloned(),
+        recipient_actor_id: client
+            .recipient_actor()?
+            .as_realm_actor_id()
+            .map(|actor| arkret_wire::ActorId::realm(actor.clone())),
         queries: vec![SignerKeyQuerySelector::HistoricalEvent { sender }],
     };
     let outcome = client.read_historical_signers(&request).await?;
@@ -958,7 +1041,7 @@ impl OwnStationDeviceEvent {
             welcome,
             &crate::mls::LocalMlsEndpoint::device(
                 welcome.realm_id.clone(),
-                arkret_wire::ActorId::account(context.account_id().clone()),
+                context.actor_id().clone(),
                 context.device_id().clone(),
             ),
             &full.event.event_id,
@@ -1569,7 +1652,43 @@ pub(crate) mod tests {
                     .lock()
                     .unwrap()
                     .push(headers.lines().next().unwrap().to_owned());
-                let body = if let Some(key) = body.get("__service_key") {
+                let body = if let Some(key) = body.get("__realm_key") {
+                    let request: SignerKeysQueryRequestBody =
+                        serde_json::from_slice(&request_bytes[header_end..header_end + body_len])
+                            .unwrap();
+                    let mut selector = request.queries[0].clone();
+                    let SignerKeyQuerySelector::HistoricalRealmDevice {
+                        committed_event_ref,
+                        ..
+                    } = &mut selector
+                    else {
+                        panic!("Realm Device history must use its exact historical selector")
+                    };
+                    if body["__wrong_target"] == true {
+                        committed_event_ref.stream_position += 1;
+                    }
+                    let result = if body["__unavailable"] == true {
+                        SignerKeyQueryOutcome::Unavailable { selector }
+                    } else {
+                        SignerKeyQueryOutcome::HistoricalRealmDeviceResolved {
+                            selector,
+                            key: serde_json::from_value(key.clone()).unwrap(),
+                            accepted_at: if body["__wrong_time"] == true {
+                                crate::test_fixtures::at(4)
+                            } else {
+                                crate::test_fixtures::at(3)
+                            },
+                        }
+                    };
+                    serde_json::to_value(arkret_models_identity::SignerKeysQueryOutcome {
+                        request_id: request.request_id,
+                        realm_id: request.realm_id,
+                        recipient_account_id: request.recipient_account_id,
+                        recipient_actor_id: request.recipient_actor_id,
+                        results: vec![result],
+                    })
+                    .unwrap()
+                } else if let Some(key) = body.get("__service_key") {
                     let request: SignerKeysQueryRequestBody =
                         serde_json::from_slice(&request_bytes[header_end..header_end + body_len])
                             .unwrap();
@@ -1597,6 +1716,7 @@ pub(crate) mod tests {
                         request_id: request.request_id,
                         realm_id: request.realm_id,
                         recipient_account_id: request.recipient_account_id,
+                        recipient_actor_id: request.recipient_actor_id,
                         results: vec![result],
                     })
                     .unwrap()
@@ -1619,7 +1739,7 @@ pub(crate) mod tests {
                         else {
                             panic!("native self source must never use current selector")
                         };
-                        assert_eq!(actor.as_account_id(), Some(&request.recipient_account_id));
+                        assert_eq!(actor.as_account_id(), request.recipient_account_id.as_ref());
                         assert_eq!(
                             serde_json::to_value(committed_event_ref).unwrap(),
                             *expected
@@ -1659,6 +1779,7 @@ pub(crate) mod tests {
                             request_id: request.request_id,
                             realm_id: request.realm_id,
                             recipient_account_id: request.recipient_account_id,
+                            recipient_actor_id: request.recipient_actor_id,
                             results: vec![if body
                                 .get("__unavailable")
                                 .and_then(serde_json::Value::as_bool)
@@ -2531,6 +2652,74 @@ pub(crate) mod tests {
             let (client, server, observed) = observed_client(vec![
                 serde_json::json!({"__service_key":key,"__unavailable":refusal=="unavailable"}),
             ]);
+            let result = verify_row(&client, &CommittedEventView::Full(full.clone())).await;
+            assert_eq!(result.is_ok(), refusal == "none", "{refusal}: {result:?}");
+            server.join().unwrap();
+            assert_eq!(observed.lock().unwrap().len(), 1);
+        }
+    }
+
+    #[tokio::test]
+    async fn realm_device_original_uses_exact_historical_key_and_real_signature() {
+        let suite = arkret_canonical::DigestSuite::Sha256;
+        let mut event = crate::test_fixtures::event(
+            79,
+            arkret_wire::EventKind::MessageCreate,
+            serde_json::json!({"content":{"kind":"ak.content.text","body":"Realm Device original"}}),
+        );
+        let principal: arkret_wire::DidCoreId = "ak:did_core:webvh:zRealmSender".parse().unwrap();
+        event.actor_id = arkret_wire::ActorId::realm(arkret_wire::RealmActorId {
+            realm_id: event.realm_id.clone(),
+            principal_id: principal,
+        });
+        let method = arkret_wire::DidUrl::new(format!(
+            "did:webvh:zRealmSender:host.example#{}",
+            crate::test_fixtures::device_id()
+        ))
+        .unwrap();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[79; 32]);
+        event.producer_proof = None;
+        let mut authored =
+            arkret_wire::AuthoredEvent::finalize_with_digest_suite(event, suite).unwrap();
+        arkret_signatures::sign_event(
+            &mut authored,
+            &arkret_signatures::Ed25519DetachedJwsSigner::from_seed([79; 32], method.to_string()),
+            arkret_signatures::SignEventOptions::new().with_created_at(crate::test_fixtures::at(0)),
+        )
+        .unwrap();
+        let event = authored.into_event();
+        let mut commit =
+            crate::test_fixtures::commit(79, &event, crate::test_fixtures::realm_stream(), 2);
+        commit.committed_at = crate::test_fixtures::at(3);
+        let fact = arkret_models_collaboration::authority_commit::RealmDeviceHistoricalSignerFact {
+            kind: arkret_models_collaboration::authority_commit::RealmDeviceHistoricalSignerFactKind::RealmDevice,
+            event_id: event.event_id.clone(), actor_id: event.actor_id.clone(),
+            verification_method: method,
+            public_key_b64u: arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(key.verifying_key().as_bytes())).unwrap(),
+            accepted_at: commit.committed_at, device_id: crate::test_fixtures::device_id(),
+            authorization_event_id: arkret_wire::EventId::from_digest(suite,[78;32]), authorized_generation_ref: 1,
+        };
+        commit.producer_signer_fact_digest = Some(fact.digest().unwrap());
+        let full = arkret_wire::CommittedEventFullView {
+            event,
+            commit: seal_native_fixture_commit(commit),
+        };
+        for refusal in [
+            "none",
+            "wrong_key",
+            "wrong_time",
+            "wrong_target",
+            "unavailable",
+        ] {
+            let public = if refusal == "wrong_key" {
+                ed25519_dalek::SigningKey::from_bytes(&[80; 32]).verifying_key()
+            } else {
+                key.verifying_key()
+            };
+            let (client, server, observed) = observed_client(vec![serde_json::json!({
+                "__realm_key": {"public_key_b64u": arkret_canonical::base64url_encode(public.as_bytes())},
+                "__wrong_time": refusal == "wrong_time", "__wrong_target": refusal == "wrong_target", "__unavailable": refusal == "unavailable",
+            })]);
             let result = verify_row(&client, &CommittedEventView::Full(full.clone())).await;
             assert_eq!(result.is_ok(), refusal == "none", "{refusal}: {result:?}");
             server.join().unwrap();
