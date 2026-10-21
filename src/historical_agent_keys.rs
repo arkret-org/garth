@@ -71,7 +71,8 @@ pub async fn resolve_historical_agent_keys(
                 clock.now().timestamp_millis().max(0) as u64
             ),
             realm_id,
-            recipient_account_id: recipient.clone(),
+            recipient_account_id: Some(recipient.clone()),
+            recipient_actor_id: None,
             queries: pending.iter().map(query_selector).collect(),
         };
         let outcome = match http.signer_keys_query(&request).await {
