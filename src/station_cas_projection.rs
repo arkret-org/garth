@@ -4,7 +4,7 @@ use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountSubscribeFrame, StationCasAccountDataContainer,
 };
 use arkret_models_collaboration::sync_frames::demand_sync::AccountBaselineChannel;
-use im::{OrdMap as BTreeMap, OrdSet as BTreeSet};
+use imbl::{OrdMap as BTreeMap, OrdSet as BTreeSet};
 
 use crate::{Error, Result};
 
@@ -54,9 +54,9 @@ impl StationCasProjection {
         ) -> Result<()> {
             for delta in old.diff(new) {
                 let (key, value) = match delta {
-                    im::ordmap::DiffItem::Add(key, value) => (key, Some(value)),
-                    im::ordmap::DiffItem::Remove(key, _) => (key, None),
-                    im::ordmap::DiffItem::Update {
+                    imbl::ordmap::DiffItem::Add(key, value) => (key, Some(value)),
+                    imbl::ordmap::DiffItem::Remove(key, _) => (key, None),
+                    imbl::ordmap::DiffItem::Update {
                         new: (key, value), ..
                     } => (key, Some(value)),
                 };
