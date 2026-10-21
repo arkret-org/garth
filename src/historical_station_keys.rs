@@ -466,6 +466,8 @@ mod tests {
     fn snapshot_signed_by(station: &PreparedStation, at: DateTime<Utc>) -> RealmStateSnapshot {
         let stream_ref = crate::test_fixtures::realm_stream();
         RealmStateSnapshot {
+            purpose: arkret_wire::RealmSnapshotPurpose::FullRecovery,
+            history_basis: None,
             snapshot_id: arkret_wire::RealmSnapshotId::from_digest([4; 32]),
             realm_id: crate::test_fixtures::realm_id(),
             governance_generation: 0,

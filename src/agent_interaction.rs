@@ -173,6 +173,8 @@ mod tests {
             commit_id: RealmCommitId::from_digest([4; 32]),
         };
         let mut snapshot = RealmStateSnapshot {
+            purpose: arkret_wire::RealmSnapshotPurpose::FullRecovery,
+            history_basis: None,
             snapshot_id: arkret_wire::RealmSnapshotId::from_digest([8; 32]),
             realm_id: realm.clone(),
             governance_generation: 2,

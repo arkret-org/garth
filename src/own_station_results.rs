@@ -437,6 +437,9 @@ impl OwnStationReplica {
     }
 
     fn install_snapshot_value(&mut self, snapshot: &RealmStateSnapshot) -> Result<()> {
+        snapshot
+            .require_full_recovery()
+            .map_err(|e| protocol(&e.to_string()))?;
         validate_snapshot(snapshot, &self.realm_id)?;
         if self
             .snapshot
@@ -537,6 +540,23 @@ impl OwnStationReplica {
             .validate()
             .map_err(|error| protocol(&error.to_string()))?;
         let snapshot = response.value()?;
+        snapshot
+            .validate_purpose()
+            .map_err(|e| protocol(&e.to_string()))?;
+        let signed = snapshot
+            .history_basis
+            .as_ref()
+            .ok_or_else(|| protocol("history window requires signed stream coverage"))?;
+        if signed.account_id != *response.session().account_id()
+            || signed.stream_ref != *stream_ref
+            || signed.anchor_position != basis.anchor_position
+            || signed.anchor_commit_ref != basis.anchor_commit_ref
+            || signed.accepted_dependency_refs
+                != basis.accepted_dependency_refs.clone().unwrap_or_default()
+        {
+            return Err(protocol("history coverage differs from Account window"));
+        }
+
         validate_snapshot(snapshot, &self.realm_id)?;
         if response.request() != &(self.realm_id.clone(), basis.snapshot_ref.clone())
             || snapshot.snapshot_id != basis.snapshot_ref
@@ -2218,7 +2238,11 @@ pub(crate) mod tests {
                 let mut tail = commit(10, Some(anchor.commit_id.clone()));
                 tail.stream_ref = stream.clone();
                 tail = seal_native_fixture_commit(tail);
-                let old = snapshot_at_floor(vec![head(accepted), anchor.clone()], 7);
+                let old = historical_snapshot(
+                    snapshot_at_floor(vec![head(accepted), anchor.clone()], 7),
+                    &stream,
+                    vec![reference.clone()],
+                );
                 let current = snapshot_at_floor(vec![head(accepted), head(&tail)], 7);
                 let mut dependency = reference.clone();
                 if failure == "wrong_ref" {
@@ -3412,6 +3436,67 @@ pub(crate) mod tests {
         snapshot_at_floor(heads, 0)
     }
 
+    fn historical_snapshot(
+        mut snapshot: RealmStateSnapshot,
+        stream: &CommitStreamRef,
+        dependencies: Vec<CommittedEventRef>,
+    ) -> RealmStateSnapshot {
+        let account = arkret_wire::AccountId::new(
+            arkret_wire::DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
+            arkret_wire::DidCoreId::new("ak:did_core:web:station.example").unwrap(),
+        );
+        let head = snapshot
+            .visible_stream_heads
+            .iter()
+            .find(|h| &h.stream_ref == stream)
+            .unwrap()
+            .clone();
+        snapshot.purpose = arkret_wire::RealmSnapshotPurpose::StreamHistory;
+        snapshot.history_basis = Some(arkret_wire::RealmSnapshotHistoryBasis {
+            account_id: account.clone(),
+            stream_ref: stream.clone(),
+            anchor_position: head.stream_position,
+            anchor_commit_ref: head.commit_id,
+            accepted_dependency_refs: dependencies.clone(),
+        });
+        if let Some(dependency) = dependencies.first() {
+            let selector = match stream {
+                CommitStreamRef::Circle { circle_id, .. } => arkret_wire::CurrentSelector::Circle {
+                    circle_id: circle_id.clone(),
+                },
+                CommitStreamRef::Sidecar { sidecar_id, .. } => {
+                    arkret_wire::CurrentSelector::Sidecar {
+                        sidecar_id: sidecar_id.clone(),
+                    }
+                }
+                _ => panic!("unexpected dependency"),
+            };
+            for selector in [
+                selector,
+                arkret_wire::CurrentSelector::MemberState {
+                    actor_id: arkret_wire::ActorId::account(account),
+                },
+            ] {
+                snapshot.current_state_entries.push(TypedCurrentRow::Value {
+                    selector,
+                    source_stream_ref: dependency.stream_ref.clone(),
+                    revision: arkret_wire::CurrentRevision {
+                        commit_id: dependency.commit_id.clone(),
+                        stream_position: dependency.stream_position,
+                    },
+                    value: serde_json::json!({"membership":"join"}),
+                });
+            }
+        }
+        let mut body = serde_json::to_value(&snapshot).unwrap();
+        body.as_object_mut().unwrap().remove("snapshot_id");
+        body.as_object_mut().unwrap().remove("signature");
+        snapshot.snapshot_id = RealmSnapshotId::from_digest(arkret_canonical::sha256_bytes(
+            arkret_canonical::canonical_json_bytes(&body).unwrap(),
+        ));
+        snapshot
+    }
+
     fn snapshot_at_floor(heads: Vec<CommitStreamHead>, oldest_position: u64) -> RealmStateSnapshot {
         snapshot_at_floor_and_generation(heads, oldest_position, 0)
     }
@@ -3423,6 +3508,8 @@ pub(crate) mod tests {
     ) -> RealmStateSnapshot {
         heads.sort_by(|left, right| left.stream_ref.cmp(&right.stream_ref));
         let mut value = RealmStateSnapshot {
+            purpose: arkret_wire::RealmSnapshotPurpose::FullRecovery,
+            history_basis: None,
             snapshot_id: RealmSnapshotId::from_digest([1; 32]),
             realm_id: crate::test_fixtures::realm_id(),
             governance_generation,
@@ -3456,7 +3543,11 @@ pub(crate) mod tests {
     async fn own_station_historical_snapshot_basis_preserves_newer_current_after_handoff() {
         let anchor = head(&commit(5, None));
         let current_head = head(&commit(8, None));
-        let historical = snapshot_at_floor_and_generation(vec![anchor.clone()], 3, 1);
+        let historical = historical_snapshot(
+            snapshot_at_floor_and_generation(vec![anchor.clone()], 3, 1),
+            &anchor.stream_ref,
+            vec![],
+        );
         let current = snapshot_at_floor_and_generation(vec![current_head.clone()], 3, 2);
         let basis = StreamWindowStartBasis {
             anchor_position: anchor.stream_position,
@@ -3538,11 +3629,7 @@ pub(crate) mod tests {
             Some(&current_head)
         );
         let installed_state = state(&replica);
-        assert!(
-            replica
-                .install_bound_snapshot(&client.snapshot_head(&historical.realm_id).await.unwrap())
-                .is_err()
-        );
+        assert!(client.snapshot_head(&historical.realm_id).await.is_err());
         assert_eq!(state(&replica), installed_state);
         let original = client
             .snapshot_by_ref(&historical.realm_id, &historical.snapshot_id)

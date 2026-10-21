@@ -357,6 +357,9 @@ impl RealmReplica {
         freshness: &RealmAuthorityFreshness,
         keys: &dyn RealmAuthorityKeyDirectory,
     ) -> Result<()> {
+        snapshot
+            .require_full_recovery()
+            .map_err(|e| Error::Protocol(e.to_string()))?;
         if self
             .authority
             .as_ref()
@@ -421,6 +424,22 @@ impl RealmReplica {
         snapshot: &RealmStateSnapshot,
         dependency_pages: &BTreeMap<CommitStreamRef, Vec<VerifiedScanPage>>,
     ) -> Result<VerifiedFloorSnapshot> {
+        snapshot
+            .validate_purpose()
+            .map_err(|e| Error::Protocol(e.to_string()))?;
+        let signed = snapshot.history_basis.as_ref().ok_or_else(|| {
+            Error::Protocol("history window requires signed stream coverage".into())
+        })?;
+        if signed.stream_ref != *stream_ref
+            || signed.anchor_position != basis.anchor_position
+            || signed.anchor_commit_ref != basis.anchor_commit_ref
+            || signed.accepted_dependency_refs
+                != basis.accepted_dependency_refs.clone().unwrap_or_default()
+        {
+            return Err(Error::Protocol(
+                "history coverage differs from window".into(),
+            ));
+        }
         basis
             .validate()
             .map_err(|error| Error::Protocol(error.to_string()))?;
@@ -536,6 +555,9 @@ impl RealmReplica {
     }
 
     pub fn install_snapshot(&mut self, snapshot: RealmStateSnapshot) -> Result<()> {
+        snapshot
+            .require_full_recovery()
+            .map_err(|e| Error::Protocol(e.to_string()))?;
         validate_snapshot(&snapshot, &self.realm_id)?;
         for head in &snapshot.visible_stream_heads {
             self.streams
@@ -805,6 +827,9 @@ impl RealmReplica {
 }
 
 pub(crate) fn validate_snapshot(snapshot: &RealmStateSnapshot, realm_id: &RealmId) -> Result<()> {
+    snapshot
+        .validate_purpose()
+        .map_err(|e| Error::Protocol(e.to_string()))?;
     if &snapshot.realm_id != realm_id
         || snapshot.visible_stream_heads.is_empty()
         || !snapshot
@@ -1154,6 +1179,8 @@ mod tests {
             .install_verified_authority(&authority_request, bundle, &freshness, &keys)
             .unwrap();
         let mut snapshot = RealmStateSnapshot {
+            purpose: arkret_wire::RealmSnapshotPurpose::FullRecovery,
+            history_basis: None,
             snapshot_id: RealmSnapshotId::from_digest([0; 32]),
             realm_id: realm_id.clone(),
             governance_generation: 0,
@@ -1340,6 +1367,16 @@ mod tests {
                 )
                 .is_err()
         );
+        let history_account = genesis.actor_id.as_account_id().unwrap().clone();
+        snapshot.purpose = arkret_wire::RealmSnapshotPurpose::StreamHistory;
+        snapshot.history_basis = Some(arkret_wire::RealmSnapshotHistoryBasis {
+            account_id: history_account.clone(),
+            stream_ref: stream_ref.clone(),
+            anchor_position: snapshot_head.stream_position,
+            anchor_commit_ref: snapshot_head.commit_id.clone(),
+            accepted_dependency_refs: vec![],
+        });
+        sign_snapshot(&mut snapshot);
         // A committed-prefix basis whose anchor is the signed head itself and
         // whose head is not earlier than the caller readable floor.
         let basis = StreamWindowStartBasis {
@@ -1397,6 +1434,16 @@ mod tests {
         ];
         current_snapshot.visible_stream_heads = vec![genesis_head.clone()];
         current_snapshot.current_state_entries = signed_rows.clone();
+        current_snapshot
+            .history_basis
+            .as_mut()
+            .unwrap()
+            .anchor_position = 0;
+        current_snapshot
+            .history_basis
+            .as_mut()
+            .unwrap()
+            .anchor_commit_ref = genesis_commit.commit_id.clone();
         sign_snapshot(&mut current_snapshot);
         // A snapshot whose head precedes the caller readable floor has no
         // Commit of the readable range before the window; a window starting
@@ -1499,7 +1546,10 @@ mod tests {
             commit_id: arkret_wire::RealmCommitId::from_digest([0x55; 32]),
         };
         let circle_row = TypedCurrentRow::Value {
-            selector: arkret_wire::CurrentSelector::Circle { circle_id },
+            selector: arkret_wire::CurrentSelector::CircleMemberState {
+                circle_id: circle_id.clone(),
+                member_actor_id: genesis.actor_id.clone(),
+            },
             source_stream_ref: circle_stream.clone(),
             revision: arkret_wire::CurrentRevision {
                 commit_id: circle_head.commit_id.clone(),
@@ -1507,9 +1557,36 @@ mod tests {
             },
             value: serde_json::json!({"state": "active"}),
         };
+        let genesis_ref = arkret_wire::CommittedEventRef {
+            event_id: genesis.event_id.clone(),
+            commit_id: genesis_commit.commit_id.clone(),
+            stream_ref: stream_ref.clone(),
+            stream_position: 0,
+        };
+        let parent_member = TypedCurrentRow::Value {
+            selector: arkret_wire::CurrentSelector::MemberState {
+                actor_id: genesis.actor_id.clone(),
+            },
+            source_stream_ref: stream_ref.clone(),
+            revision: arkret_wire::CurrentRevision {
+                commit_id: genesis_commit.commit_id.clone(),
+                stream_position: 0,
+            },
+            value: serde_json::json!({"membership":"join"}),
+        };
+        let parent_circle = TypedCurrentRow::Value {
+            selector: arkret_wire::CurrentSelector::Circle {
+                circle_id: circle_id.clone(),
+            },
+            source_stream_ref: stream_ref.clone(),
+            revision: arkret_wire::CurrentRevision {
+                commit_id: genesis_commit.commit_id.clone(),
+                stream_position: 0,
+            },
+            value: serde_json::json!({"state":"active"}),
+        };
         let mut multi = current_snapshot.clone();
         multi.visible_stream_heads.push(circle_head.clone());
-        multi.visible_stream_heads.push(sidecar_head.clone());
         multi
             .retention_and_history_floor
             .stream_floors
@@ -1517,21 +1594,22 @@ mod tests {
                 stream_ref: circle_stream.clone(),
                 oldest_position: 0,
             });
-        multi
-            .retention_and_history_floor
-            .stream_floors
-            .push(arkret_wire::StreamHistoryFloor {
-                stream_ref: sidecar_stream.clone(),
-                oldest_position: 0,
-            });
-        multi.current_state_entries.push(circle_row.clone());
+        multi.current_state_entries =
+            vec![parent_member.clone(), parent_circle, circle_row.clone()];
+        multi.history_basis = Some(arkret_wire::RealmSnapshotHistoryBasis {
+            account_id: history_account.clone(),
+            stream_ref: circle_stream.clone(),
+            anchor_position: 0,
+            anchor_commit_ref: circle_head.commit_id.clone(),
+            accepted_dependency_refs: vec![genesis_ref.clone()],
+        });
         sign_snapshot(&mut multi);
         let circle_basis = StreamWindowStartBasis {
             anchor_position: 0,
             anchor_commit_ref: circle_head.commit_id.clone(),
             snapshot_ref: multi.snapshot_id.clone(),
             governance_generation: multi.governance_generation,
-            accepted_dependency_refs: None,
+            accepted_dependency_refs: Some(vec![genesis_ref.clone()]),
         };
         let circle_floor = ReadableFloor {
             oldest_position: 0,
@@ -1591,6 +1669,22 @@ mod tests {
         };
         let mut dependency_snapshot = multi.clone();
         dependency_snapshot.visible_stream_heads[0] = snapshot_head.clone();
+        dependency_snapshot
+            .history_basis
+            .as_mut()
+            .unwrap()
+            .accepted_dependency_refs = vec![accepted_ref.clone()];
+        for row in &mut dependency_snapshot.current_state_entries {
+            let TypedCurrentRow::Value {
+                source_stream_ref,
+                revision,
+                ..
+            } = row;
+            if source_stream_ref == &stream_ref {
+                revision.commit_id = ordinary_commit.commit_id.clone();
+                revision.stream_position = 1;
+            }
+        }
         sign_snapshot(&mut dependency_snapshot);
         let mut dependent_basis = circle_basis.clone();
         dependent_basis.snapshot_ref = dependency_snapshot.snapshot_id.clone();
@@ -1704,7 +1798,7 @@ mod tests {
                 &circle_floor,
                 &multi,
                 (&freshness, &keys),
-                &BTreeMap::new(),
+                &proof,
             )
             .unwrap();
         assert_eq!(circle_slice.rows(), &[circle_row]);
@@ -1714,24 +1808,60 @@ mod tests {
         );
         assert_eq!(multi_replica.verified_head(&stream_ref), None);
         assert_eq!(multi_replica.verified_head(&sidecar_stream), None);
+        let mut sidecar_snapshot = current_snapshot.clone();
+        sidecar_snapshot
+            .visible_stream_heads
+            .push(sidecar_head.clone());
+        sidecar_snapshot
+            .retention_and_history_floor
+            .stream_floors
+            .push(arkret_wire::StreamHistoryFloor {
+                stream_ref: sidecar_stream.clone(),
+                oldest_position: 0,
+            });
+        let CommitStreamRef::Sidecar { sidecar_id, .. } = &sidecar_stream else {
+            unreachable!()
+        };
+        sidecar_snapshot.current_state_entries = vec![
+            parent_member,
+            TypedCurrentRow::Value {
+                selector: arkret_wire::CurrentSelector::Sidecar {
+                    sidecar_id: sidecar_id.clone(),
+                },
+                source_stream_ref: stream_ref.clone(),
+                revision: arkret_wire::CurrentRevision {
+                    commit_id: genesis_commit.commit_id.clone(),
+                    stream_position: 0,
+                },
+                value: serde_json::json!({"state":"active"}),
+            },
+        ];
+        sidecar_snapshot.history_basis = Some(arkret_wire::RealmSnapshotHistoryBasis {
+            account_id: history_account,
+            stream_ref: sidecar_stream.clone(),
+            anchor_position: 0,
+            anchor_commit_ref: sidecar_head.commit_id.clone(),
+            accepted_dependency_refs: vec![genesis_ref.clone()],
+        });
+        sign_snapshot(&mut sidecar_snapshot);
         let sidecar_slice = multi_replica
             .install_verified_floor_predecessor(
                 &sidecar_stream,
                 &StreamWindowStartBasis {
                     anchor_position: 0,
                     anchor_commit_ref: sidecar_head.commit_id.clone(),
-                    snapshot_ref: multi.snapshot_id.clone(),
-                    governance_generation: multi.governance_generation,
-                    accepted_dependency_refs: None,
+                    snapshot_ref: sidecar_snapshot.snapshot_id.clone(),
+                    governance_generation: sidecar_snapshot.governance_generation,
+                    accepted_dependency_refs: Some(vec![genesis_ref.clone()]),
                 },
                 &ReadableFloor {
                     oldest_position: 0,
                     floor_commit_id: sidecar_head.commit_id.clone(),
                     floor_reason: ReadableFloorReason::StreamStart,
                 },
-                &multi,
+                &sidecar_snapshot,
                 (&freshness, &keys),
-                &BTreeMap::new(),
+                &proof,
             )
             .unwrap();
         assert!(sidecar_slice.rows().is_empty());
@@ -1740,13 +1870,13 @@ mod tests {
             Some(&sidecar_head)
         );
         let mut realm_basis = prefix_basis.clone();
-        realm_basis.snapshot_ref = multi.snapshot_id.clone();
+        realm_basis.snapshot_ref = current_snapshot.snapshot_id.clone();
         let realm_slice = multi_replica
             .install_verified_floor_predecessor(
                 &stream_ref,
                 &realm_basis,
                 &prefix_floor,
-                &multi,
+                &current_snapshot,
                 (&freshness, &keys),
                 &BTreeMap::new(),
             )

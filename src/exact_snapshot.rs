@@ -173,6 +173,8 @@ mod tests {
     fn snapshot(snapshot_id: RealmSnapshotId) -> RealmStateSnapshot {
         let stream_ref = crate::test_fixtures::realm_stream();
         RealmStateSnapshot {
+            purpose: arkret_wire::RealmSnapshotPurpose::FullRecovery,
+            history_basis: None,
             snapshot_id,
             realm_id: crate::test_fixtures::realm_id(),
             governance_generation: 0,
