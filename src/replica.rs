@@ -373,8 +373,8 @@ impl RealmReplica {
         self.install_verified_snapshot_heads(snapshot, &snapshot.snapshot_id, freshness, keys)
     }
 
-    /// Admit a limited stream window anchored to one exact signed snapshot
-    /// head. The basis names the committed prefix: its anchor is the signed
+    /// Admit a limited stream window for the expected complete Account,
+    /// anchored to one exact signed snapshot head. The basis names the committed prefix: its anchor is the signed
     /// head itself, the window starts right after it, and the anchor must not
     /// lie before the caller's readable floor. The subsequent verified scan
     /// resumes after the signed head and must extend its exact Commit. A
@@ -384,6 +384,7 @@ impl RealmReplica {
     /// under this replica's exact nonce-bound authority context.
     pub fn install_verified_floor_predecessor(
         &mut self,
+        account: &arkret_wire::AccountId,
         stream_ref: &CommitStreamRef,
         basis: &StreamWindowStartBasis,
         floor: &ReadableFloor,
@@ -391,6 +392,18 @@ impl RealmReplica {
         verification: (&RealmAuthorityFreshness, &dyn RealmAuthorityKeyDirectory),
         dependency_pages: &BTreeMap<CommitStreamRef, Vec<VerifiedScanPage>>,
     ) -> Result<VerifiedFloorSnapshot> {
+        account
+            .validate()
+            .map_err(|e| Error::Protocol(e.to_string()))?;
+        if snapshot
+            .history_basis
+            .as_ref()
+            .is_none_or(|basis| &basis.account_id != account)
+        {
+            return Err(Error::Protocol(
+                "history basis belongs to another Account".into(),
+            ));
+        }
         let (freshness, keys) = verification;
         // Verify the whole signed object, including all visible heads and
         // rows, on an isolated replica. Only this stream's predecessor is
@@ -1464,6 +1477,7 @@ mod tests {
         assert!(
             replica
                 .install_verified_floor_predecessor(
+                    &history_account,
                     &stream_ref,
                     &floor_start_basis,
                     &floor_start,
@@ -1495,6 +1509,7 @@ mod tests {
         assert!(
             replica
                 .install_verified_floor_predecessor(
+                    &history_account,
                     &stream_ref,
                     &prefix_basis,
                     &prefix_floor,
@@ -1508,6 +1523,7 @@ mod tests {
         let mut prefix_replica = replica.clone();
         let prefix_carrier = prefix_replica
             .install_verified_floor_predecessor(
+                &history_account,
                 &stream_ref,
                 &prefix_basis,
                 &prefix_floor,
@@ -1692,6 +1708,7 @@ mod tests {
         let mut dependency_install = replica.clone();
         dependency_install
             .install_verified_floor_predecessor(
+                &history_account,
                 &circle_stream,
                 &dependent_basis,
                 &circle_floor,
@@ -1729,6 +1746,7 @@ mod tests {
             assert!(
                 candidate
                     .install_verified_floor_predecessor(
+                        &history_account,
                         &circle_stream,
                         &basis,
                         &circle_floor,
@@ -1745,6 +1763,7 @@ mod tests {
             replica
                 .clone()
                 .install_verified_floor_predecessor(
+                    &history_account,
                     &circle_stream,
                     &dependent_basis,
                     &circle_floor,
@@ -1760,6 +1779,7 @@ mod tests {
             replica
                 .clone()
                 .install_verified_floor_predecessor(
+                    &history_account,
                     &circle_stream,
                     &dependent_basis,
                     &circle_floor,
@@ -1781,6 +1801,7 @@ mod tests {
         assert!(
             multi_replica
                 .install_verified_floor_predecessor(
+                    &history_account,
                     &circle_stream,
                     &invented_dependency,
                     &circle_floor,
@@ -1793,6 +1814,7 @@ mod tests {
         assert_eq!(multi_replica, before_dependency);
         let circle_slice = multi_replica
             .install_verified_floor_predecessor(
+                &history_account,
                 &circle_stream,
                 &circle_basis,
                 &circle_floor,
@@ -1837,7 +1859,7 @@ mod tests {
             },
         ];
         sidecar_snapshot.history_basis = Some(arkret_wire::RealmSnapshotHistoryBasis {
-            account_id: history_account,
+            account_id: history_account.clone(),
             stream_ref: sidecar_stream.clone(),
             anchor_position: 0,
             anchor_commit_ref: sidecar_head.commit_id.clone(),
@@ -1846,6 +1868,7 @@ mod tests {
         sign_snapshot(&mut sidecar_snapshot);
         let sidecar_slice = multi_replica
             .install_verified_floor_predecessor(
+                &history_account,
                 &sidecar_stream,
                 &StreamWindowStartBasis {
                     anchor_position: 0,
@@ -1873,6 +1896,7 @@ mod tests {
         realm_basis.snapshot_ref = current_snapshot.snapshot_id.clone();
         let realm_slice = multi_replica
             .install_verified_floor_predecessor(
+                &history_account,
                 &stream_ref,
                 &realm_basis,
                 &prefix_floor,
@@ -2051,6 +2075,7 @@ mod tests {
             assert!(
                 forged_replica
                     .install_verified_floor_predecessor(
+                        &history_account,
                         &stream_ref,
                         &forged_basis,
                         &forged_floor,
@@ -2062,9 +2087,30 @@ mod tests {
             );
             assert_eq!(forged_replica, before);
         }
+        let other_account = arkret_wire::AccountId::new(
+            history_account.principal_id.clone(),
+            arkret_wire::DidCoreId::new("ak:did_core:web:other-station.example").unwrap(),
+        );
+        let mut other_account_replica = replica.clone();
+        let before = other_account_replica.clone();
+        assert!(
+            other_account_replica
+                .install_verified_floor_predecessor(
+                    &other_account,
+                    &stream_ref,
+                    &basis,
+                    &restricted_floor,
+                    &snapshot,
+                    (&freshness, &keys),
+                    &BTreeMap::new(),
+                )
+                .is_err()
+        );
+        assert_eq!(other_account_replica, before);
         let mut floor_replica = replica.clone();
         floor_replica
             .install_verified_floor_predecessor(
+                &history_account,
                 &stream_ref,
                 &basis,
                 &restricted_floor,
@@ -2083,6 +2129,7 @@ mod tests {
         assert!(
             floor_replica
                 .install_verified_floor_predecessor(
+                    &history_account,
                     &stream_ref,
                     &forged_basis,
                     &restricted_floor,
