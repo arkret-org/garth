@@ -6,78 +6,12 @@
 
 pub use arkret_models_collaboration::message_authoring::{
     MessageAuthoringContent, MessageAuthoringIntent, MessageEncryptionContext,
-    MessagePrepareOutcome, MessagePrepareRequestBody, MessageSubmitRequestBody,
+    MessageSubmitRequestBody,
 };
 use arkret_signatures::{EventSigner, SignEventOptions, sign_event};
 use arkret_wire::{AuthoredEvent, AuthoritySubmitRequest, EventAdmissionSubmission, EventKind};
 
 use crate::{Error, QueuedSubmission, Result};
-
-/// Frozen optional prepare input. Retrying this stage never invokes encryption.
-#[derive(Clone, Debug, serde::Serialize)]
-pub struct MessageAuthoringPreparation {
-    request: MessagePrepareRequestBody,
-    canonical_request_bytes: Vec<u8>,
-}
-
-impl<'de> serde::Deserialize<'de> for MessageAuthoringPreparation {
-    fn deserialize<D: serde::Deserializer<'de>>(
-        deserializer: D,
-    ) -> std::result::Result<Self, D::Error> {
-        use serde::de::Error as _;
-        #[derive(serde::Deserialize)]
-        #[serde(deny_unknown_fields)]
-        struct Raw {
-            request: MessagePrepareRequestBody,
-            canonical_request_bytes: Vec<u8>,
-        }
-        let raw = Raw::deserialize(deserializer)?;
-        let preparation = Self::new(raw.request).map_err(D::Error::custom)?;
-        if preparation.canonical_request_bytes != raw.canonical_request_bytes {
-            return Err(D::Error::custom(
-                "durable prepare bytes do not bind the frozen request",
-            ));
-        }
-        Ok(preparation)
-    }
-}
-
-impl MessageAuthoringPreparation {
-    pub fn new(request: MessagePrepareRequestBody) -> Result<Self> {
-        request.validate()?;
-        let canonical_request_bytes = arkret_canonical::canonical_json_bytes(&request)?;
-        Ok(Self {
-            request,
-            canonical_request_bytes,
-        })
-    }
-
-    pub fn request(&self) -> &MessagePrepareRequestBody {
-        &self.request
-    }
-
-    pub fn canonical_request_bytes(&self) -> &[u8] {
-        &self.canonical_request_bytes
-    }
-
-    pub fn resolve(self, outcome: &MessagePrepareOutcome) -> Result<MessageAuthoringSession> {
-        self.resolve_at(outcome, chrono::Utc::now())
-    }
-
-    pub fn resolve_at(
-        self,
-        outcome: &MessagePrepareOutcome,
-        now: chrono::DateTime<chrono::Utc>,
-    ) -> Result<MessageAuthoringSession> {
-        let event = verify_prepared_message(&self.request, outcome)?;
-        if now >= outcome.expires_at || now < outcome.observed_at {
-            return Err(Error::Protocol(
-                "message prepare draft is outside its validity window".to_owned(),
-            ));
-        }
-        MessageAuthoringSession::from_authored_event(event)
-    }
-}
 
 /// A finalized unsigned message intent, consumed by exactly one proof-only signer.
 /// Encryption and MLS private state belong to the host, outside this session.
@@ -95,13 +29,6 @@ impl MessageAuthoringSession {
         }
         event.verify_identity()?;
         Ok(Self { event })
-    }
-
-    pub fn from_prepared(
-        request: MessagePrepareRequestBody,
-        outcome: &MessagePrepareOutcome,
-    ) -> Result<Self> {
-        MessageAuthoringPreparation::new(request)?.resolve(outcome)
     }
 
     pub fn event(&self) -> &AuthoredEvent {
@@ -271,20 +198,6 @@ impl FrozenMessageSubmission {
         self.forwarding = false;
         Ok(failure)
     }
-}
-
-/// Accept an optional Station-prepared draft only after the SDK proves that it
-/// binds the exact frozen request. The returned Event is still unsigned; the
-/// host must pass it to [`author_message`] with its own signer.
-pub fn verify_prepared_message(
-    request: &MessagePrepareRequestBody,
-    outcome: &MessagePrepareOutcome,
-) -> Result<AuthoredEvent> {
-    outcome.validate_against_request(request)?;
-    outcome
-        .draft
-        .unsigned_event_for_kind(arkret_wire::event_kind_str::MESSAGE_CREATE)
-        .map_err(Into::into)
 }
 
 pub fn author_message<S: EventSigner + ?Sized>(
@@ -886,81 +799,6 @@ mod tests {
             .payload
             .insert("body".to_owned(), json!("changed after signing"));
         assert!(FrozenMessageSubmission::from_signed_request(request).is_err());
-    }
-
-    #[test]
-    fn prepared_and_direct_sessions_share_the_exact_sign_and_queue_boundary() {
-        let request: MessagePrepareRequestBody = serde_json::from_value(json!({
-            "request_id": "ak:request:019b6a40-0000-7000-8000-000000000001",
-            "account_id": { "principal_id": "ak:did_core:web:alice.example", "station_id": "ak:did_core:web:station.example" },
-            "realm_id": authored(EventKind::MessageCreate).realm_id,
-            "intent": {
-                "strand_id": "ak:strand:AUOjN8M8xm-W1G1Ve9UR6sHKJh7JPG7bM8ZDnzcGJ2Vh",
-                "track_name": "discussion",
-                "content": { "kind": "plaintext", "content": { "kind": "ak.content.text", "body": "hello", "format": "plain" } }
-            },
-            "created_at": "2026-09-16T00:00:00.000Z"
-        })).unwrap();
-        let mut event = authored(EventKind::MessageCreate).into_event();
-        event.actor_id = ActorId::account(request.account_id.clone());
-        event.payload =
-            serde_json::from_value(serde_json::to_value(request.intent.payload()).unwrap())
-                .unwrap();
-        let event = AuthoredEvent::finalize_with_digest_suite(event, DigestSuite::Sha256).unwrap();
-        let outcome = MessagePrepareOutcome {
-            request_digest: request.canonical_request_digest().unwrap(),
-            draft: arkret_models_collaboration::prepared_event_draft::PreparedEventDraft {
-                unsigned_event_bytes: arkret_wire::Base64UrlString::new(
-                    arkret_canonical::base64url_encode(
-                        arkret_canonical::canonical_json_bytes(&event.digest_payload().unwrap())
-                            .unwrap(),
-                    ),
-                )
-                .unwrap(),
-                event_digest: arkret_wire::Hash::new(
-                    event
-                        .event_digest_with_digest_suite(DigestSuite::Sha256)
-                        .unwrap(),
-                )
-                .unwrap(),
-            },
-            observed_at: request.created_at,
-            expires_at: request.created_at + chrono::Duration::seconds(300),
-        };
-        let preparation = MessageAuthoringPreparation::new(request.clone()).unwrap();
-        assert_eq!(
-            preparation.canonical_request_bytes(),
-            arkret_canonical::canonical_json_bytes(&request).unwrap()
-        );
-        let options = SignEventOptions::new().with_created_at(request.created_at);
-        let direct = MessageAuthoringSession::from_authored_event(event)
-            .unwrap()
-            .sign(&signer(), options.clone())
-            .unwrap();
-        let durable_preparation: MessageAuthoringPreparation =
-            serde_json::from_slice(&serde_json::to_vec(&preparation).unwrap()).unwrap();
-        assert_eq!(
-            durable_preparation.canonical_request_bytes(),
-            preparation.canonical_request_bytes()
-        );
-        assert!(
-            preparation
-                .clone()
-                .resolve_at(&outcome, outcome.expires_at)
-                .is_err()
-        );
-        let prepared = preparation
-            .resolve_at(&outcome, request.created_at)
-            .unwrap()
-            .sign(&signer(), options)
-            .unwrap();
-        assert_eq!(
-            direct.canonical_submission_bytes(),
-            prepared.canonical_submission_bytes()
-        );
-        let mut wrong_request = request;
-        wrong_request.intent.reply_to_id = Some("other-message".to_owned());
-        assert!(MessageAuthoringSession::from_prepared(wrong_request, &outcome).is_err());
     }
 
     #[test]

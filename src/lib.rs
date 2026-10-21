@@ -93,12 +93,11 @@ pub use historical_station_keys::{
 pub use maybe_send::{MaybeSend, MaybeSendSync};
 pub use message_authoring::{
     DomainRevisionContext, FrozenMessageSubmission, MessageAuthoringContent,
-    MessageAuthoringFailure, MessageAuthoringIntent, MessageAuthoringPreparation,
-    MessageAuthoringRecovery, MessageAuthoringSession, MessageEncryptionContext,
-    MessagePrepareOutcome, MessagePrepareRequestBody, MessageSubmissionState,
+    MessageAuthoringFailure, MessageAuthoringIntent, MessageAuthoringRecovery,
+    MessageAuthoringSession, MessageEncryptionContext, MessageSubmissionState,
     MessageSubmitRequestBody, MlsSendRefusal, author_message, classify_authority_rejection,
     classify_message_authoring_error, classify_message_authoring_error_with_revision,
-    queue_authored_message, verify_prepared_message,
+    queue_authored_message,
 };
 pub use mls::{
     AcceptedMlsArtifact, InstalledMlsEpoch, LocalMlsEndpoint, MemoryMlsLocalStateStore,

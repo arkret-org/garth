@@ -67,7 +67,6 @@ pub async fn read_holder_call_consent(
         peer: arkret_models_collaboration::events_payloads::consent::ConsentPeer::Actor {
             actor_id: invitation.inviter_actor_id.clone(),
         },
-        consent_scope: invitation.media.consent_scope(),
         audience_actor_id: ActorId::service(holder.station_id.clone()),
         nonce,
     };
@@ -103,7 +102,7 @@ impl HolderCallConsent {
     }
     /// Consume once at the actual product cut, after taking the caller's latest
     /// installed/observed high-water. Fresh full values never overwrite a
-    /// known later revoke, and independent grants are independently evaluated.
+    /// known later replacement. The complete exact-peer set is evaluated once.
     pub fn permits(
         self,
         current_generation: Option<u64>,
@@ -120,13 +119,8 @@ impl HolderCallConsent {
         if self.invitation.expires_at <= now {
             return Ok(false);
         }
-        Ok(snapshot.consents.iter().any(|row| {
-            consent_value_permits_call(
-                &row.value,
-                &self.invitation.inviter_actor_id,
-                &self.invitation.media,
-                now,
-            )
-        }))
+        Ok(
+            matches!(&snapshot.current, arkret_models_collaboration::consent_operations::ConsentCurrentReadState::Present { result } if consent_value_permits_call(result,&self.invitation.inviter_actor_id,&self.invitation.media,now)),
+        )
     }
 }
