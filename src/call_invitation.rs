@@ -1,9 +1,9 @@
 //! Fresh holder-private full-value Consent consumption for one ringing cut.
 
-use arkret_http_client::own_station_results::{BoundOwnStationResponse, OwnStationResultClient};
-use arkret_models_collaboration::call_invitation::{
-    CallInvitationEnvelope, consent_value_permits_call,
+use arkret_http_client::own_station_results::{
+    BoundOwnStationResponse, ConsentCurrentReadAuthority, OwnStationResultClient,
 };
+use arkret_models_collaboration::call_invitation::CallInvitationEnvelope;
 use arkret_models_collaboration::consent_operations::{
     ConsentCurrentReadOutcome, ConsentCurrentReadRequestBody,
 };
@@ -17,6 +17,7 @@ use crate::{Error, Result};
 pub struct HolderCallConsent {
     response: BoundOwnStationResponse<ConsentCurrentReadRequestBody, ConsentCurrentReadOutcome>,
     invitation: CallInvitationEnvelope,
+    authority_generation: u64,
 }
 
 fn invalid(message: &str) -> Error {
@@ -54,6 +55,7 @@ pub async fn read_holder_call_consent(
     client: &OwnStationResultClient,
     holder: &AccountId,
     pcr: &RealmId,
+    authority: &ConsentCurrentReadAuthority,
     invitation: &CallInvitationEnvelope,
     nonce: String,
     known_generation: Option<u64>,
@@ -67,18 +69,17 @@ pub async fn read_holder_call_consent(
         peer: arkret_models_collaboration::events_payloads::consent::ConsentPeer::Actor {
             actor_id: invitation.inviter_actor_id.clone(),
         },
-        consent_scope: invitation.media.consent_scope(),
         audience_actor_id: ActorId::service(holder.station_id.clone()),
         nonce,
     };
-    let response = client.consent_current(&request).await?;
+    let response = client.consent_current(&request, pcr, authority).await?;
     if response.session().account_id() != holder {
         return Err(invalid(
             "call Consent response belongs to another authenticated account",
         ));
     }
     let snapshot = response.value()?;
-    snapshot.validate_for_request(&request, snapshot.governance_generation, Utc::now())?;
+    snapshot.validate_for_request(&request, authority.generation(), Utc::now())?;
     if &snapshot.realm_id != pcr {
         return Err(invalid(
             "Consent current read belongs to another holder PCR",
@@ -89,6 +90,7 @@ pub async fn read_holder_call_consent(
     Ok(HolderCallConsent {
         response,
         invitation: invitation.clone(),
+        authority_generation: authority.generation(),
     })
 }
 
@@ -99,11 +101,12 @@ impl HolderCallConsent {
         &self.response
     }
     pub fn authority_generation(&self) -> Result<u64> {
-        Ok(self.response.value()?.governance_generation)
+        self.response.value()?;
+        Ok(self.authority_generation)
     }
     /// Consume once at the actual product cut, after taking the caller's latest
     /// installed/observed high-water. Fresh full values never overwrite a
-    /// known later revoke, and independent grants are independently evaluated.
+    /// known later replacement. The requested concrete scope is evaluated locally.
     pub fn permits(
         self,
         current_generation: Option<u64>,
@@ -111,22 +114,16 @@ impl HolderCallConsent {
         now: DateTime<Utc>,
     ) -> Result<bool> {
         let snapshot = self.response.value()?;
-        snapshot.validate_for_request(
-            self.response.request(),
-            snapshot.governance_generation,
-            now,
-        )?;
+        snapshot.validate_for_request(self.response.request(), self.authority_generation, now)?;
         check_heads(snapshot, current_generation, current_heads)?;
         if self.invitation.expires_at <= now {
             return Ok(false);
         }
-        Ok(snapshot.consents.iter().any(|row| {
-            consent_value_permits_call(
-                &row.value,
-                &self.invitation.inviter_actor_id,
-                &self.invitation.media,
+        Ok(self.invitation.media.is_nonempty()
+            && snapshot.permits(
+                self.response.request(),
+                self.invitation.media.consent_scope(),
                 now,
-            )
-        }))
+            ))
     }
 }

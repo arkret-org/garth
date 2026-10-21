@@ -630,15 +630,10 @@ pub fn validate_floor_product_rows(
                 }
             }
             CurrentSelector::DirectConversationBinding { pair_key } => {
-                // The pair's endorsement set: one binding digest, and every
-                // endorsement binds this pair inside this Realm
-                // (`identity/contact-and-direct-conversation.md` 8.3).
                 let binding: arkret_models_collaboration::events_payloads::direct_conversation::DirectConversationBindingCurrentValue =
                     closed_current_value(value, "direct_conversation_binding")?;
-                binding.binding_digest().map_err(protocol)?;
-                if binding.endorsements.iter().any(|entry| {
-                    &entry.value.pair_key != pair_key || entry.value.realm_id != *realm_id
-                }) {
+                binding.validate().map_err(protocol)?;
+                if &binding.binding.pair_key != pair_key || binding.binding.realm_id != *realm_id {
                     return Err(protocol(
                         "signed Direct Conversation binding names another pair or Realm",
                     ));
