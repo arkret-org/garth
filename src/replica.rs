@@ -374,8 +374,8 @@ impl RealmReplica {
     }
 
     /// Admit a limited stream window for the expected complete Account,
-    /// anchored to one exact signed snapshot head. The basis names the committed prefix: its anchor is the signed
-    /// head itself, the window starts right after it, and the anchor must not
+    /// anchored to one exact signed snapshot head. The basis names the committed prefix: its anchor
+    /// is the signed head itself, the window starts right after it, and the anchor must not
     /// lie before the caller's readable floor. The subsequent verified scan
     /// resumes after the signed head and must extend its exact Commit. A
     /// position-0 window and a window starting exactly at a nonzero readable
