@@ -57,7 +57,7 @@ pub async fn read_creator_scope(
         .ok_or_else(|| protocol("creator current cut omits Realm origin"))?;
     let origin: RealmGenesis = serde_json::from_value(origin.clone()).map_err(protocol)?;
     let sequence = NEXT_READ
-        .fetch_update(
+        .try_update(
             std::sync::atomic::Ordering::SeqCst,
             std::sync::atomic::Ordering::SeqCst,
             |value| value.checked_add(1),
