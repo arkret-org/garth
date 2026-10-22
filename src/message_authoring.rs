@@ -802,6 +802,33 @@ mod tests {
     }
 
     #[test]
+    fn restored_local_intent_keeps_the_exact_sign_and_queue_boundary() {
+        let event = authored(EventKind::MessageCreate);
+        let original = arkret_canonical::canonical_json_bytes(&event).unwrap();
+        let restored: AuthoredEvent = serde_json::from_slice(&original).unwrap();
+        let options = SignEventOptions::new().with_created_at(event.created_at);
+        let first = MessageAuthoringSession::from_authored_event(event)
+            .unwrap()
+            .sign(&signer(), options.clone())
+            .unwrap();
+        let reopened = MessageAuthoringSession::from_authored_event(restored)
+            .unwrap()
+            .sign(&signer(), options)
+            .unwrap();
+        assert_eq!(
+            first.canonical_submission_bytes(),
+            reopened.canonical_submission_bytes()
+        );
+        let queued = first.into_queued_submission();
+        let durable: QueuedSubmission =
+            serde_json::from_slice(&serde_json::to_vec(&queued).unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(queued).unwrap(),
+            serde_json::to_value(durable).unwrap()
+        );
+    }
+
+    #[test]
     fn registered_failures_keep_permission_revision_precondition_and_epoch_distinct() {
         for (code, recovery) in [
             ("cas_conflict", MessageAuthoringRecovery::PrepareAgain),
