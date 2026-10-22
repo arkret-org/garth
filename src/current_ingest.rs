@@ -335,11 +335,14 @@ pub fn validate_floor_product_rows(
                 .validate_for_tuple(realm_id, member_id, *segment)
                 .map_err(protocol)?;
             }
-            CurrentSelector::AppletRegistration { applet_id } => {
+            CurrentSelector::AppletRegistration {
+                applet_id,
+                service_id,
+            } => {
                 let registration = closed_current_value::<
                     arkret_models_integration::AppletRegistrationPayload,
                 >(value, "applet_registration")?;
-                if &registration.applet_id != applet_id {
+                if &registration.applet_id != applet_id || &registration.service_id != service_id {
                     return Err(protocol(
                         "signed Applet registration differs from its selector",
                     ));
