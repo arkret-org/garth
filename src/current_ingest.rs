@@ -829,8 +829,30 @@ mod tests {
 
     use super::*;
 
-    #[test]
-    fn signed_agent_policy_floor_preserves_sync_and_rejects_subject_rebinding() {
+    struct FloorProductFixture {
+        realm: arkret_wire::RealmId,
+        actor: arkret_wire::ActorId,
+        origin: CurrentRevision,
+        head: arkret_wire::CommitStreamHead,
+        genesis: serde_json::Value,
+        rows: Vec<TypedCurrentRow>,
+    }
+
+    impl FloorProductFixture {
+        fn validate(&self, rows: &[TypedCurrentRow]) -> crate::Result<()> {
+            validate_floor_product_rows(
+                &self.realm,
+                &self.head,
+                arkret_wire::HistoryAccess::SinceJoin,
+                rows,
+                &self.origin,
+                &self.genesis,
+                &self.actor,
+            )
+        }
+    }
+
+    fn floor_product_fixture() -> FloorProductFixture {
         let realm = crate::test_fixtures::realm_id();
         let actor = crate::test_fixtures::actor_id();
         let stream = CommitStreamRef::Realm {
@@ -895,17 +917,21 @@ mod tests {
                 value: policy,
             },
         ];
-        let validate = |rows: &[TypedCurrentRow]| {
-            validate_floor_product_rows(
-                &realm,
-                &head,
-                arkret_wire::HistoryAccess::SinceJoin,
-                rows,
-                &origin,
-                &genesis,
-                &actor,
-            )
-        };
+        FloorProductFixture {
+            realm,
+            actor,
+            origin,
+            head,
+            genesis,
+            rows,
+        }
+    }
+
+    #[test]
+    fn signed_agent_policy_floor_preserves_sync_and_rejects_subject_rebinding() {
+        let fixture = floor_product_fixture();
+        let rows = fixture.rows.clone();
+        let validate = |rows: &[TypedCurrentRow]| fixture.validate(rows);
         validate(&rows).unwrap();
         for (field, value) in [
             (
@@ -933,5 +959,112 @@ mod tests {
                 "accepted Policy rebinding: {field}"
             );
         }
+    }
+
+    fn registration_for_service(
+        service_did: &str,
+    ) -> arkret_models_integration::AppletRegistrationPayload {
+        use arkret_models_integration::{
+            AppletDidMethodVersionEvidence, AppletEndpointAuth, AppletEndpointEntry,
+            AppletEndpointMethod, AppletPackage, AppletRegistrationEpochEvidence,
+            AppletWireNamespaces,
+        };
+
+        let did = arkret_wire::Did::new(service_did).unwrap();
+        let service = arkret_wire::project_did_to_core_id(&did).unwrap();
+        let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let document = arkret_models_identity::DidDocument::new(
+            did.clone(),
+            "applet-webhook",
+            arkret_canonical::ed25519_pubkey_to_did_key_multibase(key.verifying_key().as_bytes()),
+        );
+        let evidence = AppletRegistrationEpochEvidence::from_did_document(
+            &document,
+            AppletDidMethodVersionEvidence::versioned(
+                "did:webvh",
+                Some("QmGarthProductFixtureVersion1".into()),
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let mut package = AppletPackage::new(
+            "garth_current_product_fixture",
+            arkret_wire::AppletId::new("ak:applet:01904100-0000-7000-8000-aaaaaaaaaaaa").unwrap(),
+            service.clone(),
+            did.clone(),
+            service,
+            "https://applet.example/cx",
+            vec!["ak.applet.v1".into()],
+            AppletWireNamespaces::default(),
+        );
+        package.created_at = crate::test_fixtures::at(1);
+        package.requested_scopes = vec!["ak.message.create".into()];
+        package.endpoint_policy.endpoints.push(AppletEndpointEntry {
+            method: AppletEndpointMethod::Post,
+            path: "/_arkret/edge/applet/transactions".into(),
+            auth: Some(AppletEndpointAuth::WebhookSignature),
+            description: None,
+            extra: Default::default(),
+        });
+        package.stamp_registration_epoch(&evidence).unwrap();
+        package.stamp_package_digest().unwrap();
+        let method = package.webhook_auth.key_ref.clone();
+        let signer = arkret_signatures::Ed25519PayloadSigner::new(key, did, method.clone());
+        package.sign(&signer, &method).unwrap();
+        let registration = package.to_registration(&evidence, None).unwrap();
+        arkret_schema_conformance::event_payload_validator_catalog()
+            .unwrap()
+            .validate_payload(
+                "ak.applet.registration",
+                &serde_json::to_value(&registration).unwrap(),
+            )
+            .unwrap();
+        registration
+    }
+
+    #[test]
+    fn current_product_semantics_require_the_exact_applet_service_pair() {
+        // This checks product semantics after authentication, not snapshot
+        // signature verification or a host's projection/cache transaction.
+        let fixture = floor_product_fixture();
+        let registration = registration_for_service("did:webvh:z6mkgarthserviceone:applet.example");
+        let other = registration_for_service("did:webvh:z6mkgarthservicetwo:other.example");
+        assert_eq!(registration.applet_id, other.applet_id);
+        assert_ne!(registration.service_id, other.service_id);
+        let mut rows = fixture.rows.clone();
+        rows.push(TypedCurrentRow::Value {
+            selector: CurrentSelector::AppletRegistration {
+                applet_id: registration.applet_id.clone(),
+                service_id: registration.service_id.clone(),
+            },
+            source_stream_ref: fixture.head.stream_ref.clone(),
+            revision: CurrentRevision {
+                commit_id: fixture.head.commit_id.clone(),
+                stream_position: fixture.head.stream_position,
+            },
+            value: serde_json::to_value(&registration).unwrap(),
+        });
+        fixture.validate(&rows).unwrap();
+        let registration_index = rows.len() - 1;
+        let expected = "signed Applet registration differs from its selector";
+        let mut wrong_selector = rows.clone();
+        let TypedCurrentRow::Value {
+            selector: CurrentSelector::AppletRegistration { service_id, .. },
+            ..
+        } = &mut wrong_selector[registration_index]
+        else {
+            unreachable!()
+        };
+        *service_id = other.service_id.clone();
+        assert!(
+            matches!(fixture.validate(&wrong_selector), Err(crate::Error::Protocol(detail)) if detail == expected)
+        );
+        let mut wrong_payload = rows;
+        let TypedCurrentRow::Value { value, .. } = &mut wrong_payload[registration_index];
+        *value = serde_json::to_value(&other).unwrap();
+        assert!(
+            matches!(fixture.validate(&wrong_payload), Err(crate::Error::Protocol(detail)) if detail == expected)
+        );
     }
 }
