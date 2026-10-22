@@ -51,6 +51,12 @@ fn check_heads(
     Ok(())
 }
 
+/// Previously observed holder authority used to reject a stale current read.
+pub struct HolderConsentKnownCut<'a> {
+    pub governance_generation: Option<u64>,
+    pub stream_heads: &'a [CommitStreamHead],
+}
+
 pub async fn read_holder_call_consent(
     client: &OwnStationResultClient,
     holder: &AccountId,
@@ -58,8 +64,7 @@ pub async fn read_holder_call_consent(
     authority: &ConsentCurrentReadAuthority,
     invitation: &CallInvitationEnvelope,
     nonce: String,
-    known_generation: Option<u64>,
-    known_heads: &[CommitStreamHead],
+    known: HolderConsentKnownCut<'_>,
 ) -> Result<HolderCallConsent> {
     if &invitation.holder_account_id != holder {
         return Err(invalid("call Consent read names another holder"));
@@ -85,7 +90,7 @@ pub async fn read_holder_call_consent(
             "Consent current read belongs to another holder PCR",
         ));
     }
-    check_heads(snapshot, known_generation, known_heads)?;
+    check_heads(snapshot, known.governance_generation, known.stream_heads)?;
     response.value()?;
     Ok(HolderCallConsent {
         response,

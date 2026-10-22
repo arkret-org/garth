@@ -389,8 +389,11 @@ impl RealmReplica {
         basis: &StreamWindowStartBasis,
         floor: &ReadableFloor,
         snapshot: &RealmStateSnapshot,
-        verification: (&RealmAuthorityFreshness, &dyn RealmAuthorityKeyDirectory),
-        dependency_pages: &BTreeMap<CommitStreamRef, Vec<VerifiedScanPage>>,
+        verification: (
+            &RealmAuthorityFreshness,
+            &dyn RealmAuthorityKeyDirectory,
+            &BTreeMap<CommitStreamRef, Vec<VerifiedScanPage>>,
+        ),
     ) -> Result<VerifiedFloorSnapshot> {
         account
             .validate()
@@ -404,7 +407,7 @@ impl RealmReplica {
                 "history basis belongs to another Account".into(),
             ));
         }
-        let (freshness, keys) = verification;
+        let (freshness, keys, dependency_pages) = verification;
         // Verify the whole signed object, including all visible heads and
         // rows, on an isolated replica. Only this stream's predecessor is
         // imported: another stream may name another historical snapshot and
@@ -1482,8 +1485,7 @@ mod tests {
                     &floor_start_basis,
                     &floor_start,
                     &current_snapshot,
-                    (&freshness, &keys),
-                    &BTreeMap::new(),
+                    (&freshness, &keys, &BTreeMap::new()),
                 )
                 .is_err()
         );
@@ -1514,8 +1516,7 @@ mod tests {
                     &prefix_basis,
                     &prefix_floor,
                     &bad_signature,
-                    (&freshness, &keys),
-                    &BTreeMap::new(),
+                    (&freshness, &keys, &BTreeMap::new()),
                 )
                 .is_err()
         );
@@ -1528,8 +1529,7 @@ mod tests {
                 &prefix_basis,
                 &prefix_floor,
                 &current_snapshot,
-                (&freshness, &keys),
-                &BTreeMap::new(),
+                (&freshness, &keys, &BTreeMap::new()),
             )
             .unwrap();
         assert_eq!(prefix_carrier.rows(), signed_rows);
@@ -1713,8 +1713,7 @@ mod tests {
                 &dependent_basis,
                 &circle_floor,
                 &dependency_snapshot,
-                (&freshness, &keys),
-                &proof,
+                (&freshness, &keys, &proof),
             )
             .unwrap();
         assert_eq!(
@@ -1751,8 +1750,7 @@ mod tests {
                         &basis,
                         &circle_floor,
                         &multi,
-                        (&freshness, &keys),
-                        &proof,
+                        (&freshness, &keys, &proof),
                     )
                     .is_err()
             );
@@ -1768,8 +1766,7 @@ mod tests {
                     &dependent_basis,
                     &circle_floor,
                     &dependency_snapshot,
-                    (&freshness, &keys),
-                    &short_proof,
+                    (&freshness, &keys, &short_proof),
                 )
                 .is_err()
         );
@@ -1784,8 +1781,7 @@ mod tests {
                     &dependent_basis,
                     &circle_floor,
                     &dependency_snapshot,
-                    (&freshness, &keys),
-                    &wrong_context,
+                    (&freshness, &keys, &wrong_context),
                 )
                 .is_err()
         );
@@ -1806,8 +1802,7 @@ mod tests {
                     &invented_dependency,
                     &circle_floor,
                     &dependency_snapshot,
-                    (&freshness, &keys),
-                    &BTreeMap::new(),
+                    (&freshness, &keys, &BTreeMap::new()),
                 )
                 .is_err()
         );
@@ -1819,8 +1814,7 @@ mod tests {
                 &circle_basis,
                 &circle_floor,
                 &multi,
-                (&freshness, &keys),
-                &proof,
+                (&freshness, &keys, &proof),
             )
             .unwrap();
         assert_eq!(circle_slice.rows(), &[circle_row]);
@@ -1883,8 +1877,7 @@ mod tests {
                     floor_reason: ReadableFloorReason::StreamStart,
                 },
                 &sidecar_snapshot,
-                (&freshness, &keys),
-                &proof,
+                (&freshness, &keys, &proof),
             )
             .unwrap();
         assert!(sidecar_slice.rows().is_empty());
@@ -1901,8 +1894,7 @@ mod tests {
                 &realm_basis,
                 &prefix_floor,
                 &current_snapshot,
-                (&freshness, &keys),
-                &BTreeMap::new(),
+                (&freshness, &keys, &BTreeMap::new()),
             )
             .unwrap();
         assert_eq!(realm_slice.rows(), signed_rows);
@@ -2080,8 +2072,7 @@ mod tests {
                         &forged_basis,
                         &forged_floor,
                         &current_snapshot,
-                        (&freshness, &keys),
-                        &BTreeMap::new(),
+                        (&freshness, &keys, &BTreeMap::new()),
                     )
                     .is_err()
             );
@@ -2101,8 +2092,7 @@ mod tests {
                     &basis,
                     &restricted_floor,
                     &snapshot,
-                    (&freshness, &keys),
-                    &BTreeMap::new(),
+                    (&freshness, &keys, &BTreeMap::new()),
                 )
                 .is_err()
         );
@@ -2115,8 +2105,7 @@ mod tests {
                 &basis,
                 &restricted_floor,
                 &snapshot,
-                (&freshness, &keys),
-                &BTreeMap::new(),
+                (&freshness, &keys, &BTreeMap::new()),
             )
             .unwrap();
         assert_eq!(
@@ -2134,8 +2123,7 @@ mod tests {
                     &forged_basis,
                     &restricted_floor,
                     &snapshot,
-                    (&freshness, &keys),
-                    &BTreeMap::new(),
+                    (&freshness, &keys, &BTreeMap::new()),
                 )
                 .is_err()
         );

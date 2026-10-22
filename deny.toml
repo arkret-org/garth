@@ -23,6 +23,16 @@ allow = [
 ]
 confidence-threshold = 0.93
 
+# imbl replaces the previous persistent map implementation under the same
+# MPL file-level license; retain the upstream license notices in distributions.
+[[licenses.exceptions]]
+name = "imbl"
+allow = ["MPL-2.0"]
+
+[[licenses.exceptions]]
+name = "imbl-sized-chunks"
+allow = ["MPL-2.0"]
+
 [bans]
 multiple-versions = "warn"
 wildcards = "warn"

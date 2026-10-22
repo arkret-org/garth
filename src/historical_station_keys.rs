@@ -176,12 +176,11 @@ fn key_directory_for_methods(
         let material =
             historical_key_for_signature(resolution, &entry.signature, entry.accepted_at)?;
         if let Some(previous) = keys.insert_at(method, entry.signature.created_at, material.clone())
+            && previous != material
         {
-            if previous != material {
-                return Err(protocol(
-                    "historical Station signature coordinate has conflicting key material",
-                ));
-            }
+            return Err(protocol(
+                "historical Station signature coordinate has conflicting key material",
+            ));
         }
         if latest
             .get(method)

@@ -950,9 +950,7 @@ mod tests {
             ("schema", json!("ak.schema.unknown.v1")),
         ] {
             let mut changed = rows.clone();
-            let TypedCurrentRow::Value { value: policy, .. } = &mut changed[2] else {
-                unreachable!()
-            };
+            let TypedCurrentRow::Value { value: policy, .. } = &mut changed[2];
             policy[field] = value;
             assert!(
                 validate(&changed).is_err(),
