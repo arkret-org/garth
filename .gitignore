@@ -16,3 +16,4 @@ _*.md
 .codex*
 .agent*
 .*.log
+/release-assets/

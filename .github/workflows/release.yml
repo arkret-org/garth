@@ -1,0 +1,93 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/release*.y*ml"
+      - ".ci/package-release.py"
+      - ".ci/configure-windows-openssl.ps1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  package:
+    name: Verify and package library sources
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: arkret-org/garth
+    steps:
+      - name: Checkout garth
+        uses: actions/checkout@v6
+        with:
+          path: arkret-org/garth
+      - name: Checkout arkret-rust-sdk
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository_owner }}/arkret-rust-sdk
+          path: arkret-org/arkret-rust-sdk
+          ref: db0f5b44dec117b6b316690650efd0adb3a0f990
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+      - name: Checkout arkret-spec
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ github.repository_owner }}/arkret-spec
+          path: arkret-org/arkret-spec
+          ref: 8ae6fd0f14c630310a524e38b950b191918295e3
+          token: ${{ secrets.CI_REPO_TOKEN || github.token }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: arkret-org/garth
+      - name: Verify the library
+        run: cargo test --locked --features native
+      - name: Package library source
+        run: cargo package --locked --exclude-lockfile --no-verify
+      - name: Package release
+        run: python .ci/package-release.py --target source --crates
+      - name: Upload release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-source
+          path: arkret-org/garth/release-assets/*
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: package
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: release-assets
+      - name: Verify release checksums
+        working-directory: release-assets
+        run: sha256sum --check ./*.sha256
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          fail_on_unmatched_files: true
+          files: release-assets/*
