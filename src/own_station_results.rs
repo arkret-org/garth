@@ -120,6 +120,7 @@ pub struct OwnStationReplica {
     heads: BTreeMap<CommitStreamRef, CommitStreamHead>,
     current_heads: BTreeMap<CommitStreamRef, CommitStreamHead>,
     generations: BTreeMap<CommitStreamRef, u64>,
+    complete_sidecar_heads: BTreeMap<CommitStreamRef, CommitStreamHead>,
     snapshot: Option<RealmStateSnapshot>,
     call_axis_stamps: BTreeMap<Vec<u8>, (CommitStreamRef, arkret_wire::CurrentRevision, String)>,
 }
@@ -132,6 +133,7 @@ impl OwnStationReplica {
             heads: BTreeMap::new(),
             current_heads: BTreeMap::new(),
             generations: BTreeMap::new(),
+            complete_sidecar_heads: BTreeMap::new(),
             snapshot: None,
             call_axis_stamps: BTreeMap::new(),
         }
@@ -141,6 +143,126 @@ impl OwnStationReplica {
     }
     pub fn snapshot(&self) -> Option<&RealmStateSnapshot> {
         self.snapshot.as_ref()
+    }
+
+    /// A full native prefix admitted in this exact read context. Restoring an
+    /// exact checkpoint or a floor anchor never manufactures this proof.
+    pub fn complete_sidecar_head(
+        &self,
+        client: &OwnStationResultClient,
+        stream: &CommitStreamRef,
+    ) -> Result<Option<&CommitStreamHead>> {
+        client.check_session()?;
+        self.check_context(client.session()?)?;
+        Ok(self
+            .complete_sidecar_heads
+            .get(stream)
+            .filter(|head| self.head(stream) == Some(*head)))
+    }
+
+    /// Recover only this Sidecar, returning a candidate for the host's atomic
+    /// durable installation. Other streams and rollback watermarks survive.
+    pub async fn replay_sidecar_history(
+        &self,
+        client: &OwnStationResultClient,
+        snapshot: &BoundOwnStationResponse<RealmId, RealmStateSnapshot>,
+        stream: &CommitStreamRef,
+        retain_complete_prefix: bool,
+    ) -> Result<(Self, Vec<OwnStationScanPage>)> {
+        if !matches!(stream, CommitStreamRef::Sidecar { .. }) || stream.realm_id() != &self.realm_id
+        {
+            return Err(protocol(
+                "complete private history requires this Realm's Sidecar",
+            ));
+        }
+        let mut candidate = self.clone();
+        candidate.install_bound_snapshot(snapshot)?;
+        let frozen = snapshot.value()?;
+        if frozen
+            .retention_and_history_floor
+            .stream_floors
+            .iter()
+            .find(|floor| &floor.stream_ref == stream)
+            .is_none_or(|floor| floor.oldest_position != 0)
+        {
+            return Err(protocol(
+                "complete Sidecar history is below its readable floor",
+            ));
+        }
+        let cap = frozen
+            .visible_stream_heads
+            .iter()
+            .find(|head| &head.stream_ref == stream)
+            .ok_or_else(|| protocol("Sidecar is absent from the frozen current cut"))?;
+        let old = candidate.head(stream).cloned();
+        let retained = if retain_complete_prefix {
+            candidate.complete_sidecar_head(client, stream)?.cloned()
+        } else {
+            None
+        };
+        let base = if retained.is_some() {
+            candidate.clone()
+        } else {
+            Self::new(self.realm_id.clone())
+        };
+        let (recovered, pages) = crate::history_recovery::replay_with_admitted_replica(
+            client,
+            &self.realm_id,
+            stream,
+            snapshot,
+            retained.as_ref(),
+            base,
+        )
+        .await?;
+        if recovered.complete_sidecar_head(client, stream)? != Some(cap) {
+            return Err(protocol(
+                "Sidecar history is not a fully disclosed native prefix at current",
+            ));
+        }
+        if retained.is_none()
+            && let Some(old) = &old
+        {
+            let mut matched = false;
+            for page in &pages {
+                for row in page.rows()? {
+                    if row.commit().stream_position == old.stream_position {
+                        if head(row.commit()) != *old {
+                            return Err(protocol(
+                                "Sidecar recovery forks an already admitted original",
+                            ));
+                        }
+                        matched = true;
+                    }
+                }
+            }
+            if !matched {
+                return Err(protocol(
+                    "Sidecar recovery omits its already admitted original",
+                ));
+            }
+        }
+        let generation = recovered
+            .generations
+            .get(stream)
+            .copied()
+            .ok_or_else(|| protocol("recovered Sidecar omits its native generation"))?;
+        if candidate
+            .generations
+            .get(stream)
+            .is_some_and(|old| *old > generation)
+        {
+            return Err(protocol(
+                "Sidecar recovery rolls back its native generation",
+            ));
+        }
+        candidate.heads.insert(stream.clone(), cap.clone());
+        candidate.generations.insert(stream.clone(), generation);
+        candidate
+            .complete_sidecar_heads
+            .insert(stream.clone(), cap.clone());
+        client.check_session()?;
+        snapshot.value()?;
+        Ok((candidate, pages))
     }
     /// Start live consumption at the installed current cut. This admits only
     /// its exact original head, never the unreadable historical prefix or a
@@ -330,6 +452,8 @@ impl OwnStationReplica {
             return Err(protocol("ordinary replica requires a forward scan"));
         };
         let saved = self.heads.get(&request.stream_ref);
+        let complete_prefix =
+            saved.is_none() || self.complete_sidecar_heads.get(&request.stream_ref) == saved;
         if saved.map(|value| value.stream_position) != after {
             return Err(protocol(
                 "ordinary scan does not resume its saved independent head",
@@ -408,6 +532,19 @@ impl OwnStationReplica {
             generation = commit.governance_generation;
         }
         if let Some(last) = outcome.committed_events.last() {
+            if matches!(request.stream_ref, CommitStreamRef::Sidecar { .. }) {
+                if complete_prefix
+                    && outcome
+                        .committed_events
+                        .iter()
+                        .all(|row| matches!(row, CommittedEventView::Full(_)))
+                {
+                    self.complete_sidecar_heads
+                        .insert(request.stream_ref.clone(), head(last.commit()));
+                } else {
+                    self.complete_sidecar_heads.remove(&request.stream_ref);
+                }
+            }
             self.heads
                 .insert(request.stream_ref.clone(), head(last.commit()));
             self.generations
