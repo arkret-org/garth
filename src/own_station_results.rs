@@ -1678,12 +1678,26 @@ impl OwnStationAgentInteraction {
 }
 
 /// Exact Agent mode read through its authenticated own Station, fenced by
-/// original snapshots before and after. No governance endpoint discovery.
+/// original snapshots before and after. Retry at most three complete reads
+/// when an authenticated cut advances; never reuse an outcome across cuts.
 pub async fn read_own_station_agent_interaction(
     client: &OwnStationResultClient,
     realm: &RealmId,
     agent: &arkret_wire::AccountId,
 ) -> Result<OwnStationAgentInteraction> {
+    for _ in 0..3 {
+        if let Some(value) = read_agent_interaction_at_cut(client, realm, agent).await? {
+            return Ok(value);
+        }
+    }
+    Err(protocol("ordinary Agent mode read crossed a current cut"))
+}
+
+async fn read_agent_interaction_at_cut(
+    client: &OwnStationResultClient,
+    realm: &RealmId,
+    agent: &arkret_wire::AccountId,
+) -> Result<Option<OwnStationAgentInteraction>> {
     use arkret_models_collaboration::agent_interaction::AgentInteractionExactCurrentSelector;
     use arkret_models_collaboration::exact_current_results::{
         ExactCurrentResultSelector, ExactCurrentResultsReadOutcome,
@@ -1700,10 +1714,10 @@ pub async fn read_own_station_agent_interaction(
     let snapshot = before.value()?;
     if let Some(value) = crate::agent_interaction::present_from_snapshot(&request, snapshot)? {
         before.value()?;
-        return Ok(OwnStationAgentInteraction {
+        return Ok(Some(OwnStationAgentInteraction {
             value,
             source: OwnStationAgentInteractionSource::Snapshot(Box::new(before)),
-        });
+        }));
     }
     let stream = CommitStreamRef::Realm {
         realm_id: realm.clone(),
@@ -1731,31 +1745,55 @@ pub async fn read_own_station_agent_interaction(
             ..
         } => (*governance_generation, effective_stream_head),
     };
-    if before.session() != after.session()
-        || generation != snapshot.governance_generation
+    if before.session() != after.session() {
+        return Err(protocol("ordinary Agent mode read changed its session"));
+    }
+    let after_head = after_value
+        .visible_stream_heads
+        .iter()
+        .find(|head| head.stream_ref == stream)
+        .ok_or_else(|| protocol("Agent mode snapshot omits Realm head"))?;
+    if generation != snapshot.governance_generation
         || generation != after_value.governance_generation
         || result_head != expected
-        || after_value
-            .visible_stream_heads
-            .iter()
-            .find(|head| head.stream_ref == stream)
-            != Some(expected)
+        || after_head != expected
     {
+        // Only observed forward progress permits another independent read.
+        // A stable mismatch, rollback, fork or denial remains an error. The
+        // mixed result is discarded before any mode can authorize a draft.
+        let advanced = after_value.governance_generation >= snapshot.governance_generation
+            && after_head.stream_position >= expected.stream_position
+            && (after_head.stream_position != expected.stream_position || after_head == expected)
+            && (after_value.governance_generation > snapshot.governance_generation
+                || after_head.stream_position > expected.stream_position);
+        let result_between_cuts = generation >= snapshot.governance_generation
+            && generation <= after_value.governance_generation
+            && result_head.stream_ref == stream
+            && result_head.stream_position >= expected.stream_position
+            && result_head.stream_position <= after_head.stream_position
+            && (result_head.stream_position != expected.stream_position || result_head == expected)
+            && (result_head.stream_position != after_head.stream_position
+                || result_head == after_head);
+        if advanced && result_between_cuts {
+            return Ok(None);
+        }
         return Err(protocol("ordinary Agent mode read crossed a current cut"));
     }
     result.value()?;
-    Ok(OwnStationAgentInteraction {
+    Ok(Some(OwnStationAgentInteraction {
         value: result.value()?.clone(),
         source: OwnStationAgentInteractionSource::Exact {
             before: Box::new(before),
             response: Box::new(result),
             after: Box::new(after),
         },
-    })
+    }))
 }
 
 #[cfg(test)]
 pub(crate) mod tests {
+    mod agent_interaction;
+
     use std::io::{Read, Write};
     use std::sync::Arc;
 
