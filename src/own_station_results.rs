@@ -822,6 +822,7 @@ enum OriginalSource {
     // resolves its original device authorization on this exact PCR stream.
     BoundSelfHumanPcr,
     BoundSelfAgentPcrGenesis,
+    BoundSelfAgentPcrController,
 }
 
 trait HistoricalSignerReadSource: crate::MaybeSendSync {
@@ -1358,6 +1359,10 @@ fn bound_self_submission_source(
     if source != OriginalSource::Ordinary || original.commit.producer_signer_fact_digest.is_some() {
         return Ok(source);
     }
+    let source = bound_self_agent_pcr_controller_source(client, request, original)?;
+    if source != OriginalSource::Ordinary {
+        return Ok(source);
+    }
     let SelfAuthoritySubmitRequest::Event(submission) = request else {
         return Ok(OriginalSource::Ordinary);
     };
@@ -1464,6 +1469,69 @@ fn bound_self_agent_pcr_genesis_source(
         ));
     }
     Ok(OriginalSource::BoundSelfAgentPcrGenesis)
+}
+
+// A controller's bound acceptance is a candidate for the existing restricted
+// historical query. Only the Station's immutable agent_pcr_controller fact can
+// resolve it; an envelope shape never supplies authorization or PCR history.
+fn bound_self_agent_pcr_controller_source(
+    client: &OwnStationResultClient,
+    request: &SelfAuthoritySubmitRequest,
+    original: &arkret_wire::CommittedEventFullView,
+) -> Result<OriginalSource> {
+    let SelfAuthoritySubmitRequest::Event(submission) = request else {
+        return Ok(OriginalSource::Ordinary);
+    };
+    let event = &submission.event;
+    if !matches!(
+        event.kind,
+        arkret_wire::EventKind::ProfileCreate
+            | arkret_wire::EventKind::ProfileUpdate
+            | arkret_wire::EventKind::AgentKeyAuthorize
+            | arkret_wire::EventKind::AgentKeyRevoke
+            | arkret_wire::EventKind::SelfAgentPause
+            | arkret_wire::EventKind::SelfAgentResume
+            | arkret_wire::EventKind::SelfAgentDeactivate
+    ) || event.executed_by.is_none()
+    {
+        return Ok(OriginalSource::Ordinary);
+    }
+    let controller = client.session()?.account_id();
+    let Some(agent) = event.actor_id.as_account_id() else {
+        return Err(protocol(
+            "bound Agent PCR control has no full Agent Account",
+        ));
+    };
+    if &original.event != event
+        || event
+            .account_device_producer()
+            .map_err(|error| protocol(&error.to_string()))?
+            .is_none()
+        || submission.approval_signatures.is_some()
+        || event
+            .executed_by
+            .as_ref()
+            .and_then(arkret_wire::ActorId::as_account_id)
+            != Some(controller)
+        || event.actual_signer().as_account_id() != Some(controller)
+        || agent.station_id != controller.station_id
+        || agent.principal_id == controller.principal_id
+        || event.authorization_ref.is_none()
+        || event.scope_ref
+            != (arkret_wire::ScopeRef::Realm {
+                realm_id: event.realm_id.clone(),
+            })
+        || original.commit.stream_ref
+            != (CommitStreamRef::Realm {
+                realm_id: event.realm_id.clone(),
+            })
+        || original.commit.producer_signer_fact_digest.is_some()
+    {
+        return Err(protocol(
+            "bound Agent PCR control differs from its exact authenticated self source",
+        ));
+    }
+    Ok(OriginalSource::BoundSelfAgentPcrController)
 }
 
 /// Independently validate one disclosed historical original without advancing
@@ -3168,6 +3236,214 @@ pub(crate) mod tests {
             // This consumer takes no replica/install capability. These
             // transport tests do not claim before/after existing-head proof.
         }
+    }
+
+    fn native_controller_profile_fixture(
+        kind: arkret_wire::EventKind,
+        controller: &str,
+    ) -> (
+        arkret_wire::Event,
+        arkret_wire::RealmCommit,
+        arkret_models_identity::ResolvedSignerKey,
+    ) {
+        use arkret_signatures::{Ed25519DetachedJwsSigner, SignEventOptions, sign_event};
+        let (mut event, _, historical) = native_self_genesis_fixture(controller);
+        let avatar = format!("ak:blob:sha256:{}", "ab".repeat(32));
+        event.payload = serde_json::from_value(match kind {
+            arkret_wire::EventKind::ProfileCreate => serde_json::to_value(
+                arkret_models_collaboration::events_payloads::ActorProfileCreatePayload {
+                    object: arkret_models_identity::ActorProfileDefinition {
+                        principal_id: Some(
+                            event.actor_id.as_account_id().unwrap().principal_id.clone(),
+                        ),
+                        actor_id: None,
+                        actor_kind: arkret_wire::ActorKind::Agent,
+                        display_name: "fixture-agent".into(),
+                        handle: None,
+                        agent_slug: Some("fixture-agent".into()),
+                        avatar_blob_ref: Some(arkret_wire::BlobRef::new(&avatar).unwrap()),
+                        accountable_principal_ids: Some(vec![
+                            event
+                                .executed_by
+                                .as_ref()
+                                .unwrap()
+                                .as_account_id()
+                                .unwrap()
+                                .principal_id
+                                .clone(),
+                        ]),
+                        profile_fields: Default::default(),
+                    },
+                },
+            )
+            .unwrap(),
+            arkret_wire::EventKind::ProfileUpdate => serde_json::to_value(
+                serde_json::from_value::<
+                    arkret_models_collaboration::events_payloads::ActorProfileUpdatePayload,
+                >(serde_json::json!({
+                    "target_ref": arkret_wire::ActorProfileId::from_event_id(&event.event_id),
+                    "patch": {"avatar_blob_ref": avatar}
+                }))
+                .unwrap(),
+            )
+            .unwrap(),
+            _ => unreachable!(),
+        })
+        .unwrap();
+        event.kind = kind;
+        event.scope_ref = arkret_wire::ScopeRef::Realm {
+            realm_id: event.realm_id.clone(),
+        };
+        event.producer_proof = None;
+        let mut authored = arkret_wire::AuthoredEvent::finalize_with_digest_suite(
+            event,
+            arkret_canonical::DigestSuite::Sha256,
+        )
+        .unwrap();
+        sign_event(
+            &mut authored,
+            &Ed25519DetachedJwsSigner::new(
+                ed25519_dalek::SigningKey::from_bytes(&[41; 32]),
+                format!(
+                    "did:web:{controller}.example#{}",
+                    crate::test_fixtures::device_id().as_str()
+                ),
+            ),
+            SignEventOptions::new().with_created_at(crate::test_fixtures::at(2)),
+        )
+        .unwrap();
+        let event = authored.into_event();
+        let accepted = seal_native_fixture_commit(crate::test_fixtures::commit(
+            93,
+            &event,
+            CommitStreamRef::Realm {
+                realm_id: event.realm_id.clone(),
+            },
+            1,
+        ));
+        (event, accepted, historical)
+    }
+
+    #[tokio::test]
+    async fn bound_controller_profile_requires_exact_historical_key_and_recipient() {
+        for kind in [
+            arkret_wire::EventKind::ProfileCreate,
+            arkret_wire::EventKind::ProfileUpdate,
+        ] {
+            for refusal in [
+                "none",
+                "replay",
+                "unavailable",
+                "bad_ed",
+                "wrong_target",
+                "wrong_device",
+                "wrong_account",
+                "wrong_session",
+                "wrong_request",
+            ] {
+                let (event, accepted, mut key) = native_controller_profile_fixture(
+                    kind.clone(),
+                    if refusal == "wrong_account" {
+                        "bob"
+                    } else {
+                        "alice"
+                    },
+                );
+                let request = SelfAuthoritySubmitRequest::Event(
+                    arkret_wire::EventAdmissionSubmission::new(event.clone()),
+                );
+                let outcome = SelfAuthoritySubmitOutcome::Ordinary(
+                    arkret_wire::AuthoritySubmitOutcome::Accepted {
+                        status: arkret_wire::AuthorityCommitStatus::Committed,
+                        commit: accepted.clone(),
+                    },
+                );
+                let needs_query =
+                    !matches!(refusal, "wrong_account" | "wrong_session" | "wrong_request");
+                if refusal == "bad_ed" {
+                    key.public_key_b64u =
+                        arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
+                            ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+                                .verifying_key()
+                                .as_bytes(),
+                        ))
+                        .unwrap();
+                }
+                let mut bodies = vec![serde_json::to_value(&outcome).unwrap()];
+                if needs_query {
+                    bodies.push(serde_json::json!({"__signer_key":key,
+                        "__expected_native_target":CommittedEventRef {event_id:event.event_id.clone(), commit_id:accepted.commit_id.clone(), stream_ref:accepted.stream_ref.clone(), stream_position:accepted.stream_position},
+                        "__unavailable":refusal=="unavailable", "__wrong_historical_target":refusal=="wrong_target", "__wrong_historical_device":refusal=="wrong_device"}));
+                }
+                if refusal == "replay" {
+                    bodies.extend(bodies.clone());
+                }
+                let (source, server, observed) = observed_client(bodies);
+                for _ in 0..if refusal == "replay" { 2 } else { 1 } {
+                    let response = source
+                        .submit_to_realm_authority(
+                            &verified_test_submission(&request).unwrap(),
+                            &arkret_http_client::ClientRequestOptions::default(),
+                        )
+                        .await
+                        .unwrap();
+                    let mut expected = request.clone();
+                    if refusal == "wrong_request" {
+                        let SelfAuthoritySubmitRequest::Event(value) = &mut expected else {
+                            unreachable!()
+                        };
+                        value.event.created_at = crate::test_fixtures::at(4);
+                    }
+                    let result = if refusal == "wrong_session" {
+                        let (foreign, idle) = client(vec![]);
+                        idle.join().unwrap();
+                        consume_bound_submission(&foreign, &expected, response).await
+                    } else {
+                        consume_bound_submission(&source, &expected, response).await
+                    };
+                    assert_eq!(
+                        result.is_ok(),
+                        matches!(refusal, "none" | "replay"),
+                        "{kind:?} {refusal}: {result:?}"
+                    );
+                }
+                server.join().unwrap();
+                let paths = observed.lock().unwrap();
+                assert_eq!(
+                    paths.len(),
+                    if refusal == "replay" {
+                        4
+                    } else if needs_query {
+                        2
+                    } else {
+                        1
+                    }
+                );
+                assert!(
+                    paths
+                        .iter()
+                        .all(|path| path.starts_with("post /_arkret/self/events ")
+                            || path.starts_with("post /_arkret/self/signer-keys/query "))
+                );
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn controller_profile_without_bound_acceptance_cannot_bypass_ordinary_fact_digest() {
+        let (event, commit, _) =
+            native_controller_profile_fixture(arkret_wire::EventKind::ProfileCreate, "alice");
+        let (source, idle, observed) = observed_client(vec![]);
+        idle.join().unwrap();
+        let row = CommittedEventView::Full(arkret_wire::CommittedEventFullView { event, commit });
+        assert!(
+            verify_row_from_source(&source, &row, OriginalSource::Ordinary)
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("original ordinary Human signer source is unavailable")
+        );
+        assert!(observed.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
