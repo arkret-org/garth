@@ -373,7 +373,7 @@ pub fn signed_welcome_consume(
         )
         .map_err(&refused)?,
         claim_request_id: outcome.claim_request_id.clone(),
-        key_package_ref: NonEmptyString::new(record.keypackage_ref.clone()).map_err(&refused)?,
+        keypackage_ref: NonEmptyString::new(record.keypackage_ref.clone()).map_err(&refused)?,
         recipient,
         recipient_id: local_station.clone(),
         realm_id: welcome.realm_id.clone(),
@@ -1094,7 +1094,7 @@ mod tests {
         assert_eq!(request.claim_id, welcome.keypackage_claim_ref);
         assert_eq!(receipt.claim_request_id, claims.claim_request_id);
         assert_eq!(
-            receipt.key_package_ref.as_str(),
+            receipt.keypackage_ref.as_str(),
             claim_record().keypackage_ref
         );
         assert_eq!(receipt.recipient_id, station());

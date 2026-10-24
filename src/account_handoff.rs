@@ -708,10 +708,10 @@ pub fn identity_creation_register_request(
     )
     .map_err(|error| protocol(error.to_string()))?;
     let request = AccountRegisterRequestBody {
+        published_identity: None,
         principal_id: validated.principal_id,
         did: validated.did.clone(),
         display_name,
-        device_id: None,
         proof: None,
         identity_creation: Some(IdentityCreationRegistration {
             identity_creation_lease_id: frozen_request.identity_creation_lease_id.clone(),

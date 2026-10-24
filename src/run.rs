@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use arkret_models_collaboration::sync_frames::account_subscribe::{
-    AccountStreamInterrupt, AccountSubscribeParameters, AccountSubscribeSnapshotResult,
+    AccountStreamInterrupt, AccountSubscribeParameters, AccountSubscribeReadAction,
 };
 use arkret_retry::RetrySchedule;
 
@@ -287,7 +287,7 @@ where
                 .map_err(|error| fail(provider, RunErrorClass::ProtocolViolation, error.into()))?;
 
             match transport.subscribe(&request).await {
-                Ok(AccountSubscribeSnapshotResult::Batch(batch)) => {
+                Ok(AccountSubscribeReadAction::Batch(batch)) => {
                     let mut next_station_cas = station_cas.clone();
                     if initial_catchup {
                         next_station_cas.reset_for_initial_sync();
@@ -332,7 +332,7 @@ where
                         return Ok(stop(provider, reason));
                     }
                 }
-                Ok(AccountSubscribeSnapshotResult::ReconnectAfter {
+                Ok(AccountSubscribeReadAction::ReconnectAfter {
                     reconnect_after_ms,
                     reconnect_cursor,
                     reset_cursor,
@@ -473,7 +473,7 @@ mod tests {
 
     #[derive(Debug)]
     struct ScriptedTransport {
-        response: Mutex<Option<Result<AccountSubscribeSnapshotResult>>>,
+        response: Mutex<Option<Result<AccountSubscribeReadAction>>>,
         requests: Arc<Mutex<Vec<AccountSubscribeParameters>>>,
     }
 
@@ -481,7 +481,7 @@ mod tests {
         async fn subscribe(
             &self,
             request: &AccountSubscribeParameters,
-        ) -> Result<AccountSubscribeSnapshotResult> {
+        ) -> Result<AccountSubscribeReadAction> {
             self.requests.lock().unwrap().push(request.clone());
             self.response
                 .lock()
@@ -496,7 +496,7 @@ mod tests {
     /// the iterations it scripted and then stops.
     #[derive(Debug)]
     struct Provider {
-        responses: Mutex<VecDeque<Result<AccountSubscribeSnapshotResult>>>,
+        responses: Mutex<VecDeque<Result<AccountSubscribeReadAction>>>,
         control: SyncLoopControl,
         observed: Mutex<Vec<RunEvent>>,
         recovered: AtomicUsize,
@@ -508,7 +508,7 @@ mod tests {
     impl Provider {
         fn new(
             control: SyncLoopControl,
-            responses: Vec<Result<AccountSubscribeSnapshotResult>>,
+            responses: Vec<Result<AccountSubscribeReadAction>>,
         ) -> Self {
             Self {
                 responses: Mutex::new(responses.into()),
@@ -621,13 +621,11 @@ mod tests {
         }
     }
 
-    fn batch(cursor: &str) -> Result<AccountSubscribeSnapshotResult> {
-        Ok(AccountSubscribeSnapshotResult::Batch(
-            AccountSubscribeBatch {
-                frames: vec![delta_frame(cursor)],
-                cursor: cursor.to_owned(),
-            },
-        ))
+    fn batch(cursor: &str) -> Result<AccountSubscribeReadAction> {
+        Ok(AccountSubscribeReadAction::Batch(AccountSubscribeBatch {
+            frames: vec![delta_frame(cursor)],
+            cursor: cursor.to_owned(),
+        }))
     }
 
     fn station_cas_batch(
@@ -635,7 +633,7 @@ mod tests {
         revision: u64,
         removal: bool,
         baseline: bool,
-    ) -> Result<AccountSubscribeSnapshotResult> {
+    ) -> Result<AccountSubscribeReadAction> {
         let station_cas = if removal {
             json!({
                 "upserts": [],
@@ -668,27 +666,23 @@ mod tests {
                 "completed_channels": ["station_cas"]
             });
         }
-        Ok(AccountSubscribeSnapshotResult::Batch(
-            AccountSubscribeBatch {
-                frames: vec![serde_json::from_value(frame).unwrap()],
-                cursor: cursor.to_owned(),
-            },
-        ))
+        Ok(AccountSubscribeReadAction::Batch(AccountSubscribeBatch {
+            frames: vec![serde_json::from_value(frame).unwrap()],
+            cursor: cursor.to_owned(),
+        }))
     }
 
-    fn lost_batch(cursor: &str) -> Result<AccountSubscribeSnapshotResult> {
+    fn lost_batch(cursor: &str) -> Result<AccountSubscribeReadAction> {
         let frame = serde_json::from_value(json!({
             "kind": "delta",
             "cursor": cursor,
             "to_device": {"messages": [], "lost": true}
         }))
         .unwrap();
-        Ok(AccountSubscribeSnapshotResult::Batch(
-            AccountSubscribeBatch {
-                frames: vec![frame],
-                cursor: cursor.to_owned(),
-            },
-        ))
+        Ok(AccountSubscribeReadAction::Batch(AccountSubscribeBatch {
+            frames: vec![frame],
+            cursor: cursor.to_owned(),
+        }))
     }
 
     #[tokio::test]
@@ -757,7 +751,7 @@ mod tests {
     #[tokio::test]
     async fn station_cas_conflict_clears_cursor_and_restarts_from_initial_baseline() {
         let store = MemoryStore::new();
-        let AccountSubscribeSnapshotResult::Batch(seed) =
+        let AccountSubscribeReadAction::Batch(seed) =
             station_cas_batch("ak:cursor:bGl2ZS0y", 2, false, true).unwrap()
         else {
             unreachable!()
@@ -868,7 +862,7 @@ mod tests {
         let runner = AccountRunner::new(ImmediateExecutor, store.clone());
         let provider = Provider::new(
             runner.control(),
-            vec![Ok(AccountSubscribeSnapshotResult::ReconnectAfter {
+            vec![Ok(AccountSubscribeReadAction::ReconnectAfter {
                 reconnect_after_ms: 1,
                 reconnect_cursor: None,
                 reason: Some("snapshot changed".to_owned()),
@@ -894,7 +888,7 @@ mod tests {
         let runner = AccountRunner::new(ImmediateExecutor, store.clone());
         let provider = Provider::new(
             runner.control(),
-            vec![Ok(AccountSubscribeSnapshotResult::ReconnectAfter {
+            vec![Ok(AccountSubscribeReadAction::ReconnectAfter {
                 reconnect_after_ms: 1,
                 reconnect_cursor: Some("ak:cursor:resume".to_owned()),
                 reason: None,
@@ -1021,8 +1015,10 @@ mod tests {
                         status: 409,
                         error: Box::new(arkret_wire::Problem::account_revision_stale(
                             "recoverable lag",
-                            arkret_wire::AccountRevisionStaleProblem::new("ak:cursor:durable")
-                                .unwrap(),
+                            arkret_wire::AccountRevisionStaleProblemExtensions::new(
+                                "ak:cursor:durable",
+                            )
+                            .unwrap(),
                         )),
                     })
                 })

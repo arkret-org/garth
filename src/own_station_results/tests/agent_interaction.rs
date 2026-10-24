@@ -2,7 +2,7 @@ use arkret_models_collaboration::agent_interaction::{
     AgentInteractionCurrentValue, AgentInteractionExactCurrentSelector, AgentInteractionMode,
 };
 use arkret_models_collaboration::exact_current_state::{
-    ExactCurrentStateEntry, ExactCurrentStateReadResponseBody, NeverWrittenExactCurrentSelector,
+    ExactCurrentState, ExactCurrentStateReadResponseBody, NeverWrittenExactCurrentSelector,
 };
 
 use super::*;
@@ -117,7 +117,7 @@ async fn a_public_mode_written_during_the_read_replaces_the_discarded_private_de
         .unwrap();
     assert!(
         matches!(result, ExactCurrentStateReadResponseBody::Present {
-        entry: ExactCurrentStateEntry::AgentInteraction(entry), ..
+        current_state: ExactCurrentState::AgentInteraction(entry), ..
     } if entry.value.interaction_mode == AgentInteractionMode::Public
         && entry.value.controller_account_id == account("alice"))
     );

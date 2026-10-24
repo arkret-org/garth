@@ -8,7 +8,7 @@
 use arkret_http_client::Client;
 use arkret_models_collaboration::agent_interaction::AgentInteractionExactCurrentSelector;
 use arkret_models_collaboration::exact_current_state::{
-    ExactCurrentStateEntry, ExactCurrentStateReadRequestBody, ExactCurrentStateReadResponseBody,
+    ExactCurrentState, ExactCurrentStateReadRequestBody, ExactCurrentStateReadResponseBody,
     ExactCurrentStateSelector,
 };
 use arkret_wire::{
@@ -87,7 +87,7 @@ pub(crate) fn present_from_snapshot(
         realm_id: snapshot.realm_id.clone(),
         governance_generation: snapshot.governance_generation,
         effective_stream_head: head.clone(),
-        entry: ExactCurrentStateEntry::AgentInteraction(
+        current_state: ExactCurrentState::AgentInteraction(
             arkret_models_collaboration::agent_interaction::CurrentAgentInteraction {
                 selector: selector.clone(),
                 source_stream_ref: source_stream_ref.clone(),

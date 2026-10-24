@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use arkret_models_collaboration::sync_frames::account_subscribe::{
-    AccountSubscribeBatch, AccountSubscribeParameters, AccountSubscribeSnapshotResult,
+    AccountSubscribeBatch, AccountSubscribeParameters, AccountSubscribeReadAction,
 };
 use arkret_wire::{ActorId, DeviceId, DidCoreId};
 
@@ -18,30 +18,30 @@ pub trait AccountSubscribeTransport: MaybeSendSync {
     fn subscribe<'a>(
         &'a self,
         request: &'a AccountSubscribeParameters,
-    ) -> impl Future<Output = Result<AccountSubscribeSnapshotResult>> + MaybeSend + 'a;
+    ) -> impl Future<Output = Result<AccountSubscribeReadAction>> + MaybeSend + 'a;
 }
 
 impl AccountSubscribeTransport for arkret_http_client::Client {
     async fn subscribe(
         &self,
         request: &AccountSubscribeParameters,
-    ) -> Result<AccountSubscribeSnapshotResult> {
+    ) -> Result<AccountSubscribeReadAction> {
         match self.account_subscribe_batch(request).await {
-            Ok(batch) => Ok(AccountSubscribeSnapshotResult::Batch(batch)),
+            Ok(batch) => Ok(AccountSubscribeReadAction::Batch(batch)),
             Err(arkret_http_client::Error::AccountStreamInterrupt(interrupt)) => {
                 use arkret_models_collaboration::sync_frames::account_subscribe::AccountStreamInterrupt;
                 match interrupt {
                     AccountStreamInterrupt::Dropped {
                         cursor,
                         reconnect_after_ms,
-                    } => Ok(AccountSubscribeSnapshotResult::ReconnectAfter {
+                    } => Ok(AccountSubscribeReadAction::ReconnectAfter {
                         reconnect_after_ms: reconnect_after_ms.unwrap_or(5_000),
                         reconnect_cursor: Some(cursor),
                         reason: None,
                         reset_cursor: false,
                     }),
                     AccountStreamInterrupt::ResyncRequired { reconnect_after_ms } => {
-                        Ok(AccountSubscribeSnapshotResult::ReconnectAfter {
+                        Ok(AccountSubscribeReadAction::ReconnectAfter {
                             reconnect_after_ms: reconnect_after_ms.unwrap_or(5_000),
                             reconnect_cursor: None,
                             reason: None,
@@ -201,7 +201,7 @@ where
                 other => other?,
             };
             match result {
-                AccountSubscribeSnapshotResult::Batch(batch) => {
+                AccountSubscribeReadAction::Batch(batch) => {
                     let mut next_station_cas = station_cas.clone();
                     if request.after.is_none() {
                         next_station_cas.reset_for_initial_sync();
@@ -253,7 +253,7 @@ where
                     request.catchup = Some(false);
                     request.replace_filter = None;
                 }
-                AccountSubscribeSnapshotResult::ReconnectAfter {
+                AccountSubscribeReadAction::ReconnectAfter {
                     reconnect_after_ms,
                     reconnect_cursor,
                     reset_cursor,
@@ -308,14 +308,14 @@ mod tests {
 
     #[derive(Debug)]
     struct ScriptedTransport {
-        responses: Mutex<VecDeque<Result<AccountSubscribeSnapshotResult>>>,
+        responses: Mutex<VecDeque<Result<AccountSubscribeReadAction>>>,
         requests: Mutex<Vec<AccountSubscribeParameters>>,
         calls: AtomicUsize,
         cancel_on_call: Option<SubscriptionControl>,
     }
 
     impl ScriptedTransport {
-        fn new(responses: Vec<AccountSubscribeSnapshotResult>) -> Self {
+        fn new(responses: Vec<AccountSubscribeReadAction>) -> Self {
             Self {
                 responses: Mutex::new(responses.into_iter().map(Ok).collect()),
                 requests: Mutex::new(Vec::new()),
@@ -325,7 +325,7 @@ mod tests {
         }
 
         fn cancelling(
-            responses: Vec<AccountSubscribeSnapshotResult>,
+            responses: Vec<AccountSubscribeReadAction>,
             control: SubscriptionControl,
         ) -> Self {
             Self {
@@ -341,7 +341,7 @@ mod tests {
         async fn subscribe(
             &self,
             request: &AccountSubscribeParameters,
-        ) -> Result<AccountSubscribeSnapshotResult> {
+        ) -> Result<AccountSubscribeReadAction> {
             request.validate()?;
             self.requests.lock().unwrap().push(request.clone());
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -445,14 +445,16 @@ mod tests {
                         status: 409,
                         error: Box::new(arkret_wire::Problem::account_revision_stale(
                             "verified frontier is behind",
-                            arkret_wire::AccountRevisionStaleProblem::new("ak:cursor:durable")
-                                .unwrap(),
+                            arkret_wire::AccountRevisionStaleProblemExtensions::new(
+                                "ak:cursor:durable",
+                            )
+                            .unwrap(),
                         )),
                     }));
             }
             if failures == 1 {
                 transport.responses.lock().unwrap().push_back(Ok(
-                    AccountSubscribeSnapshotResult::Batch(AccountSubscribeBatch {
+                    AccountSubscribeReadAction::Batch(AccountSubscribeBatch {
                         frames: Vec::new(),
                         cursor: "ak:cursor:caught-up".into(),
                     }),
@@ -630,7 +632,7 @@ mod tests {
             }
             let subscription = AccountSubscription::new(ImmediateExecutor, store);
             let transport = ScriptedTransport::cancelling(
-                vec![AccountSubscribeSnapshotResult::ReconnectAfter {
+                vec![AccountSubscribeReadAction::ReconnectAfter {
                     reconnect_after_ms: 1,
                     reconnect_cursor: None,
                     reason: None,
@@ -689,12 +691,10 @@ mod tests {
                     "cursor has expired",
                 )),
             }),
-            Ok(AccountSubscribeSnapshotResult::Batch(
-                AccountSubscribeBatch {
-                    frames: Vec::new(),
-                    cursor: "ak:cursor:fresh".into(),
-                },
-            )),
+            Ok(AccountSubscribeReadAction::Batch(AccountSubscribeBatch {
+                frames: Vec::new(),
+                cursor: "ak:cursor:fresh".into(),
+            })),
         ]);
         subscription
             .run(
@@ -800,7 +800,7 @@ mod tests {
             .unwrap();
         let subscription = AccountSubscription::new(ImmediateExecutor, store.clone());
         let transport = ScriptedTransport::cancelling(
-            vec![AccountSubscribeSnapshotResult::ReconnectAfter {
+            vec![AccountSubscribeReadAction::ReconnectAfter {
                 reconnect_after_ms: 1,
                 reconnect_cursor: None,
                 reason: Some("snapshot changed".to_owned()),
@@ -827,7 +827,7 @@ mod tests {
         let store = crate::MemoryStore::new();
         let subscription = AccountSubscription::new(ImmediateExecutor, store.clone());
         let transport = ScriptedTransport::cancelling(
-            vec![AccountSubscribeSnapshotResult::ReconnectAfter {
+            vec![AccountSubscribeReadAction::ReconnectAfter {
                 reconnect_after_ms: 1,
                 reconnect_cursor: Some("ak:cursor:resume".to_owned()),
                 reason: None,
@@ -857,7 +857,7 @@ mod tests {
         let store = crate::MemoryStore::new();
         let subscription = AccountSubscription::new(ImmediateExecutor, store.clone());
         let projector = Projector::new(Some(subscription.control()), false);
-        let transport = ScriptedTransport::new(vec![AccountSubscribeSnapshotResult::Batch(
+        let transport = ScriptedTransport::new(vec![AccountSubscribeReadAction::Batch(
             AccountSubscribeBatch {
                 frames: Vec::new(),
                 cursor: "ak:cursor:next".to_owned(),
@@ -889,7 +889,7 @@ mod tests {
             calls: calls.clone(),
             control: subscription.control(),
         };
-        let transport = ScriptedTransport::new(vec![AccountSubscribeSnapshotResult::Batch(
+        let transport = ScriptedTransport::new(vec![AccountSubscribeReadAction::Batch(
             AccountSubscribeBatch {
                 frames: Vec::new(),
                 cursor: "ak:cursor:local".to_owned(),
@@ -921,7 +921,7 @@ mod tests {
             .await
             .unwrap();
         let subscription = AccountSubscription::new(ImmediateExecutor, store.clone());
-        let transport = ScriptedTransport::new(vec![AccountSubscribeSnapshotResult::Batch(
+        let transport = ScriptedTransport::new(vec![AccountSubscribeReadAction::Batch(
             AccountSubscribeBatch {
                 frames: Vec::new(),
                 cursor: "ak:cursor:next".to_owned(),
