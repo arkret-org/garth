@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use arkret_models_identity::signer_key_operations::{
-    HistoricalSignerKeyQuerySender, SignerKeyQueryOutcome, SignerKeyQuerySelector,
+    HistoricalSignerKeyQuerySender, SignerKeyQuerySelector, SignerKeyResolution,
     SignerKeysQueryRequestBody,
 };
 use arkret_signatures::PublicKeyMaterial;
@@ -82,8 +82,8 @@ pub async fn resolve_historical_agent_keys(
                 continue;
             }
         };
-        for result in outcome.results {
-            let SignerKeyQueryOutcome::HistoricalResolved {
+        for result in outcome.resolutions {
+            let SignerKeyResolution::HistoricalResolved {
                 selector,
                 key,
                 accepted_at,
@@ -105,7 +105,7 @@ pub async fn resolve_historical_agent_keys(
                 accepted_at,
                 actor: selected.agent_actor_id.clone(),
                 verification_method: selected.verification_method.clone(),
-                public_key_b64u: key.public_key_b64u,
+                public_key_base64url: key.public_key_base64url,
                 authorization_ref: key.authorization_ref,
                 revision: key.revision,
                 governance_generation: key.governance_generation,
@@ -154,7 +154,7 @@ pub struct CachedHistoricalAgentSignerKey {
     pub accepted_at: chrono::DateTime<chrono::Utc>,
     pub actor: arkret_wire::ActorId,
     pub verification_method: arkret_wire::DidUrl,
-    pub public_key_b64u: arkret_wire::Base64UrlString,
+    pub public_key_base64url: arkret_wire::Base64UrlString,
     pub authorization_ref: arkret_wire::CommittedEventRef,
     pub revision: arkret_wire::CurrentRevision,
     pub governance_generation: u64,
@@ -197,7 +197,7 @@ pub fn historical_key(
     {
         return None;
     }
-    arkret_canonical::base64url_decode(entry.public_key_b64u.as_str().as_bytes())
+    arkret_canonical::base64url_decode(entry.public_key_base64url.as_str().as_bytes())
         .ok()?
         .try_into()
         .ok()

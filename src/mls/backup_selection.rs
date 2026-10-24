@@ -1,13 +1,13 @@
 //! Which key-backup envelope a restoring client is allowed to open.
 //!
 //! The Account Station's active-series pointer narrows the eligible series and
-//! the tail is ordered by `(series_seq, created_at)`. None of that needs a
+//! the tail is ordered by `(series_sequence, created_at)`. None of that needs a
 //! host, a store or a transport, so every client picks the same envelope from
 //! the same Station response. Chain verification of the selected tail lives
 //! next door in [`crate::mls::backup_series`].
 
 use arkret_models_crypto::{
-    BackupActiveSeriesState, KeyBackupRecipientMethod, KeyBackupSummary, KeysBackupsList,
+    BackupActiveSeriesState, KeyBackupRecipientMethod, KeyBackupSummary, KeysBackupsPage,
     SecretStorageItemKind,
 };
 use arkret_wire::BackupSeriesId;
@@ -19,7 +19,7 @@ pub fn active_series_id(active_series: &BackupActiveSeriesState) -> Option<&Back
 }
 
 /// Every summary that belongs to the Station's active series.
-pub fn summaries_in_active_series(list: &KeysBackupsList) -> Vec<&KeyBackupSummary> {
+pub fn summaries_in_active_series(list: &KeysBackupsPage) -> Vec<&KeyBackupSummary> {
     let Some(series_id) = active_series_id(&list.active_series) else {
         return Vec::new();
     };
@@ -29,14 +29,14 @@ pub fn summaries_in_active_series(list: &KeysBackupsList) -> Vec<&KeyBackupSumma
         .collect()
 }
 
-/// The tail of the active series: the highest `series_seq`, breaking ties on
+/// The tail of the active series: the highest `series_sequence`, breaking ties on
 /// `created_at` and then on `backup_id` so every client picks the same row.
-pub fn select_active_series_tail(list: &KeysBackupsList) -> Option<&KeyBackupSummary> {
+pub fn select_active_series_tail(list: &KeysBackupsPage) -> Option<&KeyBackupSummary> {
     summaries_in_active_series(list)
         .into_iter()
         .max_by(|left, right| {
-            left.series_seq
-                .cmp(&right.series_seq)
+            left.series_sequence
+                .cmp(&right.series_sequence)
                 .then(left.created_at.cmp(&right.created_at))
                 .then(left.backup_id.as_str().cmp(right.backup_id.as_str()))
         })
@@ -47,7 +47,7 @@ pub fn select_active_series_tail(list: &KeysBackupsList) -> Option<&KeyBackupSum
 /// `recovery_public_key` one — so a restore path MUST name the variant it can
 /// actually open instead of taking whichever row sorts first.
 pub fn select_active_series_tail_for_recipient_method(
-    list: &KeysBackupsList,
+    list: &KeysBackupsPage,
     recipient_method: KeyBackupRecipientMethod,
 ) -> Option<&KeyBackupSummary> {
     let series_id = active_series_id(&list.active_series)?;
@@ -58,8 +58,8 @@ pub fn select_active_series_tail_for_recipient_method(
                 && summary.encryption.recipient_method == recipient_method
         })
         .max_by(|left, right| {
-            left.series_seq
-                .cmp(&right.series_seq)
+            left.series_sequence
+                .cmp(&right.series_sequence)
                 .then(left.created_at.cmp(&right.created_at))
                 .then(left.backup_id.as_str().cmp(right.backup_id.as_str()))
         })
@@ -78,7 +78,7 @@ pub fn carries_item_kind(
 
 /// True when the account already has the passphrase-free fresh-device recovery
 /// envelope, so a client can stop prompting for a recovery passphrase.
-pub fn recovery_public_key_backup_present(list: &KeysBackupsList) -> bool {
+pub fn recovery_public_key_backup_present(list: &KeysBackupsPage) -> bool {
     list.backups.iter().any(|summary| {
         summary.encryption.recipient_method == KeyBackupRecipientMethod::RecoveryPublicKey
     })
@@ -106,13 +106,13 @@ mod tests {
     }
 
     fn summary(
-        seq: u64,
+        sequence: u64,
         series_id: BackupSeriesId,
         recipient_method: KeyBackupRecipientMethod,
     ) -> KeyBackupSummary {
         KeyBackupSummary {
             backup_id: BackupId::new(format!(
-                "ak:backup:0196419b-0000-7000-8000-00000000003{seq}"
+                "ak:backup:0196419b-0000-7000-8000-00000000003{sequence}"
             ))
             .unwrap(),
             actor_id: actor_id(),
@@ -121,7 +121,7 @@ mod tests {
             backup_version: NonEmptyString::new("kb_1").unwrap(),
             supersedes_id: None,
             supersedes_digest: None,
-            created_at: at(u32::try_from(seq).unwrap()),
+            created_at: at(u32::try_from(sequence).unwrap()),
             updated_at: None,
             expires_at: None,
             retention: None,
@@ -131,12 +131,12 @@ mod tests {
                 recipient_key_ref: None,
             },
             series_id,
-            series_seq: seq,
+            series_sequence: sequence,
         }
     }
 
-    fn list(pointer: BackupActiveSeriesPointer, backups: Vec<KeyBackupSummary>) -> KeysBackupsList {
-        KeysBackupsList {
+    fn list(pointer: BackupActiveSeriesPointer, backups: Vec<KeyBackupSummary>) -> KeysBackupsPage {
+        KeysBackupsPage {
             backups,
             active_series: BackupActiveSeriesState {
                 account_id: AccountId::new(
@@ -180,7 +180,7 @@ mod tests {
         ))
         .unwrap()
         .clone();
-        assert_eq!(selected.series_seq, 2);
+        assert_eq!(selected.series_sequence, 2);
         assert_eq!(selected.series_id, series("0"));
     }
 
@@ -203,7 +203,7 @@ mod tests {
                 KeyBackupRecipientMethod::PassphraseKdf
             )
             .unwrap()
-            .series_seq,
+            .series_sequence,
             1
         );
         assert_eq!(
@@ -212,7 +212,7 @@ mod tests {
                 KeyBackupRecipientMethod::RecoveryPublicKey
             )
             .unwrap()
-            .series_seq,
+            .series_sequence,
             2
         );
         assert!(recovery_public_key_backup_present(&list));

@@ -87,7 +87,7 @@ impl SignalReceiver {
 
         let public_key = PublicKeyMaterial::Ed25519Raw {
             bytes: arkret_canonical::base64url_decode(
-                delivery_authority.key.public_key_b64u.as_str(),
+                delivery_authority.key.public_key_base64url.as_str(),
             )?,
         };
         verify_ed25519_signal_proof(envelope, &public_key)

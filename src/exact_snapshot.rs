@@ -99,12 +99,13 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use arkret_http_client::ClientRequestOptions;
-    use arkret_models_collaboration::authority_commit::AuthorityHandoffRequest;
+    use arkret_models_collaboration::authority_commit::AuthorityRealmAuthorityHandoffRequestBody;
     use arkret_models_discovery::TransportBinding;
     use arkret_wire::{
-        AuthorityBundleRequest, AuthoritySubmitOutcome, AuthoritySubmitRequest, CommitStreamHead,
-        DetachedSignatureContext, Did, RealmAuthorityBundle, RealmAuthorityHandoff, RealmCommitId,
-        StreamScanOutcome, StreamScanRequest, TrustDomainId,
+        AuthoritySubmitRequestBody, AuthoritySubmitResponseBody, CommitStreamHead,
+        DetachedSignatureContext, Did, RealmAuthorityBundle, RealmAuthorityBundleRequestBody,
+        RealmAuthorityHandoff, RealmCommitId, StreamScanRequestBody, StreamScanResponseBody,
+        TrustDomainId,
     };
 
     use super::*;
@@ -122,26 +123,26 @@ mod tests {
     impl AuthorityTransport for ByRefTransport {
         async fn submit(
             &self,
-            _request: &VerifiedSubmission<AuthoritySubmitRequest>,
+            _request: &VerifiedSubmission<AuthoritySubmitRequestBody>,
             _options: &ClientRequestOptions,
-        ) -> Result<AuthoritySubmitOutcome> {
+        ) -> Result<AuthoritySubmitResponseBody> {
             unreachable!("by-ref reads never submit")
         }
 
-        async fn scan(&self, _request: &StreamScanRequest) -> Result<StreamScanOutcome> {
+        async fn scan(&self, _request: &StreamScanRequestBody) -> Result<StreamScanResponseBody> {
             unreachable!("by-ref reads never scan")
         }
 
         async fn authority_bundle(
             &self,
-            _request: &AuthorityBundleRequest,
+            _request: &RealmAuthorityBundleRequestBody,
         ) -> Result<RealmAuthorityBundle> {
             unreachable!("by-ref reads never resolve authority")
         }
 
         async fn install_handoff(
             &self,
-            _request: &AuthorityHandoffRequest,
+            _request: &AuthorityRealmAuthorityHandoffRequestBody,
             _options: &ClientRequestOptions,
         ) -> Result<RealmAuthorityHandoff> {
             unreachable!("by-ref reads never install a handoff")

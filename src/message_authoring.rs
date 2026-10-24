@@ -9,7 +9,7 @@ pub use arkret_models_collaboration::message_authoring::{
     MessageSubmitRequestBody,
 };
 use arkret_signatures::{EventSigner, SignEventOptions, sign_event};
-use arkret_wire::{AuthoredEvent, AuthoritySubmitRequest, EventAdmissionSubmission, EventKind};
+use arkret_wire::{AuthoredEvent, AuthoritySubmitRequestBody, EventAdmissionSubmission, EventKind};
 
 use crate::{Error, QueuedSubmission, Result};
 
@@ -131,8 +131,9 @@ impl FrozenMessageSubmission {
             .submission
             .event
             .validate_proof_bindings_with_digest_suite(suite)?;
-        let queued =
-            QueuedSubmission::new(AuthoritySubmitRequest::Event(request.submission.clone()))?;
+        let queued = QueuedSubmission::new(AuthoritySubmitRequestBody::Event(
+            request.submission.clone(),
+        ))?;
         let canonical_submission_bytes = arkret_canonical::canonical_json_bytes(&queued.request)?;
         Ok(Self {
             request,
@@ -173,7 +174,7 @@ impl FrozenMessageSubmission {
     /// Hosts still verify Commit authority signatures before shared projection.
     pub fn apply_outcome(
         &mut self,
-        outcome: arkret_wire::AuthoritySubmitOutcome,
+        outcome: arkret_wire::AuthoritySubmitResponseBody,
     ) -> Result<Option<MessageAuthoringFailure>> {
         if matches!(self.queued.state, crate::SubmissionState::Committed { .. }) {
             let mut candidate = self.queued.clone();
@@ -189,7 +190,7 @@ impl FrozenMessageSubmission {
             return Ok(None);
         }
         let failure = match &outcome {
-            arkret_wire::AuthoritySubmitOutcome::Rejected { reason_code, .. } => {
+            arkret_wire::AuthoritySubmitResponseBody::Rejected { reason_code, .. } => {
                 Some(classify_authority_rejection(reason_code))
             }
             _ => None,
@@ -432,7 +433,7 @@ impl MlsSendRefusal {
         }
     }
 
-    /// Classify one `AuthoritySubmitOutcome::Rejected` reason code.
+    /// Classify one `AuthoritySubmitResponseBody::Rejected` reason code.
     pub fn from_rejection_reason(reason_code: &str) -> Option<Self> {
         if arkret_wire::ErrorCode::from_wire(reason_code)
             == Some(arkret_wire::ErrorCode::EpochMismatch)
@@ -477,10 +478,10 @@ impl DomainRevisionContext {
         selector: &arkret_wire::CurrentSelector,
         stream: &arkret_wire::CommitStreamRef,
         expected: Option<arkret_wire::CurrentRevision>,
-        current: Option<&arkret_wire::TypedCurrentRow>,
+        current: Option<&arkret_wire::CurrentState>,
     ) -> Result<Self> {
         let current = match current {
-            Some(arkret_wire::TypedCurrentRow::Value {
+            Some(arkret_wire::CurrentState::Value {
                 selector: actual_selector,
                 source_stream_ref,
                 revision,
@@ -710,7 +711,7 @@ mod tests {
         wrong.event_ref = EventId::from_digest(DigestSuite::Sha256, [77; 32]);
         assert!(
             frozen
-                .apply_outcome(arkret_wire::AuthoritySubmitOutcome::Accepted {
+                .apply_outcome(arkret_wire::AuthoritySubmitResponseBody::Accepted {
                     status: arkret_wire::AuthorityCommitStatus::Committed,
                     commit: wrong,
                 })
@@ -718,21 +719,21 @@ mod tests {
         );
         assert_eq!(frozen.state(), MessageSubmissionState::Queued);
         frozen
-            .apply_outcome(arkret_wire::AuthoritySubmitOutcome::Accepted {
+            .apply_outcome(arkret_wire::AuthoritySubmitResponseBody::Accepted {
                 status: arkret_wire::AuthorityCommitStatus::Committed,
                 commit: commit.clone(),
             })
             .unwrap();
         assert_eq!(frozen.state(), MessageSubmissionState::Committed);
         frozen
-            .apply_outcome(arkret_wire::AuthoritySubmitOutcome::Accepted {
+            .apply_outcome(arkret_wire::AuthoritySubmitResponseBody::Accepted {
                 status: arkret_wire::AuthorityCommitStatus::Duplicate,
                 commit,
             })
             .unwrap();
         assert!(
             frozen
-                .apply_outcome(arkret_wire::AuthoritySubmitOutcome::Rejected {
+                .apply_outcome(arkret_wire::AuthoritySubmitResponseBody::Rejected {
                     status: arkret_wire::AuthorityRejectionStatus::Rejected,
                     reason_code: "policy_denied".to_owned(),
                 })
@@ -775,7 +776,7 @@ mod tests {
         );
         assert_eq!(
             reopened
-                .apply_outcome(arkret_wire::AuthoritySubmitOutcome::Rejected {
+                .apply_outcome(arkret_wire::AuthoritySubmitResponseBody::Rejected {
                     status: arkret_wire::AuthorityRejectionStatus::RetryableUnavailable,
                     reason_code: "temporarily_unavailable".to_owned(),
                 })
@@ -868,7 +869,7 @@ mod tests {
     #[test]
     fn domain_failed_precondition_requires_explicit_exact_revision_context() {
         use arkret_wire::{
-            CommitStreamRef, CurrentRevision, CurrentSelector, RealmCommitId, TypedCurrentRow,
+            CommitStreamRef, CurrentRevision, CurrentSelector, CurrentState, RealmCommitId,
         };
         let selector = CurrentSelector::DeviceGeneration;
         let stream = CommitStreamRef::Realm {
@@ -882,7 +883,7 @@ mod tests {
             commit_id: RealmCommitId::from_digest([2; 32]),
             stream_position: 7,
         };
-        let current = TypedCurrentRow::Value {
+        let current = CurrentState::Value {
             selector: selector.clone(),
             source_stream_ref: stream.clone(),
             revision: current_revision.clone(),
@@ -986,7 +987,7 @@ mod tests {
         .unwrap();
         let expected = arkret_canonical::canonical_json_bytes(&request.submission.event).unwrap();
         let queued = queue_authored_message(request).unwrap();
-        let arkret_models_collaboration::authority_commit::SelfAuthoritySubmitRequest::Event(
+        let arkret_models_collaboration::authority_commit::SelfAuthoritySubmitRequestBody::Event(
             submission,
         ) = queued.request
         else {

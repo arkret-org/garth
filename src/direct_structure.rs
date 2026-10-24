@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use arkret_models_collaboration::objects::space::Space;
 use arkret_models_collaboration::objects::strand::Strand;
-use arkret_wire::{CurrentSelector, Hash, RealmId, SpaceId, StrandId, TypedCurrentRow};
+use arkret_wire::{CurrentSelector, CurrentState, Hash, RealmId, SpaceId, StrandId};
 
 /// A verified current view supplied by the caller, never a wire object.
 #[derive(Clone, Debug, Default)]
@@ -15,11 +15,11 @@ pub struct DirectStructureView {
 }
 
 impl DirectStructureView {
-    pub fn from_current(realm: &RealmId, entries: &[TypedCurrentRow]) -> Result<Self, String> {
+    pub fn from_current(realm: &RealmId, entries: &[CurrentState]) -> Result<Self, String> {
         let mut view = Self::default();
         let mut parents = BTreeMap::new();
         for entry in entries {
-            let TypedCurrentRow::Value {
+            let CurrentState::Value {
                 selector,
                 value,
                 source_stream_ref,
@@ -132,8 +132,8 @@ mod tests {
         realm: &RealmId,
         selector: CurrentSelector,
         value: serde_json::Value,
-    ) -> TypedCurrentRow {
-        TypedCurrentRow::Value {
+    ) -> CurrentState {
+        CurrentState::Value {
             selector,
             value,
             source_stream_ref: CommitStreamRef::Realm {
@@ -239,7 +239,7 @@ mod tests {
             },
             json!({}),
         );
-        let TypedCurrentRow::Value {
+        let CurrentState::Value {
             source_stream_ref, ..
         } = &mut row;
         *source_stream_ref = CommitStreamRef::Sidecar {
@@ -261,7 +261,7 @@ mod tests {
             "created_at":"2026-10-04T00:00:00.000Z"});
         let mut row = current(&realm, CurrentSelector::Strand { strand_id: chat }, value);
         assert!(DirectStructureView::from_current(&realm, &[row.clone()]).is_err());
-        let TypedCurrentRow::Value {
+        let CurrentState::Value {
             source_stream_ref, ..
         } = &mut row;
         *source_stream_ref = CommitStreamRef::Circle {
@@ -274,7 +274,7 @@ mod tests {
                 .chats
                 .is_empty()
         );
-        let TypedCurrentRow::Value {
+        let CurrentState::Value {
             source_stream_ref, ..
         } = &mut row;
         *source_stream_ref = CommitStreamRef::Circle {

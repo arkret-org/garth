@@ -1,7 +1,7 @@
 use arkret_auth::session_grant::agent_key_proof_session_grant_request;
 use arkret_models_collaboration::agent_scope::AgentRequestedScopeDisclosure;
 use arkret_models_collaboration::session_grants::{
-    SessionGrantAgentScopeRequest, SessionGrantDpopBindingProof, SessionGrantRequestBody,
+    RequestedAgentSessionGrantScope, SessionGrantDpopBindingProof, SessionGrantRequestBody,
 };
 use arkret_wire::{DidCoreId, DidUrl, EventId};
 use chrono::{DateTime, Utc};
@@ -13,7 +13,7 @@ pub struct AgentKeyProofLogin {
     pub principal_id: DidCoreId,
     pub requested_scope: Vec<String>,
     pub agent_key_authorization_ref: EventId,
-    pub agent_scope_request: SessionGrantAgentScopeRequest,
+    pub agent_scope_request: RequestedAgentSessionGrantScope,
     pub requested_scope_disclosure: Option<AgentRequestedScopeDisclosure>,
     pub dpop_binding_proof: SessionGrantDpopBindingProof,
     pub verification_method: DidUrl,
@@ -80,7 +80,7 @@ mod tests {
             principal_id: principal_id(),
             requested_scope: vec!["ak.self.committed_event.stream.subscribe.v1".to_owned()],
             agent_key_authorization_ref: agent_key_authorization_ref(),
-            agent_scope_request: SessionGrantAgentScopeRequest {
+            agent_scope_request: RequestedAgentSessionGrantScope {
                 realm_ids: vec![
                     RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO").unwrap(),
                 ],

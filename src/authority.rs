@@ -8,14 +8,15 @@ use arkret_identity::{
     verify_realm_authority_bundle,
 };
 use arkret_models_collaboration::authority_commit::{
-    AuthorityHandoffRequest, DirectConversationFoundingUnitSubmission,
-    OrdinaryRealmBootstrapUnitSubmission, SelfAuthoritySubmitOutcome, SelfAuthoritySubmitRequest,
+    AuthorityRealmAuthorityHandoffRequestBody, DirectConversationFoundingUnitSubmission,
+    OrdinaryRealmBootstrapUnitSubmission, SelfAuthoritySubmitRequestBody,
+    SelfAuthoritySubmitResponseBody,
 };
 use arkret_wire::{
-    AuthorityBundleRequest, AuthorityCommitStatus, AuthorityRejectionStatus,
-    AuthoritySubmitOutcome, AuthoritySubmitRequest, EventId, RealmAuthorityBundle,
+    AuthorityCommitStatus, AuthorityRejectionStatus, AuthoritySubmitRequestBody,
+    AuthoritySubmitResponseBody, EventId, RealmAuthorityBundle, RealmAuthorityBundleRequestBody,
     RealmAuthorityHandoff, RealmCommit, RealmId, RealmSnapshotId, RealmStateSnapshot,
-    StreamScanOutcome, StreamScanRequest,
+    StreamScanRequestBody, StreamScanResponseBody,
 };
 use serde::{Deserialize, Serialize};
 
@@ -30,22 +31,22 @@ use crate::{Error, MaybeSend, MaybeSendSync, Result};
 pub trait AuthorityTransport: MaybeSendSync {
     fn submit<'a>(
         &'a self,
-        request: &'a VerifiedSubmission<AuthoritySubmitRequest>,
+        request: &'a VerifiedSubmission<AuthoritySubmitRequestBody>,
         options: &'a ClientRequestOptions,
-    ) -> impl Future<Output = Result<AuthoritySubmitOutcome>> + MaybeSend + 'a;
+    ) -> impl Future<Output = Result<AuthoritySubmitResponseBody>> + MaybeSend + 'a;
 
     fn submit_self<'a>(
         &'a self,
-        request: &'a VerifiedSubmission<SelfAuthoritySubmitRequest>,
+        request: &'a VerifiedSubmission<SelfAuthoritySubmitRequestBody>,
         options: &'a ClientRequestOptions,
-    ) -> impl Future<Output = Result<SelfAuthoritySubmitOutcome>> + MaybeSend + 'a {
+    ) -> impl Future<Output = Result<SelfAuthoritySubmitResponseBody>> + MaybeSend + 'a {
         async move {
             let wire = match request.wire() {
-                SelfAuthoritySubmitRequest::Event(value) => {
-                    AuthoritySubmitRequest::Event(value.clone())
+                SelfAuthoritySubmitRequestBody::Event(value) => {
+                    AuthoritySubmitRequestBody::Event(value.clone())
                 }
-                SelfAuthoritySubmitRequest::MlsCommit(value) => {
-                    AuthoritySubmitRequest::MlsCommit(value.clone())
+                SelfAuthoritySubmitRequestBody::MlsCommit(value) => {
+                    AuthoritySubmitRequestBody::MlsCommit(value.clone())
                 }
                 _ => {
                     return Err(Error::Protocol(
@@ -58,23 +59,23 @@ pub trait AuthorityTransport: MaybeSendSync {
                 .map_err(|e| Error::Protocol(e.to_string()))?;
             self.submit(&request, options)
                 .await
-                .map(SelfAuthoritySubmitOutcome::Ordinary)
+                .map(SelfAuthoritySubmitResponseBody::Ordinary)
         }
     }
 
     fn scan<'a>(
         &'a self,
-        request: &'a StreamScanRequest,
-    ) -> impl Future<Output = Result<StreamScanOutcome>> + MaybeSend + 'a;
+        request: &'a StreamScanRequestBody,
+    ) -> impl Future<Output = Result<StreamScanResponseBody>> + MaybeSend + 'a;
 
     fn authority_bundle<'a>(
         &'a self,
-        request: &'a AuthorityBundleRequest,
+        request: &'a RealmAuthorityBundleRequestBody,
     ) -> impl Future<Output = Result<RealmAuthorityBundle>> + MaybeSend + 'a;
 
     fn install_handoff<'a>(
         &'a self,
-        request: &'a AuthorityHandoffRequest,
+        request: &'a AuthorityRealmAuthorityHandoffRequestBody,
         options: &'a ClientRequestOptions,
     ) -> impl Future<Output = Result<RealmAuthorityHandoff>> + MaybeSend + 'a;
 
@@ -91,22 +92,22 @@ pub trait AuthorityTransport: MaybeSendSync {
 impl AuthorityTransport for Client {
     async fn submit(
         &self,
-        request: &VerifiedSubmission<AuthoritySubmitRequest>,
+        request: &VerifiedSubmission<AuthoritySubmitRequestBody>,
         options: &ClientRequestOptions,
-    ) -> Result<AuthoritySubmitOutcome> {
+    ) -> Result<AuthoritySubmitResponseBody> {
         let wire = match request.wire() {
-            AuthoritySubmitRequest::Event(value) => {
-                SelfAuthoritySubmitRequest::Event(value.clone())
+            AuthoritySubmitRequestBody::Event(value) => {
+                SelfAuthoritySubmitRequestBody::Event(value.clone())
             }
-            AuthoritySubmitRequest::MlsCommit(value) => {
-                SelfAuthoritySubmitRequest::MlsCommit(value.clone())
+            AuthoritySubmitRequestBody::MlsCommit(value) => {
+                SelfAuthoritySubmitRequestBody::MlsCommit(value.clone())
             }
         };
         let request = request
             .rebind(wire)
             .map_err(|e| Error::Protocol(e.to_string()))?;
         match AuthorityTransport::submit_self(self, &request, options).await? {
-            SelfAuthoritySubmitOutcome::Ordinary(outcome) => Ok(outcome),
+            SelfAuthoritySubmitResponseBody::Ordinary(outcome) => Ok(outcome),
             _ => Err(crate::Error::Protocol(
                 "ordinary queued submission returned an aggregate outcome".to_owned(),
             )),
@@ -115,9 +116,9 @@ impl AuthorityTransport for Client {
 
     async fn submit_self(
         &self,
-        request: &VerifiedSubmission<SelfAuthoritySubmitRequest>,
+        request: &VerifiedSubmission<SelfAuthoritySubmitRequestBody>,
         options: &ClientRequestOptions,
-    ) -> Result<SelfAuthoritySubmitOutcome> {
+    ) -> Result<SelfAuthoritySubmitResponseBody> {
         let outcome = self.submit_to_realm_authority(request, options).await?;
         let items = accepted_items(request, &outcome)?;
         if !items.is_empty() {
@@ -126,7 +127,7 @@ impl AuthorityTransport for Client {
             let nonce =
                 arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(nonce))
                     .map_err(|error| Error::Protocol(error.to_owned()))?;
-            let authority_request = AuthorityBundleRequest {
+            let authority_request = RealmAuthorityBundleRequestBody {
                 realm_id: items[0].commit.realm_id.clone(),
                 nonce: nonce.clone(),
             };
@@ -148,13 +149,13 @@ impl AuthorityTransport for Client {
         Ok(outcome)
     }
 
-    async fn scan(&self, request: &StreamScanRequest) -> Result<StreamScanOutcome> {
+    async fn scan(&self, request: &StreamScanRequestBody) -> Result<StreamScanResponseBody> {
         Ok(self.scan_commit_stream(request).await?)
     }
 
     async fn authority_bundle(
         &self,
-        request: &AuthorityBundleRequest,
+        request: &RealmAuthorityBundleRequestBody,
     ) -> Result<RealmAuthorityBundle> {
         match self.realm_authority_bundle(request).await {
             Ok(bundle) => Ok(bundle),
@@ -164,7 +165,7 @@ impl AuthorityTransport for Client {
             {
                 // A replica cannot issue a governing Snapshot. A retained
                 // Commit signer is only a locator, never an authority proof.
-                let scan_request = StreamScanRequest {
+                let scan_request = StreamScanRequestBody {
                     realm_id: request.realm_id.clone(),
                     stream_ref: arkret_wire::CommitStreamRef::Realm {
                         realm_id: request.realm_id.clone(),
@@ -191,7 +192,7 @@ impl AuthorityTransport for Client {
 
     async fn install_handoff(
         &self,
-        request: &AuthorityHandoffRequest,
+        request: &AuthorityRealmAuthorityHandoffRequestBody,
         options: &ClientRequestOptions,
     ) -> Result<RealmAuthorityHandoff> {
         Ok(self
@@ -213,25 +214,25 @@ impl AuthorityTransport for Client {
 /// Ordinary client role. It consumes the original acceptance from its fixed
 /// authenticated Station and still checks every frozen Event and producer.
 /// Governance discovery/handoff remain exclusive to the native role above.
-impl AuthorityTransport for arkret_http_client::own_station_results::OwnStationResultClient {
+impl AuthorityTransport for arkret_http_client::own_station_results::OwnStationStateClient {
     async fn submit(
         &self,
-        request: &VerifiedSubmission<AuthoritySubmitRequest>,
+        request: &VerifiedSubmission<AuthoritySubmitRequestBody>,
         options: &ClientRequestOptions,
-    ) -> Result<AuthoritySubmitOutcome> {
+    ) -> Result<AuthoritySubmitResponseBody> {
         let wire = match request.wire() {
-            AuthoritySubmitRequest::Event(value) => {
-                SelfAuthoritySubmitRequest::Event(value.clone())
+            AuthoritySubmitRequestBody::Event(value) => {
+                SelfAuthoritySubmitRequestBody::Event(value.clone())
             }
-            AuthoritySubmitRequest::MlsCommit(value) => {
-                SelfAuthoritySubmitRequest::MlsCommit(value.clone())
+            AuthoritySubmitRequestBody::MlsCommit(value) => {
+                SelfAuthoritySubmitRequestBody::MlsCommit(value.clone())
             }
         };
         let request = request
             .rebind(wire)
             .map_err(|e| Error::Protocol(e.to_string()))?;
         match AuthorityTransport::submit_self(self, &request, options).await? {
-            SelfAuthoritySubmitOutcome::Ordinary(value) => Ok(value),
+            SelfAuthoritySubmitResponseBody::Ordinary(value) => Ok(value),
             _ => Err(Error::Protocol(
                 "ordinary submission returned an aggregate outcome".into(),
             )),
@@ -240,9 +241,9 @@ impl AuthorityTransport for arkret_http_client::own_station_results::OwnStationR
 
     async fn submit_self(
         &self,
-        request: &VerifiedSubmission<SelfAuthoritySubmitRequest>,
+        request: &VerifiedSubmission<SelfAuthoritySubmitRequestBody>,
         options: &ClientRequestOptions,
-    ) -> Result<SelfAuthoritySubmitOutcome> {
+    ) -> Result<SelfAuthoritySubmitResponseBody> {
         let response = self.submit_to_realm_authority(request, options).await?;
         Ok(
             crate::own_station_results::consume_bound_submission(self, request, response)
@@ -251,12 +252,12 @@ impl AuthorityTransport for arkret_http_client::own_station_results::OwnStationR
         )
     }
 
-    async fn scan(&self, request: &StreamScanRequest) -> Result<StreamScanOutcome> {
+    async fn scan(&self, request: &StreamScanRequestBody) -> Result<StreamScanResponseBody> {
         Ok(self.scan_commit_stream(request).await?.into_value()?)
     }
     async fn authority_bundle(
         &self,
-        _request: &AuthorityBundleRequest,
+        _request: &RealmAuthorityBundleRequestBody,
     ) -> Result<RealmAuthorityBundle> {
         Err(Error::Protocol(
             "ordinary own-Station consumption does not perform governance discovery".into(),
@@ -264,7 +265,7 @@ impl AuthorityTransport for arkret_http_client::own_station_results::OwnStationR
     }
     async fn install_handoff(
         &self,
-        _request: &AuthorityHandoffRequest,
+        _request: &AuthorityRealmAuthorityHandoffRequestBody,
         _options: &ClientRequestOptions,
     ) -> Result<RealmAuthorityHandoff> {
         Err(Error::Protocol(
@@ -283,8 +284,8 @@ impl AuthorityTransport for arkret_http_client::own_station_results::OwnStationR
 }
 
 fn authority_locator_did(
-    request: &StreamScanRequest,
-    outcome: &StreamScanOutcome,
+    request: &StreamScanRequestBody,
+    outcome: &StreamScanResponseBody,
 ) -> Result<arkret_wire::Did> {
     outcome
         .validate_for_request(request)
@@ -317,8 +318,8 @@ fn authority_locator_base(
 }
 
 pub(crate) fn accepted_items(
-    request: &SelfAuthoritySubmitRequest,
-    outcome: &SelfAuthoritySubmitOutcome,
+    request: &SelfAuthoritySubmitRequestBody,
+    outcome: &SelfAuthoritySubmitResponseBody,
 ) -> Result<Vec<arkret_wire::CommittedEventFullView>> {
     outcome.validate_for_request(request)?;
     let pair =
@@ -327,24 +328,31 @@ pub(crate) fn accepted_items(
             commit: commit.clone(),
         };
     let items = match (request, outcome) {
-        (_, SelfAuthoritySubmitOutcome::Ordinary(AuthoritySubmitOutcome::Rejected { .. })) => {
+        (
+            _,
+            SelfAuthoritySubmitResponseBody::Ordinary(AuthoritySubmitResponseBody::Rejected {
+                ..
+            }),
+        ) => {
             vec![]
         }
         (
-            SelfAuthoritySubmitRequest::Event(value),
-            SelfAuthoritySubmitOutcome::Ordinary(AuthoritySubmitOutcome::Accepted {
-                commit, ..
+            SelfAuthoritySubmitRequestBody::Event(value),
+            SelfAuthoritySubmitResponseBody::Ordinary(AuthoritySubmitResponseBody::Accepted {
+                commit,
+                ..
             }),
         ) => vec![pair(&value.event, commit)],
         (
-            SelfAuthoritySubmitRequest::MlsCommit(value),
-            SelfAuthoritySubmitOutcome::Ordinary(AuthoritySubmitOutcome::Accepted {
-                commit, ..
+            SelfAuthoritySubmitRequestBody::MlsCommit(value),
+            SelfAuthoritySubmitResponseBody::Ordinary(AuthoritySubmitResponseBody::Accepted {
+                commit,
+                ..
             }),
         ) => vec![pair(&value.commit_event, commit)],
         (
-            SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(value),
-            SelfAuthoritySubmitOutcome::OrdinaryRealmBootstrap(accepted),
+            SelfAuthoritySubmitRequestBody::OrdinaryRealmBootstrap(value),
+            SelfAuthoritySubmitResponseBody::OrdinaryRealmBootstrap(accepted),
         ) => value
             .events
             .iter()
@@ -352,8 +360,8 @@ pub(crate) fn accepted_items(
             .map(|(event, commit)| pair(&event.event, commit))
             .collect(),
         (
-            SelfAuthoritySubmitRequest::DirectConversationFounding(value),
-            SelfAuthoritySubmitOutcome::DirectConversationFounding(accepted),
+            SelfAuthoritySubmitRequestBody::DirectConversationFounding(value),
+            SelfAuthoritySubmitResponseBody::DirectConversationFounding(accepted),
         ) => value
             .events
             .iter()
@@ -361,8 +369,8 @@ pub(crate) fn accepted_items(
             .map(|(event, commit)| pair(&event.event, commit))
             .collect(),
         (
-            SelfAuthoritySubmitRequest::MembershipCompensation(value),
-            SelfAuthoritySubmitOutcome::MembershipCompensation(accepted),
+            SelfAuthoritySubmitRequestBody::MembershipCompensation(value),
+            SelfAuthoritySubmitResponseBody::MembershipCompensation(accepted),
         ) => vec![pair(&value.event_submission.event, &accepted.commit)],
         _ => {
             return Err(Error::Protocol(
@@ -398,7 +406,7 @@ pub enum SubmissionState {
         commit: Box<RealmCommit>,
     },
     UnitCommitted {
-        outcome: Box<SelfAuthoritySubmitOutcome>,
+        outcome: Box<SelfAuthoritySubmitResponseBody>,
     },
     Rejected {
         status: AuthorityRejectionStatus,
@@ -408,7 +416,7 @@ pub enum SubmissionState {
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct QueuedSubmission {
-    pub request: SelfAuthoritySubmitRequest,
+    pub request: SelfAuthoritySubmitRequestBody,
     pub event_id: EventId,
     pub state: SubmissionState,
 }
@@ -422,7 +430,7 @@ impl<'de> Deserialize<'de> for QueuedSubmission {
         #[derive(Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Raw {
-            request: SelfAuthoritySubmitRequest,
+            request: SelfAuthoritySubmitRequestBody,
             event_id: EventId,
             state: SubmissionState,
         }
@@ -436,7 +444,7 @@ impl<'de> Deserialize<'de> for QueuedSubmission {
         match raw.state {
             SubmissionState::Queued => {}
             SubmissionState::Committed { status, commit } => queued
-                .apply_outcome(AuthoritySubmitOutcome::Accepted {
+                .apply_outcome(AuthoritySubmitResponseBody::Accepted {
                     status,
                     commit: *commit,
                 })
@@ -445,7 +453,7 @@ impl<'de> Deserialize<'de> for QueuedSubmission {
                 status,
                 reason_code,
             } => queued
-                .apply_outcome(AuthoritySubmitOutcome::Rejected {
+                .apply_outcome(AuthoritySubmitResponseBody::Rejected {
                     status,
                     reason_code,
                 })
@@ -459,48 +467,52 @@ impl<'de> Deserialize<'de> for QueuedSubmission {
 }
 
 impl QueuedSubmission {
-    pub fn new(request: AuthoritySubmitRequest) -> Result<Self> {
+    pub fn new(request: AuthoritySubmitRequestBody) -> Result<Self> {
         let request = match request {
-            AuthoritySubmitRequest::Event(value) => SelfAuthoritySubmitRequest::Event(value),
-            AuthoritySubmitRequest::MlsCommit(value) => {
-                SelfAuthoritySubmitRequest::MlsCommit(value)
+            AuthoritySubmitRequestBody::Event(value) => {
+                SelfAuthoritySubmitRequestBody::Event(value)
+            }
+            AuthoritySubmitRequestBody::MlsCommit(value) => {
+                SelfAuthoritySubmitRequestBody::MlsCommit(value)
             }
         };
         Self::from_self(request)
     }
 
     pub fn realm_bootstrap(unit: OrdinaryRealmBootstrapUnitSubmission) -> Result<Self> {
-        Self::from_self(SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(unit))
+        Self::from_self(SelfAuthoritySubmitRequestBody::OrdinaryRealmBootstrap(unit))
     }
 
     pub fn direct_conversation_founding(
         unit: DirectConversationFoundingUnitSubmission,
     ) -> Result<Self> {
-        Self::from_self(SelfAuthoritySubmitRequest::DirectConversationFounding(unit))
+        Self::from_self(SelfAuthoritySubmitRequestBody::DirectConversationFounding(
+            unit,
+        ))
     }
 
-    fn from_self(request: SelfAuthoritySubmitRequest) -> Result<Self> {
+    fn from_self(request: SelfAuthoritySubmitRequestBody) -> Result<Self> {
         request.validate()?;
         let validate = |event: &arkret_wire::Event| {
             arkret_event_draft::validate_event_for_submit(event)
                 .map_err(|error| Error::Protocol(error.to_string()))
         };
         let event_id = match &request {
-            SelfAuthoritySubmitRequest::Event(value) => {
+            SelfAuthoritySubmitRequestBody::Event(value) => {
                 validate(&value.event)?;
                 value.event.event_id.clone()
             }
-            SelfAuthoritySubmitRequest::MlsCommit(value) => {
+            SelfAuthoritySubmitRequestBody::MlsCommit(value) => {
                 validate(&value.commit_event)?;
                 value.commit_event.event_id.clone()
             }
-            SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(value) => {
+            SelfAuthoritySubmitRequestBody::OrdinaryRealmBootstrap(value) => {
                 for item in &value.events {
                     validate(&item.event)?;
                 }
                 value.events[0].event.event_id.clone()
             }
-            SelfAuthoritySubmitRequest::DirectConversationFounding(value) => {
+            SelfAuthoritySubmitRequestBody::DirectConversationFounding(value) => {
                 for item in &value.events {
                     validate(&item.event)?;
                 }
@@ -531,19 +543,21 @@ impl QueuedSubmission {
 
     pub fn primary_event(&self) -> &arkret_wire::Event {
         match &self.request {
-            SelfAuthoritySubmitRequest::Event(value) => &value.event,
-            SelfAuthoritySubmitRequest::MlsCommit(value) => &value.commit_event,
-            SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(value) => &value.events[0].event,
-            SelfAuthoritySubmitRequest::DirectConversationFounding(value) => &value.events[0].event,
+            SelfAuthoritySubmitRequestBody::Event(value) => &value.event,
+            SelfAuthoritySubmitRequestBody::MlsCommit(value) => &value.commit_event,
+            SelfAuthoritySubmitRequestBody::OrdinaryRealmBootstrap(value) => &value.events[0].event,
+            SelfAuthoritySubmitRequestBody::DirectConversationFounding(value) => {
+                &value.events[0].event
+            }
             _ => unreachable!("validated queued submission branch"),
         }
     }
 
-    pub fn apply_self_outcome(&mut self, outcome: SelfAuthoritySubmitOutcome) -> Result<()> {
+    pub fn apply_self_outcome(&mut self, outcome: SelfAuthoritySubmitResponseBody) -> Result<()> {
         outcome.validate_for_request(&self.request)?;
         if let (
-            SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(unit),
-            SelfAuthoritySubmitOutcome::OrdinaryRealmBootstrap(accepted),
+            SelfAuthoritySubmitRequestBody::OrdinaryRealmBootstrap(unit),
+            SelfAuthoritySubmitResponseBody::OrdinaryRealmBootstrap(accepted),
         ) = (&self.request, &outcome)
         {
             for (submission, commit) in unit.events.iter().zip(&accepted.commits) {
@@ -555,9 +569,9 @@ impl QueuedSubmission {
             }
         }
         match outcome {
-            SelfAuthoritySubmitOutcome::Ordinary(value) => self.apply_outcome(value),
-            value @ (SelfAuthoritySubmitOutcome::OrdinaryRealmBootstrap(_)
-            | SelfAuthoritySubmitOutcome::DirectConversationFounding(_)) => {
+            SelfAuthoritySubmitResponseBody::Ordinary(value) => self.apply_outcome(value),
+            value @ (SelfAuthoritySubmitResponseBody::OrdinaryRealmBootstrap(_)
+            | SelfAuthoritySubmitResponseBody::DirectConversationFounding(_)) => {
                 self.state = SubmissionState::UnitCommitted {
                     outcome: Box::new(value),
                 };
@@ -569,13 +583,13 @@ impl QueuedSubmission {
         }
     }
 
-    pub fn apply_outcome(&mut self, outcome: AuthoritySubmitOutcome) -> Result<()> {
+    pub fn apply_outcome(&mut self, outcome: AuthoritySubmitResponseBody) -> Result<()> {
         let ordinary = match &self.request {
-            SelfAuthoritySubmitRequest::Event(value) => {
-                AuthoritySubmitRequest::Event(value.clone())
+            SelfAuthoritySubmitRequestBody::Event(value) => {
+                AuthoritySubmitRequestBody::Event(value.clone())
             }
-            SelfAuthoritySubmitRequest::MlsCommit(value) => {
-                AuthoritySubmitRequest::MlsCommit(value.clone())
+            SelfAuthoritySubmitRequestBody::MlsCommit(value) => {
+                AuthoritySubmitRequestBody::MlsCommit(value.clone())
             }
             _ => {
                 return Err(Error::Protocol(
@@ -589,12 +603,14 @@ impl QueuedSubmission {
         } = &self.state
         {
             match &outcome {
-                AuthoritySubmitOutcome::Accepted { commit, .. } if installed.as_ref() != commit => {
+                AuthoritySubmitResponseBody::Accepted { commit, .. }
+                    if installed.as_ref() != commit =>
+                {
                     return Err(Error::Protocol(
                         "conflicting accepted outcomes for the frozen Event".into(),
                     ));
                 }
-                AuthoritySubmitOutcome::Rejected {
+                AuthoritySubmitResponseBody::Rejected {
                     status: arkret_wire::AuthorityRejectionStatus::Rejected,
                     ..
                 } => {
@@ -606,11 +622,13 @@ impl QueuedSubmission {
             }
         }
         self.state = match outcome {
-            AuthoritySubmitOutcome::Accepted { status, commit } => SubmissionState::Committed {
-                status,
-                commit: Box::new(commit),
-            },
-            AuthoritySubmitOutcome::Rejected {
+            AuthoritySubmitResponseBody::Accepted { status, commit } => {
+                SubmissionState::Committed {
+                    status,
+                    commit: Box::new(commit),
+                }
+            }
+            AuthoritySubmitResponseBody::Rejected {
                 status,
                 reason_code,
             } => SubmissionState::Rejected {
@@ -641,7 +659,7 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
     pub async fn submit(
         &self,
         queued: &mut QueuedSubmission,
-        verified: &VerifiedSubmission<SelfAuthoritySubmitRequest>,
+        verified: &VerifiedSubmission<SelfAuthoritySubmitRequestBody>,
         options: &ClientRequestOptions,
     ) -> Result<()> {
         queued.validate_queued_request()?;
@@ -651,10 +669,10 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
             ));
         }
         let options = match &queued.request {
-            SelfAuthoritySubmitRequest::OrdinaryRealmBootstrap(unit) => options
+            SelfAuthoritySubmitRequestBody::OrdinaryRealmBootstrap(unit) => options
                 .clone()
                 .idempotency_key(unit.idempotency_key.as_uuid().to_string()),
-            SelfAuthoritySubmitRequest::DirectConversationFounding(unit) => options
+            SelfAuthoritySubmitRequestBody::DirectConversationFounding(unit) => options
                 .clone()
                 .idempotency_key(unit.idempotency_key.as_uuid().to_string()),
             _ => options.clone(),
@@ -665,7 +683,7 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
 
     /// Fetch a shape-checked but unverified scan page. Consumers MUST pass it
     /// through [`crate::RealmReplica::apply_verified_scan`] before projection.
-    pub async fn scan(&self, request: &StreamScanRequest) -> Result<StreamScanOutcome> {
+    pub async fn scan(&self, request: &StreamScanRequestBody) -> Result<StreamScanResponseBody> {
         request.validate()?;
         let outcome = self.transport.scan(request).await?;
         outcome.validate_for_request(request)?;
@@ -676,7 +694,7 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
     /// [`Self::resolve_verified_authority`] before any authority decision.
     pub async fn resolve_authority(
         &self,
-        request: &AuthorityBundleRequest,
+        request: &RealmAuthorityBundleRequestBody,
     ) -> Result<RealmAuthorityBundle> {
         request.validate()?;
         let bundle = self.transport.authority_bundle(request).await?;
@@ -689,7 +707,7 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
     /// be installed in a replica or used to authenticate scan rows.
     pub async fn resolve_verified_authority(
         &self,
-        request: &AuthorityBundleRequest,
+        request: &RealmAuthorityBundleRequestBody,
         freshness: &RealmAuthorityFreshness,
         keys: &dyn RealmAuthorityKeyDirectory,
     ) -> Result<RealmAuthorityBundle> {
@@ -706,7 +724,7 @@ impl<T: AuthorityTransport> AuthorityClient<T> {
 
     pub async fn install_handoff(
         &self,
-        request: &AuthorityHandoffRequest,
+        request: &AuthorityRealmAuthorityHandoffRequestBody,
         options: &ClientRequestOptions,
     ) -> Result<RealmAuthorityHandoff> {
         request.validate_new_handoff()?;
@@ -746,7 +764,7 @@ mod acceptance_proof_tests {
                 principal_endpoint: &url::Url::parse("https://governance.example/").unwrap(),
                 local_id: "service",
                 also_known_as: &[],
-                version_time: now - Duration::minutes(1),
+                version_created_at: now - Duration::minutes(1),
                 did_key_fragment: Some("realm-authority"),
             },
             &[91; 32],
@@ -898,13 +916,13 @@ mod acceptance_proof_tests {
             event: ordinary,
             commit: ordinary_commit,
         };
-        let locator_request = StreamScanRequest {
+        let locator_request = StreamScanRequestBody {
             realm_id: realm_id.clone(),
             stream_ref: stream_ref.clone(),
             direction: arkret_wire::StreamScanDirection::Before(None),
             limit: 1,
         };
-        let mut locator_page = StreamScanOutcome {
+        let mut locator_page = StreamScanResponseBody {
             committed_events: vec![arkret_wire::CommittedEventView::Full(item.clone())],
             readable_floor: None,
             truncated: true,
@@ -946,7 +964,7 @@ mod acceptance_proof_tests {
             .is_err()
         );
         let mut forged = item.clone();
-        forged.commit.signature.sig =
+        forged.commit.signature.signature =
             arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode([0_u8; 64]))
                 .unwrap();
         assert!(verify_accepted_items(&[forged.clone()], &bundle, &freshness, &keys).is_err());

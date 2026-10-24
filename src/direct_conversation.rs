@@ -2,7 +2,7 @@
 
 use arkret_models_collaboration::direct_conversation::{
     DirectConversationCoordinates, DirectConversationFoundingInput,
-    DirectConversationResolveOutcome, DirectConversationSendBlocker,
+    DirectConversationResolveResponseBody, DirectConversationSendBlocker,
 };
 
 /// Product action after resolving the pair against current authority state.
@@ -29,30 +29,30 @@ pub enum DirectConversationAction {
 
 #[must_use]
 pub fn direct_conversation_action(
-    outcome: &DirectConversationResolveOutcome,
+    outcome: &DirectConversationResolveResponseBody,
 ) -> DirectConversationAction {
     match outcome {
-        DirectConversationResolveOutcome::CreationRequired {
+        DirectConversationResolveResponseBody::CreationRequired {
             next_founding_input,
         } => DirectConversationAction::SubmitCreation {
             next_founding_input: Box::new(next_founding_input.clone()),
         },
-        DirectConversationResolveOutcome::CreationBlocked { blockers } => {
+        DirectConversationResolveResponseBody::CreationBlocked { blockers } => {
             DirectConversationAction::Blocked {
                 blockers: blockers.clone(),
             }
         }
-        DirectConversationResolveOutcome::AwaitingFounder { retry_after_ms } => {
+        DirectConversationResolveResponseBody::AwaitingFounder { retry_after_ms } => {
             DirectConversationAction::AwaitFounder {
                 retry_after_ms: *retry_after_ms,
             }
         }
-        DirectConversationResolveOutcome::Provisional { coordinates, .. }
-        | DirectConversationResolveOutcome::Found { coordinates, .. }
-        | DirectConversationResolveOutcome::Suspended { coordinates, .. } => {
+        DirectConversationResolveResponseBody::Provisional { coordinates, .. }
+        | DirectConversationResolveResponseBody::Found { coordinates, .. }
+        | DirectConversationResolveResponseBody::Suspended { coordinates, .. } => {
             DirectConversationAction::Existing(coordinates.clone())
         }
-        DirectConversationResolveOutcome::TemporarilyUnavailable { retry_after_ms } => {
+        DirectConversationResolveResponseBody::TemporarilyUnavailable { retry_after_ms } => {
             DirectConversationAction::RetryResolve {
                 retry_after_ms: *retry_after_ms,
             }

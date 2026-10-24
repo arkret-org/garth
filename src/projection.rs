@@ -16,7 +16,7 @@ use arkret_models_collaboration::sync_frames::account_subscribe::{
     AccountSubscribeFrameKind, AgentDraftPendingIntentContainer, NotificationDelta, RealmSyncEntry,
     StationCasAccountDataContainer,
 };
-use arkret_models_collaboration::sync_frames::current_results::AccountCurrentView;
+use arkret_models_collaboration::sync_frames::current_states::AccountStateView;
 use arkret_wire::{
     CommitStreamHead, CommitStreamRef, CommittedEventRef, CommittedEventView, Event, EventKind,
     RealmCommit, RealmId, RealmStateSnapshot,
@@ -93,7 +93,7 @@ pub enum ClientEvent {
     RealmProjection {
         realm_id: RealmId,
         incremental: bool,
-        value: Box<AccountCurrentView>,
+        value: Box<AccountStateView>,
     },
     /// The current signed typed snapshot the Station published for a Realm.
     RealmSnapshot(Box<RealmStateSnapshot>),
@@ -364,7 +364,7 @@ pub fn account_frame_to_client_events(
         ..AccountUpdateContext::default()
     };
     if let Some(to_device) = &frame.to_device {
-        context.to_device_ack_token = to_device.ack_token.clone();
+        context.to_device_ack_token = to_device.acknowledgement_token.clone();
         context.to_device_limited = to_device.limited.unwrap_or(false);
         context.to_device_next_cursor = to_device.next_cursor.clone();
         context.to_device_lost = to_device.lost.unwrap_or(false);
@@ -474,7 +474,7 @@ fn validate_realm_entry_bindings(realm_id: &RealmId, entry: &RealmSyncEntry) -> 
         && (&current.realm_id != realm_id || !heads_belong_to_realm(&current.stream_heads))
     {
         return Err(Error::Protocol(
-            "typed current result is not bound to its Realm bucket".to_owned(),
+            "current state is not bound to its Realm bucket".to_owned(),
         ));
     }
 
@@ -491,7 +491,7 @@ fn validate_realm_entry_bindings(realm_id: &RealmId, entry: &RealmSyncEntry) -> 
             && !same_stream_heads(&current.stream_heads, &baseline.coverage.stream_heads)
         {
             return Err(Error::Protocol(
-                "typed current result and baseline cover different stream heads".to_owned(),
+                "current state and baseline cover different stream heads".to_owned(),
             ));
         }
     }
@@ -528,7 +528,7 @@ fn validate_realm_entry_bindings(realm_id: &RealmId, entry: &RealmSyncEntry) -> 
                 _ => {}
             }
             // A window may reference a snapshot from an earlier authority
-            // generation than the typed current result, and sibling streams
+            // generation than the current state, and sibling streams
             // may have distinct historical anchors. This shape validator must
             // not promote either claim to verified input: the consuming lane
             // checks each exact snapshot against the fresh authority chain.
@@ -594,7 +594,7 @@ mod tests {
     use arkret_models_collaboration::sync_frames::account_sync::{
         RealmStreamWindow, StreamWindowStartBasis,
     };
-    use arkret_models_collaboration::sync_frames::current_results::AccountCurrentCoverage;
+    use arkret_models_collaboration::sync_frames::current_states::AccountCurrentCoverage;
     use arkret_wire::{
         CircleId, CommittedEventFullView, CommittedEventWithheldView, EventDisclosure,
         EventDisclosureStatus, EventId, RealmCommitId, RealmSnapshotId, ScopeRef, StrandId,
@@ -644,8 +644,8 @@ mod tests {
         }
     }
 
-    fn current(heads: Vec<CommitStreamHead>) -> AccountCurrentView {
-        AccountCurrentView {
+    fn current(heads: Vec<CommitStreamHead>) -> AccountStateView {
+        AccountStateView {
             realm_id: realm_id(),
             governance_generation: 7,
             stream_heads: heads,
@@ -745,11 +745,11 @@ mod tests {
     }
 
     #[test]
-    fn a_current_result_from_another_realm_is_refused_before_host_projection() {
+    fn a_current_state_from_another_realm_is_refused_before_host_projection() {
         let foreign_realm =
             RealmId::from_event_id(&EventId::from_digest(DigestSuite::Sha256, [0x66; 32]));
         let entry = RealmSyncEntry {
-            current: Some(AccountCurrentView {
+            current: Some(AccountStateView {
                 realm_id: foreign_realm,
                 governance_generation: 7,
                 stream_heads: Vec::new(),
@@ -803,7 +803,7 @@ mod tests {
     }
 
     #[test]
-    fn preview_window_and_bound_current_result_reach_the_host_together() {
+    fn preview_window_and_bound_current_state_reach_the_host_together() {
         let head = stream_head(7);
         let entry = RealmSyncEntry {
             streams: Some(vec![RealmStreamWindow {

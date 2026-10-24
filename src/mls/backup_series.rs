@@ -4,7 +4,7 @@
 //! predecessor's `backup_id` and pins that predecessor's signature-independent
 //! canonical digest. A restoring client MUST walk the chain back to genesis
 //! before trusting the tail, otherwise a Station can roll the series back,
-//! forge a high `series_seq`, or withhold an intermediate envelope. The walk is
+//! forge a high `series_sequence`, or withhold an intermediate envelope. The walk is
 //! pure wire-shape verification, so it belongs to every client rather than to
 //! one host.
 
@@ -17,7 +17,7 @@ use crate::executor::{HostClock, SystemClock};
 use crate::{Error, Result};
 
 /// `sha256:<hex>` over the canonical bytes of a backup envelope with its
-/// `auth_data.signature` stripped, so the digest stays stable across
+/// `signature_proof.signature` stripped, so the digest stays stable across
 /// (re)signing. This is what a successor pins in `supersedes_digest`.
 pub fn series_supersedes_digest(previous: &KeyBackup) -> Result<Hash> {
     let bytes = previous
@@ -42,9 +42,9 @@ pub fn fresh_backup_id() -> Result<BackupId> {
 
 /// Verify a key-backup series chain from `tail` back to genesis.
 ///
-/// `tail` is the highest-`series_seq` envelope selected for the series and
+/// `tail` is the highest-`series_sequence` envelope selected for the series and
 /// `all` is the full candidate set returned by the Station. The chain is valid
-/// only when every `series_seq` in `0..=tail` is present exactly once, each
+/// only when every `series_sequence` in `0..=tail` is present exactly once, each
 /// successor's `supersedes_id` names the immediate predecessor's `backup_id`,
 /// and each `supersedes_digest` matches that predecessor's canonical digest.
 ///
@@ -57,36 +57,39 @@ pub fn verify_series_chain(tail: &KeyBackup, all: &[KeyBackup]) -> Result<()> {
         if &backup.series_id != series_id {
             continue;
         }
-        if by_seq.insert(backup.series_seq, backup).is_some() {
+        if by_seq.insert(backup.series_sequence, backup).is_some() {
             return Err(broken(format!(
-                "duplicate series_seq {} in series {series_id}",
-                backup.series_seq
+                "duplicate series_sequence {} in series {series_id}",
+                backup.series_sequence
             )));
         }
     }
-    for seq in 0..=tail.series_seq {
-        let Some(backup) = by_seq.get(&seq) else {
+    for sequence in 0..=tail.series_sequence {
+        let Some(backup) = by_seq.get(&sequence) else {
             return Err(broken(format!(
-                "missing series_seq {seq} in series {series_id}"
+                "missing series_sequence {sequence} in series {series_id}"
             )));
         };
         backup
             .validate()
-            .map_err(|error| broken(format!("series_seq {seq} is invalid: {error}")))?;
-        if seq == 0 {
+            .map_err(|error| broken(format!("series_sequence {sequence} is invalid: {error}")))?;
+        if sequence == 0 {
             continue;
         }
-        let previous = by_seq
-            .get(&(seq - 1))
-            .ok_or_else(|| broken(format!("missing predecessor series_seq {}", seq - 1)))?;
+        let previous = by_seq.get(&(sequence - 1)).ok_or_else(|| {
+            broken(format!(
+                "missing predecessor series_sequence {}",
+                sequence - 1
+            ))
+        })?;
         if backup.supersedes_id.as_ref() != Some(&previous.backup_id) {
             return Err(broken(format!(
-                "series_seq {seq} supersedes_id does not name its predecessor"
+                "series_sequence {sequence} supersedes_id does not name its predecessor"
             )));
         }
         if backup.supersedes_digest.as_ref() != Some(&series_supersedes_digest(previous)?) {
             return Err(broken(format!(
-                "series_seq {seq} supersedes_digest mismatch"
+                "series_sequence {sequence} supersedes_digest mismatch"
             )));
         }
     }
@@ -100,9 +103,10 @@ fn broken(detail: String) -> Error {
 #[cfg(test)]
 mod tests {
     use arkret_models_crypto::{
-        BackupKind, KeyBackupAead, KeyBackupAeadName, KeyBackupAuthData, KeyBackupDomainSeparation,
+        BackupKind, KeyBackupAead, KeyBackupAeadName, KeyBackupDomainSeparation,
         KeyBackupEncryption, KeyBackupRecipientMethod, KeyBackupSignatureAlgorithm,
-        KeyBackupSourceCommitRef, SecretStorageContentIndex, SecretStorageItemKind,
+        KeyBackupSignatureProof, KeyBackupSourceCommitRef, SecretStorageContentIndex,
+        SecretStorageItemKind,
     };
     use arkret_wire::{BackupSeriesId, Base64UrlString, DidUrl, EventId, RealmCommitId};
 
@@ -113,16 +117,16 @@ mod tests {
         BackupSeriesId::new("ak:backup_series:0196419b-0000-7000-8000-000000000010").unwrap()
     }
 
-    fn backup_id(seq: u64) -> BackupId {
+    fn backup_id(sequence: u64) -> BackupId {
         BackupId::new(format!(
-            "ak:backup:0196419b-0000-7000-8000-00000000002{seq}"
+            "ak:backup:0196419b-0000-7000-8000-00000000002{sequence}"
         ))
         .unwrap()
     }
 
-    fn backup(seq: u64, previous: Option<&KeyBackup>) -> KeyBackup {
+    fn backup(sequence: u64, previous: Option<&KeyBackup>) -> KeyBackup {
         let mut value = KeyBackup {
-            backup_id: backup_id(seq),
+            backup_id: backup_id(sequence),
             actor_id: actor_id(),
             device_id: Some(device_id()),
             backup_kind: BackupKind::SecretStorage,
@@ -159,7 +163,7 @@ mod tests {
             ciphertext: Base64UrlString::new("AQID").unwrap(),
             ciphertext_digest: Hash::new(format!("sha256:{}", "b".repeat(64))).unwrap(),
             plaintext_commitment: None,
-            auth_data: KeyBackupAuthData {
+            signature_proof: KeyBackupSignatureProof {
                 device_id: device_id(),
                 verification_method: DidUrl::new("did:web:alice.example#key-1").unwrap(),
                 signature_algorithm: KeyBackupSignatureAlgorithm::Ed25519,
@@ -171,14 +175,14 @@ mod tests {
             },
             retention: None,
             series_id: series_id(),
-            series_seq: seq,
+            series_sequence: sequence,
             supersedes_id: None,
             supersedes_digest: None,
             source_commit_ref: Some(KeyBackupSourceCommitRef {
                 realm_commit_id: RealmCommitId::from_digest(
-                    [u8::try_from(seq).unwrap().wrapping_add(10); 32],
+                    [u8::try_from(sequence).unwrap().wrapping_add(10); 32],
                 ),
-                device_generation_ref: seq + 1,
+                device_generation_ref: sequence + 1,
             }),
             extra: Default::default(),
         };
@@ -243,6 +247,6 @@ mod tests {
         let second = backup(1, Some(&genesis));
         let error =
             verify_series_chain(&second, &[genesis.clone(), genesis, second.clone()]).unwrap_err();
-        assert!(error.to_string().contains("duplicate series_seq"));
+        assert!(error.to_string().contains("duplicate series_sequence"));
     }
 }

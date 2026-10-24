@@ -35,8 +35,8 @@ use arkret_models_collaboration::actor_profile_resolution::{
 use arkret_models_collaboration::objects::productivity::ContactRemark;
 use arkret_models_identity::actor_profile::ActorProfile;
 use arkret_models_identity::actor_profile_operations::{
-    ACTOR_PROFILE_RESOLVE_MAX_ACTORS, ActorProfileResolveOutcome, ActorProfileResolveRequest,
-    ResolvedActorProfile,
+    ACTOR_PROFILE_RESOLVE_MAX_ACTORS, ActorProfileResolveRequestBody,
+    ActorProfileResolveResponseBody, ResolvedActorProfile,
 };
 use arkret_wire::{ActorId, RealmId};
 use chrono::{DateTime, TimeDelta, Utc};
@@ -60,15 +60,15 @@ pub type BoxActorProfileFuture<'a, T> = Pin<Box<dyn Future<Output = Result<T>> +
 pub trait ActorProfileResolveTransport: MaybeSendSync {
     fn resolve_actor_profiles<'a>(
         &'a self,
-        request: &'a ActorProfileResolveRequest,
-    ) -> BoxActorProfileFuture<'a, ActorProfileResolveOutcome>;
+        request: &'a ActorProfileResolveRequestBody,
+    ) -> BoxActorProfileFuture<'a, ActorProfileResolveResponseBody>;
 }
 
 impl ActorProfileResolveTransport for arkret_http_client::Client {
     fn resolve_actor_profiles<'a>(
         &'a self,
-        request: &'a ActorProfileResolveRequest,
-    ) -> BoxActorProfileFuture<'a, ActorProfileResolveOutcome> {
+        request: &'a ActorProfileResolveRequestBody,
+    ) -> BoxActorProfileFuture<'a, ActorProfileResolveResponseBody> {
         Box::pin(async move {
             self.actor_profile_resolve(request)
                 .await
@@ -286,7 +286,7 @@ impl ActorProfileDirectory {
     {
         let pending = self.pending_refresh(realm_id, actor_ids, now);
         for chunk in pending.chunks(ACTOR_PROFILE_RESOLVE_MAX_ACTORS) {
-            let request = ActorProfileResolveRequest::new(realm_id.clone(), chunk.to_vec());
+            let request = ActorProfileResolveRequestBody::new(realm_id.clone(), chunk.to_vec());
             let outcome = transport.resolve_actor_profiles(&request).await?;
             self.record(realm_id, chunk, outcome, now);
         }
@@ -303,7 +303,7 @@ impl ActorProfileDirectory {
         &mut self,
         realm_id: &RealmId,
         requested: &[ActorId],
-        outcome: ActorProfileResolveOutcome,
+        outcome: ActorProfileResolveResponseBody,
         now: DateTime<Utc>,
     ) {
         let mut accounted: Vec<ActorId> = Vec::new();
@@ -454,12 +454,12 @@ mod tests {
 
     /// Records every request and replays scripted outcomes in order.
     struct ScriptedTransport {
-        requests: Mutex<Vec<ActorProfileResolveRequest>>,
-        outcomes: Mutex<VecDeque<ActorProfileResolveOutcome>>,
+        requests: Mutex<Vec<ActorProfileResolveRequestBody>>,
+        outcomes: Mutex<VecDeque<ActorProfileResolveResponseBody>>,
     }
 
     impl ScriptedTransport {
-        fn new(outcomes: Vec<ActorProfileResolveOutcome>) -> Self {
+        fn new(outcomes: Vec<ActorProfileResolveResponseBody>) -> Self {
             Self {
                 requests: Mutex::new(Vec::new()),
                 outcomes: Mutex::new(outcomes.into()),
@@ -474,8 +474,8 @@ mod tests {
     impl ActorProfileResolveTransport for ScriptedTransport {
         fn resolve_actor_profiles<'a>(
             &'a self,
-            request: &'a ActorProfileResolveRequest,
-        ) -> BoxActorProfileFuture<'a, ActorProfileResolveOutcome> {
+            request: &'a ActorProfileResolveRequestBody,
+        ) -> BoxActorProfileFuture<'a, ActorProfileResolveResponseBody> {
             self.requests
                 .lock()
                 .expect("transport lock")
@@ -487,15 +487,15 @@ mod tests {
         }
     }
 
-    fn resolved(row: ResolvedActorProfile) -> ActorProfileResolveOutcome {
-        ActorProfileResolveOutcome {
+    fn resolved(row: ResolvedActorProfile) -> ActorProfileResolveResponseBody {
+        ActorProfileResolveResponseBody {
             profiles: vec![row],
             failures: None,
         }
     }
 
-    fn unavailable(actor_id: ActorId) -> ActorProfileResolveOutcome {
-        ActorProfileResolveOutcome {
+    fn unavailable(actor_id: ActorId) -> ActorProfileResolveResponseBody {
+        ActorProfileResolveResponseBody {
             profiles: Vec::new(),
             failures: Some(vec![ActorProfileResolveFailure {
                 actor_id,
@@ -711,7 +711,7 @@ mod tests {
         directory.record(
             &realm,
             std::slice::from_ref(&actor),
-            ActorProfileResolveOutcome {
+            ActorProfileResolveResponseBody {
                 profiles: Vec::new(),
                 failures: None,
             },

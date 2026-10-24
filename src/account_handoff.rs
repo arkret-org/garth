@@ -7,17 +7,18 @@
 use std::collections::BTreeSet;
 
 use arkret_models_collaboration::account_operations::{
-    AccountRegisterOutcome, AccountRegisterRequestBody,
+    AccountRegisterRequestBody, AccountRegisterResponseBody,
 };
 use arkret_models_identity::{
-    AccountHandoffBinding, AccountHandoffOutcome, AccountHandoffRequestBody,
-    IdentityBindingChallengeOutcome, IdentityBindingChallengeRequestBody, IdentityBindingPurpose,
-    IdentityCreationCommandKind, IdentityCreationControlProofKind, IdentityCreationGoal,
-    IdentityCreationLease, IdentityCreationLeaseState, IdentityCreationLocalArtifactKind,
-    IdentityCreationRecoveryKeyState, IdentityCreationRegistration, InitialSessionGrantIntent,
-    PrincipalRegistrationAnchor, ReservedIdentityCreation,
-    UnsignedAccountHandoffAuthenticationProof, UnsignedAccountHandoffRequestBody,
-    UnsignedIdentityCreationControlProof, UnsignedIdentityCreationControlProofBody,
+    AccountHandoffBinding, AccountHandoffRequestBody, AccountHandoffResponseBody,
+    IdentityBindingChallengeRequestBody, IdentityBindingChallengeResponseBody,
+    IdentityBindingPurpose, IdentityCreationCommandKind, IdentityCreationControlProofKind,
+    IdentityCreationGoal, IdentityCreationLease, IdentityCreationLeaseState,
+    IdentityCreationLocalArtifactKind, IdentityCreationRecoveryKeyState,
+    IdentityCreationRegistration, InitialSessionGrantIntent, PrincipalRegistrationAnchor,
+    ReservedIdentityCreation, UnsignedAccountHandoffAuthenticationProof,
+    UnsignedAccountHandoffRequestBody, UnsignedIdentityCreationControlProof,
+    UnsignedIdentityCreationControlProofBody,
 };
 use arkret_wire::{
     Base64UrlString, DetachedSignatureAlgorithm, DeviceId, Did, DidCoreId, Hash, PcrGenesisUnit,
@@ -517,7 +518,7 @@ pub fn reconcile_identity_creation(
 }
 
 pub fn account_handoff_disposition(
-    outcome: &AccountHandoffOutcome,
+    outcome: &AccountHandoffResponseBody,
 ) -> Result<AccountHandoffDisposition> {
     outcome.validate()?;
     Ok(match &outcome.binding {
@@ -621,7 +622,7 @@ pub struct IdentityCreationBindingContext {
 /// Reconstruct the closed proof from the frozen request and authenticated context.
 /// The response contributes only fresh challenge material and its lifetime.
 pub fn identity_creation_register_request(
-    challenge: &IdentityBindingChallengeOutcome,
+    challenge: &IdentityBindingChallengeResponseBody,
     frozen_request: &IdentityBindingChallengeRequestBody,
     context: &IdentityCreationBindingContext,
     creation_events: PcrGenesisUnit,
@@ -731,7 +732,7 @@ pub fn identity_creation_register_request(
 /// Validate the only successful identity-creation terminal: the account is
 /// bound, PCR genesis has a verified receipt, and the first grant is Standard.
 pub fn validate_identity_creation_outcome(
-    outcome: &AccountRegisterOutcome,
+    outcome: &AccountRegisterResponseBody,
     request: &AccountRegisterRequestBody,
 ) -> Result<()> {
     outcome.validate_against_request(request)?;
@@ -780,7 +781,7 @@ mod tests {
                 principal_endpoint: &endpoint,
                 local_id: "lease-fixture",
                 also_known_as: &[],
-                version_time: arkret_canonical::normalize_timestamp_canonical(Utc::now()),
+                version_created_at: arkret_canonical::normalize_timestamp_canonical(Utc::now()),
                 root_seed: &[7; 32],
                 next_root_public_key_multibase: &next_root_public_key_multibase,
                 witness_policy: None,
@@ -1224,7 +1225,7 @@ mod tests {
 
     #[test]
     fn canonical_handoff_disposition_rejects_open_allowlist() {
-        let mut outcome = AccountHandoffOutcome {
+        let mut outcome = AccountHandoffResponseBody {
             request_id: RequestId::new(
                 "ak:request:01964137-0000-7000-8000-000000000001".to_owned(),
             )

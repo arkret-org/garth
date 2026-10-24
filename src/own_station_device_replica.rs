@@ -13,7 +13,7 @@ use super::*;
 #[derive(Clone)]
 enum DeviceLease {
     Snapshot(Arc<NativeResponse<RealmId, RealmStateSnapshot>>),
-    Scan(Arc<NativeResponse<StreamScanRequest, StreamScanOutcome>>),
+    Scan(Arc<NativeResponse<StreamScanRequestBody, StreamScanResponseBody>>),
 }
 impl DeviceLease {
     fn check(&self) -> Result<()> {
@@ -39,7 +39,7 @@ pub struct OwnStationDeviceReplica {
 }
 
 pub struct OwnStationDeviceScanPage {
-    response: Arc<NativeResponse<StreamScanRequest, StreamScanOutcome>>,
+    response: Arc<NativeResponse<StreamScanRequestBody, StreamScanResponseBody>>,
 }
 impl OwnStationDeviceScanPage {
     pub fn rows(&self) -> Result<&[CommittedEventView]> {
@@ -48,7 +48,7 @@ impl OwnStationDeviceScanPage {
     pub fn into_rows(self) -> Result<Vec<CommittedEventView>> {
         Ok(self.response.value()?.committed_events.clone())
     }
-    pub fn request(&self) -> &StreamScanRequest {
+    pub fn request(&self) -> &StreamScanRequestBody {
         self.response.request()
     }
     pub fn context(&self) -> &NativeContext {
@@ -164,7 +164,7 @@ impl OwnStationDeviceReplica {
         if expected.stream_ref != stream {
             return Err(protocol("native checkpoint belongs to another stream"));
         }
-        let request = StreamScanRequest {
+        let request = StreamScanRequestBody {
             realm_id: self.scope.realm_id().clone(),
             stream_ref: stream,
             direction: StreamScanDirection::Before(Some(
@@ -191,7 +191,7 @@ impl OwnStationDeviceReplica {
     pub async fn apply_bound_scan(
         &mut self,
         client: &NativeClient,
-        response: NativeResponse<StreamScanRequest, StreamScanOutcome>,
+        response: NativeResponse<StreamScanRequestBody, StreamScanResponseBody>,
     ) -> Result<OwnStationDeviceScanPage> {
         self.check_client(client)?;
         self.check_context(response.context())?;

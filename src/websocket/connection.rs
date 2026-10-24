@@ -675,13 +675,13 @@ mod tests {
             "kind": "welcome",
             "connection_id": CONNECTION_ID,
             "max_frame_bytes": 65536,
-            "max_channels": 16,
+            "max_channel_count": 16,
             "max_connection_pending_bytes": 65536,
             "max_channel_pending_bytes": 16384,
-            "max_connection_pending_frames": 128,
-            "max_channel_pending_frames": 32,
+            "max_connection_pending_frame_count": 128,
+            "max_channel_pending_frame_count": 32,
             "heartbeat_interval_ms": 30000,
-            "auth_expires_at": "2026-09-19T12:15:00.000Z"
+            "authentication_expires_at": "2026-09-19T12:15:00.000Z"
         }))
         .unwrap()
     }

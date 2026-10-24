@@ -170,7 +170,7 @@ impl MessageStreamProjection {
                     MessageStreamIgnoreReason::AwaitingInitialKeyframe,
                 ));
             };
-            if keyframe.seq != 0 {
+            if keyframe.sequence != 0 {
                 return Ok(MessageStreamApplyOutcome::Ignored(
                     MessageStreamIgnoreReason::AwaitingInitialKeyframe,
                 ));
@@ -212,7 +212,7 @@ impl MessageStreamProjection {
                     MessageStreamIgnoreReason::AwaitingHigherAttemptKeyframe,
                 ));
             };
-            if keyframe.seq != 0 {
+            if keyframe.sequence != 0 {
                 return Ok(MessageStreamApplyOutcome::Ignored(
                     MessageStreamIgnoreReason::AwaitingHigherAttemptKeyframe,
                 ));
@@ -222,12 +222,12 @@ impl MessageStreamProjection {
         }
 
         if existing.stream_id != *frame.stream_id() {
-            existing.highest_observed_seq = existing.highest_observed_seq.max(frame.seq());
+            existing.highest_observed_seq = existing.highest_observed_seq.max(frame.sequence());
             existing.status = MessageStreamPreviewStatus::Forked;
             existing.last_valid_at = observed_at;
             return Ok(MessageStreamApplyOutcome::Forked);
         }
-        existing.highest_observed_seq = existing.highest_observed_seq.max(frame.seq());
+        existing.highest_observed_seq = existing.highest_observed_seq.max(frame.sequence());
         if matches!(
             existing.status,
             MessageStreamPreviewStatus::Aborted | MessageStreamPreviewStatus::Forked
@@ -239,7 +239,7 @@ impl MessageStreamProjection {
 
         match frame {
             MessageStreamFrame::Keyframe(keyframe) => {
-                if keyframe.seq <= existing.last_content_seq {
+                if keyframe.sequence <= existing.last_content_seq {
                     return Ok(MessageStreamApplyOutcome::Ignored(
                         MessageStreamIgnoreReason::StaleSequence,
                     ));
@@ -251,18 +251,18 @@ impl MessageStreamProjection {
                 }
                 existing.text = keyframe.text.clone();
                 existing.truncated = keyframe.truncated;
-                existing.last_content_seq = keyframe.seq;
+                existing.last_content_seq = keyframe.sequence;
                 existing.last_valid_at = observed_at;
                 existing.status = MessageStreamPreviewStatus::Active;
                 Ok(MessageStreamApplyOutcome::Updated)
             }
             MessageStreamFrame::Delta(delta) => {
-                if delta.seq <= existing.last_content_seq {
+                if delta.sequence <= existing.last_content_seq {
                     return Ok(MessageStreamApplyOutcome::Ignored(
                         MessageStreamIgnoreReason::StaleSequence,
                     ));
                 }
-                if delta.base_seq != existing.last_content_seq {
+                if delta.base_sequence != existing.last_content_seq {
                     return Ok(MessageStreamApplyOutcome::Ignored(
                         MessageStreamIgnoreReason::DeltaGap,
                     ));
@@ -274,7 +274,7 @@ impl MessageStreamProjection {
                     ));
                 }
                 existing.text.push_str(&delta.text_append);
-                existing.last_content_seq = delta.seq;
+                existing.last_content_seq = delta.sequence;
                 existing.last_valid_at = observed_at;
                 existing.status = MessageStreamPreviewStatus::Active;
                 Ok(MessageStreamApplyOutcome::Updated)
@@ -381,8 +381,8 @@ fn activated(
         format: keyframe.format,
         text: keyframe.text.clone(),
         truncated: keyframe.truncated,
-        last_content_seq: keyframe.seq,
-        highest_observed_seq: keyframe.seq,
+        last_content_seq: keyframe.sequence,
+        highest_observed_seq: keyframe.sequence,
         status: MessageStreamPreviewStatus::Active,
         started_at: observed_at,
         last_valid_at: observed_at,
@@ -431,15 +431,15 @@ mod tests {
         .unwrap()
     }
 
-    fn keyframe(seq: u64, attempt: u32, stream: &str, text: &str) -> MessageStreamFrame {
+    fn keyframe(sequence: u64, attempt: u32, stream: &str, text: &str) -> MessageStreamFrame {
         MessageStreamFrame::Keyframe(
             MessageStreamKeyframe::new(
-                seq,
+                sequence,
                 strand(),
                 message_id(),
                 attempt,
                 stream_id(stream),
-                seq,
+                sequence,
                 MessageStreamFormat::Plain,
                 text,
                 false,
@@ -448,16 +448,16 @@ mod tests {
         )
     }
 
-    fn delta(seq: u64, base_seq: u64, stream: &str, append: &str) -> MessageStreamFrame {
+    fn delta(sequence: u64, base_sequence: u64, stream: &str, append: &str) -> MessageStreamFrame {
         MessageStreamFrame::Delta(
             MessageStreamDelta::new(
-                seq,
+                sequence,
                 strand(),
                 message_id(),
                 0,
                 stream_id(stream),
-                seq,
-                base_seq,
+                sequence,
+                base_sequence,
                 append,
             )
             .unwrap(),

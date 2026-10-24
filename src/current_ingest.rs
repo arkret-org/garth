@@ -99,12 +99,12 @@ pub fn validate_floor_product_rows(
     realm_id: &arkret_wire::RealmId,
     signed_head: &arkret_wire::CommitStreamHead,
     history_access: arkret_wire::HistoryAccess,
-    rows: &[arkret_wire::TypedCurrentRow],
+    rows: &[arkret_wire::CurrentState],
     genesis_revision: &arkret_wire::CurrentRevision,
     genesis_object: &serde_json::Value,
     genesis_actor: &arkret_wire::ActorId,
 ) -> crate::Result<()> {
-    arkret_models_collaboration::exact_current_results::validate_calendar_current_pairs(
+    arkret_models_collaboration::exact_current_state::validate_calendar_current_pairs(
         realm_id, rows,
     )
     .map_err(protocol)?;
@@ -113,7 +113,7 @@ pub fn validate_floor_product_rows(
         realm_id: realm_id.clone(),
     };
     let policy = rows.iter().find_map(|row| match row {
-        arkret_wire::TypedCurrentRow::Value {
+        arkret_wire::CurrentState::Value {
             selector: CurrentSelector::RealmPolicyBundle,
             value,
             ..
@@ -134,7 +134,7 @@ pub fn validate_floor_product_rows(
     let mut positions = Vec::new();
     let mut selectors = BTreeSet::new();
     for row in rows {
-        let arkret_wire::TypedCurrentRow::Value {
+        let arkret_wire::CurrentState::Value {
             selector,
             source_stream_ref,
             revision,
@@ -205,7 +205,7 @@ pub fn validate_floor_product_rows(
                         != serde_json::json!({
                                     "controller_actor_id": genesis_actor,
                                     "controller_epoch": 0,
-                                    "authority_generation": 0,
+                                    "authority_generation": "0",
                         "authority_event_ref": realm_id.event_id(),
                                 })
                 {
@@ -328,7 +328,7 @@ pub fn validate_floor_product_rows(
             CurrentSelector::MemberIdentityUpdates { member_id, segment } => {
                 // This family is Realm-local; the enclosing stream gate rejects
                 // a Circle source. Preserve every exact signed update payload.
-                closed_current_value::<arkret_models_identity::MemberIdentityUpdatesCurrentValue>(
+                closed_current_value::<arkret_models_identity::MemberIdentityUpdatesValue>(
                     value,
                     "member_identity_updates",
                 )?
@@ -349,7 +349,7 @@ pub fn validate_floor_product_rows(
                 }
             }
             CurrentSelector::MemberState { .. } => {
-                closed_current_value::<arkret_wire::MemberStateCurrent>(value, "member_state")?;
+                closed_current_value::<arkret_wire::MemberStateValue>(value, "member_state")?;
             }
             CurrentSelector::Sidecar { sidecar_id } => {
                 // The Sidecar object is created in the parent Realm stream;
@@ -411,7 +411,7 @@ pub fn validate_floor_product_rows(
                 }
             }
             CurrentSelector::MlsGroup { scope_ref } => {
-                let group: arkret_wire::MlsGroupCurrent = closed_current_value(value, "mls_group")?;
+                let group: arkret_wire::MlsGroupValue = closed_current_value(value, "mls_group")?;
                 if scope_ref
                     != &(arkret_wire::ScopeRef::Realm {
                         realm_id: realm_id.clone(),
@@ -534,7 +534,7 @@ pub fn validate_floor_product_rows(
                 // This authenticated snapshot row remains typed current state.
                 // Only the separate exact read can supply a self-watch CAS preimage.
                 closed_current_value::<
-                    arkret_models_collaboration::strand_watch_operations::StrandWatchCurrentValue,
+                    arkret_models_collaboration::strand_watch_operations::StrandWatchValue,
                 >(value, "strand_watch")?;
             }
             CurrentSelector::Rsvp { occurrence, .. } => {
@@ -568,7 +568,7 @@ pub fn validate_floor_product_rows(
             | CurrentSelector::CallModeration { call_id } => {
                 if !rows.iter().any(|row| {
                     matches!(row,
-                        arkret_wire::TypedCurrentRow::Value {
+                        arkret_wire::CurrentState::Value {
                             selector: CurrentSelector::CallState {call_id: found},
                             source_stream_ref: stream, ..
                         } if found == call_id && stream == source_stream_ref
@@ -745,7 +745,7 @@ pub fn validate_current_product(
     realm: &arkret_wire::RealmId,
 ) -> crate::Result<()> {
     for row in &snapshot.current_state_entries {
-        let arkret_wire::TypedCurrentRow::Value {
+        let arkret_wire::CurrentState::Value {
             selector,
             source_stream_ref,
             revision,
@@ -756,7 +756,7 @@ pub fn validate_current_product(
                 return Err(protocol("receipt policy belongs to another Realm"));
             }
             let current =
-                arkret_models_collaboration::events_payloads::ScopeReadReceiptPolicyCurrent {
+                arkret_models_collaboration::events_payloads::CurrentScopeReadReceiptPolicy {
                     selector: selector.clone(),
                     source_stream_ref: source_stream_ref.clone(),
                     revision: revision.clone(),
@@ -776,13 +776,13 @@ pub fn validate_current_product(
     let rows = snapshot
         .current_state_entries
         .iter()
-        .filter(|row| matches!(row, arkret_wire::TypedCurrentRow::Value { source_stream_ref, .. } if source_stream_ref == &stream))
+        .filter(|row| matches!(row, arkret_wire::CurrentState::Value { source_stream_ref, .. } if source_stream_ref == &stream))
         .cloned()
         .collect::<Vec<_>>();
     let (object, revision) = rows
         .iter()
         .find_map(|row| match row {
-            arkret_wire::TypedCurrentRow::Value {
+            arkret_wire::CurrentState::Value {
                 selector: arkret_wire::CurrentSelector::RealmGenesis,
                 value,
                 revision,
@@ -797,7 +797,7 @@ pub fn validate_current_product(
     let root = rows
         .iter()
         .find_map(|row| match row {
-            arkret_wire::TypedCurrentRow::Value {
+            arkret_wire::CurrentState::Value {
                 selector: arkret_wire::CurrentSelector::RealmAuthorityRoot,
                 value,
                 ..
@@ -824,7 +824,7 @@ pub fn validate_current_product(
 
 #[cfg(test)]
 mod tests {
-    use arkret_wire::{CurrentRevision, CurrentSelector, RealmCommitId, TypedCurrentRow};
+    use arkret_wire::{CurrentRevision, CurrentSelector, CurrentState, RealmCommitId};
     use serde_json::json;
 
     use super::*;
@@ -835,11 +835,11 @@ mod tests {
         origin: CurrentRevision,
         head: arkret_wire::CommitStreamHead,
         genesis: serde_json::Value,
-        rows: Vec<TypedCurrentRow>,
+        rows: Vec<CurrentState>,
     }
 
     impl FloorProductFixture {
-        fn validate(&self, rows: &[TypedCurrentRow]) -> crate::Result<()> {
+        fn validate(&self, rows: &[CurrentState]) -> crate::Result<()> {
             validate_floor_product_rows(
                 &self.realm,
                 &self.head,
@@ -896,19 +896,19 @@ mod tests {
             "default_effect":"deny", "created_by":actor, "created_at":"2026-09-16T00:00:00.000Z"
         });
         let rows = vec![
-            TypedCurrentRow::Value {
+            CurrentState::Value {
                 selector: CurrentSelector::RealmGenesis,
                 source_stream_ref: stream.clone(),
                 revision: origin.clone(),
                 value: genesis.clone(),
             },
-            TypedCurrentRow::Value {
+            CurrentState::Value {
                 selector: CurrentSelector::RealmAuthorityRoot,
                 source_stream_ref: stream.clone(),
                 revision: origin.clone(),
-                value: json!({"controller_actor_id":actor,"controller_epoch":0,"authority_generation":0,"authority_event_ref":realm.event_id()}),
+                value: json!({"controller_actor_id":actor,"controller_epoch":0,"authority_generation":"0","authority_event_ref":realm.event_id()}),
             },
-            TypedCurrentRow::Value {
+            CurrentState::Value {
                 selector: CurrentSelector::Policy {
                     policy_id: policy_id.clone(),
                 },
@@ -931,7 +931,7 @@ mod tests {
     fn signed_agent_policy_floor_preserves_sync_and_rejects_subject_rebinding() {
         let fixture = floor_product_fixture();
         let rows = fixture.rows.clone();
-        let validate = |rows: &[TypedCurrentRow]| fixture.validate(rows);
+        let validate = |rows: &[CurrentState]| fixture.validate(rows);
         validate(&rows).unwrap();
         for (field, value) in [
             (
@@ -950,7 +950,7 @@ mod tests {
             ("schema", json!("ak.schema.unknown.v1")),
         ] {
             let mut changed = rows.clone();
-            let TypedCurrentRow::Value { value: policy, .. } = &mut changed[2];
+            let CurrentState::Value { value: policy, .. } = &mut changed[2];
             policy[field] = value;
             assert!(
                 validate(&changed).is_err(),
@@ -1001,13 +1001,13 @@ mod tests {
         package.endpoint_policy.endpoints.push(AppletEndpointEntry {
             method: AppletEndpointMethod::Post,
             path: "/_arkret/edge/applet/transactions".into(),
-            auth: Some(AppletEndpointAuth::WebhookSignature),
+            authentication_kind: Some(AppletEndpointAuth::WebhookSignature),
             description: None,
             extra: Default::default(),
         });
         package.stamp_registration_epoch(&evidence).unwrap();
         package.stamp_package_digest().unwrap();
-        let method = package.webhook_auth.key_ref.clone();
+        let method = package.webhook_signature_policy.key_ref.clone();
         let signer = arkret_signatures::Ed25519PayloadSigner::new(key, did, method.clone());
         package.sign(&signer, &method).unwrap();
         let registration = package.to_registration(&evidence, None).unwrap();
@@ -1031,7 +1031,7 @@ mod tests {
         assert_eq!(registration.applet_id, other.applet_id);
         assert_ne!(registration.service_id, other.service_id);
         let mut rows = fixture.rows.clone();
-        rows.push(TypedCurrentRow::Value {
+        rows.push(CurrentState::Value {
             selector: CurrentSelector::AppletRegistration {
                 applet_id: registration.applet_id.clone(),
                 service_id: registration.service_id.clone(),
@@ -1047,7 +1047,7 @@ mod tests {
         let registration_index = rows.len() - 1;
         let expected = "signed Applet registration differs from its selector";
         let mut wrong_selector = rows.clone();
-        let TypedCurrentRow::Value {
+        let CurrentState::Value {
             selector: CurrentSelector::AppletRegistration { service_id, .. },
             ..
         } = &mut wrong_selector[registration_index]
@@ -1059,7 +1059,7 @@ mod tests {
             matches!(fixture.validate(&wrong_selector), Err(crate::Error::Protocol(detail)) if detail == expected)
         );
         let mut wrong_payload = rows;
-        let TypedCurrentRow::Value { value, .. } = &mut wrong_payload[registration_index];
+        let CurrentState::Value { value, .. } = &mut wrong_payload[registration_index];
         *value = serde_json::to_value(&other).unwrap();
         assert!(
             matches!(fixture.validate(&wrong_payload), Err(crate::Error::Protocol(detail)) if detail == expected)

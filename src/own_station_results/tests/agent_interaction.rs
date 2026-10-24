@@ -1,8 +1,8 @@
 use arkret_models_collaboration::agent_interaction::{
     AgentInteractionCurrentValue, AgentInteractionExactCurrentSelector, AgentInteractionMode,
 };
-use arkret_models_collaboration::exact_current_results::{
-    ExactCurrentResultEntry, ExactCurrentResultsReadOutcome, NeverWrittenExactCurrentSelector,
+use arkret_models_collaboration::exact_current_state::{
+    ExactCurrentStateEntry, ExactCurrentStateReadResponseBody, NeverWrittenExactCurrentSelector,
 };
 
 use super::*;
@@ -33,7 +33,7 @@ fn seal(mut snapshot: RealmStateSnapshot) -> RealmStateSnapshot {
 }
 
 fn never_written(snapshot: &RealmStateSnapshot) -> serde_json::Value {
-    serde_json::to_value(ExactCurrentResultsReadOutcome::NeverWritten {
+    serde_json::to_value(ExactCurrentStateReadResponseBody::NeverWritten {
         realm_id: snapshot.realm_id.clone(),
         governance_generation: snapshot.governance_generation,
         effective_stream_head: snapshot.visible_stream_heads[0].clone(),
@@ -62,7 +62,7 @@ async fn advancing_mode_cut_repeats_the_complete_read_before_accepting_never_wri
         .into_value()
         .unwrap();
     assert!(
-        matches!(result, ExactCurrentResultsReadOutcome::NeverWritten {
+        matches!(result, ExactCurrentStateReadResponseBody::NeverWritten {
         governance_generation: 1, effective_stream_head, ..
     } if effective_stream_head == after.visible_stream_heads[0])
     );
@@ -72,7 +72,7 @@ async fn advancing_mode_cut_repeats_the_complete_read_before_accepting_never_wri
     assert_eq!(
         requests
             .iter()
-            .filter(|path| path.contains("/current-results/exact"))
+            .filter(|path| path.contains("/current-state/exact"))
             .count(),
         2
     );
@@ -88,7 +88,7 @@ async fn a_public_mode_written_during_the_read_replaces_the_discarded_private_de
     let before = current(0, 0);
     let mut after = current(1, 1);
     let accepted = &after.visible_stream_heads[0];
-    after.current_state_entries.push(TypedCurrentRow::Value {
+    after.current_state_entries.push(CurrentState::Value {
         selector: arkret_wire::CurrentSelector::AgentInteraction {
             agent_account_id: account("agent"),
         },
@@ -115,10 +115,12 @@ async fn a_public_mode_written_during_the_read_replaces_the_discarded_private_de
         .unwrap()
         .into_value()
         .unwrap();
-    assert!(matches!(result, ExactCurrentResultsReadOutcome::Present {
-        entry: ExactCurrentResultEntry::AgentInteraction(entry), ..
+    assert!(
+        matches!(result, ExactCurrentStateReadResponseBody::Present {
+        entry: ExactCurrentStateEntry::AgentInteraction(entry), ..
     } if entry.value.interaction_mode == AgentInteractionMode::Public
-        && entry.value.controller_account_id == account("alice")));
+        && entry.value.controller_account_id == account("alice"))
+    );
     server.join().unwrap();
     assert_eq!(requests.lock().unwrap().len(), 4);
 }

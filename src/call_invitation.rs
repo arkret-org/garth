@@ -1,11 +1,11 @@
 //! Fresh holder-private full-value Consent consumption for one ringing cut.
 
 use arkret_http_client::own_station_results::{
-    BoundOwnStationResponse, ConsentCurrentReadAuthority, OwnStationResultClient,
+    BoundOwnStationResponse, ConsentCurrentReadAuthority, OwnStationStateClient,
 };
 use arkret_models_collaboration::call_invitation::CallInvitationEnvelope;
 use arkret_models_collaboration::consent_operations::{
-    ConsentCurrentReadOutcome, ConsentCurrentReadRequestBody,
+    ConsentCurrentReadRequestBody, ConsentCurrentReadResponseBody,
 };
 use arkret_wire::{AccountId, ActorId, CommitStreamHead, RealmId};
 use chrono::{DateTime, Utc};
@@ -15,7 +15,8 @@ use crate::{Error, Result};
 /// Retains the genuine authenticated response and targeted current rows for
 /// precisely one product attempt. It cannot be cloned into an admission cache.
 pub struct HolderCallConsent {
-    response: BoundOwnStationResponse<ConsentCurrentReadRequestBody, ConsentCurrentReadOutcome>,
+    response:
+        BoundOwnStationResponse<ConsentCurrentReadRequestBody, ConsentCurrentReadResponseBody>,
     invitation: CallInvitationEnvelope,
     authority_generation: u64,
 }
@@ -25,7 +26,7 @@ fn invalid(message: &str) -> Error {
 }
 
 fn check_heads(
-    snapshot: &ConsentCurrentReadOutcome,
+    snapshot: &ConsentCurrentReadResponseBody,
     generation: Option<u64>,
     known: &[CommitStreamHead],
 ) -> Result<()> {
@@ -58,7 +59,7 @@ pub struct HolderConsentKnownCut<'a> {
 }
 
 pub async fn read_holder_call_consent(
-    client: &OwnStationResultClient,
+    client: &OwnStationStateClient,
     holder: &AccountId,
     pcr: &RealmId,
     authority: &ConsentCurrentReadAuthority,
@@ -102,7 +103,8 @@ pub async fn read_holder_call_consent(
 impl HolderCallConsent {
     pub fn source(
         &self,
-    ) -> &BoundOwnStationResponse<ConsentCurrentReadRequestBody, ConsentCurrentReadOutcome> {
+    ) -> &BoundOwnStationResponse<ConsentCurrentReadRequestBody, ConsentCurrentReadResponseBody>
+    {
         &self.response
     }
     pub fn authority_generation(&self) -> Result<u64> {

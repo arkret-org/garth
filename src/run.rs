@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use arkret_models_collaboration::sync_frames::account_subscribe::{
-    AccountStreamInterrupt, AccountSubscribeSnapshotResult, SyncRequestBody,
+    AccountStreamInterrupt, AccountSubscribeParameters, AccountSubscribeSnapshotResult,
 };
 use arkret_retry::RetrySchedule;
 
@@ -39,11 +39,11 @@ pub trait TransportProvider {
     fn observe(&self, _event: RunEvent) {}
 
     /// Build a complete aggregate request from the last durable cursor.
-    fn account_request(&self, after: Option<String>) -> Result<SyncRequestBody> {
-        Ok(SyncRequestBody {
+    fn account_request(&self, after: Option<String>) -> Result<AccountSubscribeParameters> {
+        Ok(AccountSubscribeParameters {
             catchup: Some(after.is_none()),
             after,
-            ..SyncRequestBody::default()
+            ..AccountSubscribeParameters::default()
         })
     }
 
@@ -474,13 +474,13 @@ mod tests {
     #[derive(Debug)]
     struct ScriptedTransport {
         response: Mutex<Option<Result<AccountSubscribeSnapshotResult>>>,
-        requests: Arc<Mutex<Vec<SyncRequestBody>>>,
+        requests: Arc<Mutex<Vec<AccountSubscribeParameters>>>,
     }
 
     impl AccountSubscribeTransport for ScriptedTransport {
         async fn subscribe(
             &self,
-            request: &SyncRequestBody,
+            request: &AccountSubscribeParameters,
         ) -> Result<AccountSubscribeSnapshotResult> {
             self.requests.lock().unwrap().push(request.clone());
             self.response
@@ -502,7 +502,7 @@ mod tests {
         recovered: AtomicUsize,
         recovers: bool,
         provides: AtomicUsize,
-        requests: Arc<Mutex<Vec<SyncRequestBody>>>,
+        requests: Arc<Mutex<Vec<AccountSubscribeParameters>>>,
     }
 
     impl Provider {

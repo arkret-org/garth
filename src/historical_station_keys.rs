@@ -18,7 +18,7 @@ use arkret_models_identity::AuthenticatedServiceResolution;
 use arkret_signatures::PublicKeyMaterial;
 use arkret_wire::{
     DetachedObjectSignature, DidCoreId, RealmAuthorityBundle, RealmCommit, RealmStateSnapshot,
-    StreamScanOutcome,
+    StreamScanResponseBody,
 };
 use chrono::{DateTime, Utc};
 
@@ -35,7 +35,7 @@ fn protocol(error: impl std::fmt::Display) -> Error {
 
 fn signed_methods(
     bundle: &RealmAuthorityBundle,
-    scan: Option<&StreamScanOutcome>,
+    scan: Option<&StreamScanResponseBody>,
     snapshot: Option<&RealmStateSnapshot>,
 ) -> Result<Vec<SignedStationMethod>> {
     let mut methods = vec![SignedStationMethod {
@@ -135,7 +135,7 @@ fn historical_key_for_signature(
 /// exact ids; absent material remains an error, never a current-key fallback.
 pub fn required_historical_station_ids(
     bundle: &RealmAuthorityBundle,
-    scan: Option<&StreamScanOutcome>,
+    scan: Option<&StreamScanResponseBody>,
     snapshot: Option<&RealmStateSnapshot>,
 ) -> Result<Vec<DidCoreId>> {
     let mut ids = signed_methods(bundle, scan, snapshot)?
@@ -152,7 +152,7 @@ pub fn required_historical_station_ids(
 /// is verified at the signature's historical coordinate.
 pub fn historical_station_key_directory(
     bundle: &RealmAuthorityBundle,
-    scan: Option<&StreamScanOutcome>,
+    scan: Option<&StreamScanResponseBody>,
     snapshot: Option<&RealmStateSnapshot>,
     resolutions: &BTreeMap<DidCoreId, AuthenticatedServiceResolution>,
 ) -> Result<RealmAuthorityKeyMap> {
@@ -205,7 +205,7 @@ fn key_directory_for_methods(
 pub async fn fetch_historical_station_key_directory(
     http: &Client,
     bundle: &RealmAuthorityBundle,
-    scan: Option<&StreamScanOutcome>,
+    scan: Option<&StreamScanResponseBody>,
     snapshot: Option<&RealmStateSnapshot>,
 ) -> Result<RealmAuthorityKeyMap> {
     fetch_keys_for_methods(http, bundle, signed_methods(bundle, scan, snapshot)?).await
@@ -310,7 +310,7 @@ mod tests {
                 principal_endpoint: &Url::parse("https://station.example/").unwrap(),
                 local_id: "service",
                 also_known_as: &[],
-                version_time: inception_at,
+                version_created_at: inception_at,
                 did_key_fragment: Some("realm-authority"),
             },
             &signing_seed,
@@ -334,7 +334,7 @@ mod tests {
             verification_method: DidUrl::new(prepared.did_key_id.clone()).unwrap(),
             signed_digest: Hash::new(format!("sha256:{}", "0".repeat(64))).unwrap(),
             created_at: inception_at + Duration::seconds(10),
-            sig: Base64UrlString::new("AA").unwrap(),
+            signature: Base64UrlString::new("AA").unwrap(),
         };
         let key =
             historical_key_for_signature(&resolution, &signature, signature.created_at).unwrap();
@@ -380,7 +380,7 @@ mod tests {
                 principal_endpoint: &Url::parse(&format!("https://{host}/")).unwrap(),
                 local_id: "service",
                 also_known_as: &[],
-                version_time: inception_at,
+                version_created_at: inception_at,
                 did_key_fragment: Some("notary-key"),
             },
             &[seed; 32],
@@ -608,7 +608,7 @@ mod tests {
             verification_method: method,
             signed_digest: Hash::new(format!("sha256:{}", "0".repeat(64))).unwrap(),
             created_at: at,
-            sig: Base64UrlString::new("AA").unwrap(),
+            signature: Base64UrlString::new("AA").unwrap(),
         };
         assert!(historical_key_for_signature(&resolution, &signature, at).is_err());
     }

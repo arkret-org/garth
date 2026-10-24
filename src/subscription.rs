@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use arkret_models_collaboration::sync_frames::account_subscribe::{
-    AccountSubscribeBatch, AccountSubscribeSnapshotResult, SyncRequestBody,
+    AccountSubscribeBatch, AccountSubscribeParameters, AccountSubscribeSnapshotResult,
 };
 use arkret_wire::{ActorId, DeviceId, DidCoreId};
 
@@ -17,12 +17,15 @@ use crate::{
 pub trait AccountSubscribeTransport: MaybeSendSync {
     fn subscribe<'a>(
         &'a self,
-        request: &'a SyncRequestBody,
+        request: &'a AccountSubscribeParameters,
     ) -> impl Future<Output = Result<AccountSubscribeSnapshotResult>> + MaybeSend + 'a;
 }
 
 impl AccountSubscribeTransport for arkret_http_client::Client {
-    async fn subscribe(&self, request: &SyncRequestBody) -> Result<AccountSubscribeSnapshotResult> {
+    async fn subscribe(
+        &self,
+        request: &AccountSubscribeParameters,
+    ) -> Result<AccountSubscribeSnapshotResult> {
         match self.account_subscribe_batch(request).await {
             Ok(batch) => Ok(AccountSubscribeSnapshotResult::Batch(batch)),
             Err(arkret_http_client::Error::AccountStreamInterrupt(interrupt)) => {
@@ -141,7 +144,7 @@ where
         service_id: Option<DidCoreId>,
         actor_id: ActorId,
         device_id: DeviceId,
-        mut request: SyncRequestBody,
+        mut request: AccountSubscribeParameters,
     ) -> Result<SubscriptionStopReason>
     where
         T: AccountSubscribeTransport + ?Sized,
@@ -306,7 +309,7 @@ mod tests {
     #[derive(Debug)]
     struct ScriptedTransport {
         responses: Mutex<VecDeque<Result<AccountSubscribeSnapshotResult>>>,
-        requests: Mutex<Vec<SyncRequestBody>>,
+        requests: Mutex<Vec<AccountSubscribeParameters>>,
         calls: AtomicUsize,
         cancel_on_call: Option<SubscriptionControl>,
     }
@@ -337,7 +340,7 @@ mod tests {
     impl AccountSubscribeTransport for ScriptedTransport {
         async fn subscribe(
             &self,
-            request: &SyncRequestBody,
+            request: &AccountSubscribeParameters,
         ) -> Result<AccountSubscribeSnapshotResult> {
             request.validate()?;
             self.requests.lock().unwrap().push(request.clone());
@@ -463,7 +466,7 @@ mod tests {
                     None,
                     actor_id(),
                     device_id(),
-                    SyncRequestBody::default(),
+                    AccountSubscribeParameters::default(),
                 )
                 .await;
             if failures == 1 {
@@ -524,7 +527,7 @@ mod tests {
                     None,
                     actor_id(),
                     device_id(),
-                    SyncRequestBody::default(),
+                    AccountSubscribeParameters::default(),
                 )
                 .await;
             assert!(matches!(result, Err(Error::Protocol(_))));
@@ -580,7 +583,7 @@ mod tests {
                     None,
                     actor_id(),
                     device_id(),
-                    SyncRequestBody::default()
+                    AccountSubscribeParameters::default()
                 )
                 .await,
             Err(Error::StreamPositionGap {
@@ -642,7 +645,7 @@ mod tests {
                     None,
                     actor_id(),
                     device_id(),
-                    SyncRequestBody {
+                    AccountSubscribeParameters {
                         filter: Some(Default::default()),
                         replace_filter: Some(true),
                         ..Default::default()
@@ -700,7 +703,7 @@ mod tests {
                 None,
                 actor_id(),
                 device_id(),
-                SyncRequestBody::default(),
+                AccountSubscribeParameters::default(),
             )
             .await
             .unwrap();
@@ -755,7 +758,7 @@ mod tests {
                     None,
                     actor_id(),
                     device_id(),
-                    SyncRequestBody::default()
+                    AccountSubscribeParameters::default()
                 )
                 .await
                 .is_err()
@@ -780,7 +783,7 @@ mod tests {
                 None,
                 actor_id(),
                 device_id(),
-                SyncRequestBody::default(),
+                AccountSubscribeParameters::default(),
             )
             .await
             .unwrap();
@@ -812,7 +815,7 @@ mod tests {
                 None,
                 actor_id(),
                 device_id(),
-                SyncRequestBody::default(),
+                AccountSubscribeParameters::default(),
             )
             .await
             .unwrap();
@@ -839,7 +842,7 @@ mod tests {
                 None,
                 actor_id(),
                 device_id(),
-                SyncRequestBody::default(),
+                AccountSubscribeParameters::default(),
             )
             .await
             .unwrap();
@@ -867,7 +870,7 @@ mod tests {
                 None,
                 actor_id(),
                 device_id(),
-                SyncRequestBody::default(),
+                AccountSubscribeParameters::default(),
             )
             .await
             .unwrap();
@@ -899,7 +902,7 @@ mod tests {
                 None,
                 actor_id(),
                 device_id(),
-                SyncRequestBody::default(),
+                AccountSubscribeParameters::default(),
             )
             .await
             .unwrap();
@@ -932,7 +935,7 @@ mod tests {
                     None,
                     actor_id(),
                     device_id(),
-                    SyncRequestBody::default(),
+                    AccountSubscribeParameters::default(),
                 )
                 .await
                 .is_err()

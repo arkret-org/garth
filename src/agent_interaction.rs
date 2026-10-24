@@ -7,12 +7,12 @@
 
 use arkret_http_client::Client;
 use arkret_models_collaboration::agent_interaction::AgentInteractionExactCurrentSelector;
-use arkret_models_collaboration::exact_current_results::{
-    ExactCurrentResultEntry, ExactCurrentResultSelector, ExactCurrentResultsReadOutcome,
-    ExactCurrentResultsReadRequestBody,
+use arkret_models_collaboration::exact_current_state::{
+    ExactCurrentStateEntry, ExactCurrentStateReadRequestBody, ExactCurrentStateReadResponseBody,
+    ExactCurrentStateSelector,
 };
 use arkret_wire::{
-    AccountId, CommitStreamRef, CurrentSelector, RealmId, RealmStateSnapshot, TypedCurrentRow,
+    AccountId, CommitStreamRef, CurrentSelector, CurrentState, RealmId, RealmStateSnapshot,
 };
 
 use crate::{Error, Result};
@@ -21,10 +21,10 @@ pub async fn read_verified_agent_interaction(
     http: &Client,
     realm: &RealmId,
     agent: &AccountId,
-) -> Result<ExactCurrentResultsReadOutcome> {
-    let request = ExactCurrentResultsReadRequestBody {
+) -> Result<ExactCurrentStateReadResponseBody> {
+    let request = ExactCurrentStateReadRequestBody {
         realm_id: realm.clone(),
-        selector: ExactCurrentResultSelector::AgentInteraction(
+        selector: ExactCurrentStateSelector::AgentInteraction(
             AgentInteractionExactCurrentSelector::new(agent.clone()),
         ),
     };
@@ -33,7 +33,7 @@ pub async fn read_verified_agent_interaction(
         return Ok(outcome);
     }
     let outcome = http
-        .exact_current_result(&request, snapshot.governance_generation)
+        .exact_current_state(&request, snapshot.governance_generation)
         .await?;
     bind_to_snapshot(&request, &snapshot, &outcome)?;
     Ok(outcome)
@@ -43,10 +43,10 @@ pub async fn read_verified_agent_interaction(
 // selector, revision and current cut. Do not require a second service scope to
 // reread that same fact. Absence is never a never-written proof.
 pub(crate) fn present_from_snapshot(
-    request: &ExactCurrentResultsReadRequestBody,
+    request: &ExactCurrentStateReadRequestBody,
     snapshot: &RealmStateSnapshot,
-) -> Result<Option<ExactCurrentResultsReadOutcome>> {
-    let ExactCurrentResultSelector::AgentInteraction(selector) = &request.selector else {
+) -> Result<Option<ExactCurrentStateReadResponseBody>> {
+    let ExactCurrentStateSelector::AgentInteraction(selector) = &request.selector else {
         return Err(Error::Protocol(
             "Agent mode requires an Agent selector".into(),
         ));
@@ -55,7 +55,7 @@ pub(crate) fn present_from_snapshot(
         .current_state_entries
         .iter()
         .filter_map(|row| match row {
-            TypedCurrentRow::Value {
+            CurrentState::Value {
                 selector: CurrentSelector::AgentInteraction { agent_account_id },
                 source_stream_ref,
                 revision,
@@ -83,12 +83,12 @@ pub(crate) fn present_from_snapshot(
         .ok_or_else(|| Error::Protocol("Agent mode snapshot omits its Realm cut".into()))?;
     let value = serde_json::from_value(value.clone())
         .map_err(|error| Error::Protocol(format!("invalid Agent mode snapshot value: {error}")))?;
-    let outcome = ExactCurrentResultsReadOutcome::Present {
+    let outcome = ExactCurrentStateReadResponseBody::Present {
         realm_id: snapshot.realm_id.clone(),
         governance_generation: snapshot.governance_generation,
         effective_stream_head: head.clone(),
-        entry: ExactCurrentResultEntry::AgentInteraction(
-            arkret_models_collaboration::agent_interaction::AgentInteractionExactCurrentRow {
+        entry: ExactCurrentStateEntry::AgentInteraction(
+            arkret_models_collaboration::agent_interaction::CurrentAgentInteraction {
                 selector: selector.clone(),
                 source_stream_ref: source_stream_ref.clone(),
                 revision: revision.clone(),
@@ -101,9 +101,9 @@ pub(crate) fn present_from_snapshot(
 }
 
 fn bind_to_snapshot(
-    request: &ExactCurrentResultsReadRequestBody,
+    request: &ExactCurrentStateReadRequestBody,
     snapshot: &RealmStateSnapshot,
-    outcome: &ExactCurrentResultsReadOutcome,
+    outcome: &ExactCurrentStateReadResponseBody,
 ) -> Result<()> {
     if snapshot.realm_id != request.realm_id {
         return Err(Error::Protocol(
@@ -129,11 +129,11 @@ fn bind_to_snapshot(
         ));
     }
     let effective = match outcome {
-        ExactCurrentResultsReadOutcome::Present {
+        ExactCurrentStateReadResponseBody::Present {
             effective_stream_head,
             ..
         }
-        | ExactCurrentResultsReadOutcome::NeverWritten {
+        | ExactCurrentStateReadResponseBody::NeverWritten {
             effective_stream_head,
             ..
         } => effective_stream_head,
@@ -148,7 +148,7 @@ fn bind_to_snapshot(
 
 #[cfg(test)]
 mod tests {
-    use arkret_models_collaboration::exact_current_results::NeverWrittenExactCurrentSelector;
+    use arkret_models_collaboration::exact_current_state::NeverWrittenExactCurrentSelector;
     use arkret_wire::{CommitStreamHead, RealmCommitId};
 
     use super::*;
@@ -161,9 +161,9 @@ mod tests {
             arkret_wire::DidCoreId::new("ak:did_core:web:station.example").unwrap(),
         );
         let selector = AgentInteractionExactCurrentSelector::new(agent);
-        let request = ExactCurrentResultsReadRequestBody {
+        let request = ExactCurrentStateReadRequestBody {
             realm_id: realm.clone(),
-            selector: ExactCurrentResultSelector::AgentInteraction(selector.clone()),
+            selector: ExactCurrentStateSelector::AgentInteraction(selector.clone()),
         };
         let head = CommitStreamHead {
             stream_ref: CommitStreamRef::Realm {
@@ -192,7 +192,7 @@ mod tests {
                 arkret_wire::DetachedSignatureContext::RealmSnapshot,
             ),
         };
-        let outcome = ExactCurrentResultsReadOutcome::NeverWritten {
+        let outcome = ExactCurrentStateReadResponseBody::NeverWritten {
             realm_id: realm,
             governance_generation: 2,
             effective_stream_head: head,
@@ -207,7 +207,7 @@ mod tests {
         snapshot.visible_stream_heads.clear();
         assert!(bind_to_snapshot(&request, &snapshot, &outcome).is_err());
 
-        let ExactCurrentResultsReadOutcome::NeverWritten {
+        let ExactCurrentStateReadResponseBody::NeverWritten {
             effective_stream_head,
             ..
         } = &outcome
@@ -215,10 +215,10 @@ mod tests {
             unreachable!();
         };
         snapshot.visible_stream_heads = vec![effective_stream_head.clone()];
-        let ExactCurrentResultSelector::AgentInteraction(selector) = &request.selector else {
+        let ExactCurrentStateSelector::AgentInteraction(selector) = &request.selector else {
             unreachable!();
         };
-        let row = TypedCurrentRow::Value {
+        let row = CurrentState::Value {
             selector: CurrentSelector::AgentInteraction {
                 agent_account_id: selector.agent_account_id.clone(),
             },
@@ -241,7 +241,7 @@ mod tests {
         snapshot.current_state_entries = vec![row.clone()];
         assert!(matches!(
             present_from_snapshot(&request, &snapshot).unwrap(),
-            Some(ExactCurrentResultsReadOutcome::Present { .. })
+            Some(ExactCurrentStateReadResponseBody::Present { .. })
         ));
         snapshot.current_state_entries.push(row.clone());
         assert!(present_from_snapshot(&request, &snapshot).is_err());
@@ -252,16 +252,16 @@ mod tests {
             serde_json::json!({"controller_account_id": selector.agent_account_id, "interaction_mode": "public", "scope_ref": {}}),
         ] {
             let mut bad = snapshot.clone();
-            let TypedCurrentRow::Value { value, .. } = &mut bad.current_state_entries[0];
+            let CurrentState::Value { value, .. } = &mut bad.current_state_entries[0];
             *value = bad_value;
             assert!(present_from_snapshot(&request, &bad).is_err());
         }
         let mut bad = snapshot.clone();
-        let TypedCurrentRow::Value { revision, .. } = &mut bad.current_state_entries[0];
+        let CurrentState::Value { revision, .. } = &mut bad.current_state_entries[0];
         revision.stream_position += 1;
         assert!(present_from_snapshot(&request, &bad).is_err());
         let mut bad = snapshot.clone();
-        let TypedCurrentRow::Value {
+        let CurrentState::Value {
             source_stream_ref, ..
         } = &mut bad.current_state_entries[0];
         *source_stream_ref = CommitStreamRef::Realm {

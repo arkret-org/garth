@@ -4,7 +4,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use arkret_models_collaboration::session_grants::{
-    SessionGrantOutcome, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
+    SessionGrantRefreshRequestBody, SessionGrantRequestBody, SessionGrantResponseBody,
 };
 use arkret_wire::{AccountId, DeviceId, DidCoreId, SessionGrantId};
 use chrono::{DateTime, Utc};
@@ -26,19 +26,19 @@ pub trait SessionGrantTransport: crate::MaybeSendSync {
     fn issue_session_grant<'a>(
         &'a self,
         request: SessionGrantRequestBody,
-    ) -> BoxSessionFuture<'a, SessionGrantOutcome>;
+    ) -> BoxSessionFuture<'a, SessionGrantResponseBody>;
 
     fn refresh_session_grant<'a>(
         &'a self,
         request: SessionGrantRefreshRequestBody,
-    ) -> BoxSessionFuture<'a, SessionGrantOutcome>;
+    ) -> BoxSessionFuture<'a, SessionGrantResponseBody>;
 }
 
 impl SessionGrantTransport for arkret_http_client::Client {
     fn issue_session_grant<'a>(
         &'a self,
         request: SessionGrantRequestBody,
-    ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
+    ) -> BoxSessionFuture<'a, SessionGrantResponseBody> {
         Box::pin(async move {
             self.auth_issue_session_grant(&request)
                 .await
@@ -49,7 +49,7 @@ impl SessionGrantTransport for arkret_http_client::Client {
     fn refresh_session_grant<'a>(
         &'a self,
         request: SessionGrantRefreshRequestBody,
-    ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
+    ) -> BoxSessionFuture<'a, SessionGrantResponseBody> {
         Box::pin(async move {
             self.auth_refresh_session_grant(&request)
                 .await
@@ -147,7 +147,7 @@ impl SessionGrantState {
 
     pub fn from_initial_registration_outcome(
         request: &arkret_models_identity::InitialSessionGrantIntent,
-        outcome: SessionGrantOutcome,
+        outcome: SessionGrantResponseBody,
         now: DateTime<Utc>,
     ) -> Result<Self> {
         if outcome.session_grant.trim().is_empty() || outcome.expires_at <= now {
@@ -528,7 +528,7 @@ fn refresh_request(
 
 fn state_from_issue_outcome(
     request: &SessionGrantRequestBody,
-    outcome: SessionGrantOutcome,
+    outcome: SessionGrantResponseBody,
     now: DateTime<Utc>,
 ) -> Result<SessionGrantState> {
     if outcome.session_grant.trim().is_empty() {
@@ -586,7 +586,7 @@ fn state_from_refresh_outcome(
     current: &SessionGrantState,
     request: &SessionGrantRefreshRequestBody,
     expected_dpop_jkt: &str,
-    outcome: SessionGrantOutcome,
+    outcome: SessionGrantResponseBody,
     now: DateTime<Utc>,
 ) -> Result<SessionGrantState> {
     if outcome.session_grant.trim().is_empty() {
@@ -680,11 +680,11 @@ pub(super) mod tests {
     use std::sync::{Arc, Mutex};
 
     use arkret_models_collaboration::session_grant_bodies::{
-        AgentSessionGrantRefreshRequest, AgentSessionRefreshProofContext,
+        AgentSessionGrantRefreshRequestBody, AgentSessionRefreshProofContext,
         UnsignedAgentSessionRefreshProof,
     };
     use arkret_models_collaboration::session_grants::{
-        SessionGrantAgentScopeRequest, SessionGrantDpopBindingProof,
+        RequestedAgentSessionGrantScope, SessionGrantDpopBindingProof,
     };
     use arkret_wire::{Base64UrlString, DidUrl, Hash, RealmId};
     use chrono::Duration;
@@ -721,7 +721,7 @@ pub(super) mod tests {
         fn issue_session_grant<'a>(
             &'a self,
             request: SessionGrantRequestBody,
-        ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
+        ) -> BoxSessionFuture<'a, SessionGrantResponseBody> {
             Box::pin(async move {
                 *self.clock.0.lock().unwrap() = self.response_at;
                 self.inner.issue_session_grant(request).await
@@ -731,7 +731,7 @@ pub(super) mod tests {
         fn refresh_session_grant<'a>(
             &'a self,
             request: SessionGrantRefreshRequestBody,
-        ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
+        ) -> BoxSessionFuture<'a, SessionGrantResponseBody> {
             Box::pin(async move {
                 *self.clock.0.lock().unwrap() = self.response_at;
                 self.inner.refresh_session_grant(request).await
@@ -743,19 +743,19 @@ pub(super) mod tests {
     struct MockSessionTransport {
         issue_requests: Arc<Mutex<Vec<SessionGrantRequestBody>>>,
         refresh_requests: Arc<Mutex<Vec<SessionGrantRefreshRequestBody>>>,
-        issue_responses: Arc<Mutex<VecDeque<Result<SessionGrantOutcome>>>>,
-        refresh_responses: Arc<Mutex<VecDeque<Result<SessionGrantOutcome>>>>,
+        issue_responses: Arc<Mutex<VecDeque<Result<SessionGrantResponseBody>>>>,
+        refresh_responses: Arc<Mutex<VecDeque<Result<SessionGrantResponseBody>>>>,
     }
 
     impl MockSessionTransport {
-        fn with_issue_responses(responses: Vec<Result<SessionGrantOutcome>>) -> Self {
+        fn with_issue_responses(responses: Vec<Result<SessionGrantResponseBody>>) -> Self {
             Self {
                 issue_responses: Arc::new(Mutex::new(VecDeque::from(responses))),
                 ..Self::default()
             }
         }
 
-        fn with_refresh_responses(responses: Vec<Result<SessionGrantOutcome>>) -> Self {
+        fn with_refresh_responses(responses: Vec<Result<SessionGrantResponseBody>>) -> Self {
             Self {
                 refresh_responses: Arc::new(Mutex::new(VecDeque::from(responses))),
                 ..Self::default()
@@ -775,7 +775,7 @@ pub(super) mod tests {
         fn issue_session_grant<'a>(
             &'a self,
             request: SessionGrantRequestBody,
-        ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
+        ) -> BoxSessionFuture<'a, SessionGrantResponseBody> {
             self.issue_requests.lock().unwrap().push(request);
             let response = self.issue_responses.lock().unwrap().pop_front().unwrap();
             Box::pin(async move { response })
@@ -784,7 +784,7 @@ pub(super) mod tests {
         fn refresh_session_grant<'a>(
             &'a self,
             request: SessionGrantRefreshRequestBody,
-        ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
+        ) -> BoxSessionFuture<'a, SessionGrantResponseBody> {
             self.refresh_requests.lock().unwrap().push(request);
             let response = self.refresh_responses.lock().unwrap().pop_front().unwrap();
             Box::pin(async move { response })
@@ -853,7 +853,7 @@ pub(super) mod tests {
             principal_id: principal_id(),
             requested_scope: vec!["ak.self.committed_event.stream.subscribe.v1".to_owned()],
             agent_key_authorization_ref: agent_key_authorization_ref(),
-            agent_scope_request: SessionGrantAgentScopeRequest {
+            agent_scope_request: RequestedAgentSessionGrantScope {
                 realm_ids: vec![
                     RealmId::new("ak:realm:AfF-hFqRoMbajXkPapH-xaq0xwK-UKt2ph2zTs9JZRAO").unwrap(),
                 ],
@@ -916,8 +916,8 @@ pub(super) mod tests {
         grant: SessionGrantId,
         principal_id: DidCoreId,
         device_id: Option<DeviceId>,
-    ) -> SessionGrantOutcome {
-        SessionGrantOutcome {
+    ) -> SessionGrantResponseBody {
+        SessionGrantResponseBody {
             account_id: AccountId::new(principal_id, audience()),
             device_id: device_id.clone(),
             session_grant: if device_id.is_none() {
@@ -977,7 +977,7 @@ pub(super) mod tests {
         .unwrap();
         SessionRefreshOptions {
             request: Some(SessionGrantRefreshRequestBody::Agent(
-                AgentSessionGrantRefreshRequest {
+                AgentSessionGrantRefreshRequestBody {
                     grant_jwt: grant_jwt.to_owned(),
                     audience_id: Some(audience()),
                     principal_id: principal_id(),
@@ -993,8 +993,8 @@ pub(super) mod tests {
         refresh_options_for(&active_state().grant_jwt)
     }
 
-    fn refresh_outcome(token: &str, grant: SessionGrantId) -> SessionGrantOutcome {
-        SessionGrantOutcome {
+    fn refresh_outcome(token: &str, grant: SessionGrantId) -> SessionGrantResponseBody {
+        SessionGrantResponseBody {
             session_grant_id: grant.clone(),
             account_id: AccountId::new(principal_id(), audience()),
             device_id: None,
@@ -1200,7 +1200,7 @@ pub(super) mod tests {
     async fn engine_rejects_unsafe_issue_outcomes_without_state() {
         let cases = vec![
             issue_outcome("", grant_id(20), principal_id(), None),
-            SessionGrantOutcome {
+            SessionGrantResponseBody {
                 expires_at: now() - Duration::seconds(1),
                 ..issue_outcome("grant-expired", grant_id(21), principal_id(), None)
             },
@@ -1400,21 +1400,21 @@ pub(super) mod tests {
         started: Arc<tokio::sync::Notify>,
         release: Arc<tokio::sync::Notify>,
         refresh_calls: Arc<Mutex<usize>>,
-        outcome: SessionGrantOutcome,
+        outcome: SessionGrantResponseBody,
     }
 
     impl SessionGrantTransport for GatedRefreshTransport {
         fn issue_session_grant<'a>(
             &'a self,
             _request: SessionGrantRequestBody,
-        ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
+        ) -> BoxSessionFuture<'a, SessionGrantResponseBody> {
             Box::pin(async move { Err(Error::Protocol("issue not expected".to_owned())) })
         }
 
         fn refresh_session_grant<'a>(
             &'a self,
             _request: SessionGrantRefreshRequestBody,
-        ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
+        ) -> BoxSessionFuture<'a, SessionGrantResponseBody> {
             *self.refresh_calls.lock().unwrap() += 1;
             let started = Arc::clone(&self.started);
             let release = Arc::clone(&self.release);

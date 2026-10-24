@@ -13,9 +13,9 @@ use arkret_identity::VerifiedSubmission;
 use arkret_models_crypto::ClientStepAttestationArtifact;
 pub use arkret_models_crypto::{
     ClientStepAttestation, PcrPolicyRecoveryPlan, RecoveryReceipt, RecoveryTerminalCommit,
-    RecoveryTransactionCreateRequest, SecurityTransaction, SecurityTransactionContinueRequest,
-    SecurityTransactionCreateRequest, SecurityTransactionPreparedPlan,
-    SecurityTransactionTerminalOutcome,
+    RecoveryTransactionCreateRequestBody, SecurityTransaction,
+    SecurityTransactionContinueRequestBody, SecurityTransactionCreateRequestBody,
+    SecurityTransactionPreparedPlan, SecurityTransactionTerminalOutcome,
 };
 use arkret_wire::{CommitStreamRef, CommittedEventRef, RealmId, TransactionId};
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,7 @@ use crate::{Error, MaybeSend, MaybeSendSync, Result};
 pub trait SecurityTransactionTransport: MaybeSendSync {
     fn create<'a>(
         &'a self,
-        request: &'a VerifiedSubmission<SecurityTransactionCreateRequest>,
+        request: &'a VerifiedSubmission<SecurityTransactionCreateRequestBody>,
     ) -> impl Future<Output = Result<SecurityTransaction>> + MaybeSend + 'a;
 
     fn get<'a>(
@@ -37,7 +37,7 @@ pub trait SecurityTransactionTransport: MaybeSendSync {
     fn continue_transaction<'a>(
         &'a self,
         transaction_id: &'a TransactionId,
-        request: &'a SecurityTransactionContinueRequest,
+        request: &'a SecurityTransactionContinueRequestBody,
     ) -> impl Future<Output = Result<SecurityTransaction>> + MaybeSend + 'a;
 }
 
@@ -306,7 +306,7 @@ where
 
     pub async fn create_or_resume(
         &self,
-        request: &VerifiedSubmission<SecurityTransactionCreateRequest>,
+        request: &VerifiedSubmission<SecurityTransactionCreateRequestBody>,
         staged_secret_ref: Option<String>,
     ) -> Result<SecurityTransaction> {
         request.validate()?;
@@ -360,7 +360,7 @@ where
     pub async fn continue_transaction(
         &self,
         transaction_id: &TransactionId,
-        request: &SecurityTransactionContinueRequest,
+        request: &SecurityTransactionContinueRequestBody,
     ) -> Result<SecurityTransaction> {
         let mut local = self.store.load(transaction_id)?.ok_or_else(|| {
             Error::Protocol("security transaction has no local public plan".to_owned())
@@ -441,7 +441,7 @@ where
         let Some(pending) = local.pending_continue else {
             return Ok(None);
         };
-        let request: SecurityTransactionContinueRequest =
+        let request: SecurityTransactionContinueRequestBody =
             serde_json::from_slice(&pending.canonical_request)?;
         if request.expected_accepted_step_count != pending.expected_accepted_step_count
             || arkret_canonical::canonical_json_bytes(&request)? != pending.canonical_request
@@ -603,7 +603,7 @@ mod tests {
             "identity_model": "pcr_policy",
             "recovery_authority_kind": "pcr_policy",
             "previous_model_generation_ref": 7,
-            "result_model_generation_ref": 8,
+            "new_model_generation_ref": 8,
             "authorization_event_id": "ak:event:AWKDhmQTc5zyfilaLwPF3xnhoZAjxSha7Z-6grioN9aW",
             "reanchor_event_id": "ak:event:AR8bu-n-kOOB3nRUvYuIEglCX5B-JpFaNTex9gxs_cWY",
             "proof_summary": {
@@ -615,7 +615,7 @@ mod tests {
             "outcome": "completed",
             "started_at": "2026-09-19T10:00:00.000Z",
             "completed_at": "2026-09-19T10:00:01.000Z",
-            "auth_data": {
+            "signature_proof": {
                 "verification_method": "did:web:alice.example#device-1",
                 "signature_algorithm": "Ed25519",
                 "signature": "AA"
@@ -758,7 +758,7 @@ mod tests {
     fn completed_recovery_receipt_conflicting_replay_is_rejected() {
         let receipt = completed_recovery_receipt();
         let mut conflicting = receipt.clone();
-        conflicting.auth_data.signature =
+        conflicting.signature_proof.signature =
             serde_json::from_value(serde_json::Value::String("AQ".to_owned())).unwrap();
         let mut state = durable_state();
 

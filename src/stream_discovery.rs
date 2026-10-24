@@ -3,8 +3,8 @@
 
 use std::collections::BTreeSet;
 
-use arkret_http_client::own_station_results::OwnStationResultClient;
-use arkret_wire::{RealmId, RealmStreamList, RealmStreamRow};
+use arkret_http_client::own_station_results::OwnStationStateClient;
+use arkret_wire::{RealmId, RealmStreamPage, RealmStreamRow};
 
 use crate::{Error, Result};
 
@@ -16,7 +16,7 @@ struct Enumeration {
 }
 
 impl Enumeration {
-    fn append(&mut self, realm: &RealmId, page: RealmStreamList) -> Result<Option<String>> {
+    fn append(&mut self, realm: &RealmId, page: RealmStreamPage) -> Result<Option<String>> {
         page.validate()?;
         if &page.realm_id != realm {
             return Err(Error::Protocol("stream discovery crosses Realm".to_owned()));
@@ -48,7 +48,7 @@ impl Enumeration {
 /// Enumerate every established stream in one fixed caller-visible generation.
 /// No arbitrary page ceiling may make streams beyond the first 500 unreachable.
 pub async fn discover_realm_streams(
-    client: &OwnStationResultClient,
+    client: &OwnStationStateClient,
     realm: &RealmId,
 ) -> Result<Vec<RealmStreamRow>> {
     let mut enumeration = Enumeration::default();
@@ -111,8 +111,8 @@ mod tests {
         realm: &RealmId,
         streams: Vec<RealmStreamRow>,
         cursor: Option<&str>,
-    ) -> RealmStreamList {
-        RealmStreamList {
+    ) -> RealmStreamPage {
+        RealmStreamPage {
             realm_id: realm.clone(),
             streams,
             next_cursor: cursor.map(str::to_owned),

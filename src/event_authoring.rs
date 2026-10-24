@@ -1,7 +1,7 @@
 //! Proof-only Event authoring over host-owned signer and encryption adapters.
 
 use arkret_wire::{
-    AuthoredEvent, AuthoritySubmitRequest, Event, EventAdmissionSubmission, EventKind,
+    AuthoredEvent, AuthoritySubmitRequestBody, Event, EventAdmissionSubmission, EventKind,
 };
 
 use crate::{Error, QueuedSubmission, Result};
@@ -68,5 +68,5 @@ pub fn event_submission(event: &AuthoredEvent) -> Result<QueuedSubmission> {
         )
         .map(crate::FrozenMessageSubmission::into_queued_submission);
     }
-    QueuedSubmission::new(AuthoritySubmitRequest::Event(submission))
+    QueuedSubmission::new(AuthoritySubmitRequestBody::Event(submission))
 }

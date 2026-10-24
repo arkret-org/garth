@@ -62,7 +62,7 @@ pub use actor_profile_directory::{
 pub use agent_draft_pending_intent_projection::{
     AgentDraftPendingIntentProjection, AgentDraftPendingIntentProjectionUpdate,
 };
-pub use arkret_models_collaboration::authority_commit::AuthorityHandoffRequest;
+pub use arkret_models_collaboration::authority_commit::AuthorityRealmAuthorityHandoffRequestBody;
 pub use arkret_models_collaboration::signal_plaintext::{
     MAX_SIGNAL_PLAINTEXT_TTL_MS, SignalPlaintext, SignalPlaintextKind, SignalPlaintextProfile,
     SignalSequence, SignalSequenceDecision, SignalSequenceDomain, SignalSequenceEndpoint,
@@ -71,10 +71,11 @@ pub use arkret_models_collaboration::signal_plaintext::{
 };
 pub use arkret_retry::{RetryPolicy, RetrySchedule};
 pub use arkret_wire::{
-    AuthorityBundleRequest, AuthoritySubmitOutcome, AuthoritySubmitRequest, CommitStreamHead,
-    CommitStreamRef, CommittedEventFullView, CommittedEventRef, CommittedEventView,
-    CommittedEventWithheldView, EventAdmissionSubmission, RealmAuthorityBundle,
-    RealmAuthorityHandoff, RealmCommit, RealmStateSnapshot, StreamScanOutcome, StreamScanRequest,
+    AuthoritySubmitRequestBody, AuthoritySubmitResponseBody, CommitStreamHead, CommitStreamRef,
+    CommittedEventFullView, CommittedEventRef, CommittedEventView, CommittedEventWithheldView,
+    EventAdmissionSubmission, RealmAuthorityBundle, RealmAuthorityBundleRequestBody,
+    RealmAuthorityHandoff, RealmCommit, RealmStateSnapshot, StreamScanRequestBody,
+    StreamScanResponseBody,
 };
 pub use authority::{AuthorityClient, AuthorityTransport, QueuedSubmission, SubmissionState};
 pub use direct_conversation::{DirectConversationAction, direct_conversation_action};
@@ -127,11 +128,11 @@ pub use runtime_journey::{ParticipationAction, ParticipationAdmissionFacts};
 pub use security_transaction::{
     ClientStepAttestation, DurableCompletedRecoveryReceipt, DurableSecurityTransaction,
     MemorySecurityTransactionStore, PcrPolicyRecoveryPlan, PendingSecurityTransactionContinue,
-    RecoveryReceipt, RecoveryTerminalCommit, RecoveryTransactionCreateRequest, SecurityTransaction,
-    SecurityTransactionContinueRequest, SecurityTransactionCreateRequest,
-    SecurityTransactionEngine, SecurityTransactionPreparedPlan, SecurityTransactionStore,
-    SecurityTransactionTerminalOutcome, SecurityTransactionTransport,
-    validate_recovery_commit_boundary,
+    RecoveryReceipt, RecoveryTerminalCommit, RecoveryTransactionCreateRequestBody,
+    SecurityTransaction, SecurityTransactionContinueRequestBody,
+    SecurityTransactionCreateRequestBody, SecurityTransactionEngine,
+    SecurityTransactionPreparedPlan, SecurityTransactionStore, SecurityTransactionTerminalOutcome,
+    SecurityTransactionTransport, validate_recovery_commit_boundary,
 };
 pub use service_route::{
     MemoryServiceRouteStateStore, RouteCandidateSource, RouteForkQuarantine, RouteResolution,

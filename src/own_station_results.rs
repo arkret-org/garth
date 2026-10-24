@@ -5,20 +5,20 @@
 use std::collections::BTreeMap;
 
 use arkret_http_client::own_station_results::{
-    BoundOwnStationResponse, OwnStationResultClient, OwnStationSessionSnapshot,
+    BoundOwnStationResponse, OwnStationSessionSnapshot, OwnStationStateClient,
 };
 use arkret_models_collaboration::authority_commit::{
-    SelfAuthoritySubmitOutcome, SelfAuthoritySubmitRequest,
+    SelfAuthoritySubmitRequestBody, SelfAuthoritySubmitResponseBody,
 };
 use arkret_models_collaboration::sync_frames::account_sync::StreamWindowStartBasis;
 use arkret_models_identity::signer_key_operations::{
-    HistoricalSignerKeyQuerySender, SignerKeyQueryOutcome, SignerKeyQuerySelector,
+    HistoricalSignerKeyQuerySender, SignerKeyQuerySelector, SignerKeyResolution,
     SignerKeysQueryRequestBody,
 };
 use arkret_wire::{
-    CommitStreamHead, CommitStreamRef, CommittedEventRef, CommittedEventView, EventId,
-    ReadableFloor, RealmId, RealmSnapshotId, RealmStateSnapshot, RequestId, StreamScanDirection,
-    StreamScanOutcome, StreamScanRequest, TypedCurrentRow,
+    CommitStreamHead, CommitStreamRef, CommittedEventRef, CommittedEventView, CurrentState,
+    EventId, ReadableFloor, RealmId, RealmSnapshotId, RealmStateSnapshot, RequestId,
+    StreamScanDirection, StreamScanRequestBody, StreamScanResponseBody,
 };
 
 use crate::{Error, Result};
@@ -30,7 +30,7 @@ pub use device_replica::{
 };
 
 pub struct OwnStationScanPage {
-    response: BoundOwnStationResponse<StreamScanRequest, StreamScanOutcome>,
+    response: BoundOwnStationResponse<StreamScanRequestBody, StreamScanResponseBody>,
 }
 impl OwnStationScanPage {
     pub fn rows(&self) -> Result<&[CommittedEventView]> {
@@ -52,7 +52,7 @@ pub struct OwnStationWindowDependency {
 }
 
 pub async fn read_window_dependency(
-    client: &OwnStationResultClient,
+    client: &OwnStationStateClient,
     reference: &CommittedEventRef,
 ) -> Result<OwnStationWindowDependency> {
     let response = client.committed_event_get(&reference.event_id).await?;
@@ -91,14 +91,14 @@ impl OwnStationFloorSnapshot {
     pub fn history_access(&self) -> Result<arkret_wire::HistoryAccess> {
         Ok(self.snapshot()?.retention_and_history_floor.history_access)
     }
-    pub fn rows(&self) -> Result<Vec<TypedCurrentRow>> {
+    pub fn rows(&self) -> Result<Vec<CurrentState>> {
         Ok(self
             .response
             .value()?
             .current_state_entries
             .iter()
             .filter(|row| match row {
-                TypedCurrentRow::Value {
+                CurrentState::Value {
                     source_stream_ref, ..
                 } => source_stream_ref == &self.stream_ref,
             })
@@ -149,7 +149,7 @@ impl OwnStationReplica {
     /// exact checkpoint or a floor anchor never manufactures this proof.
     pub fn complete_sidecar_head(
         &self,
-        client: &OwnStationResultClient,
+        client: &OwnStationStateClient,
         stream: &CommitStreamRef,
     ) -> Result<Option<&CommitStreamHead>> {
         client.check_session()?;
@@ -164,7 +164,7 @@ impl OwnStationReplica {
     /// durable installation. Other streams and rollback watermarks survive.
     pub async fn replay_sidecar_history(
         &self,
-        client: &OwnStationResultClient,
+        client: &OwnStationStateClient,
         snapshot: &BoundOwnStationResponse<RealmId, RealmStateSnapshot>,
         stream: &CommitStreamRef,
         retain_complete_prefix: bool,
@@ -269,7 +269,7 @@ impl OwnStationReplica {
     /// preview window. Subsequent pages must continue from this head.
     pub async fn bootstrap_current_head(
         &mut self,
-        client: &OwnStationResultClient,
+        client: &OwnStationStateClient,
         stream: &CommitStreamRef,
     ) -> Result<()> {
         if self.heads.contains_key(stream) {
@@ -285,14 +285,14 @@ impl OwnStationReplica {
     /// Re-admit a durable head using one exact original, never a bare cursor.
     pub async fn restore_checkpoint_head(
         &mut self,
-        client: &OwnStationResultClient,
+        client: &OwnStationStateClient,
         expected: &CommitStreamHead,
     ) -> Result<()> {
         let before = expected
             .stream_position
             .checked_add(1)
             .ok_or_else(|| protocol("checkpoint position overflow"))?;
-        let request = StreamScanRequest {
+        let request = StreamScanRequestBody {
             realm_id: self.realm_id.clone(),
             stream_ref: expected.stream_ref.clone(),
             direction: StreamScanDirection::Before(Some(before)),
@@ -304,9 +304,9 @@ impl OwnStationReplica {
 
     pub async fn restore_bound_head(
         &mut self,
-        client: &OwnStationResultClient,
+        client: &OwnStationStateClient,
         expected: &CommitStreamHead,
-        response: BoundOwnStationResponse<StreamScanRequest, StreamScanOutcome>,
+        response: BoundOwnStationResponse<StreamScanRequestBody, StreamScanResponseBody>,
     ) -> Result<()> {
         self.check_context(response.session())?;
         if response.session() != client.session()? {
@@ -327,8 +327,8 @@ impl OwnStationReplica {
         &mut self,
         client: &impl HistoricalSignerReadSource,
         expected: &CommitStreamHead,
-        request: &StreamScanRequest,
-        outcome: &StreamScanOutcome,
+        request: &StreamScanRequestBody,
+        outcome: &StreamScanResponseBody,
     ) -> Result<()> {
         outcome
             .validate_for_request(request)
@@ -380,7 +380,7 @@ impl OwnStationReplica {
     /// local checkpoint, never from the pending MLS Commit's asserted payload.
     pub async fn restore_bound_anchor(
         &mut self,
-        client: &OwnStationResultClient,
+        client: &OwnStationStateClient,
         expected: &CommittedEventRef,
         response: BoundOwnStationResponse<EventId, CommittedEventView>,
     ) -> Result<()> {
@@ -416,8 +416,8 @@ impl OwnStationReplica {
 
     pub async fn apply_bound_scan(
         &mut self,
-        client: &OwnStationResultClient,
-        response: BoundOwnStationResponse<StreamScanRequest, StreamScanOutcome>,
+        client: &OwnStationStateClient,
+        response: BoundOwnStationResponse<StreamScanRequestBody, StreamScanResponseBody>,
     ) -> Result<OwnStationScanPage> {
         self.check_context(response.session())?;
         if response.session() != client.session()? {
@@ -439,8 +439,8 @@ impl OwnStationReplica {
     async fn apply_verified_scan(
         &mut self,
         client: &impl HistoricalSignerReadSource,
-        request: &StreamScanRequest,
-        outcome: &StreamScanOutcome,
+        request: &StreamScanRequestBody,
+        outcome: &StreamScanResponseBody,
     ) -> Result<()> {
         outcome
             .validate_for_request(request)
@@ -587,7 +587,7 @@ impl OwnStationReplica {
         }
         let mut incoming_axes = BTreeMap::new();
         for row in &snapshot.current_state_entries {
-            let TypedCurrentRow::Value {
+            let CurrentState::Value {
                 selector,
                 source_stream_ref,
                 revision,
@@ -832,12 +832,12 @@ trait HistoricalSignerReadSource: crate::MaybeSendSync {
         &'a self,
         request: &'a SignerKeysQueryRequestBody,
     ) -> impl std::future::Future<
-        Output = Result<arkret_models_identity::signer_key_operations::SignerKeysQueryOutcome>,
+        Output = Result<arkret_models_identity::signer_key_operations::SignerKeyQueryResponseBody>,
     > + crate::MaybeSend
     + 'a;
 }
 
-impl HistoricalSignerReadSource for OwnStationResultClient {
+impl HistoricalSignerReadSource for OwnStationStateClient {
     fn recipient_actor(&self) -> Result<arkret_wire::ActorId> {
         Ok(arkret_wire::ActorId::account(
             self.session()?.account_id().clone(),
@@ -849,7 +849,7 @@ impl HistoricalSignerReadSource for OwnStationResultClient {
     async fn read_historical_signers<'a>(
         &'a self,
         request: &'a SignerKeysQueryRequestBody,
-    ) -> Result<arkret_models_identity::signer_key_operations::SignerKeysQueryOutcome> {
+    ) -> Result<arkret_models_identity::signer_key_operations::SignerKeyQueryResponseBody> {
         Ok(self.signer_keys_query(request).await?.into_value()?)
     }
 }
@@ -866,12 +866,12 @@ impl HistoricalSignerReadSource
     async fn read_historical_signers<'a>(
         &'a self,
         request: &'a SignerKeysQueryRequestBody,
-    ) -> Result<arkret_models_identity::signer_key_operations::SignerKeysQueryOutcome> {
+    ) -> Result<arkret_models_identity::signer_key_operations::SignerKeyQueryResponseBody> {
         Ok(self.signer_keys_query(request).await?.into_value()?)
     }
 }
 
-async fn verify_row(client: &OwnStationResultClient, row: &CommittedEventView) -> Result<()> {
+async fn verify_row(client: &OwnStationStateClient, row: &CommittedEventView) -> Result<()> {
     verify_row_from_source(client, row, OriginalSource::Ordinary)
         .await
         .map(|_| ())
@@ -931,9 +931,9 @@ async fn verify_row_from_source(
         outcome
             .validate_for_request(&request)
             .map_err(|e| protocol(&e.to_string()))?;
-        let Some(SignerKeyQueryOutcome::HistoricalServiceResolved {
+        let Some(SignerKeyResolution::HistoricalServiceResolved {
             key, accepted_at, ..
-        }) = outcome.results.first()
+        }) = outcome.resolutions.first()
         else {
             return Err(protocol(
                 "exact historical Service signing key is unavailable",
@@ -949,7 +949,7 @@ async fn verify_row_from_source(
         fact.validate_commit_binding(full, suite)
             .map_err(|e| protocol(&e.to_string()))?;
         let material = arkret_signatures::PublicKeyMaterial::Ed25519Raw {
-            bytes: arkret_canonical::base64url_decode(key.public_key_b64u.as_str())
+            bytes: arkret_canonical::base64url_decode(key.public_key_base64url.as_str())
                 .map_err(|e| protocol(&e.to_string()))?,
         };
         let bytes = arkret_signatures::EventProofBuilder::new()
@@ -1008,9 +1008,9 @@ async fn verify_row_from_source(
         outcome
             .validate_for_request(&request)
             .map_err(|e| protocol(&e.to_string()))?;
-        let Some(SignerKeyQueryOutcome::HistoricalRealmDeviceResolved {
+        let Some(SignerKeyResolution::HistoricalRealmDeviceResolved {
             key, accepted_at, ..
-        }) = outcome.results.first()
+        }) = outcome.resolutions.first()
         else {
             return Err(protocol("exact historical Realm Device key is unavailable"));
         };
@@ -1022,7 +1022,7 @@ async fn verify_row_from_source(
         // The bound Station query verifies the private fact at this exact Commit.
         // Its minimal response deliberately does not disclose control-stream metadata.
         let material = arkret_signatures::PublicKeyMaterial::Ed25519Raw {
-            bytes: arkret_canonical::base64url_decode(key.public_key_b64u.as_str())
+            bytes: arkret_canonical::base64url_decode(key.public_key_base64url.as_str())
                 .map_err(|e| protocol(&e.to_string()))?,
         };
         let bytes = arkret_signatures::EventProofBuilder::new()
@@ -1101,9 +1101,9 @@ async fn verify_row_from_source(
     outcome
         .validate_for_request(&request)
         .map_err(|error| protocol(&error.to_string()))?;
-    let Some(SignerKeyQueryOutcome::HistoricalResolved {
+    let Some(SignerKeyResolution::HistoricalResolved {
         key, accepted_at, ..
-    }) = outcome.results.first()
+    }) = outcome.resolutions.first()
     else {
         return Err(protocol(
             "exact historical producer signing key is unavailable",
@@ -1142,7 +1142,7 @@ async fn verify_row_from_source(
         }
     }
     let material = arkret_signatures::PublicKeyMaterial::Ed25519Raw {
-        bytes: arkret_canonical::base64url_decode(key.public_key_b64u.as_str())
+        bytes: arkret_canonical::base64url_decode(key.public_key_base64url.as_str())
             .map_err(|error| protocol(&error.to_string()))?,
     };
     let bytes = arkret_signatures::EventProofBuilder::new()
@@ -1165,8 +1165,8 @@ async fn verify_row_from_source(
 /// used by ordinary session clients, never through a cached runtime key.
 pub struct OwnStationDeviceEvent {
     response: arkret_http_client::own_station_device_results::BoundOwnStationDeviceResponse<
-        StreamScanRequest,
-        StreamScanOutcome,
+        StreamScanRequestBody,
+        StreamScanResponseBody,
     >,
     producer_key: Option<arkret_signatures::PublicKeyMaterial>,
 }
@@ -1272,7 +1272,7 @@ pub async fn consume_own_station_device_event(
         .stream_position
         .checked_add(1)
         .ok_or_else(|| protocol("native historical row position overflow"))?;
-    let request = StreamScanRequest {
+    let request = StreamScanRequestBody {
         realm_id: commit.realm_id.clone(),
         stream_ref: commit.stream_ref.clone(),
         direction: StreamScanDirection::Before(Some(before)),
@@ -1328,10 +1328,14 @@ fn protocol(message: &str) -> Error {
 /// Consume only a real authenticated acceptance paired with its frozen request.
 /// This verifies originals without granting a history read or advancing a head.
 pub async fn consume_bound_submission(
-    client: &OwnStationResultClient,
-    request: &SelfAuthoritySubmitRequest,
-    response: BoundOwnStationResponse<SelfAuthoritySubmitRequest, SelfAuthoritySubmitOutcome>,
-) -> Result<BoundOwnStationResponse<SelfAuthoritySubmitRequest, SelfAuthoritySubmitOutcome>> {
+    client: &OwnStationStateClient,
+    request: &SelfAuthoritySubmitRequestBody,
+    response: BoundOwnStationResponse<
+        SelfAuthoritySubmitRequestBody,
+        SelfAuthoritySubmitResponseBody,
+    >,
+) -> Result<BoundOwnStationResponse<SelfAuthoritySubmitRequestBody, SelfAuthoritySubmitResponseBody>>
+{
     if response.session() != client.session()? || response.request() != request {
         return Err(protocol(
             "ordinary acceptance differs from its source or frozen request",
@@ -1351,8 +1355,8 @@ pub async fn consume_bound_submission(
 }
 
 fn bound_self_submission_source(
-    client: &OwnStationResultClient,
-    request: &SelfAuthoritySubmitRequest,
+    client: &OwnStationStateClient,
+    request: &SelfAuthoritySubmitRequestBody,
     original: &arkret_wire::CommittedEventFullView,
 ) -> Result<OriginalSource> {
     let source = bound_self_agent_pcr_genesis_source(client, request, original)?;
@@ -1363,7 +1367,7 @@ fn bound_self_submission_source(
     if source != OriginalSource::Ordinary {
         return Ok(source);
     }
-    let SelfAuthoritySubmitRequest::Event(submission) = request else {
+    let SelfAuthoritySubmitRequestBody::Event(submission) = request else {
         return Ok(OriginalSource::Ordinary);
     };
     let event = &submission.event;
@@ -1397,11 +1401,11 @@ fn bound_self_submission_source(
 // exact HistoricalEvent query must still resolve the immutable self-admission
 // fact (including original provision/controller/delegation) or fail closed.
 fn bound_self_agent_pcr_genesis_source(
-    client: &OwnStationResultClient,
-    request: &SelfAuthoritySubmitRequest,
+    client: &OwnStationStateClient,
+    request: &SelfAuthoritySubmitRequestBody,
     original: &arkret_wire::CommittedEventFullView,
 ) -> Result<OriginalSource> {
-    let SelfAuthoritySubmitRequest::Event(submission) = request else {
+    let SelfAuthoritySubmitRequestBody::Event(submission) = request else {
         return Ok(OriginalSource::Ordinary);
     };
     let event = &submission.event;
@@ -1475,11 +1479,11 @@ fn bound_self_agent_pcr_genesis_source(
 // historical query. Only the Station's immutable agent_pcr_controller fact can
 // resolve it; an envelope shape never supplies authorization or PCR history.
 fn bound_self_agent_pcr_controller_source(
-    client: &OwnStationResultClient,
-    request: &SelfAuthoritySubmitRequest,
+    client: &OwnStationStateClient,
+    request: &SelfAuthoritySubmitRequestBody,
     original: &arkret_wire::CommittedEventFullView,
 ) -> Result<OriginalSource> {
-    let SelfAuthoritySubmitRequest::Event(submission) = request else {
+    let SelfAuthoritySubmitRequestBody::Event(submission) = request else {
         return Ok(OriginalSource::Ordinary);
     };
     let event = &submission.event;
@@ -1537,7 +1541,7 @@ fn bound_self_agent_pcr_controller_source(
 /// Independently validate one disclosed historical original without advancing
 /// any replay head. This is useful for exact MLS predecessor recovery.
 pub async fn consume_bound_event(
-    client: &OwnStationResultClient,
+    client: &OwnStationStateClient,
     expected: &CommittedEventRef,
     response: BoundOwnStationResponse<EventId, CommittedEventView>,
 ) -> Result<BoundOwnStationResponse<EventId, CommittedEventView>> {
@@ -1556,7 +1560,7 @@ pub async fn consume_bound_event(
 }
 
 async fn verify_get_candidate(
-    client: &OwnStationResultClient,
+    client: &OwnStationStateClient,
     expected: &CommittedEventRef,
     candidate: &CommittedEventView,
 ) -> Result<()> {
@@ -1564,7 +1568,7 @@ async fn verify_get_candidate(
         .stream_position
         .checked_add(1)
         .ok_or_else(|| protocol("historical row position overflow"))?;
-    let request = StreamScanRequest {
+    let request = StreamScanRequestBody {
         realm_id: expected.stream_ref.realm_id().clone(),
         stream_ref: expected.stream_ref.clone(),
         direction: StreamScanDirection::Before(Some(before)),
@@ -1583,10 +1587,10 @@ async fn verify_get_candidate(
 /// Consume one actual per-stream `stream_row` original, the registered input
 /// for an exact historical producer signer selector.
 pub async fn consume_bound_scan_row(
-    client: &OwnStationResultClient,
+    client: &OwnStationStateClient,
     expected: &CommittedEventRef,
-    response: BoundOwnStationResponse<StreamScanRequest, StreamScanOutcome>,
-) -> Result<BoundOwnStationResponse<StreamScanRequest, StreamScanOutcome>> {
+    response: BoundOwnStationResponse<StreamScanRequestBody, StreamScanResponseBody>,
+) -> Result<BoundOwnStationResponse<StreamScanRequestBody, StreamScanResponseBody>> {
     let request = response.request();
     let before = expected
         .stream_position
@@ -1628,7 +1632,7 @@ pub fn consume_bound_snapshot<Q>(
 /// Both production paths retain their genuine source until consumption; a
 /// snapshot Present row is not reconstructed into a synthetic SDK response.
 pub struct OwnStationAgentInteraction {
-    value: arkret_models_collaboration::exact_current_results::ExactCurrentResultsReadOutcome,
+    value: arkret_models_collaboration::exact_current_state::ExactCurrentStateReadResponseBody,
     source: OwnStationAgentInteractionSource,
 }
 
@@ -1637,8 +1641,8 @@ enum OwnStationAgentInteractionSource {
     Exact {
         before: Box<BoundOwnStationResponse<RealmId, RealmStateSnapshot>>,
         response: Box<BoundOwnStationResponse<
-            (arkret_models_collaboration::exact_current_results::ExactCurrentResultsReadRequestBody, u64),
-            arkret_models_collaboration::exact_current_results::ExactCurrentResultsReadOutcome,
+            (arkret_models_collaboration::exact_current_state::ExactCurrentStateReadRequestBody, u64),
+            arkret_models_collaboration::exact_current_state::ExactCurrentStateReadResponseBody,
         >>,
         after: Box<BoundOwnStationResponse<RealmId, RealmStateSnapshot>>,
     },
@@ -1648,7 +1652,7 @@ impl OwnStationAgentInteraction {
     pub fn value(
         &self,
     ) -> arkret_http_client::Result<
-        &arkret_models_collaboration::exact_current_results::ExactCurrentResultsReadOutcome,
+        &arkret_models_collaboration::exact_current_state::ExactCurrentStateReadResponseBody,
     > {
         match &self.source {
             OwnStationAgentInteractionSource::Snapshot(snapshot) => {
@@ -1670,7 +1674,7 @@ impl OwnStationAgentInteraction {
     pub fn into_value(
         self,
     ) -> arkret_http_client::Result<
-        arkret_models_collaboration::exact_current_results::ExactCurrentResultsReadOutcome,
+        arkret_models_collaboration::exact_current_state::ExactCurrentStateReadResponseBody,
     > {
         self.value()?;
         Ok(self.value)
@@ -1681,7 +1685,7 @@ impl OwnStationAgentInteraction {
 /// original snapshots before and after. Retry at most three complete reads
 /// when an authenticated cut advances; never reuse an outcome across cuts.
 pub async fn read_own_station_agent_interaction(
-    client: &OwnStationResultClient,
+    client: &OwnStationStateClient,
     realm: &RealmId,
     agent: &arkret_wire::AccountId,
 ) -> Result<OwnStationAgentInteraction> {
@@ -1694,20 +1698,20 @@ pub async fn read_own_station_agent_interaction(
 }
 
 async fn read_agent_interaction_at_cut(
-    client: &OwnStationResultClient,
+    client: &OwnStationStateClient,
     realm: &RealmId,
     agent: &arkret_wire::AccountId,
 ) -> Result<Option<OwnStationAgentInteraction>> {
     use arkret_models_collaboration::agent_interaction::AgentInteractionExactCurrentSelector;
-    use arkret_models_collaboration::exact_current_results::{
-        ExactCurrentResultSelector, ExactCurrentResultsReadOutcome,
-        ExactCurrentResultsReadRequestBody,
+    use arkret_models_collaboration::exact_current_state::{
+        ExactCurrentStateReadRequestBody, ExactCurrentStateReadResponseBody,
+        ExactCurrentStateSelector,
     };
     let before = client.snapshot_head(realm).await?;
     consume_bound_snapshot(&before, realm)?;
-    let request = ExactCurrentResultsReadRequestBody {
+    let request = ExactCurrentStateReadRequestBody {
         realm_id: realm.clone(),
-        selector: ExactCurrentResultSelector::AgentInteraction(
+        selector: ExactCurrentStateSelector::AgentInteraction(
             AgentInteractionExactCurrentSelector::new(agent.clone()),
         ),
     };
@@ -1728,18 +1732,18 @@ async fn read_agent_interaction_at_cut(
         .find(|head| head.stream_ref == stream)
         .ok_or_else(|| protocol("Agent mode snapshot omits Realm head"))?;
     let result = client
-        .exact_current_result(&request, snapshot.governance_generation)
+        .exact_current_state(&request, snapshot.governance_generation)
         .await?;
     let after = client.snapshot_head(realm).await?;
     consume_bound_snapshot(&after, realm)?;
     let after_value = after.value()?;
     let (generation, result_head) = match result.value()? {
-        ExactCurrentResultsReadOutcome::Present {
+        ExactCurrentStateReadResponseBody::Present {
             governance_generation,
             effective_stream_head,
             ..
         }
-        | ExactCurrentResultsReadOutcome::NeverWritten {
+        | ExactCurrentStateReadResponseBody::NeverWritten {
             governance_generation,
             effective_stream_head,
             ..
@@ -1804,8 +1808,8 @@ pub(crate) mod tests {
     use super::*;
 
     fn verified_test_submission(
-        request: &SelfAuthoritySubmitRequest,
-    ) -> arkret_identity::Result<arkret_identity::VerifiedSubmission<SelfAuthoritySubmitRequest>>
+        request: &SelfAuthoritySubmitRequestBody,
+    ) -> arkret_identity::Result<arkret_identity::VerifiedSubmission<SelfAuthoritySubmitRequestBody>>
     {
         // These producers are authored locally by the fixture's Device key;
         // server-returned signer projections remain independent negative inputs.
@@ -1835,14 +1839,14 @@ pub(crate) mod tests {
     }
     fn client(
         bodies: Vec<serde_json::Value>,
-    ) -> (OwnStationResultClient, std::thread::JoinHandle<()>) {
+    ) -> (OwnStationStateClient, std::thread::JoinHandle<()>) {
         let (client, server, _) = observed_client(bodies);
         (client, server)
     }
     pub(crate) fn observed_client(
         bodies: Vec<serde_json::Value>,
     ) -> (
-        OwnStationResultClient,
+        OwnStationStateClient,
         std::thread::JoinHandle<()>,
         Arc<std::sync::Mutex<Vec<String>>>,
     ) {
@@ -1856,7 +1860,7 @@ pub(crate) mod tests {
             base_url: base.clone(),
             trust_domain: arkret_wire::TrustDomainId::new("ak:trust_domain:station.example")
                 .unwrap(),
-            auth_metadata: arkret_models_discovery::AuthMetadata::minimal(),
+            authentication_metadata: arkret_models_discovery::AuthenticationMetadata::minimal(),
         };
         let snapshot = OwnStationSessionSnapshot::new(
             binding.clone(),
@@ -1931,9 +1935,9 @@ pub(crate) mod tests {
                         committed_event_ref.stream_position += 1;
                     }
                     let result = if body["__unavailable"] == true {
-                        SignerKeyQueryOutcome::Unavailable { selector }
+                        SignerKeyResolution::Unavailable { selector }
                     } else {
-                        SignerKeyQueryOutcome::HistoricalRealmDeviceResolved {
+                        SignerKeyResolution::HistoricalRealmDeviceResolved {
                             selector,
                             key: serde_json::from_value(key.clone()).unwrap(),
                             accepted_at: if body["__wrong_time"] == true {
@@ -1943,12 +1947,12 @@ pub(crate) mod tests {
                             },
                         }
                     };
-                    serde_json::to_value(arkret_models_identity::SignerKeysQueryOutcome {
+                    serde_json::to_value(arkret_models_identity::SignerKeyQueryResponseBody {
                         request_id: request.request_id,
                         realm_id: request.realm_id,
                         recipient_account_id: request.recipient_account_id,
                         recipient_actor_id: request.recipient_actor_id,
-                        results: vec![result],
+                        resolutions: vec![result],
                     })
                     .unwrap()
                 } else if let Some(key) = body.get("__service_key") {
@@ -1967,20 +1971,20 @@ pub(crate) mod tests {
                         .and_then(serde_json::Value::as_bool)
                         == Some(true)
                     {
-                        SignerKeyQueryOutcome::Unavailable { selector }
+                        SignerKeyResolution::Unavailable { selector }
                     } else {
-                        SignerKeyQueryOutcome::HistoricalServiceResolved {
+                        SignerKeyResolution::HistoricalServiceResolved {
                             selector,
                             key: serde_json::from_value(key.clone()).unwrap(),
                             accepted_at: crate::test_fixtures::at(3),
                         }
                     };
-                    serde_json::to_value(arkret_models_identity::SignerKeysQueryOutcome {
+                    serde_json::to_value(arkret_models_identity::SignerKeyQueryResponseBody {
                         request_id: request.request_id,
                         realm_id: request.realm_id,
                         recipient_account_id: request.recipient_account_id,
                         recipient_actor_id: request.recipient_actor_id,
-                        results: vec![result],
+                        resolutions: vec![result],
                     })
                     .unwrap()
                 } else if let Some(key) = body.get("__signer_key") {
@@ -2038,19 +2042,19 @@ pub(crate) mod tests {
                         .unwrap();
                     }
                     serde_json::to_value(
-                        arkret_models_identity::signer_key_operations::SignerKeysQueryOutcome {
+                        arkret_models_identity::signer_key_operations::SignerKeyQueryResponseBody {
                             request_id: request.request_id,
                             realm_id: request.realm_id,
                             recipient_account_id: request.recipient_account_id,
                             recipient_actor_id: request.recipient_actor_id,
-                            results: vec![if body
+                            resolutions: vec![if body
                                 .get("__unavailable")
                                 .and_then(serde_json::Value::as_bool)
                                 == Some(true)
                             {
-                                SignerKeyQueryOutcome::Unavailable { selector }
+                                SignerKeyResolution::Unavailable { selector }
                             } else {
-                                SignerKeyQueryOutcome::HistoricalResolved {
+                                SignerKeyResolution::HistoricalResolved {
                                     selector,
                                     key,
                                     accepted_at: if body
@@ -2089,7 +2093,7 @@ pub(crate) mod tests {
             }
         });
         (
-            OwnStationResultClient::new(raw, binding, Arc::new(Source(snapshot))).unwrap(),
+            OwnStationStateClient::new(raw, binding, Arc::new(Source(snapshot))).unwrap(),
             server,
             observed,
         )
@@ -2130,7 +2134,7 @@ pub(crate) mod tests {
             base_url: "http://127.0.0.1:32123/".into(),
             trust_domain: arkret_wire::TrustDomainId::new("ak:trust_domain:station.example")
                 .unwrap(),
-            auth_metadata: arkret_models_discovery::AuthMetadata::minimal(),
+            authentication_metadata: arkret_models_discovery::AuthenticationMetadata::minimal(),
         };
         let account = arkret_wire::AccountId::new(
             arkret_wire::DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
@@ -2165,7 +2169,7 @@ pub(crate) mod tests {
         .build()
         .unwrap();
         assert!(
-            OwnStationResultClient::new(wrong_origin, binding, Arc::new(Source(session))).is_err()
+            OwnStationStateClient::new(wrong_origin, binding, Arc::new(Source(session))).is_err()
         );
     }
 
@@ -2243,9 +2247,9 @@ pub(crate) mod tests {
             stream_position: authorization.stream_position,
         };
         let original_key = arkret_models_identity::ResolvedSignerKey {
-            public_key_b64u: arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
-                signing_key.verifying_key().as_bytes(),
-            ))
+            public_key_base64url: arkret_wire::Base64UrlString::new(
+                arkret_canonical::base64url_encode(signing_key.verifying_key().as_bytes()),
+            )
             .unwrap(),
             authorization_ref: authorization_ref.clone(),
             revision: arkret_wire::CurrentRevision {
@@ -2288,7 +2292,7 @@ pub(crate) mod tests {
                 ed25519_dalek::SigningKey::from_bytes(&[42; 32]).verifying_key()
             };
             let key = arkret_models_identity::signer_key_operations::ResolvedSignerKey {
-                public_key_b64u: arkret_wire::Base64UrlString::new(
+                public_key_base64url: arkret_wire::Base64UrlString::new(
                     arkret_canonical::base64url_encode(public_key.as_bytes()),
                 )
                 .unwrap(),
@@ -2378,7 +2382,7 @@ pub(crate) mod tests {
                     serde_json::json!({"kind":"ak.content.text","body":"tampered"}),
                 );
             }
-            let request = SelfAuthoritySubmitRequest::Event(
+            let request = SelfAuthoritySubmitRequestBody::Event(
                 arkret_wire::EventAdmissionSubmission::new(frozen_event),
             );
             if refusal == "event_content" {
@@ -2389,8 +2393,8 @@ pub(crate) mod tests {
             if refusal == "commit_content" {
                 supplied.committed_at = crate::test_fixtures::at(3);
             }
-            let outcome = SelfAuthoritySubmitOutcome::Ordinary(
-                arkret_wire::AuthoritySubmitOutcome::Accepted {
+            let outcome = SelfAuthoritySubmitResponseBody::Ordinary(
+                arkret_wire::AuthoritySubmitResponseBody::Accepted {
                     status: arkret_wire::AuthorityCommitStatus::Committed,
                     commit: supplied,
                 },
@@ -2403,7 +2407,7 @@ pub(crate) mod tests {
                     ed25519_dalek::SigningKey::from_bytes(&[42; 32]).verifying_key()
                 };
                 let key = arkret_models_identity::ResolvedSignerKey {
-                    public_key_b64u: arkret_wire::Base64UrlString::new(
+                    public_key_base64url: arkret_wire::Base64UrlString::new(
                         arkret_canonical::base64url_encode(public_key.as_bytes()),
                     )
                     .unwrap(),
@@ -2426,7 +2430,7 @@ pub(crate) mod tests {
                 .unwrap();
             let mut expected = request.clone();
             if refusal == "wrong_request" {
-                let SelfAuthoritySubmitRequest::Event(value) = &mut expected else {
+                let SelfAuthoritySubmitRequestBody::Event(value) = &mut expected else {
                     unreachable!()
                 };
                 value.event.created_at = crate::test_fixtures::at(3);
@@ -2525,7 +2529,7 @@ pub(crate) mod tests {
                         "oldest_position":7,"floor_commit_id":accepted.commit_id,"floor_reason":"membership_join"},"truncated":false}));
                     let mut key = key.clone();
                     if failure == "wrong_key" {
-                        key.public_key_b64u =
+                        key.public_key_base64url =
                             arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
                                 ed25519_dalek::SigningKey::from_bytes(&[42; 32])
                                     .verifying_key()
@@ -2607,7 +2611,7 @@ pub(crate) mod tests {
                 principal_endpoint: &endpoint,
                 local_id: "fixture-agent",
                 controller_principal_id: &controller.principal_id,
-                version_time: crate::test_fixtures::at(0),
+                version_created_at: crate::test_fixtures::at(0),
                 root_seed: &[44; 32],
                 next_root_public_key_multibase: &next_key,
             },
@@ -2682,9 +2686,9 @@ pub(crate) mod tests {
         let authorization_commit = arkret_wire::RealmCommitId::from_digest([82; 32]);
         let revision_commit = arkret_wire::RealmCommitId::from_digest([83; 32]);
         let historical = arkret_models_identity::ResolvedSignerKey {
-            public_key_b64u: arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
-                key.verifying_key().as_bytes(),
-            ))
+            public_key_base64url: arkret_wire::Base64UrlString::new(
+                arkret_canonical::base64url_encode(key.verifying_key().as_bytes()),
+            )
             .unwrap(),
             authorization_ref: CommittedEventRef {
                 event_id: authorization_event.clone(),
@@ -2867,7 +2871,7 @@ pub(crate) mod tests {
             actor: event.actual_signer().clone(),
             verification_method: method,
             key: ServiceHistoricalSigningKey {
-                public_key_b64u: arkret_wire::Base64UrlString::new(
+                public_key_base64url: arkret_wire::Base64UrlString::new(
                     arkret_canonical::base64url_encode(
                         ed25519_dalek::SigningKey::from_bytes(&[73; 32])
                             .verifying_key()
@@ -2901,7 +2905,7 @@ pub(crate) mod tests {
             let mut key = fact.key.clone();
             match refusal {
                 "wrong_key" => {
-                    key.public_key_b64u =
+                    key.public_key_base64url =
                         arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
                             ed25519_dalek::SigningKey::from_bytes(&[76; 32])
                                 .verifying_key()
@@ -2962,7 +2966,7 @@ pub(crate) mod tests {
             kind: arkret_models_collaboration::authority_commit::RealmDeviceHistoricalSignerFactKind::RealmDevice,
             event_id: event.event_id.clone(), actor_id: event.actor_id.clone(),
             verification_method: method,
-            public_key_b64u: arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(key.verifying_key().as_bytes())).unwrap(),
+            public_key_base64url: arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(key.verifying_key().as_bytes())).unwrap(),
             accepted_at: commit.committed_at, device_id: crate::test_fixtures::device_id(),
             authorization_event_id: arkret_wire::EventId::from_digest(suite,[78;32]), authorized_generation_ref: 1,
         };
@@ -2984,7 +2988,7 @@ pub(crate) mod tests {
                 key.verifying_key()
             };
             let (client, server, observed) = observed_client(vec![serde_json::json!({
-                "__realm_key": {"public_key_b64u": arkret_canonical::base64url_encode(public.as_bytes())},
+                "__realm_key": {"public_key_base64url": arkret_canonical::base64url_encode(public.as_bytes())},
                 "__wrong_time": refusal == "wrong_time", "__wrong_target": refusal == "wrong_target", "__unavailable": refusal == "unavailable",
             })]);
             let result = verify_row(&client, &CommittedEventView::Full(full.clone())).await;
@@ -3029,7 +3033,7 @@ pub(crate) mod tests {
                 let mut event = event;
                 if refusal == "event_content" {
                     event.created_at = crate::test_fixtures::at(4);
-                    let rejected = SelfAuthoritySubmitRequest::Event(
+                    let rejected = SelfAuthoritySubmitRequestBody::Event(
                         arkret_wire::EventAdmissionSubmission::new(event),
                     );
                     assert!(verified_test_submission(&rejected).is_err());
@@ -3051,7 +3055,7 @@ pub(crate) mod tests {
                     accepted.committed_at = crate::test_fixtures::at(4);
                 }
                 if refusal == "wrong_key" {
-                    key.public_key_b64u =
+                    key.public_key_base64url =
                         arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
                             ed25519_dalek::SigningKey::from_bytes(&[42; 32])
                                 .verifying_key()
@@ -3078,11 +3082,11 @@ pub(crate) mod tests {
                         | "ordinary_authorization"
                         | "wrong_digest"
                 );
-                let request = SelfAuthoritySubmitRequest::Event(
+                let request = SelfAuthoritySubmitRequestBody::Event(
                     arkret_wire::EventAdmissionSubmission::new(event.clone()),
                 );
-                let outcome = SelfAuthoritySubmitOutcome::Ordinary(
-                    arkret_wire::AuthoritySubmitOutcome::Accepted {
+                let outcome = SelfAuthoritySubmitResponseBody::Ordinary(
+                    arkret_wire::AuthoritySubmitResponseBody::Accepted {
                         status: arkret_wire::AuthorityCommitStatus::Committed,
                         commit: accepted.clone(),
                     },
@@ -3121,7 +3125,7 @@ pub(crate) mod tests {
                     let response = fetched.unwrap();
                     let mut expected = request.clone();
                     if refusal == "wrong_request" {
-                        let SelfAuthoritySubmitRequest::Event(value) = &mut expected else {
+                        let SelfAuthoritySubmitRequestBody::Event(value) = &mut expected else {
                             unreachable!()
                         };
                         value.event.created_at = crate::test_fixtures::at(4);
@@ -3193,11 +3197,11 @@ pub(crate) mod tests {
                     Some(arkret_wire::RealmCommitId::from_digest([99; 32]));
             }
             accepted = seal_native_fixture_commit(accepted);
-            let request = SelfAuthoritySubmitRequest::Event(
+            let request = SelfAuthoritySubmitRequestBody::Event(
                 arkret_wire::EventAdmissionSubmission::new(event.clone()),
             );
-            let outcome = SelfAuthoritySubmitOutcome::Ordinary(
-                arkret_wire::AuthoritySubmitOutcome::Accepted {
+            let outcome = SelfAuthoritySubmitResponseBody::Ordinary(
+                arkret_wire::AuthoritySubmitResponseBody::Accepted {
                     status: arkret_wire::AuthorityCommitStatus::Committed,
                     commit: accepted.clone(),
                 },
@@ -3207,7 +3211,7 @@ pub(crate) mod tests {
                 "none" | "unavailable" | "bad_ed" | "wrong_target" | "distinct_authorization_time"
             );
             if refusal == "bad_ed" {
-                key.public_key_b64u =
+                key.public_key_base64url =
                     arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
                         ed25519_dalek::SigningKey::from_bytes(&[42; 32])
                             .verifying_key()
@@ -3234,7 +3238,7 @@ pub(crate) mod tests {
             let response = fetched.unwrap();
             let mut expected = request.clone();
             if refusal == "wrong_request" {
-                let SelfAuthoritySubmitRequest::Event(value) = &mut expected else {
+                let SelfAuthoritySubmitRequestBody::Event(value) = &mut expected else {
                     unreachable!()
                 };
                 value.event.created_at = crate::test_fixtures::at(4);
@@ -3387,11 +3391,11 @@ pub(crate) mod tests {
                         "alice"
                     },
                 );
-                let request = SelfAuthoritySubmitRequest::Event(
+                let request = SelfAuthoritySubmitRequestBody::Event(
                     arkret_wire::EventAdmissionSubmission::new(event.clone()),
                 );
-                let outcome = SelfAuthoritySubmitOutcome::Ordinary(
-                    arkret_wire::AuthoritySubmitOutcome::Accepted {
+                let outcome = SelfAuthoritySubmitResponseBody::Ordinary(
+                    arkret_wire::AuthoritySubmitResponseBody::Accepted {
                         status: arkret_wire::AuthorityCommitStatus::Committed,
                         commit: accepted.clone(),
                     },
@@ -3399,7 +3403,7 @@ pub(crate) mod tests {
                 let needs_query =
                     !matches!(refusal, "wrong_account" | "wrong_session" | "wrong_request");
                 if refusal == "bad_ed" {
-                    key.public_key_b64u =
+                    key.public_key_base64url =
                         arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
                             ed25519_dalek::SigningKey::from_bytes(&[42; 32])
                                 .verifying_key()
@@ -3427,7 +3431,7 @@ pub(crate) mod tests {
                         .unwrap();
                     let mut expected = request.clone();
                     if refusal == "wrong_request" {
-                        let SelfAuthoritySubmitRequest::Event(value) = &mut expected else {
+                        let SelfAuthoritySubmitRequestBody::Event(value) = &mut expected else {
                             unreachable!()
                         };
                         value.event.created_at = crate::test_fixtures::at(4);
@@ -3543,7 +3547,7 @@ pub(crate) mod tests {
         ];
         let (client, server) = client(bodies);
         let mut replica = OwnStationReplica::new(crate::test_fixtures::realm_id());
-        let request = StreamScanRequest {
+        let request = StreamScanRequestBody {
             realm_id: crate::test_fixtures::realm_id(),
             stream_ref: crate::test_fixtures::realm_stream(),
             direction: StreamScanDirection::After(None),
@@ -3555,7 +3559,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(page.rows().unwrap().len(), 2);
         assert_eq!(replica.head(&request.stream_ref).unwrap(), &head(&second));
-        let next = StreamScanRequest {
+        let next = StreamScanRequestBody {
             direction: StreamScanDirection::After(Some(1)),
             ..request.clone()
         };
@@ -3637,7 +3641,7 @@ pub(crate) mod tests {
             )
         };
         let before = state(&replica);
-        let request = StreamScanRequest {
+        let request = StreamScanRequestBody {
             realm_id: first.realm_id.clone(),
             stream_ref: first.stream_ref.clone(),
             direction: StreamScanDirection::After(None),
@@ -3676,7 +3680,7 @@ pub(crate) mod tests {
                 .is_err()
         );
         assert!(state(&replica) == installed);
-        let tail = StreamScanRequest {
+        let tail = StreamScanRequestBody {
             direction: StreamScanDirection::After(Some(1)),
             ..request
         };
@@ -3720,7 +3724,7 @@ pub(crate) mod tests {
             replica.head(&checkpoint.stream_ref),
             Some(&head(&checkpoint))
         );
-        let request = StreamScanRequest {
+        let request = StreamScanRequestBody {
             realm_id: next.realm_id.clone(),
             stream_ref: next.stream_ref.clone(),
             direction: StreamScanDirection::After(Some(checkpoint.stream_position)),
@@ -3792,7 +3796,7 @@ pub(crate) mod tests {
         replica
             .install_bound_snapshot(&client.snapshot_head(&anchor.realm_id).await.unwrap())
             .unwrap();
-        let request = StreamScanRequest {
+        let request = StreamScanRequestBody {
             realm_id: anchor.realm_id.clone(),
             stream_ref: anchor.stream_ref.clone(),
             direction: StreamScanDirection::After(Some(anchor.stream_position)),
@@ -3813,7 +3817,7 @@ pub(crate) mod tests {
         let (client, server) = client(vec![
             serde_json::json!({"committed_events":[],"readable_floor":{"oldest_position":7,"floor_commit_id":arkret_wire::RealmCommitId::from_digest([7;32]),"floor_reason":"membership_join"},"truncated":false}),
         ]);
-        let request = StreamScanRequest {
+        let request = StreamScanRequestBody {
             realm_id: crate::test_fixtures::realm_id(),
             stream_ref: crate::test_fixtures::realm_stream(),
             direction: StreamScanDirection::After(None),
@@ -3855,7 +3859,7 @@ pub(crate) mod tests {
         replica
             .install_bound_snapshot(&client.snapshot_head(&first.realm_id).await.unwrap())
             .unwrap();
-        let request = StreamScanRequest {
+        let request = StreamScanRequestBody {
             realm_id: first.realm_id.clone(),
             stream_ref: first.stream_ref.clone(),
             direction: StreamScanDirection::After(None),
@@ -3928,7 +3932,7 @@ pub(crate) mod tests {
                     actor_id: arkret_wire::ActorId::account(account),
                 },
             ] {
-                snapshot.current_state_entries.push(TypedCurrentRow::Value {
+                snapshot.current_state_entries.push(CurrentState::Value {
                     selector,
                     source_stream_ref: dependency.stream_ref.clone(),
                     revision: arkret_wire::CurrentRevision {
@@ -4118,27 +4122,27 @@ pub(crate) mod tests {
             snapshot
         };
         let mut changed_key = initial.clone();
-        let arkret_wire::TypedCurrentRow::Value { value, .. } = changed_key
+        let arkret_wire::CurrentState::Value { value, .. } = changed_key
             .current_state_entries
             .iter_mut()
             .find(|row| {
                 matches!(
                     row,
-                    arkret_wire::TypedCurrentRow::Value {
+                    arkret_wire::CurrentState::Value {
                         selector: arkret_wire::CurrentSelector::CallRoster { .. },
                         ..
                     }
                 )
             })
             .unwrap();
-        value["entries"][0]["participant_signing_key"]["public_key_b64u"] =
+        value["entries"][0]["participant_signing_key"]["public_key_base64url"] =
             serde_json::json!(arkret_canonical::base64url_encode([42; 32]));
         let changed_key = resign_identity(changed_key);
         let mut partial = initial.clone();
         partial.current_state_entries.retain(|row| {
             !matches!(
                 row,
-                arkret_wire::TypedCurrentRow::Value {
+                arkret_wire::CurrentState::Value {
                     selector: arkret_wire::CurrentSelector::CallRoster { .. },
                     ..
                 }
@@ -4215,7 +4219,7 @@ pub(crate) mod tests {
             .find(|row| {
                 matches!(
                     row,
-                    TypedCurrentRow::Value {
+                    CurrentState::Value {
                         selector: arkret_wire::CurrentSelector::CallRoster { .. },
                         ..
                     }
@@ -4274,7 +4278,7 @@ pub(crate) mod tests {
         replica
             .install_bound_snapshot(&client.snapshot_head(&replica.realm_id).await.unwrap())
             .unwrap();
-        let request = StreamScanRequest {
+        let request = StreamScanRequestBody {
             realm_id: replica.realm_id.clone(),
             stream_ref: stream.clone(),
             direction: StreamScanDirection::After(None),

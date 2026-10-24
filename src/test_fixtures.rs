@@ -86,9 +86,9 @@ pub fn genesis_payload(seed: u8, realm: RealmId) -> Value {
         .unwrap(),
         creator_leaf_authority:
             arkret_models_collaboration::events_payloads::MlsGenesisCreatorLeafAuthority {
-                leaf_signature_key_b64u: Base64UrlString::new(arkret_canonical::base64url_encode(
-                    [3; 32],
-                ))
+                leaf_signature_key_base64url: Base64UrlString::new(
+                    arkret_canonical::base64url_encode([3; 32]),
+                )
                 .unwrap(),
                 endpoint: arkret_wire::MlsWelcomeRecipientEndpoint::Device {
                     device_id: device_id(),
@@ -131,6 +131,6 @@ pub fn detached_signature(context: DetachedSignatureContext) -> DetachedObjectSi
         verification_method: DidUrl::new("did:web:authority.example#key-1").unwrap(),
         signed_digest: Hash::new(format!("sha256:{}", "a".repeat(64))).unwrap(),
         created_at: at(1),
-        sig: Base64UrlString::new("AA").unwrap(),
+        signature: Base64UrlString::new("AA").unwrap(),
     }
 }

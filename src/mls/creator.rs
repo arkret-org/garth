@@ -1,6 +1,6 @@
 //! Exact creator reads shared by Device hosts and Agent runtimes.
 
-use arkret_http_client::own_station_results::OwnStationResultClient;
+use arkret_http_client::own_station_results::OwnStationStateClient;
 use arkret_models_collaboration::events_payloads::RealmGenesis;
 use arkret_models_collaboration::mls_creator_bootstrap::{
     MlsCreatorBootstrapAcceptedCreate, MlsCreatorBootstrapAuthority, MlsCreatorBootstrapIntent,
@@ -8,8 +8,8 @@ use arkret_models_collaboration::mls_creator_bootstrap::{
 };
 use arkret_wire::{
     CommitStreamRef, CommittedEventFullView, CommittedEventRef, CommittedEventView,
-    CurrentSelector, EventKind, RealmStateSnapshot, StreamScanDirection, StreamScanRequest,
-    TypedCurrentRow,
+    CurrentSelector, CurrentState, EventKind, RealmStateSnapshot, StreamScanDirection,
+    StreamScanRequestBody,
 };
 
 use crate::own_station_results::{OwnStationReplica, consume_bound_event};
@@ -29,7 +29,7 @@ fn protocol(message: impl ToString) -> Error {
 }
 
 pub async fn read_creator_scope(
-    client: &OwnStationResultClient,
+    client: &OwnStationStateClient,
     intent: &MlsCreatorBootstrapIntent,
 ) -> Result<CreatorScopeRead> {
     static NEXT_READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -46,7 +46,7 @@ pub async fn read_creator_scope(
         .current_state_entries
         .iter()
         .find_map(|row| match row {
-            TypedCurrentRow::Value {
+            CurrentState::Value {
                 selector: CurrentSelector::RealmGenesis,
                 source_stream_ref,
                 value,
@@ -116,7 +116,7 @@ pub async fn read_creator_scope(
             break;
         }
         let remaining = head.stream_position - next;
-        let request = StreamScanRequest {
+        let request = StreamScanRequestBody {
             realm_id: realm.clone(),
             stream_ref: stream.clone(),
             direction: StreamScanDirection::After(after),

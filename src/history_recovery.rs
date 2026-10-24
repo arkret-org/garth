@@ -4,9 +4,9 @@
 
 use std::collections::BTreeMap;
 
-use arkret_http_client::own_station_results::{BoundOwnStationResponse, OwnStationResultClient};
+use arkret_http_client::own_station_results::{BoundOwnStationResponse, OwnStationStateClient};
 use arkret_wire::{
-    CommitStreamRef, CommittedEventView, RealmId, RealmStateSnapshot, StreamScanRequest,
+    CommitStreamRef, CommittedEventView, RealmId, RealmStateSnapshot, StreamScanRequestBody,
 };
 
 use crate::own_station_results::{OwnStationReplica, OwnStationScanPage};
@@ -21,7 +21,7 @@ fn protocol(error: impl std::fmt::Display) -> crate::Error {
 }
 
 pub async fn window_pages(
-    client: &OwnStationResultClient,
+    client: &OwnStationStateClient,
     realm: &arkret_wire::RealmId,
     current: &SnapshotResponse,
     replica: &mut OwnStationReplica,
@@ -72,7 +72,7 @@ pub async fn window_pages(
             .next_position
             .checked_sub(next)
             .ok_or_else(|| protocol("Account window lies behind its exact basis"))?;
-        let request = StreamScanRequest {
+        let request = StreamScanRequestBody {
             realm_id: realm.clone(),
             stream_ref: window.stream_ref.clone(),
             direction: arkret_wire::StreamScanDirection::After(after),
@@ -135,7 +135,7 @@ pub async fn window_pages(
 }
 
 pub async fn genesis_pages(
-    client: &OwnStationResultClient,
+    client: &OwnStationStateClient,
     realm: &arkret_wire::RealmId,
     stream: &CommitStreamRef,
     end: u64,
@@ -156,7 +156,7 @@ pub async fn genesis_pages(
         if remaining == 0 {
             break;
         }
-        let request = StreamScanRequest {
+        let request = StreamScanRequestBody {
             realm_id: realm.clone(),
             stream_ref: stream.clone(),
             direction: arkret_wire::StreamScanDirection::After(after),
@@ -193,7 +193,7 @@ pub async fn genesis_pages(
 }
 
 pub async fn replay_with_admitted_replica(
-    client: &OwnStationResultClient,
+    client: &OwnStationStateClient,
     realm: &arkret_wire::RealmId,
     stream: &CommitStreamRef,
     snapshot: &CreatorOwnSnapshot,
@@ -244,7 +244,7 @@ pub async fn replay_with_admitted_replica(
             .checked_add(1)
             .and_then(|end| end.checked_sub(next))
             .ok_or_else(|| protocol("stream exceeded frozen cut"))?;
-        let request = StreamScanRequest {
+        let request = StreamScanRequestBody {
             realm_id: realm.clone(),
             stream_ref: stream.clone(),
             direction: arkret_wire::StreamScanDirection::After(after),

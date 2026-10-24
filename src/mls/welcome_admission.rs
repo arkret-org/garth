@@ -8,8 +8,8 @@
 //! answers it identically.
 
 use arkret_models_crypto::{
-    KeyOperationSignature, KeyPackageClaimRecord, KeyPackagesClaimOutcome,
-    KeyPackagesConsumeRequestBody, KeyPackagesConsumeUnsignedRequest, MlsCommitPayload,
+    KeyOperationSignature, KeyPackageClaimRecord, KeyPackagesClaimResponseBody,
+    KeyPackagesConsumeFields, KeyPackagesConsumeRequestBody, MlsCommitPayload,
     RecipientMlsDurableReceipt, RecipientMlsDurableSigner, keypackages_consume_signing_input,
 };
 use arkret_wire::{
@@ -143,7 +143,7 @@ pub fn verify_welcome_claim<'a>(
     welcome: &MlsWelcomeDelivery,
     endpoint: &LocalMlsEndpoint,
     accepted_commit: &Event,
-    outcome: &KeyPackagesClaimOutcome,
+    outcome: &KeyPackagesClaimResponseBody,
     authority: impl Into<WelcomeClaimAuthority<'a>>,
     endpoint_authorization: &EventId,
 ) -> Result<KeyPackageClaimRecord> {
@@ -255,7 +255,7 @@ pub fn verify_welcome_claim<'a>(
             "the Commit and Welcome have different effective scopes",
         ));
     }
-    let commit_bytes = arkret_canonical::base64url_decode(payload.commit_bytes_b64())
+    let commit_bytes = arkret_canonical::base64url_decode(payload.commit_base64url())
         .map_err(|_| refused("the accepted Commit bytes are not base64url"))?;
     // An inline Add proposal carries the added KeyPackage's exact TLS
     // serialization inside the Commit's public content.
@@ -284,7 +284,7 @@ pub fn verify_welcome_claim<'a>(
 /// then the command, so both carry the same endpoint signature.
 pub fn signed_welcome_consume(
     welcome: &MlsWelcomeDelivery,
-    outcome: &KeyPackagesClaimOutcome,
+    outcome: &KeyPackagesClaimResponseBody,
     recipient: RecipientMlsDurableSigner,
     local_station: &DidCoreId,
     joined_epoch: u64,
@@ -386,7 +386,7 @@ pub fn signed_welcome_consume(
         signature: KeyOperationSignature {
             kid: NonEmptyString::new(method.clone()).map_err(&refused)?,
             signature_algorithm: None,
-            sig: Base64UrlString::new("AA".to_owned()).map_err(&refused)?,
+            signature: Base64UrlString::new("AA".to_owned()).map_err(&refused)?,
         },
     };
     receipt.signature = sign(
@@ -396,7 +396,7 @@ pub fn signed_welcome_consume(
             .map_err(|error| refused(&error.to_string()))?,
     )?;
     receipt.validate_shape().map_err(refused)?;
-    let unsigned = KeyPackagesConsumeUnsignedRequest {
+    let unsigned = KeyPackagesConsumeFields {
         claim_id: welcome.keypackage_claim_ref.clone(),
         recipient_durable_receipt: receipt,
     };
@@ -443,7 +443,7 @@ mod tests {
                 "ak:keypackage_claim:0196419b-0000-7000-8000-000000000050",
             )
             .unwrap(),
-            ciphertext_b64: Base64UrlString::new("AQID").unwrap(),
+            ciphertext_base64url: Base64UrlString::new("AQID").unwrap(),
             producer_proof: detached_signature(DetachedSignatureContext::MlsWelcomeDelivery),
         }
     }
@@ -575,9 +575,9 @@ mod tests {
 
     /// The claim outcome as the recipient's Station first serialized it,
     /// with the receipt's `claims_digest` over `claims`.
-    fn outcome(claims: Vec<KeyPackageClaimRecord>) -> KeyPackagesClaimOutcome {
+    fn outcome(claims: Vec<KeyPackageClaimRecord>) -> KeyPackagesClaimResponseBody {
         let claim_request_id = Base64UrlString::new("Y2xhaW0tcmVxdWVzdA").unwrap();
-        let request = arkret_models_crypto::PeerKeyPackagesClaimUnsignedRequest {
+        let request = arkret_models_crypto::PeerKeyPackagesClaimFields {
             claim_request_id: claim_request_id.clone(),
             target_account_id: recipient().as_account_id().cloned(),
             target_actor_id: None,
@@ -598,7 +598,7 @@ mod tests {
             pair_key: None,
             last_resort_allowed: None,
         };
-        KeyPackagesClaimOutcome {
+        KeyPackagesClaimResponseBody {
             claim_request_id: claim_request_id.clone(),
             claim_receipt: arkret_models_crypto::PeerKeyPackageClaimReceipt {
                 claim_request_id,
@@ -620,7 +620,7 @@ mod tests {
                     )
                     .unwrap(),
                     signature_algorithm: None,
-                    sig: Base64UrlString::new("AA").unwrap(),
+                    signature: Base64UrlString::new("AA").unwrap(),
                 },
             },
             claims,
@@ -667,7 +667,7 @@ mod tests {
     fn a_tampered_claim_receipt_refuses_the_welcome() {
         let commit = accepted_commit(KEYPACKAGE);
         let welcome = recipient_welcome(&commit);
-        let verify = |outcome: &KeyPackagesClaimOutcome| {
+        let verify = |outcome: &KeyPackagesClaimResponseBody| {
             verify_welcome_claim(
                 &welcome,
                 &recipient_endpoint(),
@@ -1011,7 +1011,7 @@ mod tests {
         );
         let endpoint = LocalMlsEndpoint::device(realm, actor, device_id());
         let current = station();
-        let verify = |claims: &KeyPackagesClaimOutcome, current_station: &DidCoreId| {
+        let verify = |claims: &KeyPackagesClaimResponseBody, current_station: &DidCoreId| {
             verify_welcome_claim(
                 &welcome,
                 &endpoint,
@@ -1061,7 +1061,7 @@ mod tests {
             Ok(KeyOperationSignature {
                 kid: NonEmptyString::new(method.to_owned()).unwrap(),
                 signature_algorithm: Some(NonEmptyString::new("Ed25519").unwrap()),
-                sig: Base64UrlString::new(arkret_canonical::base64url_encode(
+                signature: Base64UrlString::new(arkret_canonical::base64url_encode(
                     key.sign(input).to_bytes(),
                 ))
                 .unwrap(),
@@ -1119,7 +1119,7 @@ mod tests {
         );
         let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]).verifying_key();
         for (input, signature) in inputs.iter().zip([&receipt.signature, &request.signature]) {
-            let bytes = arkret_canonical::base64url_decode(signature.sig.as_str()).unwrap();
+            let bytes = arkret_canonical::base64url_decode(signature.signature.as_str()).unwrap();
             let signature = ed25519_dalek::Signature::from_slice(&bytes).unwrap();
             assert!(key.verify_strict(input, &signature).is_ok());
         }

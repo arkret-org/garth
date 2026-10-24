@@ -76,11 +76,13 @@ where
         verify: G,
     ) -> Result<Option<QueuedSubmission>>
     where
-        G: FnOnce(arkret_models_collaboration::authority_commit::SelfAuthoritySubmitRequest) -> F,
+        G: FnOnce(
+            arkret_models_collaboration::authority_commit::SelfAuthoritySubmitRequestBody,
+        ) -> F,
         F: Future<
             Output = Result<
                 arkret_identity::VerifiedSubmission<
-                    arkret_models_collaboration::authority_commit::SelfAuthoritySubmitRequest,
+                    arkret_models_collaboration::authority_commit::SelfAuthoritySubmitRequestBody,
                 >,
             >,
         >,

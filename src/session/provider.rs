@@ -201,7 +201,7 @@ where
         &self,
         client: arkret_http_client::Client,
         binding: arkret_models_discovery::StationConnectionBinding,
-    ) -> Result<arkret_http_client::own_station_results::OwnStationResultClient>
+    ) -> Result<arkret_http_client::own_station_results::OwnStationStateClient>
     where
         T: Clone + crate::MaybeSendSync + 'static,
     {
@@ -211,10 +211,8 @@ where
             factory: self.factory.clone(),
             clock: self.clock.clone(),
         });
-        arkret_http_client::own_station_results::OwnStationResultClient::new(
-            client, binding, source,
-        )
-        .map_err(Error::from)
+        arkret_http_client::own_station_results::OwnStationStateClient::new(client, binding, source)
+            .map_err(Error::from)
     }
 
     pub fn clear_cached_transport(&self) {
@@ -385,11 +383,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use arkret_models_collaboration::session_grant_bodies::{
-        AgentSessionGrantRefreshRequest, AgentSessionRefreshProofContext,
+        AgentSessionGrantRefreshRequestBody, AgentSessionRefreshProofContext,
         UnsignedAgentSessionRefreshProof,
     };
     use arkret_models_collaboration::session_grants::{
-        SessionGrantOutcome, SessionGrantRefreshRequestBody, SessionGrantRequestBody,
+        SessionGrantRefreshRequestBody, SessionGrantRequestBody, SessionGrantResponseBody,
     };
     use arkret_wire::{AccountId, Base64UrlString, DidCoreId, DidUrl, Hash};
     use chrono::{Duration, Utc};
@@ -399,7 +397,7 @@ mod tests {
 
     #[derive(Clone)]
     struct RefreshTransport {
-        outcomes: Arc<Mutex<VecDeque<Result<SessionGrantOutcome>>>>,
+        outcomes: Arc<Mutex<VecDeque<Result<SessionGrantResponseBody>>>>,
         calls: Arc<Mutex<usize>>,
     }
 
@@ -407,14 +405,14 @@ mod tests {
         fn issue_session_grant<'a>(
             &'a self,
             _request: SessionGrantRequestBody,
-        ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
+        ) -> BoxSessionFuture<'a, SessionGrantResponseBody> {
             Box::pin(async { Err(Error::Protocol("unexpected issue".to_owned())) })
         }
 
         fn refresh_session_grant<'a>(
             &'a self,
             _request: SessionGrantRefreshRequestBody,
-        ) -> BoxSessionFuture<'a, SessionGrantOutcome> {
+        ) -> BoxSessionFuture<'a, SessionGrantResponseBody> {
             *self.calls.lock().unwrap() += 1;
             let outcome = self.outcomes.lock().unwrap().pop_front().unwrap();
             Box::pin(async move { outcome })
@@ -507,7 +505,7 @@ mod tests {
             base_url: "https://service.example/".into(),
             trust_domain: arkret_wire::TrustDomainId::new("ak:trust_domain:service.example")
                 .unwrap(),
-            auth_metadata: arkret_models_discovery::AuthMetadata::minimal(),
+            authentication_metadata: arkret_models_discovery::AuthenticationMetadata::minimal(),
         };
         let engine = SessionEngine::with_state(transport.clone(), state.clone());
         let first = engine
@@ -551,10 +549,10 @@ mod tests {
         );
     }
 
-    fn refresh_outcome() -> SessionGrantOutcome {
+    fn refresh_outcome() -> SessionGrantResponseBody {
         let expires =
             arkret_canonical::normalize_timestamp_canonical(Utc::now()) + Duration::hours(1);
-        SessionGrantOutcome {
+        SessionGrantResponseBody {
             session_grant_id: grant_id(2),
             account_id: AccountId::new(
                 DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
@@ -590,7 +588,7 @@ mod tests {
         .unwrap();
         SessionRefreshOptions {
             request: Some(SessionGrantRefreshRequestBody::Agent(
-                AgentSessionGrantRefreshRequest {
+                AgentSessionGrantRefreshRequestBody {
                     grant_jwt: "grant-1".to_owned(),
                     audience_id: Some(audience),
                     principal_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example")

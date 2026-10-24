@@ -20,7 +20,7 @@ install an authority handoff.
 
 ## 2. Submit through the current authority
 
-Construct `QueuedSubmission` from an SDK `AuthoritySubmitRequest`. The
+Construct `QueuedSubmission` from an SDK `AuthoritySubmitRequestBody`. The
 constructor validates the producer Event or MLS commit submission and records
 its stable Event ID. Calling `client.authority().submit(...)` validates the
 server outcome before changing the local state to `Committed` or `Rejected`.
@@ -33,7 +33,7 @@ no ordering pointer of its own.
 Create `RealmReplica` with the Realm ID. Install a verified current-authority
 bundle, then a signed `RealmStateSnapshot`. The snapshot supplies one visible
 head per independent stream. For every Realm, Circle, or Sidecar stream, issue
-a `StreamScanRequest` starting at that stream's head and pass the validated
+a `StreamScanRequestBody` starting at that stream's head and pass the validated
 result to `apply_scan`.
 
 Do not merge positions across streams. Positions are meaningful only within
@@ -180,7 +180,7 @@ SDK models and reducers remain the protocol owners; the projector owns the
 host's durable index, notification and UI state.
 
 `history_recovery` drives bounded snapshot-anchored windows and live replay
-through `OwnStationResultClient`. A limited preview never becomes a durable
+through `OwnStationStateClient`. A limited preview never becomes a durable
 historical prefix. A durable cursor is restored from its exact original,
 while a current-head bootstrap establishes current state without inventing
 historical rows. Hosts commit the returned admitted pages before moving cursors.

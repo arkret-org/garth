@@ -15,7 +15,7 @@ use arkret_http_client::ClientRequestOptions;
 #[cfg(test)]
 use arkret_identity::VerifiedSubmission;
 use arkret_models_collaboration::authority_commit::{
-    SelfAuthoritySubmitOutcome, SelfAuthoritySubmitRequest,
+    SelfAuthoritySubmitRequestBody, SelfAuthoritySubmitResponseBody,
 };
 use arkret_retry::{Jitter, RetryPolicy};
 use arkret_wire::{EventId, Problem, RealmCommit};
@@ -73,7 +73,7 @@ impl SendQueueItem {
         &self.submission.event_id
     }
 
-    pub fn request(&self) -> &SelfAuthoritySubmitRequest {
+    pub fn request(&self) -> &SelfAuthoritySubmitRequestBody {
         &self.submission.request
     }
 
@@ -82,8 +82,10 @@ impl SendQueueItem {
         match &self.submission.state {
             SubmissionState::Committed { commit, .. } => Some(commit),
             SubmissionState::UnitCommitted { outcome } => match outcome.as_ref() {
-                SelfAuthoritySubmitOutcome::OrdinaryRealmBootstrap(value) => value.commits.first(),
-                SelfAuthoritySubmitOutcome::DirectConversationFounding(value) => {
+                SelfAuthoritySubmitResponseBody::OrdinaryRealmBootstrap(value) => {
+                    value.commits.first()
+                }
+                SelfAuthoritySubmitResponseBody::DirectConversationFounding(value) => {
                     value.commits.first()
                 }
                 _ => None,
@@ -448,10 +450,10 @@ where
     ) -> Result<OutboundEngineOutcome>
     where
         T: AuthorityTransport,
-        G: FnOnce(SelfAuthoritySubmitRequest) -> F,
+        G: FnOnce(SelfAuthoritySubmitRequestBody) -> F,
         F: Future<
             Output = std::result::Result<
-                arkret_identity::VerifiedSubmission<SelfAuthoritySubmitRequest>,
+                arkret_identity::VerifiedSubmission<SelfAuthoritySubmitRequestBody>,
                 String,
             >,
         >,
@@ -470,10 +472,10 @@ where
     ) -> Result<OutboundEngineOutcome>
     where
         T: AuthorityTransport,
-        G: FnOnce(SelfAuthoritySubmitRequest) -> F,
+        G: FnOnce(SelfAuthoritySubmitRequestBody) -> F,
         F: Future<
             Output = std::result::Result<
-                arkret_identity::VerifiedSubmission<SelfAuthoritySubmitRequest>,
+                arkret_identity::VerifiedSubmission<SelfAuthoritySubmitRequestBody>,
                 String,
             >,
         >,
@@ -645,14 +647,14 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     use arkret_canonical::DigestSuite;
-    use arkret_models_collaboration::authority_commit::AuthorityHandoffRequest;
+    use arkret_models_collaboration::authority_commit::AuthorityRealmAuthorityHandoffRequestBody;
     use arkret_signatures::{Ed25519DetachedJwsSigner, SignEventOptions, sign_event};
     use arkret_wire::{
-        ActorId, AuthoredEvent, AuthorityBundleRequest, AuthorityCommitStatus,
-        AuthorityRejectionStatus, AuthoritySubmitOutcome, AuthoritySubmitRequest, CommitStreamRef,
-        DidCoreId, Event, EventAdmissionSubmission, EventId, EventKind, Problem,
-        RealmAuthorityBundle, RealmAuthorityHandoff, RealmId, ScopeRef, StreamScanOutcome,
-        StreamScanRequest,
+        ActorId, AuthoredEvent, AuthorityCommitStatus, AuthorityRejectionStatus,
+        AuthoritySubmitRequestBody, AuthoritySubmitResponseBody, CommitStreamRef, DidCoreId, Event,
+        EventAdmissionSubmission, EventId, EventKind, Problem, RealmAuthorityBundle,
+        RealmAuthorityBundleRequestBody, RealmAuthorityHandoff, RealmId, ScopeRef,
+        StreamScanRequestBody, StreamScanResponseBody,
     };
 
     use super::*;
@@ -669,8 +671,8 @@ mod tests {
     }
 
     async fn verify_fixture(
-        request: SelfAuthoritySubmitRequest,
-    ) -> std::result::Result<VerifiedSubmission<SelfAuthoritySubmitRequest>, String> {
+        request: SelfAuthoritySubmitRequestBody,
+    ) -> std::result::Result<VerifiedSubmission<SelfAuthoritySubmitRequestBody>, String> {
         let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
         let context = arkret_identity::ProducerVerificationContext {
             actor: ActorId::service(DidCoreId::new("ak:did_core:web:alice.example").unwrap()),
@@ -754,7 +756,7 @@ mod tests {
             "did:web:alice.example#key-1",
         );
         sign_event(&mut authored, &signer, SignEventOptions::new()).unwrap();
-        QueuedSubmission::new(AuthoritySubmitRequest::Event(
+        QueuedSubmission::new(AuthoritySubmitRequestBody::Event(
             EventAdmissionSubmission::new(authored.into_event()),
         ))
         .unwrap()
@@ -775,7 +777,7 @@ mod tests {
         let first = commit(7, original.primary_event(), stream.clone(), 1);
         let mut accepted = original.clone();
         accepted
-            .apply_outcome(AuthoritySubmitOutcome::Accepted {
+            .apply_outcome(AuthoritySubmitResponseBody::Accepted {
                 status: AuthorityCommitStatus::Committed,
                 commit: first.clone(),
             })
@@ -803,7 +805,7 @@ mod tests {
         assert_eq!(late.commit(), Some(&first));
         let mut conflicting = original.clone();
         conflicting
-            .apply_outcome(AuthoritySubmitOutcome::Accepted {
+            .apply_outcome(AuthoritySubmitResponseBody::Accepted {
                 status: AuthorityCommitStatus::Committed,
                 commit: commit(8, original.primary_event(), stream, 2),
             })
@@ -825,7 +827,7 @@ mod tests {
             Some(&first)
         );
         accepted
-            .apply_outcome(AuthoritySubmitOutcome::Accepted {
+            .apply_outcome(AuthoritySubmitResponseBody::Accepted {
                 status: AuthorityCommitStatus::Duplicate,
                 commit: first.clone(),
             })
@@ -873,18 +875,18 @@ mod tests {
     impl AuthorityTransport for ScriptedTransport {
         async fn submit(
             &self,
-            request: &VerifiedSubmission<AuthoritySubmitRequest>,
+            request: &VerifiedSubmission<AuthoritySubmitRequestBody>,
             _options: &ClientRequestOptions,
-        ) -> Result<AuthoritySubmitOutcome> {
+        ) -> Result<AuthoritySubmitResponseBody> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            let AuthoritySubmitRequest::Event(submission) = request.wire() else {
+            let AuthoritySubmitRequestBody::Event(submission) = request.wire() else {
                 panic!("the fixture only submits ordinary Events");
             };
             match &self.script {
                 Scripted::LateFailure(store, status) => {
                     let mut accepted = QueuedSubmission::new(request.wire().clone()).unwrap();
                     accepted
-                        .apply_outcome(AuthoritySubmitOutcome::Accepted {
+                        .apply_outcome(AuthoritySubmitResponseBody::Accepted {
                             status: AuthorityCommitStatus::Committed,
                             commit: commit(
                                 7,
@@ -911,7 +913,7 @@ mod tests {
                         .await
                         .unwrap();
                     if *status == 0 {
-                        Ok(AuthoritySubmitOutcome::Rejected {
+                        Ok(AuthoritySubmitResponseBody::Rejected {
                             status: AuthorityRejectionStatus::Rejected,
                             reason_code: "late_rejection".into(),
                         })
@@ -926,7 +928,7 @@ mod tests {
                         })
                     }
                 }
-                Scripted::Accept => Ok(AuthoritySubmitOutcome::Accepted {
+                Scripted::Accept => Ok(AuthoritySubmitResponseBody::Accepted {
                     status: AuthorityCommitStatus::Committed,
                     commit: commit(
                         7,
@@ -937,12 +939,12 @@ mod tests {
                         1,
                     ),
                 }),
-                Scripted::Reject => Ok(AuthoritySubmitOutcome::Rejected {
+                Scripted::Reject => Ok(AuthoritySubmitResponseBody::Rejected {
                     status: AuthorityRejectionStatus::Rejected,
                     reason_code: "authorization_denied".to_owned(),
                 }),
                 #[cfg(feature = "native")]
-                Scripted::Retryable => Ok(AuthoritySubmitOutcome::Rejected {
+                Scripted::Retryable => Ok(AuthoritySubmitResponseBody::Rejected {
                     status: AuthorityRejectionStatus::RetryableUnavailable,
                     reason_code: "revision_unavailable".to_owned(),
                 }),
@@ -954,20 +956,20 @@ mod tests {
             }
         }
 
-        async fn scan(&self, _request: &StreamScanRequest) -> Result<StreamScanOutcome> {
+        async fn scan(&self, _request: &StreamScanRequestBody) -> Result<StreamScanResponseBody> {
             unreachable!("the outbound engine never scans")
         }
 
         async fn authority_bundle(
             &self,
-            _request: &AuthorityBundleRequest,
+            _request: &RealmAuthorityBundleRequestBody,
         ) -> Result<RealmAuthorityBundle> {
             unreachable!("the outbound engine never resolves authority")
         }
 
         async fn install_handoff(
             &self,
-            _request: &AuthorityHandoffRequest,
+            _request: &AuthorityRealmAuthorityHandoffRequestBody,
             _options: &ClientRequestOptions,
         ) -> Result<RealmAuthorityHandoff> {
             unreachable!("the outbound engine never installs a handoff")
@@ -1088,7 +1090,7 @@ mod tests {
         use std::sync::atomic::AtomicBool;
         let queued = submission(3);
         let event_id = queued.event_id.clone();
-        let outcome = AuthoritySubmitOutcome::Accepted {
+        let outcome = AuthoritySubmitResponseBody::Accepted {
             status: AuthorityCommitStatus::Committed,
             commit: commit(
                 7,

@@ -7,9 +7,10 @@ use arkret_identity::{
 };
 use arkret_models_collaboration::sync_frames::account_sync::StreamWindowStartBasis;
 use arkret_wire::{
-    AuthorityBundleRequest, CommitStreamHead, CommitStreamRef, CommittedEventView, HistoryAccess,
-    ReadableFloor, RealmAuthorityBundle, RealmCommit, RealmId, RealmSnapshotId, RealmStateSnapshot,
-    StreamScanDirection, StreamScanOutcome, StreamScanRequest, TypedCurrentRow,
+    CommitStreamHead, CommitStreamRef, CommittedEventView, CurrentState, HistoryAccess,
+    ReadableFloor, RealmAuthorityBundle, RealmAuthorityBundleRequestBody, RealmCommit, RealmId,
+    RealmSnapshotId, RealmStateSnapshot, StreamScanDirection, StreamScanRequestBody,
+    StreamScanResponseBody,
 };
 
 use crate::{Error, Result};
@@ -34,18 +35,18 @@ pub struct VerifiedScanPage {
 /// when the signed snapshot covers several independent streams.
 #[derive(Clone, Debug, PartialEq)]
 pub struct VerifiedFloorSnapshot {
-    rows: Vec<TypedCurrentRow>,
+    rows: Vec<CurrentState>,
     head: CommitStreamHead,
     governance_generation: u64,
     history_access: HistoryAccess,
 }
 
 impl VerifiedFloorSnapshot {
-    pub fn rows(&self) -> &[TypedCurrentRow] {
+    pub fn rows(&self) -> &[CurrentState] {
         &self.rows
     }
 
-    pub fn into_rows(self) -> Vec<TypedCurrentRow> {
+    pub fn into_rows(self) -> Vec<CurrentState> {
         self.rows
     }
 
@@ -79,7 +80,7 @@ pub struct RealmReplica {
     pub authority: Option<RealmAuthorityBundle>,
     pub snapshot: Option<RealmStateSnapshot>,
     pub streams: BTreeMap<CommitStreamRef, StreamReplica>,
-    authority_request: Option<AuthorityBundleRequest>,
+    authority_request: Option<RealmAuthorityBundleRequestBody>,
     verified_streams: BTreeMap<CommitStreamRef, StreamReplica>,
     verified_anchors: BTreeMap<CommitStreamRef, RealmCommit>,
 }
@@ -150,7 +151,7 @@ impl RealmReplica {
     /// chain. The request nonce must be the one the caller actually issued.
     pub fn install_verified_authority(
         &mut self,
-        request: &AuthorityBundleRequest,
+        request: &RealmAuthorityBundleRequestBody,
         bundle: RealmAuthorityBundle,
         freshness: &RealmAuthorityFreshness,
         keys: &dyn RealmAuthorityKeyDirectory,
@@ -181,7 +182,7 @@ impl RealmReplica {
     /// replace the already authenticated genesis/handoff chain.
     pub fn refresh_verified_authority(
         &mut self,
-        request: &AuthorityBundleRequest,
+        request: &RealmAuthorityBundleRequestBody,
         bundle: RealmAuthorityBundle,
         freshness: &RealmAuthorityFreshness,
         keys: &dyn RealmAuthorityKeyDirectory,
@@ -558,7 +559,7 @@ impl RealmReplica {
                 .current_state_entries
                 .iter()
                 .filter(|row| match row {
-                    TypedCurrentRow::Value {
+                    CurrentState::Value {
                         source_stream_ref, ..
                     } => source_stream_ref == stream_ref,
                 })
@@ -589,8 +590,8 @@ impl RealmReplica {
     /// for [`Self::apply_verified_scan`] or any authority-sensitive projection.
     pub fn apply_scan(
         &mut self,
-        request: &StreamScanRequest,
-        outcome: StreamScanOutcome,
+        request: &StreamScanRequestBody,
+        outcome: StreamScanResponseBody,
     ) -> Result<()> {
         for item in &outcome.committed_events {
             if let Some(event) = item.reducer_input() {
@@ -634,8 +635,8 @@ impl RealmReplica {
     /// An empty page never advances the verified tail.
     pub fn apply_verified_scan(
         &mut self,
-        request: &StreamScanRequest,
-        outcome: StreamScanOutcome,
+        request: &StreamScanRequestBody,
+        outcome: StreamScanResponseBody,
         freshness: &RealmAuthorityFreshness,
         keys: &dyn RealmAuthorityKeyDirectory,
     ) -> Result<VerifiedScanPage> {
@@ -893,7 +894,7 @@ pub(crate) fn validate_snapshot(snapshot: &RealmStateSnapshot, realm_id: &RealmI
     let mut commits = BTreeMap::new();
     for row in &snapshot.current_state_entries {
         let (selector, source_stream_ref, revision) = match row {
-            arkret_wire::TypedCurrentRow::Value {
+            arkret_wire::CurrentState::Value {
                 selector,
                 source_stream_ref,
                 revision,
@@ -945,7 +946,7 @@ pub(crate) fn validate_snapshot(snapshot: &RealmStateSnapshot, realm_id: &RealmI
         }
     }
     for row in &snapshot.current_state_entries {
-        let arkret_wire::TypedCurrentRow::Value {
+        let arkret_wire::CurrentState::Value {
             selector: arkret_wire::CurrentSelector::CallRoster { call_id },
             source_stream_ref,
             value,
@@ -954,7 +955,7 @@ pub(crate) fn validate_snapshot(snapshot: &RealmStateSnapshot, realm_id: &RealmI
         else {
             continue;
         };
-        if !snapshot.current_state_entries.iter().any(|row|matches!(row,arkret_wire::TypedCurrentRow::Value {selector:arkret_wire::CurrentSelector::CallState {call_id:found},source_stream_ref:stream,..} if found==call_id && stream==source_stream_ref)) {return Err(Error::Protocol("Call roster has no lifecycle in its exact scope".into()));}
+        if !snapshot.current_state_entries.iter().any(|row|matches!(row,arkret_wire::CurrentState::Value {selector:arkret_wire::CurrentSelector::CallState {call_id:found},source_stream_ref:stream,..} if found==call_id && stream==source_stream_ref)) {return Err(Error::Protocol("Call roster has no lifecycle in its exact scope".into()));}
         let roster =
             serde_json::from_value(value.clone()).map_err(|e| Error::Protocol(e.to_string()))?;
         arkret_signatures::media::verify_call_roster_bindings(realm_id, call_id, &roster)
@@ -993,7 +994,7 @@ mod tests {
         );
         let commit = crate::test_fixtures::commit(21, &event, stream_ref.clone(), 0);
         let floor_commit_id = commit.commit_id.clone();
-        let outcome = StreamScanOutcome {
+        let outcome = StreamScanResponseBody {
             committed_events: vec![CommittedEventView::Full(CommittedEventFullView {
                 commit,
                 event,
@@ -1005,7 +1006,7 @@ mod tests {
             }),
             truncated: false,
         };
-        let request = StreamScanRequest {
+        let request = StreamScanRequestBody {
             realm_id: realm_id.clone(),
             stream_ref,
             direction: StreamScanDirection::After(None),
@@ -1124,7 +1125,7 @@ mod tests {
             arkret_wire::DidCoreId::new("ak:did_core:web:founder.example").unwrap(),
             station.clone(),
             serde_json::json!({
-                "expected_governance_generation": 0,
+                "expected_governance_generation": "0",
                 "expected_realm_stream_commit_id": genesis_commit.commit_id,
                 "new_governance_station_id": "ak:did_core:web:station-b.example"
             }),
@@ -1185,7 +1186,7 @@ mod tests {
             bundle_issued_at: now,
             current_assertion: assertion,
         };
-        let authority_request = AuthorityBundleRequest {
+        let authority_request = RealmAuthorityBundleRequestBody {
             realm_id: realm_id.clone(),
             nonce: nonce.clone(),
         };
@@ -1244,7 +1245,7 @@ mod tests {
             )
             .unwrap();
         };
-        let row = arkret_wire::TypedCurrentRow::Value {
+        let row = arkret_wire::CurrentState::Value {
             selector: arkret_wire::CurrentSelector::RealmProfile,
             source_stream_ref: stream_ref.clone(),
             revision: arkret_wire::CurrentRevision {
@@ -1278,7 +1279,7 @@ mod tests {
             {
                 let mut value = snapshot.clone();
                 let mut wrong_source = row.clone();
-                let arkret_wire::TypedCurrentRow::Value {
+                let arkret_wire::CurrentState::Value {
                     source_stream_ref, ..
                 } = &mut wrong_source;
                 *source_stream_ref = CommitStreamRef::Realm {
@@ -1293,7 +1294,7 @@ mod tests {
             {
                 let mut value = snapshot.clone();
                 let mut other_head_commit = row.clone();
-                let arkret_wire::TypedCurrentRow::Value { revision, .. } = &mut other_head_commit;
+                let arkret_wire::CurrentState::Value { revision, .. } = &mut other_head_commit;
                 revision.commit_id = genesis_commit.commit_id.clone();
                 value.current_state_entries = vec![other_head_commit];
                 value
@@ -1303,11 +1304,11 @@ mod tests {
                 let mut first = row.clone();
                 let mut second = row.clone();
                 for (row, commit) in [(&mut first, [0x61; 32]), (&mut second, [0x62; 32])] {
-                    let arkret_wire::TypedCurrentRow::Value { revision, .. } = row;
+                    let arkret_wire::CurrentState::Value { revision, .. } = row;
                     revision.stream_position = 0;
                     revision.commit_id = arkret_wire::RealmCommitId::from_digest(commit);
                 }
-                let arkret_wire::TypedCurrentRow::Value { selector, .. } = &mut second;
+                let arkret_wire::CurrentState::Value { selector, .. } = &mut second;
                 *selector = arkret_wire::CurrentSelector::RealmDiscovery;
                 value.current_state_entries = vec![first, second];
                 value
@@ -1315,7 +1316,7 @@ mod tests {
             {
                 let mut value = snapshot.clone();
                 let mut future_row = row.clone();
-                let arkret_wire::TypedCurrentRow::Value { revision, .. } = &mut future_row;
+                let arkret_wire::CurrentState::Value { revision, .. } = &mut future_row;
                 revision.stream_position = snapshot_head.stream_position + 1;
                 value.current_state_entries = vec![future_row];
                 value
@@ -1431,20 +1432,20 @@ mod tests {
             stream_position: 0,
         };
         let signed_rows = vec![
-            arkret_wire::TypedCurrentRow::Value {
+            arkret_wire::CurrentState::Value {
                 selector: arkret_wire::CurrentSelector::RealmGenesis,
                 source_stream_ref: stream_ref.clone(),
                 revision: genesis_revision.clone(),
                 value: serde_json::to_value(genesis_value).unwrap(),
             },
-            arkret_wire::TypedCurrentRow::Value {
+            arkret_wire::CurrentState::Value {
                 selector: arkret_wire::CurrentSelector::RealmAuthorityRoot,
                 source_stream_ref: stream_ref.clone(),
                 revision: genesis_revision,
                 value: serde_json::json!({
                     "controller_actor_id": genesis.actor_id.clone(),
                     "controller_epoch": 0,
-                    "authority_generation": 0,
+                    "authority_generation": "0",
                 }),
             },
         ];
@@ -1561,7 +1562,7 @@ mod tests {
             stream_position: 0,
             commit_id: arkret_wire::RealmCommitId::from_digest([0x55; 32]),
         };
-        let circle_row = TypedCurrentRow::Value {
+        let circle_row = CurrentState::Value {
             selector: arkret_wire::CurrentSelector::CircleMemberState {
                 circle_id: circle_id.clone(),
                 member_actor_id: genesis.actor_id.clone(),
@@ -1579,7 +1580,7 @@ mod tests {
             stream_ref: stream_ref.clone(),
             stream_position: 0,
         };
-        let parent_member = TypedCurrentRow::Value {
+        let parent_member = CurrentState::Value {
             selector: arkret_wire::CurrentSelector::MemberState {
                 actor_id: genesis.actor_id.clone(),
             },
@@ -1590,7 +1591,7 @@ mod tests {
             },
             value: serde_json::json!({"membership":"join"}),
         };
-        let parent_circle = TypedCurrentRow::Value {
+        let parent_circle = CurrentState::Value {
             selector: arkret_wire::CurrentSelector::Circle {
                 circle_id: circle_id.clone(),
             },
@@ -1635,13 +1636,13 @@ mod tests {
         let mut dependency_replica = replica.fork_verified_authority().unwrap();
         let genesis_page = dependency_replica
             .apply_verified_scan(
-                &StreamScanRequest {
+                &StreamScanRequestBody {
                     realm_id: realm_id.clone(),
                     stream_ref: stream_ref.clone(),
                     direction: StreamScanDirection::After(None),
                     limit: 2,
                 },
-                StreamScanOutcome {
+                StreamScanResponseBody {
                     committed_events: vec![CommittedEventView::Full(CommittedEventFullView {
                         commit: genesis_commit.clone(),
                         event: genesis.clone(),
@@ -1655,13 +1656,13 @@ mod tests {
             .unwrap();
         let ordinary_page = dependency_replica
             .apply_verified_scan(
-                &StreamScanRequest {
+                &StreamScanRequestBody {
                     realm_id: realm_id.clone(),
                     stream_ref: stream_ref.clone(),
                     direction: StreamScanDirection::After(Some(0)),
                     limit: 1,
                 },
-                StreamScanOutcome {
+                StreamScanResponseBody {
                     committed_events: vec![CommittedEventView::Full(CommittedEventFullView {
                         commit: ordinary_commit.clone(),
                         event: ordinary.clone(),
@@ -1691,7 +1692,7 @@ mod tests {
             .unwrap()
             .accepted_dependency_refs = vec![accepted_ref.clone()];
         for row in &mut dependency_snapshot.current_state_entries {
-            let TypedCurrentRow::Value {
+            let CurrentState::Value {
                 source_stream_ref,
                 revision,
                 ..
@@ -1840,7 +1841,7 @@ mod tests {
         };
         sidecar_snapshot.current_state_entries = vec![
             parent_member,
-            TypedCurrentRow::Value {
+            CurrentState::Value {
                 selector: arkret_wire::CurrentSelector::Sidecar {
                     sidecar_id: sidecar_id.clone(),
                 },
@@ -1964,13 +1965,13 @@ mod tests {
             let scoped_commit = seal(scoped_commit, &route.signing_key);
             let page = multi_replica
                 .apply_verified_scan(
-                    &StreamScanRequest {
+                    &StreamScanRequestBody {
                         realm_id: realm_id.clone(),
                         stream_ref: scoped_stream.clone(),
                         direction: StreamScanDirection::After(Some(0)),
                         limit: 1,
                     },
-                    StreamScanOutcome {
+                    StreamScanResponseBody {
                         committed_events: vec![CommittedEventView::Full(CommittedEventFullView {
                             commit: scoped_commit.clone(),
                             event: scoped_event,
@@ -1986,13 +1987,13 @@ mod tests {
             if scoped_stream == circle_stream {
                 let verified_tail = dependency_install
                     .apply_verified_scan(
-                        &StreamScanRequest {
+                        &StreamScanRequestBody {
                             realm_id: realm_id.clone(),
                             stream_ref: circle_stream.clone(),
                             direction: StreamScanDirection::After(Some(0)),
                             limit: 1,
                         },
-                        StreamScanOutcome {
+                        StreamScanResponseBody {
                             committed_events: page.rows().to_vec(),
                             readable_floor: Some(scoped_floor.clone()),
                             truncated: false,
@@ -2016,7 +2017,7 @@ mod tests {
                 Some(1)
             );
         }
-        let prefix_tail = StreamScanRequest {
+        let prefix_tail = StreamScanRequestBody {
             realm_id: realm_id.clone(),
             stream_ref: stream_ref.clone(),
             direction: StreamScanDirection::After(Some(0)),
@@ -2025,7 +2026,7 @@ mod tests {
         let prefix_page = prefix_replica
             .apply_verified_scan(
                 &prefix_tail,
-                StreamScanOutcome {
+                StreamScanResponseBody {
                     committed_events: vec![CommittedEventView::Full(CommittedEventFullView {
                         commit: ordinary_commit.clone(),
                         event: ordinary.clone(),
@@ -2159,7 +2160,7 @@ mod tests {
             );
             assert_eq!(snapshot_replica, before);
         }
-        let request = StreamScanRequest {
+        let request = StreamScanRequestBody {
             realm_id,
             stream_ref: stream_ref.clone(),
             direction: StreamScanDirection::After(None),
@@ -2170,7 +2171,7 @@ mod tests {
             commit: ordinary_commit.clone(),
             event: ordinary.clone(),
         };
-        let outcome = StreamScanOutcome {
+        let outcome = StreamScanResponseBody {
             committed_events: vec![
                 CommittedEventView::Full(CommittedEventFullView {
                     commit: genesis_commit,
@@ -2300,7 +2301,7 @@ mod tests {
             &route.signing_key,
         )
         .unwrap();
-        let renewed_request = AuthorityBundleRequest {
+        let renewed_request = RealmAuthorityBundleRequestBody {
             realm_id: request.realm_id.clone(),
             nonce: renewed_nonce.clone(),
         };
@@ -2380,11 +2381,11 @@ mod tests {
             .restore_verified_anchor(&anchor, &renewed_freshness, &keys)
             .unwrap();
         assert_eq!(reloaded.verified_head(&stream_ref), Some(&snapshot_head));
-        let continuation = StreamScanRequest {
+        let continuation = StreamScanRequestBody {
             direction: StreamScanDirection::After(Some(snapshot_head.stream_position)),
             ..request.clone()
         };
-        let empty = StreamScanOutcome {
+        let empty = StreamScanResponseBody {
             committed_events: vec![],
             ..outcome
         };
@@ -2502,7 +2503,7 @@ mod tests {
         successor_bundle.current_assertion.current_generation = 1;
         successor_bundle.current_assertion.current_service_id = successor_id;
         successor_bundle.current_assertion.last_handoff_ref = Some(handoff.handoff_id.clone());
-        let successor_request = AuthorityBundleRequest {
+        let successor_request = RealmAuthorityBundleRequestBody {
             realm_id: request.realm_id.clone(),
             nonce: arkret_wire::Base64UrlString::new("EEEEEEEEEEEEEEEEEEEEEE").unwrap(),
         };
@@ -2524,7 +2525,7 @@ mod tests {
                 bytes: successor.signing_key.verifying_key().to_bytes().to_vec(),
             },
         );
-        arkret_models_collaboration::authority_commit::AuthorityHandoffRequest {
+        arkret_models_collaboration::authority_commit::AuthorityRealmAuthorityHandoffRequestBody {
             pcr_private_state: None,
             management_private_state: None,
             handoff: handoff.clone(),
@@ -2648,7 +2649,7 @@ mod tests {
         };
         appended_bundle.current_assertion.realm_stream_head =
             appended_bundle.realm_stream_head.clone();
-        let appended_request = AuthorityBundleRequest {
+        let appended_request = RealmAuthorityBundleRequestBody {
             realm_id: request.realm_id.clone(),
             nonce: arkret_wire::Base64UrlString::new("FFFFFFFFFFFFFFFFFFFFFF").unwrap(),
         };
@@ -2674,7 +2675,7 @@ mod tests {
         let accepted_tail = reloaded
             .apply_verified_scan(
                 &continuation,
-                StreamScanOutcome {
+                StreamScanResponseBody {
                     committed_events: vec![CommittedEventView::Full(CommittedEventFullView {
                         commit: successor_commit.clone(),
                         event: successor_event,

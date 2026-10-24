@@ -57,11 +57,11 @@ impl ParticipationAdmissionFacts {
 
 fn participation_bit(bits: ParticipationBits, action: ParticipationAction) -> bool {
     match action {
-        ParticipationAction::ReplyMessage => bits.reply_message,
-        ParticipationAction::ReactionAdd => bits.reaction_add,
-        ParticipationAction::ReactionRemove => bits.reaction_remove,
-        ParticipationAction::AcceptThirdPartyMention => bits.accept_third_party_mention,
-        ParticipationAction::ActOnBehalf => bits.act_on_behalf,
+        ParticipationAction::ReplyMessage => bits.message_creation_allowed,
+        ParticipationAction::ReactionAdd => bits.reaction_addition_allowed,
+        ParticipationAction::ReactionRemove => bits.reaction_removal_allowed,
+        ParticipationAction::AcceptThirdPartyMention => bits.third_party_mention_delivery_allowed,
+        ParticipationAction::ActOnBehalf => bits.acting_on_behalf_allowed,
     }
 }
 
@@ -72,11 +72,11 @@ mod tests {
     #[test]
     fn participation_actions_map_to_five_distinct_bits() {
         let bits = ParticipationBits {
-            reply_message: true,
-            reaction_add: false,
-            reaction_remove: true,
-            accept_third_party_mention: false,
-            act_on_behalf: true,
+            message_creation_allowed: true,
+            reaction_addition_allowed: false,
+            reaction_removal_allowed: true,
+            third_party_mention_delivery_allowed: false,
+            acting_on_behalf_allowed: true,
         };
         assert!(participation_bit(bits, ParticipationAction::ReplyMessage));
         assert!(!participation_bit(bits, ParticipationAction::ReactionAdd));
