@@ -1584,7 +1584,7 @@ async fn verify_get_candidate(
     Ok(())
 }
 
-/// Consume one actual per-stream `stream_row` original, the registered input
+/// Consume one actual per-stream `committed_event_view` original, the registered input
 /// for an exact historical producer signer selector.
 pub async fn consume_bound_scan_row(
     client: &OwnStationStateClient,

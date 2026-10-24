@@ -4,13 +4,13 @@
 use std::collections::BTreeSet;
 
 use arkret_http_client::own_station_results::OwnStationStateClient;
-use arkret_wire::{RealmId, RealmStreamPage, RealmStreamRow};
+use arkret_wire::{RealmId, RealmStreamPage, RealmStreamView};
 
 use crate::{Error, Result};
 
 #[derive(Default)]
 struct Enumeration {
-    rows: Vec<RealmStreamRow>,
+    rows: Vec<RealmStreamView>,
     previous_key: Option<Vec<u8>>,
     cursors: BTreeSet<String>,
 }
@@ -50,7 +50,7 @@ impl Enumeration {
 pub async fn discover_realm_streams(
     client: &OwnStationStateClient,
     realm: &RealmId,
-) -> Result<Vec<RealmStreamRow>> {
+) -> Result<Vec<RealmStreamView>> {
     let mut enumeration = Enumeration::default();
     let mut cursor = None;
     loop {
@@ -71,7 +71,7 @@ mod tests {
 
     use super::*;
 
-    fn rows(count: usize) -> (RealmId, Vec<RealmStreamRow>) {
+    fn rows(count: usize) -> (RealmId, Vec<RealmStreamView>) {
         let realm: RealmId = "ak:realm:AUGIFvQctz4TjQTmvvO4Wdy-xdc5XP2ZnJ5Qpbh4s8Ru"
             .parse()
             .unwrap();
@@ -84,7 +84,7 @@ mod tests {
                 let mut bytes = [0u8; 33];
                 bytes[0] = 1;
                 bytes[1..9].copy_from_slice(&(index as u64).to_be_bytes());
-                RealmStreamRow {
+                RealmStreamView {
                     stream_ref: CommitStreamRef::Circle {
                         realm_id: realm.clone(),
                         circle_id: arkret_wire::CircleId::from_event_id(
@@ -109,7 +109,7 @@ mod tests {
 
     fn page(
         realm: &RealmId,
-        streams: Vec<RealmStreamRow>,
+        streams: Vec<RealmStreamView>,
         cursor: Option<&str>,
     ) -> RealmStreamPage {
         RealmStreamPage {
