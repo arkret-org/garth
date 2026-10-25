@@ -1014,7 +1014,8 @@ mod tests {
         };
         let freshness = RealmAuthorityFreshness::new(
             crate::test_fixtures::at(2),
-            arkret_wire::Base64UrlString::new("AAAAAAAAAAAAAAAAAAAAAA").unwrap(),
+            arkret_wire::Base64UrlString::new("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE")
+                .unwrap(),
         );
         let mut replica = RealmReplica::new(realm_id);
         let before = replica.clone();
@@ -1151,7 +1152,9 @@ mod tests {
             commit_id: ordinary_commit.commit_id.clone(),
         };
         let snapshot_head = head.clone();
-        let nonce = arkret_wire::Base64UrlString::new("BBBBBBBBBBBBBBBBBBBBBB").unwrap();
+        let nonce =
+            arkret_wire::Base64UrlString::new("AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI")
+                .unwrap();
         let mut assertion = RealmAuthorityCurrentAssertion {
             realm_id: realm_id.clone(),
             current_generation: 0,
@@ -1362,7 +1365,8 @@ mod tests {
         );
         let wrong_nonce = RealmAuthorityFreshness::new(
             now,
-            arkret_wire::Base64UrlString::new("CCCCCCCCCCCCCCCCCCCCCC").unwrap(),
+            arkret_wire::Base64UrlString::new("AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM")
+                .unwrap(),
         );
         assert!(
             snapshot_replica
@@ -2290,7 +2294,9 @@ mod tests {
         // A fresh nonce does not require downloading the authenticated prefix
         // again; a refresh still verifies the complete authority chain.
         let mut refreshed = replica.authority.as_ref().unwrap().clone();
-        let renewed_nonce = arkret_wire::Base64UrlString::new("DDDDDDDDDDDDDDDDDDDDDD").unwrap();
+        let renewed_nonce =
+            arkret_wire::Base64UrlString::new("BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ")
+                .unwrap();
         refreshed.current_assertion.nonce = renewed_nonce.clone();
         refreshed.current_assertion.signature = sign_detached_object(
             &arkret_canonical::unsigned_value(&refreshed.current_assertion, &["signature"])
@@ -2505,7 +2511,8 @@ mod tests {
         successor_bundle.current_assertion.last_handoff_ref = Some(handoff.handoff_id.clone());
         let successor_request = RealmAuthorityBundleRequestBody {
             realm_id: request.realm_id.clone(),
-            nonce: arkret_wire::Base64UrlString::new("EEEEEEEEEEEEEEEEEEEEEE").unwrap(),
+            nonce: arkret_wire::Base64UrlString::new("BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU")
+                .unwrap(),
         };
         let successor_freshness =
             RealmAuthorityFreshness::new(now, successor_request.nonce.clone());
@@ -2651,7 +2658,8 @@ mod tests {
             appended_bundle.realm_stream_head.clone();
         let appended_request = RealmAuthorityBundleRequestBody {
             realm_id: request.realm_id.clone(),
-            nonce: arkret_wire::Base64UrlString::new("FFFFFFFFFFFFFFFFFFFFFF").unwrap(),
+            nonce: arkret_wire::Base64UrlString::new("BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY")
+                .unwrap(),
         };
         let appended_freshness = RealmAuthorityFreshness::new(now, appended_request.nonce.clone());
         appended_bundle.current_assertion.nonce = appended_request.nonce.clone();

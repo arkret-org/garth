@@ -876,7 +876,9 @@ mod acceptance_proof_tests {
             stream_position: 1,
             commit_id: ordinary_commit.commit_id.clone(),
         };
-        let nonce = arkret_wire::Base64UrlString::new("BBBBBBBBBBBBBBBBBBBBBB").unwrap();
+        let nonce =
+            arkret_wire::Base64UrlString::new("AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI")
+                .unwrap();
         let mut assertion = RealmAuthorityCurrentAssertion {
             realm_id: realm_id.clone(),
             current_generation: 0,
@@ -979,7 +981,8 @@ mod acceptance_proof_tests {
         assert!(verify_accepted_items(&[future_generation], &bundle, &freshness, &keys).is_err());
         let mut replay = freshness;
         replay.expected_nonce =
-            arkret_wire::Base64UrlString::new("CCCCCCCCCCCCCCCCCCCCCC").unwrap();
+            arkret_wire::Base64UrlString::new("AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM")
+                .unwrap();
         assert!(verify_accepted_items(&[item], &bundle, &replay, &keys).is_err());
     }
 }
