@@ -745,9 +745,9 @@ pub fn validate_identity_creation_outcome(
     if receipt.account_subject != registration.control_proof.account_subject
         || receipt.principal_id != request.principal_id
         || receipt.did != request.did
-        || receipt.identity_creation_lease_id.as_deref()
-            != Some(registration.identity_creation_lease_id.as_str())
-        || receipt.lease_fence != Some(registration.lease_fence)
+        || receipt.identity_creation_lease_id.as_str()
+            != registration.identity_creation_lease_id.as_str()
+        || receipt.lease_fence != registration.lease_fence
         || receipt.registration_anchor_digest
             != registration.control_proof.registration_anchor_digest
     {
