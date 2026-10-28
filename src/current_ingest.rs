@@ -492,6 +492,49 @@ pub fn validate_floor_product_rows(
                     value, "invite_live_target",
                 )?;
             }
+            CurrentSelector::RealmInviteLinkDefinition {
+                realm_invite_link_id,
+            } => {
+                use arkret_models_collaboration::governance::realm_invite_link::{
+                    RealmInviteLinkCreatePayload, RealmInviteLinkDefinitionValue,
+                };
+                let definition: RealmInviteLinkDefinitionValue =
+                    closed_current_value(value, "realm_invite_link_definition")?;
+                RealmInviteLinkCreatePayload {
+                    public_key: definition.public_key,
+                    expires_at: definition.expires_at,
+                    max_uses: definition.max_uses,
+                }
+                .validate()
+                .map_err(protocol)?;
+                if arkret_wire::RealmInviteLinkId::from_event_id(&definition.create_event_id)
+                    != *realm_invite_link_id
+                {
+                    return Err(protocol(
+                        "signed invite link definition differs from its selector",
+                    ));
+                }
+            }
+            CurrentSelector::RealmInviteLinkLifecycle { .. } => {
+                closed_current_value::<
+                    arkret_models_collaboration::governance::realm_invite_link::RealmInviteLinkLifecycle,
+                >(value, "realm_invite_link_lifecycle")?;
+            }
+            CurrentSelector::RealmInviteLinkUse {
+                realm_invite_link_id,
+                subject_account_id,
+            } => {
+                let used: arkret_models_collaboration::governance::realm_invite_link::RealmInviteLinkUseRecord =
+                    closed_current_value(value, "realm_invite_link_use")?;
+                used.subject_account_id.validate().map_err(protocol)?;
+                if used.realm_invite_link_id != *realm_invite_link_id
+                    || used.subject_account_id != *subject_account_id
+                {
+                    return Err(protocol(
+                        "signed invite link use differs from its exact link/account selector",
+                    ));
+                }
+            }
             CurrentSelector::Policy { policy_id } => {
                 let policy: arkret_models_collaboration::governance::operation_wire::PolicySetValue =
                     closed_current_value(value, "policy")?;
@@ -925,6 +968,118 @@ mod tests {
             genesis,
             rows,
         }
+    }
+
+    fn invite_link_rows(fixture: &FloorProductFixture) -> Vec<CurrentState> {
+        let create =
+            arkret_wire::EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [11; 32]);
+        let link = arkret_wire::RealmInviteLinkId::from_event_id(&create);
+        let account = arkret_wire::AccountId {
+            principal_id: arkret_wire::DidCoreId::new("ak:did_core:web:member.example").unwrap(),
+            station_id: arkret_wire::DidCoreId::new("ak:did_core:web:station.example").unwrap(),
+        };
+        let revision = CurrentRevision {
+            commit_id: fixture.head.commit_id.clone(),
+            stream_position: fixture.head.stream_position,
+        };
+        let mut rows = fixture.rows.clone();
+        for (selector, value) in [
+            (
+                CurrentSelector::RealmInviteLinkDefinition {
+                    realm_invite_link_id: link.clone(),
+                },
+                json!({
+                    "public_key": arkret_canonical::base64url_encode([7; 32]),
+                    "expires_at": "2020-01-01T00:00:00.000Z", "max_uses": 2,
+                    "create_event_id": create, "creator_actor_id": fixture.actor,
+                }),
+            ),
+            (
+                CurrentSelector::RealmInviteLinkLifecycle {
+                    realm_invite_link_id: link.clone(),
+                },
+                json!("active"),
+            ),
+            (
+                CurrentSelector::RealmInviteLinkUse {
+                    realm_invite_link_id: link.clone(),
+                    subject_account_id: account.clone(),
+                },
+                json!({
+                    "realm_invite_link_id": link, "subject_account_id": account,
+                    "accept_event_id": arkret_wire::EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [12; 32]),
+                }),
+            ),
+        ] {
+            rows.push(CurrentState::Value {
+                selector,
+                source_stream_ref: fixture.head.stream_ref.clone(),
+                revision: revision.clone(),
+                value,
+            });
+        }
+        rows
+    }
+
+    #[test]
+    fn signed_invite_link_floor_installs_closed_facts_even_after_expiry_or_revocation() {
+        let fixture = floor_product_fixture();
+        let mut rows = invite_link_rows(&fixture);
+        fixture.validate(&rows).unwrap();
+        let CurrentState::Value { value, .. } = &mut rows[fixture.rows.len() + 1];
+        *value = json!("revoked");
+        fixture.validate(&rows).unwrap();
+    }
+
+    #[test]
+    fn signed_invite_link_floor_rejects_malformed_and_rebound_facts() {
+        let fixture = floor_product_fixture();
+        let rows = invite_link_rows(&fixture);
+        let first = fixture.rows.len();
+        for (index, field, value) in [
+            (first, "max_uses", json!(0)),
+            (first, "public_key", json!("bad-key")),
+            (
+                first,
+                "create_event_id",
+                json!(arkret_wire::EventId::from_digest(
+                    arkret_canonical::DigestSuite::Sha256,
+                    [13; 32]
+                )),
+            ),
+            (first, "unknown", json!(true)),
+            (
+                first + 2,
+                "realm_invite_link_id",
+                json!(arkret_wire::RealmInviteLinkId::from_event_id(
+                    &arkret_wire::EventId::from_digest(
+                        arkret_canonical::DigestSuite::Sha256,
+                        [14; 32]
+                    )
+                )),
+            ),
+            (
+                first + 2,
+                "subject_account_id",
+                json!({
+                    "principal_id": "ak:did_core:web:member.example",
+                    "station_id": "ak:did_core:web:other-station.example",
+                }),
+            ),
+            (first + 2, "unknown", json!(true)),
+        ] {
+            let mut changed = rows.clone();
+            let CurrentState::Value { value: body, .. } = &mut changed[index];
+            body[field] = value;
+            assert!(
+                fixture.validate(&changed).is_err(),
+                "invalid invite link field {field} was accepted"
+            );
+        }
+        let mut changed = rows;
+        let CurrentState::Value { value, .. } = &mut changed[first + 1];
+        *value = json!("expired");
+        assert!(fixture.validate(&changed).is_err());
     }
 
     #[test]
