@@ -676,7 +676,7 @@ mod tests {
         let frame = serde_json::from_value(json!({
             "kind": "delta",
             "cursor": cursor,
-            "to_device": {"messages": [], "lost": true}
+            "to_device": {"deliveries": [], "lost": true}
         }))
         .unwrap();
         Ok(AccountSubscribeReadAction::Batch(AccountSubscribeBatch {

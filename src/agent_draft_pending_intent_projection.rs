@@ -647,7 +647,7 @@ mod tests {
                 "kind":"delta",
                 "cursor":"ak:cursor:other-carriers",
                 "notifications":{"items":[]},
-                "to_device":{"messages":[]}
+                "to_device":{"deliveries":[]}
             })))
             .unwrap();
         assert!(projection.is_empty());
