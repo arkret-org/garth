@@ -250,6 +250,7 @@ dependencies = [
  "thiserror",
  "unicode-normalization",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]
