@@ -1,6 +1,6 @@
 
 [package]
-authors = ["Chris Young <chris@sonc.ai>"]
+authors = ["Chris Young <chris@veco.id>"]
 categories = ["api-bindings", "network-programming", "cryptography"]
 description = "Runtime-neutral shared client engine for Arkret v1 applications."
 edition = "2024"
