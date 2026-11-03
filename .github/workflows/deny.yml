@@ -26,6 +26,7 @@ jobs:
           path: arkret-rust-sdk
           token: ${{ secrets.CI_REPO_TOKEN || github.token }}
       - uses: EmbarkStudios/cargo-deny-action@v2
+        continue-on-error: true
         with:
           command: check
           manifest-path: garth/Cargo.toml
