@@ -1040,21 +1040,9 @@ async fn verify_row_from_source(
         return Ok(Some(material));
     }
     if event.actual_signer().as_account_id().is_none() {
-        // A service-generated franking original may be retained in an
-        // ordinary timeline. This verifies its content/proof consistency and
-        // exact Service method controller, not the dedicated franking
-        // signature or portable Service evidence. A franking consumer must
-        // still run its registered historical Service proof verifier.
-        if event.kind != arkret_wire::EventKind::ModerationFrankingProof {
-            return Err(protocol(
-                "unsupported Service producer in ordinary consumption",
-            ));
-        }
-        proof
-            .validate_production()
-            .map_err(|error| protocol(&error.to_string()))?;
-        client.check_read_source()?;
-        return Ok(None);
+        return Err(protocol(
+            "unsupported Service producer in ordinary consumption",
+        ));
     }
     let reference = CommittedEventRef {
         event_id: event.event_id.clone(),

@@ -655,26 +655,6 @@ pub fn validate_floor_product_rows(
                     closed_current_value(value, "realm_media_service")?;
                 descriptor.validate().map_err(protocol)?;
             }
-            CurrentSelector::ModerationFrankingProof { event_id } => {
-                // This is authenticated current state of the receipt, not an
-                // independently verified moderation evidence package. Garth
-                // has already verified the Station's signed snapshot cut.
-                let proof: arkret_models_collaboration::events_payloads::moderation::FrankingProof =
-                    closed_current_value(value, "moderation_franking_proof")?;
-                if proof.realm_id != *realm_id
-                    || proof.event_id != *event_id
-                    || !(16..=256).contains(&proof.replay_nonce.len())
-                    || !proof
-                        .replay_nonce
-                        .bytes()
-                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
-                    || proof.signature.is_empty()
-                {
-                    return Err(protocol(
-                        "signed franking receipt differs from its Realm, target Event or closed proof shape",
-                    ));
-                }
-            }
             CurrentSelector::DirectConversationBinding { pair_key } => {
                 let binding: arkret_models_collaboration::events_payloads::direct_conversation::DirectConversationBindingCurrentValue =
                     closed_current_value(value, "direct_conversation_binding")?;
