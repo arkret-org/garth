@@ -47,7 +47,7 @@ jobs:
           components: rustfmt
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.98"
+          toolchain: "1.99"
           components: clippy
       - uses: Swatinem/rust-cache@v2
         with:
@@ -80,7 +80,7 @@ jobs:
           token: ${{ secrets.CI_REPO_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.98"
+          toolchain: "1.99"
           targets: aarch64-apple-ios
       - name: Check iOS library surface
         working-directory: garth
@@ -100,7 +100,7 @@ jobs:
           token: ${{ secrets.CI_REPO_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.98"
+          toolchain: "1.99"
           targets: aarch64-linux-android
       - name: Configure Android NDK compiler
         shell: bash
@@ -133,7 +133,7 @@ jobs:
           token: ${{ secrets.CI_REPO_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: "1.98"
+          toolchain: "1.99"
           targets: wasm32-unknown-unknown
       - uses: Swatinem/rust-cache@v2
         with:
