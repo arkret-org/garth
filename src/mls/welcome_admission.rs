@@ -371,9 +371,9 @@ pub fn signed_welcome_consume(
         domain: NonEmptyString::new(
             DomainSeparationId::MLS_RECIPIENT_DURABLE_RECEIPT_V1.to_owned(),
         )
-        .map_err(&refused)?,
+        .map_err(refused)?,
         claim_request_id: outcome.claim_request_id.clone(),
-        keypackage_ref: NonEmptyString::new(record.keypackage_ref.clone()).map_err(&refused)?,
+        keypackage_ref: NonEmptyString::new(record.keypackage_ref.clone()).map_err(refused)?,
         recipient,
         recipient_id: local_station.clone(),
         realm_id: welcome.realm_id.clone(),
@@ -384,9 +384,9 @@ pub fn signed_welcome_consume(
         durable_at,
         // Replaced by the endpoint signature below; the signing input omits it.
         signature: KeyOperationSignature {
-            kid: NonEmptyString::new(method.clone()).map_err(&refused)?,
+            kid: NonEmptyString::new(method.clone()).map_err(refused)?,
             signature_algorithm: None,
-            signature: Base64UrlString::new("AA".to_owned()).map_err(&refused)?,
+            signature: Base64UrlString::new("AA".to_owned()).map_err(refused)?,
         },
     };
     receipt.signature = sign(
