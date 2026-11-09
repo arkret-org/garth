@@ -63,7 +63,40 @@ pub async fn read_window_dependency(
     Ok(OwnStationWindowDependency { response })
 }
 
+/// Resolve a cited Event id through its original stream row and native
+/// historical producer key. GET is only a candidate, never its own proof of
+/// acceptance or a reason to trust a caller-provided signing key.
+pub async fn read_window_dependency_by_event_id(
+    client: &OwnStationStateClient,
+    event_id: &EventId,
+) -> Result<OwnStationWindowDependency> {
+    let response = client.committed_event_get(event_id).await?;
+    let candidate = response.value()?;
+    let commit = candidate.commit();
+    let reference = CommittedEventRef {
+        event_id: event_id.clone(),
+        commit_id: commit.commit_id.clone(),
+        stream_ref: commit.stream_ref.clone(),
+        stream_position: commit.stream_position,
+    };
+    let response = consume_bound_event(client, &reference, response).await?;
+    Ok(OwnStationWindowDependency { response })
+}
+
 impl OwnStationWindowDependency {
+    pub fn full(&self) -> Result<&arkret_wire::CommittedEventFullView> {
+        match self.response.value()? {
+            CommittedEventView::Full(full) => Ok(full),
+            _ => Err(protocol("historical dependency original is withheld")),
+        }
+    }
+
+    /// This context is query-local and expires with its actual session.
+    pub fn session(&self) -> Result<&OwnStationSessionSnapshot> {
+        self.response.value()?;
+        Ok(self.response.session())
+    }
+
     pub(crate) fn encoded_len(&self) -> Result<usize> {
         Ok(serde_json::to_vec(self.response.value()?)
             .map_err(|error| protocol(&error.to_string()))?
@@ -2294,7 +2327,7 @@ pub(crate) mod tests {
                 },
                 governance_generation: 0,
             };
-            let (client, server) = client(vec![
+            let bodies = vec![
                 serde_json::json!({"commit":accepted,"event":event}),
                 serde_json::json!({
                     "committed_events":[{"commit":accepted,"event":event}],
@@ -2306,7 +2339,8 @@ pub(crate) mod tests {
                     "truncated":false
                 }),
                 serde_json::json!({"__signer_key":key}),
-            ]);
+            ];
+            let (client, server) = client(bodies.clone());
             let mut replica = OwnStationReplica::new(event.realm_id.clone());
             let response = client.committed_event_get(&event.event_id).await.unwrap();
             let result = replica
@@ -2322,6 +2356,15 @@ pub(crate) mod tests {
                 valid_key,
                 "failed proof must not publish a head"
             );
+            server.join().unwrap();
+            let (source, server) = self::client(bodies);
+            let dependency = read_window_dependency_by_event_id(&source, &event.event_id).await;
+            assert_eq!(dependency.is_ok(), valid_key);
+            if let Ok(dependency) = dependency {
+                assert_eq!(dependency.full().unwrap().event, event);
+                assert_eq!(dependency.full().unwrap().commit, accepted);
+                assert_eq!(dependency.session().unwrap(), source.session().unwrap());
+            }
             server.join().unwrap();
         }
         assert_bounded_window_dependencies(&event, &accepted, &original_fact.key).await;
