@@ -7,6 +7,7 @@ pub mod backup_selection;
 pub mod backup_series;
 pub mod checkpoint;
 pub mod checkpoint_port;
+pub mod content_roots;
 pub mod creator;
 #[path = "mls/key_package.rs"]
 pub mod key_package;

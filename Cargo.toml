@@ -42,6 +42,7 @@ imbl = { version = "7.0.2", features = ["serde"] }
 getrandom = { version = "0.4.3", default-features = false, features = ["std", "sys_rng"] }
 arkret-auth = { version = "0.3.0", path = "../arkret-rust-sdk/crates/auth", default-features = false }
 arkret-canonical = { version = "0.3.0", path = "../arkret-rust-sdk/crates/canonical", default-features = false }
+arkret-crypto = { version = "0.3.0", path = "../arkret-rust-sdk/crates/crypto", default-features = false, features = ["content-history"] }
 arkret-http-client = { version = "0.3.0", path = "../arkret-rust-sdk/crates/http-client", default-features = false }
 arkret-event-draft = { version = "0.3.0", path = "../arkret-rust-sdk/crates/event-draft", default-features = false }
 arkret-hlc = { version = "0.3.0", path = "../arkret-rust-sdk/crates/hlc", default-features = false }
