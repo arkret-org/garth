@@ -541,6 +541,16 @@ mod tests {
             0,
             &envelope,
             binding,
+            arkret_wire::BlobRef::new(format!(
+                "ak:blob:{}",
+                arkret_canonical::sha256_digest(b"welcome parser GroupInfo reference")
+            ))
+            .unwrap(),
+            arkret_wire::BlobRef::new(format!(
+                "ak:blob:{}",
+                arkret_canonical::sha256_digest(b"welcome parser ratchet tree reference")
+            ))
+            .unwrap(),
         )
         .unwrap();
         let mut event = crate::test_fixtures::event(
@@ -584,6 +594,9 @@ mod tests {
             requester_account_id: Some(committer()),
             requester_actor_id: None,
             intended_realm_id: realm_id(),
+            effective_scope: arkret_wire::ScopeRef::Realm {
+                realm_id: realm_id(),
+            },
             mls_group_id: mls_group_id_for_realm(&realm_id()).unwrap(),
             claim_purpose: arkret_models_crypto::PeerKeyPackageClaimPurpose::RealmMembership,
             required_capabilities: vec![arkret_wire::NonEmptyString::new("ak.content.v1").unwrap()],

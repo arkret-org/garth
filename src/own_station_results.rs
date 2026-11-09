@@ -3303,6 +3303,7 @@ pub(crate) mod tests {
                                 .clone(),
                         ]),
                         profile_fields: Default::default(),
+                        encrypted_private_fields: None,
                     },
                 },
             )

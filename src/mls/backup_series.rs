@@ -128,9 +128,11 @@ mod tests {
         let mut value = KeyBackup {
             backup_id: backup_id(sequence),
             actor_id: actor_id(),
+            custodian_actor_id: None,
+            custody_authorization_ref: None,
             device_id: Some(device_id()),
             backup_kind: BackupKind::SecretStorage,
-            mixed_secret_storage: false,
+            mixed_secret_storage: Some(false),
             backup_version: "kb_1".to_owned(),
             recovery_policy_ref: None,
             created_at: at(0),
@@ -159,19 +161,22 @@ mod tests {
             contents: vec![SecretStorageContentIndex {
                 item_kind: SecretStorageItemKind::MlsAccountSecret,
                 secret_id: "account-secret".to_owned(),
+                root_ref: None,
+                root_context: None,
             }],
             ciphertext: Base64UrlString::new("AQID").unwrap(),
             ciphertext_digest: Hash::new(format!("sha256:{}", "b".repeat(64))).unwrap(),
             plaintext_commitment: None,
             signature_proof: KeyBackupSignatureProof {
-                device_id: device_id(),
+                device_id: Some(device_id()),
                 verification_method: DidUrl::new("did:web:alice.example#key-1").unwrap(),
                 signature_algorithm: KeyBackupSignatureAlgorithm::Ed25519,
                 signature: Base64UrlString::new("AA").unwrap(),
-                device_authorize_event_id: EventId::from_digest(
+                device_authorize_event_id: Some(EventId::from_digest(
                     arkret_canonical::DigestSuite::Sha256,
                     [4; 32],
-                ),
+                )),
+                agent_authorization_event_ref: None,
             },
             retention: None,
             series_id: series_id(),
