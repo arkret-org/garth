@@ -36,6 +36,10 @@ async fn reopened_vault_keeps_only_original_roots_and_exact_backup_ciphertext() 
     let vault = ContentRootVault::new(&store, &backup.actor_id, &endpoint);
     assert!(vault.freeze_backup("first-root", &backup).await.is_err());
     vault.retain_root(&root).await.unwrap();
+    assert_eq!(
+        vault.cached_root(&root.root_ref).unwrap(),
+        Some(root.clone())
+    );
     vault.freeze_backup("first-root", &backup).await.unwrap();
     let reopened = ContentRootVault::new(&store, &backup.actor_id, &endpoint);
     assert_eq!(

@@ -167,6 +167,22 @@ impl<'a> ContentRootVault<'a> {
     }
 
     /// Reading a retained root does not restore active MLS state or membership.
+    /// A host may use its already hydrated authoritative cache on a synchronous
+    /// projection path. A cache miss remains pending; it never creates a root.
+    pub fn cached_root(&self, reference: &Hash) -> Result<Option<ContentRootBackupEntry>> {
+        let key = self.key("content-root", reference)?;
+        let Some(bytes) = self.store.get_secret_bytes(&key).map_err(rejected)? else {
+            return Ok(None);
+        };
+        let root: ContentRootBackupEntry = serde_json::from_slice(bytes.as_slice())?;
+        Self::validate_root(&root)?;
+        if root.root_ref != *reference {
+            return Err(rejected("cached root selector differs"));
+        }
+        Ok(Some(root))
+    }
+
+    /// Reading a retained root does not restore active MLS state or membership.
     pub async fn root(&self, reference: &Hash) -> Result<Option<ContentRootBackupEntry>> {
         let key = self.key("content-root", reference)?;
         let Some(bytes) = self
