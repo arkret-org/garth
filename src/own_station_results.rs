@@ -29,6 +29,9 @@ pub use device_replica::{
     OwnStationDeviceReplica, OwnStationDeviceScanPage, consume_own_station_device_snapshot,
 };
 
+mod pcr_genesis;
+pub use pcr_genesis::{OwnStationHumanPcrGenesis, read_own_station_human_pcr_genesis};
+
 pub struct OwnStationScanPage {
     response: BoundOwnStationResponse<StreamScanRequestBody, StreamScanResponseBody>,
 }
