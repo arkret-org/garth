@@ -7,17 +7,21 @@ use arkret_models_identity::{
     ResolutionCommitment, ResolutionMethodHistoryEvidence,
 };
 use arkret_wire::{
-    AccountId, CommitStreamRef, CommittedEventFullView, CommittedEventView, EventId,
-    GenesisGovernance, PcrGenesisUnit, RealmCommitAuthorityRef, RealmId, ScopeRef,
+    AccountId, CommitStreamRef, CommittedEventFullView, CommittedEventRef, CommittedEventView,
+    EventId, GenesisGovernance, PcrGenesisUnit, RealmCommitAuthorityRef, RealmId, ScopeRef,
     StreamScanDirection, StreamScanRequestBody, StreamScanResponseBody,
 };
 
 use super::protocol;
 use crate::Result;
 
+#[cfg(test)]
+#[path = "pcr_history_tests.rs"]
+mod tests;
+
 type Principal = BoundOwnStationResponse<CurrentPrincipalRequestBody, CurrentPrincipalResponseBody>;
 type Original = BoundOwnStationResponse<EventId, CommittedEventView>;
-type Founding = BoundOwnStationResponse<StreamScanRequestBody, StreamScanResponseBody>;
+type Scan = BoundOwnStationResponse<StreamScanRequestBody, StreamScanResponseBody>;
 
 /// Only the authenticated read below constructs this context. Keeping the
 /// complete originals and registration material avoids reusable verified flags.
@@ -25,9 +29,37 @@ pub struct OwnStationHumanPcrGenesis {
     source: OwnStationStateClient,
     principal: Principal,
     original: Original,
-    founding: Founding,
+    founding: Scan,
     unit: PcrGenesisUnit,
     anchor: PrincipalRegistrationAnchor,
+}
+
+/// A holder-private original tied to its live registered PCR and actual Full
+/// stream row. This is not a portable authorization or a current MLS state.
+pub struct OwnStationHumanPcrEvent<'a> {
+    pcr: &'a OwnStationHumanPcrGenesis,
+    original: CommittedEventFullView,
+    successor: Option<Scan>,
+}
+
+impl OwnStationHumanPcrEvent<'_> {
+    pub fn full(&self) -> Result<&CommittedEventFullView> {
+        self.pcr.check()?;
+        if let Some(source) = &self.successor {
+            source.value()?;
+        }
+        Ok(&self.original)
+    }
+
+    pub fn reference(&self) -> Result<CommittedEventRef> {
+        let full = self.full()?;
+        Ok(CommittedEventRef {
+            event_id: full.event.event_id.clone(),
+            commit_id: full.commit.commit_id.clone(),
+            stream_ref: full.commit.stream_ref.clone(),
+            stream_position: full.commit.stream_position,
+        })
+    }
 }
 
 impl OwnStationHumanPcrGenesis {
@@ -65,6 +97,87 @@ impl OwnStationHumanPcrGenesis {
     pub fn registration_verification_anchor(&self) -> Result<&PrincipalRegistrationAnchor> {
         self.check()?;
         Ok(&self.anchor)
+    }
+
+    /// Resolve one original without restoring old private MLS state or
+    /// installing its historical authorization as current. The founding pair
+    /// already has independent registration/root and Device-possession proofs.
+    /// Successors require the exact scan row and original self-admission key.
+    pub async fn read_original(&self, event_id: &EventId) -> Result<OwnStationHumanPcrEvent<'_>> {
+        self.check()?;
+        for row in &self.founding.value()?.committed_events {
+            if let CommittedEventView::Full(full) = row
+                && &full.event.event_id == event_id
+            {
+                return Ok(OwnStationHumanPcrEvent {
+                    pcr: self,
+                    original: full.clone(),
+                    successor: None,
+                });
+            }
+        }
+        let candidate = self.source.committed_event_get(event_id).await?;
+        self.check()?;
+        let CommittedEventView::Full(full) = candidate.value()? else {
+            return Err(protocol("PCR historical original is withheld"));
+        };
+        let realm = self.realm()?;
+        let stream = CommitStreamRef::Realm {
+            realm_id: realm.clone(),
+        };
+        let genesis = self.genesis()?;
+        if candidate.session() != self.principal.session()
+            || candidate.request() != event_id
+            || full.event.event_id != *event_id
+            || full.event.realm_id != *realm
+            || full.event.scope_ref
+                != (ScopeRef::Realm {
+                    realm_id: realm.clone(),
+                })
+            || full.event.actual_signer().as_account_id() != Some(self.account()?)
+            || full.commit.event_ref != *event_id
+            || full.commit.stream_ref != stream
+            || full.commit.stream_position < 2
+            || full.commit.governance_generation != 0
+            || full.commit.authority_ref != genesis.commit.authority_ref
+        {
+            return Err(protocol(
+                "historical original is outside this registered Human PCR",
+            ));
+        }
+        let before = full
+            .commit
+            .stream_position
+            .checked_add(1)
+            .ok_or_else(|| protocol("PCR original position overflow"))?;
+        let request = StreamScanRequestBody {
+            realm_id: realm.clone(),
+            stream_ref: stream,
+            direction: StreamScanDirection::Before(Some(before)),
+            limit: 1,
+        };
+        let successor = self.source.scan_commit_stream(&request).await?;
+        self.check()?;
+        let [row] = successor.value()?.committed_events.as_slice() else {
+            return Err(protocol(
+                "PCR historical source requires one exact Full stream row",
+            ));
+        };
+        if successor.session() != self.principal.session() || row != candidate.value()? {
+            return Err(protocol(
+                "PCR GET differs from its exact accepted scan original",
+            ));
+        }
+        super::verify_row_from_source(&self.source, row, super::OriginalSource::HumanPcrHistory)
+            .await?;
+        self.check()?;
+        candidate.value()?;
+        successor.value()?;
+        Ok(OwnStationHumanPcrEvent {
+            pcr: self,
+            original: full.clone(),
+            successor: Some(successor),
+        })
     }
 }
 

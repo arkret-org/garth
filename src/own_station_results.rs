@@ -30,7 +30,9 @@ pub use device_replica::{
 };
 
 mod pcr_genesis;
-pub use pcr_genesis::{OwnStationHumanPcrGenesis, read_own_station_human_pcr_genesis};
+pub use pcr_genesis::{
+    OwnStationHumanPcrEvent, OwnStationHumanPcrGenesis, read_own_station_human_pcr_genesis,
+};
 
 pub struct OwnStationScanPage {
     response: BoundOwnStationResponse<StreamScanRequestBody, StreamScanResponseBody>,
@@ -857,6 +859,9 @@ enum OriginalSource {
     // A bound self acceptance is only a candidate until the historical key
     // resolves its original device authorization on this exact PCR stream.
     BoundSelfHumanPcr,
+    // An actual Full scan row of the recipient's independently registered PCR.
+    // Its original self-admission fact remains holder-private at the Station.
+    HumanPcrHistory,
     BoundSelfAgentPcrGenesis,
     BoundSelfAgentPcrController,
 }
@@ -1089,11 +1094,15 @@ fn verify_original_signer(
                     "exact historical producer signing key is unavailable",
                 ));
             };
-            if original.source == OriginalSource::BoundSelfHumanPcr
-                && key.authorization_ref.stream_ref != full.commit.stream_ref
+            // accepted_at belongs to authorization_ref, not the target Event's Commit.
+            if matches!(
+                original.source,
+                OriginalSource::BoundSelfHumanPcr | OriginalSource::HumanPcrHistory
+            ) && (key.authorization_ref.stream_ref != full.commit.stream_ref
+                || key.governance_generation != 0)
             {
                 return Err(protocol(
-                    "bound self Human acceptance lacks its original same-PCR authorization",
+                    "Human PCR original lacks same-PCR authorization at its original generation",
                 ));
             }
             if let Some(human) = original
@@ -1172,6 +1181,16 @@ async fn verify_row_from_source(
     let Some(original) = prepare_original(row, source)? else {
         return Ok(None);
     };
+    if matches!(
+        source,
+        OriginalSource::BoundSelfHumanPcr | OriginalSource::HumanPcrHistory
+    ) && (original.human.is_none()
+        || &client.recipient_actor()? != original.full.event.actual_signer())
+    {
+        return Err(protocol(
+            "Human PCR original belongs to another actual producer",
+        ));
+    }
     let request = historical_signer_request(
         client,
         original.full.event.realm_id.clone(),
@@ -1926,6 +1945,17 @@ pub(crate) mod tests {
             Ok(self.0.clone())
         }
     }
+    struct WithdrawableSource(Source, Arc<std::sync::atomic::AtomicBool>);
+    impl OwnStationSessionSource for WithdrawableSource {
+        fn snapshot(&self) -> arkret_http_client::Result<OwnStationSessionSnapshot> {
+            if !self.1.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err(arkret_http_client::Error::Protocol(
+                    "session replaced".into(),
+                ));
+            }
+            self.0.snapshot()
+        }
+    }
     fn client(
         bodies: Vec<serde_json::Value>,
     ) -> (OwnStationStateClient, std::thread::JoinHandle<()>) {
@@ -1939,11 +1969,30 @@ pub(crate) mod tests {
         std::thread::JoinHandle<()>,
         Arc<std::sync::Mutex<Vec<String>>>,
     ) {
+        observed_client_for_account(
+            bodies,
+            arkret_wire::AccountId::new(
+                arkret_wire::DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
+                arkret_wire::DidCoreId::new("ak:did_core:web:station.example").unwrap(),
+            ),
+            Arc::new(std::sync::atomic::AtomicBool::new(true)),
+        )
+    }
+
+    pub(crate) fn observed_client_for_account(
+        bodies: Vec<serde_json::Value>,
+        account: arkret_wire::AccountId,
+        active: Arc<std::sync::atomic::AtomicBool>,
+    ) -> (
+        OwnStationStateClient,
+        std::thread::JoinHandle<()>,
+        Arc<std::sync::Mutex<Vec<String>>>,
+    ) {
         let observed = Arc::new(std::sync::Mutex::new(Vec::new()));
         let server_observed = observed.clone();
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let base = format!("http://{}/", listener.local_addr().unwrap());
-        let station = arkret_wire::DidCoreId::new("ak:did_core:web:station.example").unwrap();
+        let station = account.station_id.clone();
         let binding = arkret_models_discovery::StationConnectionBinding {
             service_id: station.clone(),
             base_url: base.clone(),
@@ -1953,10 +2002,7 @@ pub(crate) mod tests {
         };
         let snapshot = OwnStationSessionSnapshot::new(
             binding.clone(),
-            arkret_wire::AccountId::new(
-                arkret_wire::DidCoreId::new("ak:did_core:web:alice.example").unwrap(),
-                station.clone(),
-            ),
+            account,
             station,
             arkret_wire::SessionGrantId::from_issuance_digest([3; 32]),
             0,
@@ -1969,6 +2015,7 @@ pub(crate) mod tests {
             .auth(arkret_http_client::Auth::Bearer("test-grant".into()))
             .build()
             .unwrap();
+        let server_active = active.clone();
         let server = std::thread::spawn(move || {
             for body in bodies {
                 let (mut stream, _) = listener.accept().unwrap();
@@ -2008,6 +2055,8 @@ pub(crate) mod tests {
                     .lock()
                     .unwrap()
                     .push(headers.lines().next().unwrap().to_owned());
+                let withdraw =
+                    body.get("__withdraw_source") == Some(&serde_json::Value::Bool(true));
                 let body = if let Some(key) = body.get("__realm_key") {
                     let request: SignerKeysQueryRequestBody =
                         serde_json::from_slice(&request_bytes[header_end..header_end + body_len])
@@ -2194,6 +2243,9 @@ pub(crate) mod tests {
                 } else {
                     body
                 };
+                if withdraw {
+                    server_active.store(false, std::sync::atomic::Ordering::SeqCst);
+                }
                 let bytes = serde_json::to_vec(&body).unwrap();
                 let header = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\nContent-Length: {}\r\n\r\n",
@@ -2204,7 +2256,12 @@ pub(crate) mod tests {
             }
         });
         (
-            OwnStationStateClient::new(raw, binding, Arc::new(Source(snapshot))).unwrap(),
+            OwnStationStateClient::new(
+                raw,
+                binding,
+                Arc::new(WithdrawableSource(Source(snapshot), active)),
+            )
+            .unwrap(),
             server,
             observed,
         )
@@ -2945,10 +3002,17 @@ pub(crate) mod tests {
         };
         (event, accepted, historical)
     }
-    fn seal_native_fixture_commit(
-        mut commit: arkret_wire::RealmCommit,
+    pub(crate) fn seal_native_fixture_commit(
+        commit: arkret_wire::RealmCommit,
     ) -> arkret_wire::RealmCommit {
-        commit.committed_at = crate::test_fixtures::at(3);
+        seal_native_fixture_commit_at(commit, crate::test_fixtures::at(3))
+    }
+
+    pub(crate) fn seal_native_fixture_commit_at(
+        mut commit: arkret_wire::RealmCommit,
+        committed_at: chrono::DateTime<chrono::Utc>,
+    ) -> arkret_wire::RealmCommit {
+        commit.committed_at = committed_at;
         let mut body = serde_json::to_value(&commit).unwrap();
         body.as_object_mut().unwrap().remove("commit_id");
         body.as_object_mut().unwrap().remove("signature");
