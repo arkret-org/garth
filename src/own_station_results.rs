@@ -560,13 +560,13 @@ impl OwnStationReplica {
                     "ordinary scan exceeds or forks its exact current cut",
                 ));
             }
-            verify_row_from_source(client, row, OriginalSource::Ordinary).await?;
             previous_id = Some(commit.commit_id.clone());
             position = position
                 .checked_add(1)
                 .ok_or_else(|| protocol("stream position overflow"))?;
             generation = commit.governance_generation;
         }
+        verify_scan_originals(client, &request.realm_id, &outcome.committed_events).await?;
         if let Some(last) = outcome.committed_events.last() {
             if matches!(request.stream_ref, CommitStreamRef::Sidecar { .. }) {
                 if complete_prefix
@@ -913,11 +913,17 @@ async fn verify_row(client: &OwnStationStateClient, row: &CommittedEventView) ->
         .map(|_| ())
 }
 
-async fn verify_row_from_source(
-    client: &impl HistoricalSignerReadSource,
+struct PreparedOriginal<'a> {
+    full: &'a arkret_wire::CommittedEventFullView,
+    human: Option<arkret_wire::event_envelope::AccountDeviceProducer>,
+    selector: SignerKeyQuerySelector,
+    source: OriginalSource,
+}
+
+fn prepare_original(
     row: &CommittedEventView,
     source: OriginalSource,
-) -> Result<Option<arkret_signatures::PublicKeyMaterial>> {
+) -> Result<Option<PreparedOriginal<'_>>> {
     row.validate_shape()
         .map_err(|error| protocol(&error.to_string()))?;
     row.commit()
@@ -938,71 +944,23 @@ async fn verify_row_from_source(
         .producer_proof
         .as_ref()
         .ok_or_else(|| protocol("disclosed Event has no producer proof"))?;
-    if matches!(event.actual_signer(), arkret_wire::ActorId::Service { .. })
+    let reference = CommittedEventRef {
+        event_id: event.event_id.clone(),
+        commit_id: full.commit.commit_id.clone(),
+        stream_ref: full.commit.stream_ref.clone(),
+        stream_position: full.commit.stream_position,
+    };
+    let selector = if matches!(event.actual_signer(), arkret_wire::ActorId::Service { .. })
         && event.applet_id.is_some()
     {
-        let selector = SignerKeyQuerySelector::HistoricalEvent {
+        SignerKeyQuerySelector::HistoricalEvent {
             sender: HistoricalSignerKeyQuerySender::Service {
                 actor: event.actual_signer().clone(),
                 verification_method: proof.verification_method.clone(),
-                committed_event_ref: CommittedEventRef {
-                    event_id: event.event_id.clone(),
-                    commit_id: full.commit.commit_id.clone(),
-                    stream_ref: full.commit.stream_ref.clone(),
-                    stream_position: full.commit.stream_position,
-                },
+                committed_event_ref: reference,
             },
-        };
-        let request = SignerKeysQueryRequestBody {
-            request_id: request_id()?,
-            realm_id: event.realm_id.clone(),
-            recipient_account_id: client.recipient_actor()?.as_account_id().cloned(),
-            recipient_actor_id: client
-                .recipient_actor()?
-                .as_realm_actor_id()
-                .map(|actor| arkret_wire::ActorId::realm(actor.clone())),
-            queries: vec![selector],
-        };
-        let outcome = client.read_historical_signers(&request).await?;
-        outcome
-            .validate_for_request(&request)
-            .map_err(|e| protocol(&e.to_string()))?;
-        let Some(SignerKeyResolution::HistoricalServiceResolved {
-            key, accepted_at, ..
-        }) = outcome.resolutions.first()
-        else {
-            return Err(protocol(
-                "exact historical Service signing key is unavailable",
-            ));
-        };
-        let fact = arkret_models_collaboration::authority_commit::ServiceHistoricalSignerFact {
-            event_id: event.event_id.clone(),
-            actor: event.actual_signer().clone(),
-            verification_method: proof.verification_method.clone(),
-            key: key.clone(),
-            accepted_at: *accepted_at,
-        };
-        fact.validate_commit_binding(full, suite)
-            .map_err(|e| protocol(&e.to_string()))?;
-        let material = arkret_signatures::PublicKeyMaterial::Ed25519Raw {
-            bytes: arkret_canonical::base64url_decode(key.public_key_base64url.as_str())
-                .map_err(|e| protocol(&e.to_string()))?,
-        };
-        let bytes = arkret_signatures::EventProofBuilder::new()
-            .envelope_bytes(event)
-            .map_err(|e| protocol(&e.to_string()))?;
-        arkret_signatures::verify_ed25519_detached_jws_proof_with_digest_suite(
-            proof,
-            &bytes,
-            &event.actor_id,
-            &material,
-            suite,
-        )
-        .map_err(|e| protocol(&e.to_string()))?;
-        client.check_read_source()?;
-        return Ok(Some(material));
-    }
-    if let Some(actor) = event.actual_signer().as_realm_actor_id() {
+        }
+    } else if let Some(actor) = event.actual_signer().as_realm_actor_id() {
         if actor.realm_id != event.realm_id
             || event.executed_by.is_some()
             || full.commit.producer_signer_fact_digest.is_none()
@@ -1021,152 +979,160 @@ async fn verify_row_from_source(
             .rsplit_once('#')
             .and_then(|(_, fragment)| arkret_wire::DeviceId::new(fragment).ok())
             .ok_or_else(|| protocol("Realm Device original has no complete device method"))?;
-        let recipient = client.recipient_actor()?;
-        let request = SignerKeysQueryRequestBody {
-            request_id: request_id()?,
-            realm_id: event.realm_id.clone(),
-            recipient_account_id: recipient.as_account_id().cloned(),
-            recipient_actor_id: recipient.as_realm_actor_id().map(|_| recipient.clone()),
-            queries: vec![SignerKeyQuerySelector::HistoricalRealmDevice {
-                sender_kind: arkret_models_identity::RealmDeviceSignerKind::RealmDevice,
-                actor_id: event.actor_id.clone(),
-                device_id,
-                verification_method: proof.verification_method.clone(),
-                committed_event_ref: CommittedEventRef {
-                    event_id: event.event_id.clone(),
-                    commit_id: full.commit.commit_id.clone(),
-                    stream_ref: full.commit.stream_ref.clone(),
-                    stream_position: full.commit.stream_position,
-                },
-            }],
-        };
-        let outcome = client.read_historical_signers(&request).await?;
-        outcome
-            .validate_for_request(&request)
-            .map_err(|e| protocol(&e.to_string()))?;
-        let Some(SignerKeyResolution::HistoricalRealmDeviceResolved {
-            key, accepted_at, ..
-        }) = outcome.resolutions.first()
-        else {
-            return Err(protocol("exact historical Realm Device key is unavailable"));
-        };
-        if *accepted_at != full.commit.committed_at {
-            return Err(protocol(
-                "Realm Device key belongs to a different acceptance coordinate",
-            ));
-        }
-        // The bound Station query verifies the private fact at this exact Commit.
-        // Its minimal response deliberately does not disclose control-stream metadata.
-        let material = arkret_signatures::PublicKeyMaterial::Ed25519Raw {
-            bytes: arkret_canonical::base64url_decode(key.public_key_base64url.as_str())
-                .map_err(|e| protocol(&e.to_string()))?,
-        };
-        let bytes = arkret_signatures::EventProofBuilder::new()
-            .envelope_bytes(event)
-            .map_err(|e| protocol(&e.to_string()))?;
-        arkret_signatures::verify_ed25519_detached_jws_proof_with_digest_suite(
-            proof,
-            &bytes,
-            &event.actor_id,
-            &material,
-            suite,
-        )
-        .map_err(|e| protocol(&e.to_string()))?;
-        client.check_read_source()?;
-        return Ok(Some(material));
-    }
-    if event.actual_signer().as_account_id().is_none() {
-        return Err(protocol(
-            "unsupported Service producer in ordinary consumption",
-        ));
-    }
-    let reference = CommittedEventRef {
-        event_id: event.event_id.clone(),
-        commit_id: full.commit.commit_id.clone(),
-        stream_ref: full.commit.stream_ref.clone(),
-        stream_position: full.commit.stream_position,
-    };
-    // Scan/get originals require the ordinary Human fact digest. Bound self
-    // PCR acceptance uses its recipient-limited historical source instead;
-    // neither path grants native PCR audit or history access.
-    if source == OriginalSource::Ordinary
-        && human.is_some()
-        && full.commit.producer_signer_fact_digest.is_none()
-    {
-        return Err(protocol(
-            "original ordinary Human signer source is unavailable",
-        ));
-    }
-    let sender = if let Some(human) = &human {
-        HistoricalSignerKeyQuerySender::AccountDevice {
-            actor: arkret_wire::ActorId::account(human.account_id.clone()),
-            device_id: human.device_id.clone(),
+        SignerKeyQuerySelector::HistoricalRealmDevice {
+            sender_kind: arkret_models_identity::RealmDeviceSignerKind::RealmDevice,
+            actor_id: event.actor_id.clone(),
+            device_id,
             verification_method: proof.verification_method.clone(),
             committed_event_ref: reference,
         }
     } else {
-        HistoricalSignerKeyQuerySender::Agent {
-            actor: event.actual_signer().clone(),
-            verification_method: proof.verification_method.clone(),
-            committed_event_ref: reference,
+        if event.actual_signer().as_account_id().is_none() {
+            return Err(protocol(
+                "unsupported Service producer in ordinary consumption",
+            ));
         }
+        // Bound self PCR acceptance has a separate recipient-limited source.
+        // Ordinary scan/get never substitutes that source for a missing fact.
+        if source == OriginalSource::Ordinary
+            && human.is_some()
+            && full.commit.producer_signer_fact_digest.is_none()
+        {
+            return Err(protocol(
+                "original ordinary Human signer source is unavailable",
+            ));
+        }
+        let sender = if let Some(human) = &human {
+            HistoricalSignerKeyQuerySender::AccountDevice {
+                actor: arkret_wire::ActorId::account(human.account_id.clone()),
+                device_id: human.device_id.clone(),
+                verification_method: proof.verification_method.clone(),
+                committed_event_ref: reference,
+            }
+        } else {
+            HistoricalSignerKeyQuerySender::Agent {
+                actor: event.actual_signer().clone(),
+                verification_method: proof.verification_method.clone(),
+                committed_event_ref: reference,
+            }
+        };
+        SignerKeyQuerySelector::HistoricalEvent { sender }
     };
-    let request = SignerKeysQueryRequestBody {
-        request_id: request_id()?,
-        realm_id: event.realm_id.clone(),
-        recipient_account_id: client.recipient_actor()?.as_account_id().cloned(),
-        recipient_actor_id: client
-            .recipient_actor()?
-            .as_realm_actor_id()
-            .map(|actor| arkret_wire::ActorId::realm(actor.clone())),
-        queries: vec![SignerKeyQuerySelector::HistoricalEvent { sender }],
-    };
-    let outcome = client.read_historical_signers(&request).await?;
-    outcome
-        .validate_for_request(&request)
-        .map_err(|error| protocol(&error.to_string()))?;
-    let Some(SignerKeyResolution::HistoricalResolved {
-        key, accepted_at, ..
-    }) = outcome.resolutions.first()
-    else {
+    Ok(Some(PreparedOriginal {
+        full,
+        human,
+        selector,
+        source,
+    }))
+}
+
+fn verify_original_signer(
+    original: &PreparedOriginal<'_>,
+    resolution: &SignerKeyResolution,
+) -> Result<arkret_signatures::PublicKeyMaterial> {
+    let full = original.full;
+    let event = &full.event;
+    let suite = event.realm_id.digest_suite_code().digest_suite();
+    let proof = event
+        .producer_proof
+        .as_ref()
+        .ok_or_else(|| protocol("disclosed Event has no producer proof"))?;
+    if resolution.selector() != &original.selector {
         return Err(protocol(
-            "exact historical producer signing key is unavailable",
-        ));
-    };
-    if source == OriginalSource::BoundSelfHumanPcr
-        && key.authorization_ref.stream_ref != full.commit.stream_ref
-    {
-        return Err(protocol(
-            "bound self Human acceptance lacks its original same-PCR authorization",
+            "historical signer result belongs to a different Event",
         ));
     }
-    if let Some(human) = human.filter(|_| source == OriginalSource::Ordinary) {
-        let fact =
-            arkret_models_collaboration::authority_commit::AccountDeviceHistoricalSignerFact {
+    let encoded_key = match &original.selector {
+        SignerKeyQuerySelector::HistoricalEvent {
+            sender: HistoricalSignerKeyQuerySender::Service { .. },
+        } => {
+            let SignerKeyResolution::HistoricalServiceResolved {
+                key, accepted_at, ..
+            } = resolution
+            else {
+                return Err(protocol(
+                    "exact historical Service signing key is unavailable",
+                ));
+            };
+            let fact = arkret_models_collaboration::authority_commit::ServiceHistoricalSignerFact {
                 event_id: event.event_id.clone(),
                 actor: event.actual_signer().clone(),
-                device_id: human.device_id,
                 verification_method: proof.verification_method.clone(),
                 key: key.clone(),
                 accepted_at: *accepted_at,
             };
-        fact.validate_event_binding(event, suite)
-            .map_err(|error| protocol(&error.to_string()))?;
-        if source == OriginalSource::Ordinary
-            && full.commit.producer_signer_fact_digest.as_ref()
-                != Some(
-                    &fact
-                        .digest()
-                        .map_err(|error| protocol(&error.to_string()))?,
-                )
-        {
+            fact.validate_commit_binding(full, suite)
+                .map_err(|error| protocol(&error.to_string()))?;
+            key.public_key_base64url.as_str()
+        }
+        SignerKeyQuerySelector::HistoricalRealmDevice { .. } => {
+            let SignerKeyResolution::HistoricalRealmDeviceResolved {
+                key, accepted_at, ..
+            } = resolution
+            else {
+                return Err(protocol("exact historical Realm Device key is unavailable"));
+            };
+            if *accepted_at != full.commit.committed_at {
+                return Err(protocol(
+                    "Realm Device key belongs to a different acceptance coordinate",
+                ));
+            }
+            // The bound query verifies the private fact at this exact Commit.
+            key.public_key_base64url.as_str()
+        }
+        SignerKeyQuerySelector::HistoricalEvent { .. } => {
+            let SignerKeyResolution::HistoricalResolved {
+                key, accepted_at, ..
+            } = resolution
+            else {
+                return Err(protocol(
+                    "exact historical producer signing key is unavailable",
+                ));
+            };
+            if original.source == OriginalSource::BoundSelfHumanPcr
+                && key.authorization_ref.stream_ref != full.commit.stream_ref
+            {
+                return Err(protocol(
+                    "bound self Human acceptance lacks its original same-PCR authorization",
+                ));
+            }
+            if let Some(human) = original
+                .human
+                .as_ref()
+                .filter(|_| original.source == OriginalSource::Ordinary)
+            {
+                let fact = arkret_models_collaboration::authority_commit::AccountDeviceHistoricalSignerFact {
+                    event_id: event.event_id.clone(),
+                    actor: event.actual_signer().clone(),
+                    device_id: human.device_id.clone(),
+                    verification_method: proof.verification_method.clone(),
+                    key: key.clone(),
+                    accepted_at: *accepted_at,
+                };
+                fact.validate_event_binding(event, suite)
+                    .map_err(|error| protocol(&error.to_string()))?;
+                if full.commit.producer_signer_fact_digest.as_ref()
+                    != Some(
+                        &fact
+                            .digest()
+                            .map_err(|error| protocol(&error.to_string()))?,
+                    )
+                {
+                    return Err(protocol(
+                        "ordinary Human source differs from original Commit fact digest",
+                    ));
+                }
+            }
+            key.public_key_base64url.as_str()
+        }
+        _ => {
             return Err(protocol(
-                "ordinary Human source differs from original Commit fact digest",
+                "original does not have an exact historical signer selector",
             ));
         }
-    }
+    };
     let material = arkret_signatures::PublicKeyMaterial::Ed25519Raw {
-        bytes: arkret_canonical::base64url_decode(key.public_key_base64url.as_str())
+        bytes: arkret_canonical::base64url_decode(encoded_key)
             .map_err(|error| protocol(&error.to_string()))?,
     };
     let bytes = arkret_signatures::EventProofBuilder::new()
@@ -1180,8 +1146,107 @@ async fn verify_row_from_source(
         suite,
     )
     .map_err(|error| protocol(&error.to_string()))?;
+    Ok(material)
+}
+
+fn historical_signer_request(
+    client: &impl HistoricalSignerReadSource,
+    realm_id: RealmId,
+    queries: Vec<SignerKeyQuerySelector>,
+) -> Result<SignerKeysQueryRequestBody> {
+    let recipient = client.recipient_actor()?;
+    Ok(SignerKeysQueryRequestBody {
+        request_id: request_id()?,
+        realm_id,
+        recipient_account_id: recipient.as_account_id().cloned(),
+        recipient_actor_id: recipient.as_realm_actor_id().map(|_| recipient.clone()),
+        queries,
+    })
+}
+
+async fn verify_row_from_source(
+    client: &impl HistoricalSignerReadSource,
+    row: &CommittedEventView,
+    source: OriginalSource,
+) -> Result<Option<arkret_signatures::PublicKeyMaterial>> {
+    let Some(original) = prepare_original(row, source)? else {
+        return Ok(None);
+    };
+    let request = historical_signer_request(
+        client,
+        original.full.event.realm_id.clone(),
+        vec![original.selector.clone()],
+    )?;
+    let outcome = client.read_historical_signers(&request).await?;
+    outcome
+        .validate_for_request(&request)
+        .map_err(|error| protocol(&error.to_string()))?;
+    let resolution = outcome
+        .resolutions
+        .first()
+        .ok_or_else(|| protocol("historical signer result is missing"))?;
+    let material = verify_original_signer(&original, resolution)?;
     client.check_read_source()?;
     Ok(Some(material))
+}
+
+async fn verify_scan_originals(
+    client: &impl HistoricalSignerReadSource,
+    realm: &RealmId,
+    rows: &[CommittedEventView],
+) -> Result<()> {
+    use arkret_models_identity::agent_signer_state::SELF_SIGNER_REQUEST_MAX_BYTES;
+    use arkret_models_identity::signer_key_operations::MAX_SIGNER_KEY_QUERIES;
+
+    // Each selector still binds one disclosed Full Event and its exact Commit.
+    // Group transport only; no key cache or disclosure is shared across rows.
+    let mut originals = Vec::new();
+    for row in rows {
+        if let Some(original) = prepare_original(row, OriginalSource::Ordinary)? {
+            originals.push(original);
+        }
+    }
+    let mut after = 0;
+    while after < originals.len() {
+        client.check_read_source()?;
+        let end = originals.len().min(after + MAX_SIGNER_KEY_QUERIES);
+        let mut request = historical_signer_request(
+            client,
+            realm.clone(),
+            originals[after..end]
+                .iter()
+                .map(|original| original.selector.clone())
+                .collect(),
+        )?;
+        while request.queries.len() > 1
+            && arkret_canonical::canonical_json_bytes(&request)
+                .map_err(|error| protocol(&error.to_string()))?
+                .len()
+                > SELF_SIGNER_REQUEST_MAX_BYTES
+        {
+            request.queries.truncate(request.queries.len() / 2);
+        }
+        request
+            .validate()
+            .map_err(|error| protocol(&error.to_string()))?;
+        let outcome = client.read_historical_signers(&request).await?;
+        outcome
+            .validate_for_request(&request)
+            .map_err(|error| protocol(&error.to_string()))?;
+        client.check_read_source()?;
+        let end = after + request.queries.len();
+        for original in &originals[after..end] {
+            let resolution = outcome
+                .resolutions
+                .iter()
+                .find(|resolution| resolution.selector() == &original.selector)
+                .ok_or_else(|| protocol("exact historical signer result is missing"))?;
+            verify_original_signer(original, resolution)?;
+        }
+        after = end;
+    }
+    client.check_read_source()?;
+    Ok(())
 }
 
 /// One original Event from a real Device's accepted Station and current host
@@ -2011,6 +2076,28 @@ pub(crate) mod tests {
                         resolutions: vec![result],
                     })
                     .unwrap()
+                } else if let Some(batch) = body.get("__historical_batch") {
+                    let request: SignerKeysQueryRequestBody =
+                        serde_json::from_slice(&request_bytes[header_end..header_end + body_len])
+                            .unwrap();
+                    let resolutions: Vec<SignerKeyResolution> =
+                        serde_json::from_value(batch.clone()).unwrap();
+                    assert!(
+                        request.queries.iter().all(|selector| {
+                            resolutions
+                                .iter()
+                                .any(|resolution| resolution.selector() == selector)
+                        }),
+                        "a withheld row must not disclose a signer selector"
+                    );
+                    serde_json::to_value(arkret_models_identity::SignerKeyQueryResponseBody {
+                        request_id: request.request_id,
+                        realm_id: request.realm_id,
+                        recipient_account_id: request.recipient_account_id,
+                        recipient_actor_id: request.recipient_actor_id,
+                        resolutions,
+                    })
+                    .unwrap()
                 } else if let Some(key) = body.get("__signer_key") {
                     let request: SignerKeysQueryRequestBody =
                         serde_json::from_slice(&request_bytes[header_end..header_end + body_len])
@@ -2367,6 +2454,7 @@ pub(crate) mod tests {
             }
             server.join().unwrap();
         }
+        assert_batched_page_signers(&event, &accepted, &original_fact, &signing_key).await;
         assert_bounded_window_dependencies(&event, &accepted, &original_fact.key).await;
         let mut legacy = accepted.clone();
         legacy.producer_signer_fact_digest = None;
@@ -2486,6 +2574,123 @@ pub(crate) mod tests {
                 replica.head(&accepted.stream_ref).is_none(),
                 "acceptance consumption never advances history"
             );
+            server.join().unwrap();
+        }
+    }
+
+    async fn assert_batched_page_signers(
+        event: &arkret_wire::Event,
+        first: &arkret_wire::RealmCommit,
+        first_fact: &arkret_models_collaboration::authority_commit::AccountDeviceHistoricalSignerFact,
+        signing_key: &ed25519_dalek::SigningKey,
+    ) {
+        use arkret_signatures::{Ed25519DetachedJwsSigner, SignEventOptions, sign_event};
+        let mut middle = commit(8, Some(first.commit_id.clone()));
+        middle.committed_at = crate::test_fixtures::at(2);
+        let middle = seal_native_fixture_commit(middle);
+        let mut last_event = event.clone();
+        last_event.producer_proof = None;
+        last_event.payload.insert(
+            "content".into(),
+            serde_json::json!({
+                "kind": "ak.content.text", "body": "distinct accepted original",
+            }),
+        );
+        let mut authored = arkret_wire::AuthoredEvent::finalize_with_digest_suite(
+            last_event,
+            arkret_canonical::DigestSuite::Sha256,
+        )
+        .unwrap();
+        sign_event(
+            &mut authored,
+            &Ed25519DetachedJwsSigner::new(
+                signing_key.clone(),
+                first_fact.verification_method.to_string(),
+            ),
+            SignEventOptions::new().with_created_at(crate::test_fixtures::at(0)),
+        )
+        .unwrap();
+        let last_event = authored.into_event();
+        let mut last_fact = first_fact.clone();
+        last_fact.event_id = last_event.event_id.clone();
+        last_fact.accepted_at = crate::test_fixtures::at(2);
+        let mut last = commit(9, Some(middle.commit_id.clone()));
+        last.event_ref = last_event.event_id.clone();
+        last.committed_at = crate::test_fixtures::at(3);
+        last.producer_signer_fact_digest = Some(last_fact.digest().unwrap());
+        let last = seal_native_fixture_commit(last);
+        let resolution =
+            |event: &arkret_wire::Event, commit: &arkret_wire::RealmCommit, accepted_at| {
+                SignerKeyResolution::HistoricalResolved {
+                    selector: SignerKeyQuerySelector::HistoricalEvent {
+                        sender: HistoricalSignerKeyQuerySender::AccountDevice {
+                            actor: event.actor_id.clone(),
+                            device_id: first_fact.device_id.clone(),
+                            verification_method: first_fact.verification_method.clone(),
+                            committed_event_ref: CommittedEventRef {
+                                event_id: event.event_id.clone(),
+                                commit_id: commit.commit_id.clone(),
+                                stream_ref: commit.stream_ref.clone(),
+                                stream_position: commit.stream_position,
+                            },
+                        },
+                    },
+                    key: first_fact.key.clone(),
+                    accepted_at,
+                }
+            };
+        for wrong_fact in [false, true] {
+            let answers = [
+                resolution(
+                    &last_event,
+                    &last,
+                    if wrong_fact {
+                        first_fact.accepted_at
+                    } else {
+                        last_fact.accepted_at
+                    },
+                ),
+                resolution(event, first, first_fact.accepted_at),
+            ];
+            let (client, server) = client(vec![
+                serde_json::json!({"committed_events":[{"event":event,"commit":first},withheld(middle.clone()),{"event":last_event,"commit":last}],"truncated":false}),
+                serde_json::json!({"__historical_batch": answers}),
+            ]);
+            let request = StreamScanRequestBody {
+                realm_id: event.realm_id.clone(),
+                stream_ref: first.stream_ref.clone(),
+                direction: StreamScanDirection::After(Some(6)),
+                limit: 3,
+            };
+            let mut replica = OwnStationReplica::new(event.realm_id.clone());
+            let prior = CommitStreamHead {
+                stream_ref: first.stream_ref.clone(),
+                commit_id: first.previous_commit_ref.clone().unwrap(),
+                stream_position: 6,
+            };
+            replica
+                .heads
+                .insert(first.stream_ref.clone(), prior.clone());
+            let response = client.scan_commit_stream(&request).await.unwrap();
+            let result = replica.apply_bound_scan(&client, response).await;
+            if wrong_fact {
+                assert!(
+                    result
+                        .err()
+                        .expect("wrong signer fact must refuse the page")
+                        .to_string()
+                        .contains("original Commit fact digest")
+                );
+                assert_eq!(replica.head(&first.stream_ref), Some(&prior));
+                assert!(replica.context.is_none());
+            } else {
+                let page = result.unwrap();
+                assert!(matches!(
+                    &page.rows().unwrap()[1],
+                    CommittedEventView::Withheld(_)
+                ));
+                assert_eq!(replica.head(&first.stream_ref), Some(&head(&last)));
+            }
             server.join().unwrap();
         }
     }
