@@ -6,7 +6,7 @@ use arkret_models_crypto::{
     ContentEndpoint, ContentProtection, ContentRootBackupEntry, ContentRootContext, KeyBackup,
     SecretStorageItemKind,
 };
-use arkret_wire::{ActorId, Hash, MlsWelcomeRecipientEndpoint};
+use arkret_wire::{ActorId, EventId, Hash, MlsWelcomeRecipientEndpoint, ScopeRef};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -17,6 +17,7 @@ const CAS_ATTEMPTS: usize = 8;
 pub fn is_content_root_vault_key(key: &str) -> bool {
     [
         "content-root/v1/",
+        "content-root-state/v1/",
         "content-root-backup/v1/",
         "content-salt/v1/",
     ]
@@ -133,6 +134,43 @@ impl<'a> ContentRootVault<'a> {
     /// Retain only authenticated R and its public context, never an MLS private
     /// checkpoint. Success resolves after the backend's durable commit.
     pub async fn retain_root(&self, root: &ContentRootBackupEntry) -> Result<()> {
+        self.retain_root_record(root).await?;
+        let key = self.key(
+            "content-root-state",
+            (
+                &root.root_context.effective_scope,
+                &root.root_context.group_state_ref,
+            ),
+        )?;
+        let bytes = serde_json::to_vec(&root.root_ref)?;
+        for _ in 0..CAS_ATTEMPTS {
+            if let Some(previous) = self
+                .store
+                .read_secret_bytes_durable(&key)
+                .await
+                .map_err(rejected)?
+            {
+                let reference: Hash = serde_json::from_slice(previous.as_slice())?;
+                if reference != root.root_ref {
+                    return Err(rejected(
+                        "accepted group state has conflicting retained roots",
+                    ));
+                }
+                return Ok(());
+            }
+            if self
+                .store
+                .compare_exchange_secret_bytes_durable(&key, None, &bytes)
+                .await
+                .map_err(rejected)?
+            {
+                return Ok(());
+            }
+        }
+        Err(rejected("root state index contended"))
+    }
+
+    async fn retain_root_record(&self, root: &ContentRootBackupEntry) -> Result<()> {
         Self::validate_root(root)?;
         let key = self.key("content-root", &root.root_ref)?;
         let bytes = Zeroizing::new(serde_json::to_vec(root)?);
@@ -164,6 +202,39 @@ impl<'a> ContentRootVault<'a> {
             }
         }
         Err(rejected("root retention contended"))
+    }
+
+    /// Resolve locally held read material by its immutable group-state binding.
+    /// The caller independently verifies that exact accepted public epoch and
+    /// current history access before using the key. This index grants neither.
+    pub async fn root_for_group_state(
+        &self,
+        scope: &ScopeRef,
+        reference: &EventId,
+    ) -> Result<Option<ContentRootBackupEntry>> {
+        scope.canonical_mls_group_id().map_err(rejected)?;
+        let key = self.key("content-root-state", (scope, reference))?;
+        let Some(bytes) = self
+            .store
+            .read_secret_bytes_durable(&key)
+            .await
+            .map_err(rejected)?
+        else {
+            return Ok(None);
+        };
+        let root_ref: Hash = serde_json::from_slice(bytes.as_slice())?;
+        let root = self
+            .root(&root_ref)
+            .await?
+            .ok_or_else(|| rejected("indexed root record is absent"))?;
+        if root.root_context.effective_scope != *scope
+            || root.root_context.group_state_ref != *reference
+        {
+            return Err(rejected(
+                "root state index differs from its original context",
+            ));
+        }
+        Ok(Some(root))
     }
 
     /// Reading a retained root does not restore active MLS state or membership.
