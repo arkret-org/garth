@@ -1647,6 +1647,45 @@ fn bound_self_agent_pcr_controller_source(
     Ok(OriginalSource::BoundSelfAgentPcrController)
 }
 
+/// Read the exact founding original disclosed to a current collaboration
+/// member. The history floor can omit position zero from the ordinary scan.
+pub async fn read_collaboration_realm_genesis(
+    client: &OwnStationStateClient,
+    realm: &RealmId,
+) -> Result<BoundOwnStationResponse<EventId, CommittedEventView>> {
+    let event_id = realm.event_id();
+    let response = client.committed_event_get(&event_id).await?;
+    let row = response.value()?;
+    let CommittedEventView::Full(full) = row else {
+        return Err(protocol("Realm Genesis original is withheld"));
+    };
+    if response.session() != client.session()?
+        || response.request() != &event_id
+        || full.event.event_id != event_id
+        || &full.event.realm_id != realm
+        || full.event.scope_ref != arkret_wire::ScopeRef::RealmGenesis
+        || full.commit.stream_ref
+            != (CommitStreamRef::Realm {
+                realm_id: realm.clone(),
+            })
+        || full.commit.stream_position != 0
+        || full.commit.previous_commit_ref.is_some()
+        || full.commit.governance_generation != 0
+        || !matches!(
+            arkret_wire::GenesisGovernance::from_genesis(&full.event),
+            Ok(arkret_wire::GenesisGovernance::Collaboration
+                | arkret_wire::GenesisGovernance::DirectConversation(_))
+        )
+    {
+        return Err(protocol(
+            "own Station Genesis differs from the collaboration Realm",
+        ));
+    }
+    verify_row(client, row).await?;
+    response.value()?;
+    Ok(response)
+}
+
 /// Independently validate one disclosed historical original without advancing
 /// any replay head. This is useful for exact MLS predecessor recovery.
 pub async fn consume_bound_event(
@@ -2680,6 +2719,115 @@ pub(crate) mod tests {
             );
             server.join().unwrap();
         }
+    }
+
+    #[tokio::test]
+    async fn collaboration_genesis_uses_exact_get_and_historical_signature() {
+        use arkret_models_collaboration::authority_commit::AccountDeviceHistoricalSignerFact;
+        use arkret_models_collaboration::events_payloads::realm::{
+            RealmCreatePayload, RealmGenesis, RealmPurpose,
+        };
+        use arkret_signatures::{Ed25519DetachedJwsSigner, SignEventOptions, sign_event};
+
+        let (agent, pcr, mut key) = native_self_genesis_fixture("alice");
+        let device = crate::test_fixtures::device_id();
+        let account = agent.actual_signer().as_account_id().unwrap();
+        let object = RealmGenesis::new(
+            RealmPurpose::Collaboration,
+            arkret_wire::GenesisSalt::new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap(),
+            arkret_wire::TrustDomainId::new("ak:trust_domain:station.example").unwrap(),
+            arkret_wire::SecurityClass::Standard,
+            account.station_id.clone(),
+            arkret_wire::JoinRule::Invite,
+            arkret_wire::HistoryAccess::SinceJoin,
+            arkret_wire::Discoverability::Listed,
+            None,
+            None,
+        )
+        .unwrap();
+        let mut event = crate::test_fixtures::event(
+            93,
+            arkret_wire::EventKind::RealmCreate,
+            RealmCreatePayload::new(object).to_value().unwrap(),
+        );
+        event.actor_id = arkret_wire::ActorId::account(account.clone());
+        event.scope_ref = arkret_wire::ScopeRef::RealmGenesis;
+        event.created_at = crate::test_fixtures::at(2);
+        event.producer_proof = None;
+        let mut authored = arkret_wire::AuthoredEvent::finalize_with_digest_suite(
+            event,
+            arkret_canonical::DigestSuite::Sha256,
+        )
+        .unwrap();
+        let method = format!("did:web:alice.example#{device}");
+        sign_event(
+            &mut authored,
+            &Ed25519DetachedJwsSigner::new(
+                ed25519_dalek::SigningKey::from_bytes(&[41; 32]),
+                method,
+            ),
+            SignEventOptions::new().with_created_at(crate::test_fixtures::at(2)),
+        )
+        .unwrap();
+        let event = authored.into_event();
+        let mut accepted = crate::test_fixtures::commit(
+            93,
+            &event,
+            CommitStreamRef::Realm {
+                realm_id: event.realm_id.clone(),
+            },
+            0,
+        );
+        let fact = AccountDeviceHistoricalSignerFact {
+            event_id: event.event_id.clone(),
+            actor: event.actor_id.clone(),
+            device_id: device,
+            verification_method: event
+                .producer_proof
+                .as_ref()
+                .unwrap()
+                .verification_method
+                .clone(),
+            key: key.clone(),
+            accepted_at: crate::test_fixtures::at(1),
+        };
+        accepted.producer_signer_fact_digest = Some(fact.digest().unwrap());
+        let accepted = seal_native_fixture_commit(accepted);
+        let row = serde_json::json!({"commit":accepted,"event":event});
+        let (source, server, requests) =
+            observed_client(vec![row.clone(), serde_json::json!({"__signer_key":key})]);
+        let actual = read_collaboration_realm_genesis(&source, &event.realm_id)
+            .await
+            .unwrap()
+            .into_value()
+            .unwrap();
+        assert_eq!(serde_json::to_value(actual).unwrap(), row);
+        server.join().unwrap();
+        let paths = requests.lock().unwrap();
+        assert_eq!(paths.len(), 2);
+        assert!(paths[0].starts_with("get /_arkret/self/committed-events/"));
+        assert!(paths[1].contains("/signer-keys/query"));
+        key.public_key_base64url =
+            arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
+                ed25519_dalek::SigningKey::from_bytes(&[42; 32])
+                    .verifying_key()
+                    .as_bytes(),
+            ))
+            .unwrap();
+        let (source, server) = client(vec![row, serde_json::json!({"__signer_key":key})]);
+        assert!(
+            read_collaboration_realm_genesis(&source, &event.realm_id)
+                .await
+                .is_err()
+        );
+        server.join().unwrap();
+        let (source, server) = client(vec![serde_json::json!({"commit":pcr,"event":agent})]);
+        assert!(
+            read_collaboration_realm_genesis(&source, &agent.realm_id)
+                .await
+                .is_err()
+        );
+        server.join().unwrap();
     }
 
     async fn assert_batched_page_signers(
