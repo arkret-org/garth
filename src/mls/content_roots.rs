@@ -19,6 +19,7 @@ pub fn is_content_root_vault_key(key: &str) -> bool {
         "content-root/v1/",
         "content-root-state/v1/",
         "content-root-backup/v1/",
+        "content-root-download/v1/",
         "content-salt/v1/",
     ]
     .iter()

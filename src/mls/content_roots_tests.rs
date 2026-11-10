@@ -303,6 +303,7 @@ async fn unsupported_durability_never_falls_back_to_sync_or_cache_writes() {
         "content-root/v1/",
         "content-root-state/v1/",
         "content-root-backup/v1/",
+        "content-root-download/v1/",
         "content-salt/v1/",
     ] {
         assert!(is_content_root_vault_key(&format!("{prefix}digest")));

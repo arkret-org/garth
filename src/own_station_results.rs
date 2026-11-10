@@ -31,7 +31,8 @@ pub use device_replica::{
 
 mod pcr_genesis;
 pub use pcr_genesis::{
-    OwnStationHumanPcrEvent, OwnStationHumanPcrGenesis, read_own_station_human_pcr_genesis,
+    OwnStationHumanPcrEvent, OwnStationHumanPcrGenesis, PcrHistoryBackupReader,
+    read_own_station_human_pcr_genesis,
 };
 
 pub struct OwnStationScanPage {
@@ -2017,6 +2018,8 @@ pub(crate) mod tests {
             .unwrap();
         let server_active = active.clone();
         let server = std::thread::spawn(move || {
+            let mut history_unlock = None;
+            let mut history_request = None;
             for body in bodies {
                 let (mut stream, _) = listener.accept().unwrap();
                 stream
@@ -2057,7 +2060,51 @@ pub(crate) mod tests {
                     .push(headers.lines().next().unwrap().to_owned());
                 let withdraw =
                     body.get("__withdraw_source") == Some(&serde_json::Value::Bool(true));
-                let body = if let Some(key) = body.get("__realm_key") {
+                let body = if let Some(template) = body.get("__history_challenge") {
+                    let request: arkret_models_crypto::KeysBackupsIssueUnlockChallengeRequestBody =
+                        serde_json::from_slice(&request_bytes[header_end..header_end + body_len])
+                            .unwrap();
+                    let mut challenge: arkret_models_crypto::KeysBackupsUnlockChallenge =
+                        serde_json::from_value(template.clone()).unwrap();
+                    assert_eq!(request.content_history, challenge.content_history);
+                    assert!(request.subject_actor_id.is_none());
+                    assert!(request.custody_authorization_ref.is_none());
+                    if body["__fresh_request"] == true {
+                        assert_ne!(history_request.as_ref(), Some(&request.request_id));
+                        history_unlock = None;
+                    }
+                    if body["__same_request"] == true {
+                        assert_eq!(history_request.as_ref(), Some(&request.request_id));
+                    }
+                    history_request = Some(request.request_id.clone());
+                    challenge.request_id = request.request_id;
+                    if body["__drop_response"] == true {
+                        continue;
+                    }
+                    serde_json::to_value(challenge).unwrap()
+                } else if let Some(backup) = body.get("__history_unlock") {
+                    let proof: arkret_models_crypto::KeysBackupsUnlockRequestBody =
+                        serde_json::from_slice(&request_bytes[header_end..header_end + body_len])
+                            .unwrap();
+                    proof.proof.validate().unwrap();
+                    let key: arkret_signatures::PublicKeyMaterial =
+                        serde_json::from_value(body["__history_key"].clone()).unwrap();
+                    arkret_signatures::proof::verify_ed25519_raw_transcript_signature(
+                        &proof.proof.signing_payload_bytes().unwrap(),
+                        proof.proof.signature_proof.signature.as_str(),
+                        &key,
+                    )
+                    .unwrap();
+                    let value = serde_json::to_value(proof).unwrap();
+                    if let Some(previous) = &history_unlock {
+                        assert_eq!(previous, &value);
+                    }
+                    history_unlock = Some(value);
+                    if body["__drop_response"] == true {
+                        continue;
+                    }
+                    backup.clone()
+                } else if let Some(key) = body.get("__realm_key") {
                     let request: SignerKeysQueryRequestBody =
                         serde_json::from_slice(&request_bytes[header_end..header_end + body_len])
                             .unwrap();

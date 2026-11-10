@@ -15,6 +15,10 @@ use arkret_wire::{
 use super::protocol;
 use crate::Result;
 
+mod root_backup;
+mod root_download;
+pub use root_download::PcrHistoryBackupReader;
+
 #[cfg(test)]
 #[path = "pcr_history_tests.rs"]
 mod tests;
@@ -40,9 +44,19 @@ pub struct OwnStationHumanPcrEvent<'a> {
     pcr: &'a OwnStationHumanPcrGenesis,
     original: CommittedEventFullView,
     successor: Option<Scan>,
+    producer_key: Option<arkret_signatures::PublicKeyMaterial>,
 }
 
 impl OwnStationHumanPcrEvent<'_> {
+    /// The key remains bound to this exact original and live holder context.
+    /// Founding records use their separate native registration proofs instead.
+    pub fn producer_signing_key(&self) -> Result<&arkret_signatures::PublicKeyMaterial> {
+        self.full()?;
+        self.producer_key
+            .as_ref()
+            .ok_or_else(|| protocol("founding original uses its native registration proof"))
+    }
+
     pub fn full(&self) -> Result<&CommittedEventFullView> {
         self.pcr.check()?;
         if let Some(source) = &self.successor {
@@ -113,6 +127,7 @@ impl OwnStationHumanPcrGenesis {
                     pcr: self,
                     original: full.clone(),
                     successor: None,
+                    producer_key: None,
                 });
             }
         }
@@ -168,8 +183,12 @@ impl OwnStationHumanPcrGenesis {
                 "PCR GET differs from its exact accepted scan original",
             ));
         }
-        super::verify_row_from_source(&self.source, row, super::OriginalSource::HumanPcrHistory)
-            .await?;
+        let producer_key = super::verify_row_from_source(
+            &self.source,
+            row,
+            super::OriginalSource::HumanPcrHistory,
+        )
+        .await?;
         self.check()?;
         candidate.value()?;
         successor.value()?;
@@ -177,6 +196,7 @@ impl OwnStationHumanPcrGenesis {
             pcr: self,
             original: full.clone(),
             successor: Some(successor),
+            producer_key,
         })
     }
 }

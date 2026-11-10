@@ -40,7 +40,7 @@ fn principal_request(f: &HumanPcrOriginalsFixture) -> CurrentPrincipalRequestBod
     }
 }
 
-fn original(
+pub(super) fn original(
     f: &HumanPcrOriginalsFixture,
     event: arkret_wire::Event,
     position: u64,
@@ -70,7 +70,7 @@ fn original(
     }
 }
 
-fn founding(f: &HumanPcrOriginalsFixture) -> [CommittedEventFullView; 2] {
+pub(super) fn founding(f: &HumanPcrOriginalsFixture) -> [CommittedEventFullView; 2] {
     let create = original(f, f.unit.create().clone(), 0, None);
     let authorize = original(
         f,
@@ -93,7 +93,10 @@ fn scan(rows: &[CommittedEventFullView], f: &[CommittedEventFullView; 2]) -> Val
     })
 }
 
-fn setup(f: &HumanPcrOriginalsFixture, pair: &[CommittedEventFullView; 2]) -> Vec<Value> {
+pub(super) fn setup(
+    f: &HumanPcrOriginalsFixture,
+    pair: &[CommittedEventFullView; 2],
+) -> Vec<Value> {
     vec![
         json!(f.current_principal(principal_request(f).request_id)),
         json!(CommittedEventView::Full(pair[0].clone())),
