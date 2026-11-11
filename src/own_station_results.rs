@@ -3822,7 +3822,7 @@ pub(crate) mod tests {
                 serde_json::from_value::<
                     arkret_models_collaboration::events_payloads::ActorProfileUpdatePayload,
                 >(serde_json::json!({
-                    "target_ref": arkret_wire::ActorProfileId::from_event_id(&event.event_id),
+                    "actor_profile_id": arkret_wire::ActorProfileId::from_event_id(&event.event_id),
                     "patch": {"avatar_blob_ref": avatar}
                 }))
                 .unwrap(),

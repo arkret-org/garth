@@ -362,7 +362,7 @@ async fn mnemonic_root_import_checks_original_signers_and_keeps_only_selected_hi
         let pending = signed_event(
             &f,
             EventKind::ProfileUpdate,
-            json!({"target_ref":arkret_wire::ActorProfileId::from_event_id(&pair[0].event.event_id),"patch":{"encrypted_private_fields":carrier}}),
+            json!({"actor_profile_id":arkret_wire::ActorProfileId::from_event_id(&pair[0].event.event_id),"patch":{"encrypted_private_fields":carrier}}),
         );
         let mut outer = serde_json::to_value(&pending).unwrap();
         for field in ["event_id", "payload", "producer_proof", "unsigned"] {
@@ -406,7 +406,7 @@ async fn mnemonic_root_import_checks_original_signers_and_keeps_only_selected_hi
             signed_event(
                 &f,
                 EventKind::ProfileUpdate,
-                json!({"target_ref":arkret_wire::ActorProfileId::from_event_id(&pair[0].event.event_id),"patch":{"encrypted_private_fields":carrier}}),
+                json!({"actor_profile_id":arkret_wire::ActorProfileId::from_event_id(&pair[0].event.event_id),"patch":{"encrypted_private_fields":carrier}}),
             ),
             4,
             Some(authorize_full.commit.commit_id.clone()),
