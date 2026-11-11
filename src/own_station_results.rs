@@ -2803,10 +2803,12 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(serde_json::to_value(actual).unwrap(), row);
         server.join().unwrap();
-        let paths = requests.lock().unwrap();
-        assert_eq!(paths.len(), 2);
-        assert!(paths[0].starts_with("get /_arkret/self/committed-events/"));
-        assert!(paths[1].contains("/signer-keys/query"));
+        {
+            let paths = requests.lock().unwrap();
+            assert_eq!(paths.len(), 2);
+            assert!(paths[0].starts_with("get /_arkret/self/committed-events/"));
+            assert!(paths[1].contains("/signer-keys/query"));
+        }
         key.public_key_base64url =
             arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
                 ed25519_dalek::SigningKey::from_bytes(&[42; 32])

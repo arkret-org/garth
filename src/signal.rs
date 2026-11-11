@@ -9,7 +9,7 @@ use arkret_models_collaboration::signal_plaintext::{
 };
 use arkret_models_collaboration::{SignalDeliveryAuthority, SignalStreamFrame};
 use arkret_signatures::{PublicKeyMaterial, verify_ed25519_signal_proof};
-use arkret_wire::SignalEnvelope;
+use arkret_wire::{SignalEnvelope, StationSigningKey};
 use chrono::{DateTime, Utc};
 
 use crate::{Error, MaybeSend, MaybeSendSync, Result};
@@ -18,6 +18,7 @@ pub trait SignalDecryptor: MaybeSendSync {
     fn decrypt<'a>(
         &'a self,
         envelope: &'a SignalEnvelope,
+        sender_key: &'a StationSigningKey,
     ) -> impl Future<Output = Result<Vec<u8>>> + MaybeSend + 'a;
 }
 
@@ -93,7 +94,7 @@ impl SignalReceiver {
         verify_ed25519_signal_proof(envelope, &public_key)
             .map_err(|error| Error::Protocol(error.to_string()))?;
 
-        let bytes = decryptor.decrypt(envelope).await?;
+        let bytes = decryptor.decrypt(envelope, &delivery_authority.key).await?;
         let plaintext = open_signal_plaintext(&bytes)?;
         plaintext.bind_to_envelope(
             &envelope.sender_actor_id,
@@ -226,7 +227,11 @@ mod tests {
     struct UnusedDecryptor;
 
     impl SignalDecryptor for UnusedDecryptor {
-        async fn decrypt(&self, _envelope: &SignalEnvelope) -> Result<Vec<u8>> {
+        async fn decrypt(
+            &self,
+            _envelope: &SignalEnvelope,
+            _sender_key: &StationSigningKey,
+        ) -> Result<Vec<u8>> {
             Err(Error::Protocol(
                 "test decryptor must not receive control frames".to_owned(),
             ))
