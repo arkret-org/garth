@@ -27,6 +27,78 @@ fn fixture() -> (
 }
 
 #[tokio::test]
+async fn only_exact_native_put_results_make_a_root_available_for_offline_preparation() {
+    let (root, backup, ..) = fixture();
+    let store = MemorySecureKeyStore::default();
+    let endpoint = MlsWelcomeRecipientEndpoint::Device {
+        device_id: backup.signature_proof.device_id.clone().unwrap(),
+    };
+    let vault = ContentRootVault::new(&store, &backup.actor_id, &endpoint);
+    vault.retain_root(&root).await.unwrap();
+    vault.freeze_backup("first-root", &backup).await.unwrap();
+    assert!(
+        vault.published_backup_refs(&root).await.unwrap().is_none(),
+        "a frozen PUT is not an accepted PUT"
+    );
+    let response = KeysBackupsReplaceResponseBody {
+        status: arkret_models_crypto::KeyBackupPutStatus::Accepted,
+        backup_id: backup.backup_id.clone(),
+        ciphertext_digest: backup.ciphertext_digest.clone(),
+    };
+    let mut wrong_id = response.clone();
+    wrong_id.backup_id = BackupId::new("ak:backup:01904100-0000-7000-8000-000000000099").unwrap();
+    let mut wrong_digest = response.clone();
+    wrong_digest.ciphertext_digest =
+        Hash::new(arkret_canonical::sha256_digest(b"another ciphertext")).unwrap();
+    for wrong in [wrong_id, wrong_digest] {
+        assert!(
+            vault
+                .retain_backup_publication(&root, &[(backup.clone(), wrong)])
+                .await
+                .is_err()
+        );
+        assert!(vault.published_backup_refs(&root).await.unwrap().is_none());
+    }
+    assert!(vault.retain_backup_publication(&root, &[]).await.is_err());
+    let mut conflicting_device = backup.clone();
+    conflicting_device.device_id =
+        Some(arkret_wire::DeviceId::new("ak:device:01904100-0000-7000-8000-000000000099").unwrap());
+    assert!(
+        vault
+            .retain_backup_publication(&root, &[(conflicting_device, response.clone())])
+            .await
+            .is_err()
+    );
+    let refs = vault
+        .retain_backup_publication(&root, &[(backup.clone(), response)])
+        .await
+        .unwrap();
+    assert_eq!(refs, vec![backup.backup_id.clone()]);
+    let reopened = ContentRootVault::new(&store, &backup.actor_id, &endpoint);
+    assert_eq!(
+        reopened.published_backup_refs(&root).await.unwrap(),
+        Some(refs)
+    );
+    let other = MlsWelcomeRecipientEndpoint::Device {
+        device_id: arkret_wire::DeviceId::new("ak:device:01904100-0000-7000-8000-000000000099")
+            .unwrap(),
+    };
+    assert!(
+        ContentRootVault::new(&store, &backup.actor_id, &other)
+            .published_backup_refs(&root)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    // Namespace and the immutable root/frozen-envelope records retain v1.
+    assert_eq!(
+        reopened.frozen_backup("first-root").await.unwrap(),
+        Some(backup.clone())
+    );
+    assert_eq!(reopened.root(&root.root_ref).await.unwrap(), Some(root));
+}
+
+#[tokio::test]
 async fn reopened_vault_keeps_only_original_roots_and_exact_backup_ciphertext() {
     let (root, backup, ..) = fixture();
     let store = MemorySecureKeyStore::default();

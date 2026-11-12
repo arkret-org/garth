@@ -4,9 +4,9 @@
 
 use arkret_models_crypto::{
     ContentEndpoint, ContentProtection, ContentRootBackupEntry, ContentRootContext, KeyBackup,
-    SecretStorageItemKind,
+    KeysBackupsReplaceResponseBody, SecretStorageItemKind,
 };
-use arkret_wire::{ActorId, EventId, Hash, MlsWelcomeRecipientEndpoint, ScopeRef};
+use arkret_wire::{ActorId, BackupId, EventId, Hash, MlsWelcomeRecipientEndpoint, ScopeRef};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -89,6 +89,14 @@ pub struct ContentRootVault<'a> {
 struct SaltIntent {
     binding: Hash,
     salt: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RootBackupPublication {
+    root_ref: Hash,
+    root_context: ContentRootContext,
+    accepted: Vec<(KeyBackup, KeysBackupsReplaceResponseBody)>,
 }
 
 fn rejected(message: impl std::fmt::Display) -> Error {
@@ -346,6 +354,115 @@ impl<'a> ContentRootVault<'a> {
             return Err(rejected("frozen backup has another complete subject"));
         }
         Ok(Some(backup))
+    }
+
+    fn publication_refs(&self, publication: &RootBackupPublication) -> Result<Vec<BackupId>> {
+        publication.root_context.validate().map_err(rejected)?;
+        if publication.accepted.is_empty() {
+            return Err(rejected("root publication has no native PUT results"));
+        }
+        let mut refs = std::collections::BTreeSet::new();
+        for (backup, response) in &publication.accepted {
+            backup.validate().map_err(rejected)?;
+            if backup.actor_id != *self.subject
+                || response.backup_id != backup.backup_id
+                || response.ciphertext_digest != backup.ciphertext_digest
+                || matches!(self.endpoint, MlsWelcomeRecipientEndpoint::Device { device_id }
+                    if backup.signature_proof.device_id.as_ref() != Some(device_id)
+                        || backup.device_id.as_ref().is_some_and(|declared| declared != device_id))
+                || backup
+                    .contents
+                    .iter()
+                    .filter(|item| {
+                        item.item_kind == SecretStorageItemKind::ContentEpochRoot
+                            && item.root_ref.as_ref() == Some(&publication.root_ref)
+                            && item.root_context.as_ref() == Some(&publication.root_context)
+                    })
+                    .count()
+                    != 1
+                || !refs.insert(backup.backup_id.clone())
+            {
+                return Err(rejected(
+                    "root publication differs from its exact native PUT",
+                ));
+            }
+        }
+        Ok(refs.into_iter().collect())
+    }
+
+    /// Call only after the authenticated owning Station has acknowledged each
+    /// exact immutable envelope. Freeze alone is never a PUT acknowledgement.
+    /// This journal is for local crypto preparation, not current authority:
+    /// the server must recheck root custody and recipients at actual admission.
+    pub async fn retain_backup_publication(
+        &self,
+        root: &ContentRootBackupEntry,
+        accepted: &[(KeyBackup, KeysBackupsReplaceResponseBody)],
+    ) -> Result<Vec<BackupId>> {
+        let publication = RootBackupPublication {
+            root_ref: root.root_ref.clone(),
+            root_context: root.root_context.clone(),
+            accepted: accepted.to_vec(),
+        };
+        self.publication_refs(&publication)?;
+        if self.root(&root.root_ref).await?.as_ref() != Some(root) {
+            return Err(rejected(
+                "native PUT journal requires its durably retained root",
+            ));
+        }
+        // A typed selector in the existing v1 backup namespace cannot alias a
+        // string operation used by an unacknowledged frozen packet.
+        let key = self.key(
+            "content-root-backup",
+            ("accepted-publication", &root.root_ref),
+        )?;
+        let bytes = Zeroizing::new(serde_json::to_vec(&publication)?);
+        for _ in 0..CAS_ATTEMPTS {
+            if let Some(refs) = self.published_backup_refs(root).await? {
+                return Ok(refs);
+            }
+            if self
+                .store
+                .compare_exchange_secret_bytes_durable(&key, None, &bytes)
+                .await
+                .map_err(rejected)?
+            {
+                return self.publication_refs(&publication);
+            }
+        }
+        Err(rejected("native PUT journal contended"))
+    }
+
+    /// Historical acknowledgement of physical root custody, not a fresh
+    /// recipient, membership or writer grant. It remains bound to the original
+    /// root and exact packet bytes across offline preparation and cold reopen.
+    pub async fn published_backup_refs(
+        &self,
+        root: &ContentRootBackupEntry,
+    ) -> Result<Option<Vec<BackupId>>> {
+        Self::validate_root(root)?;
+        let key = self.key(
+            "content-root-backup",
+            ("accepted-publication", &root.root_ref),
+        )?;
+        let Some(bytes) = self
+            .store
+            .read_secret_bytes_durable(&key)
+            .await
+            .map_err(rejected)?
+        else {
+            return Ok(None);
+        };
+        let publication: RootBackupPublication = serde_json::from_slice(bytes.as_slice())?;
+        if publication.root_ref != root.root_ref
+            || publication.root_context != root.root_context
+            || self.root(&root.root_ref).await?.as_ref() != Some(root)
+        {
+            return Err(rejected(
+                "native PUT journal root differs from its original",
+            ));
+        }
+        self.publication_refs(&publication).map(Some)
     }
 
     /// Any changed binding gets a fresh salt; an exact retry keeps its salt.
