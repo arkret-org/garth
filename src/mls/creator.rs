@@ -28,11 +28,27 @@ fn protocol(message: impl ToString) -> Error {
     Error::Protocol(message.to_string())
 }
 
+/// Allocate a process-local read identity shared by every creator adapter.
+/// Separate counters would alias distinct reads under the same holder session.
+pub fn next_creator_read_sequence() -> Result<u64> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_READ: AtomicU64 = AtomicU64::new(0);
+    let mut previous = NEXT_READ.load(Ordering::SeqCst);
+    loop {
+        let next = previous
+            .checked_add(1)
+            .ok_or_else(|| protocol("creator read sequence exhausted"))?;
+        match NEXT_READ.compare_exchange_weak(previous, next, Ordering::SeqCst, Ordering::SeqCst) {
+            Ok(_) => return Ok(next),
+            Err(actual) => previous = actual,
+        }
+    }
+}
+
 pub async fn read_creator_scope(
     client: &OwnStationStateClient,
     intent: &MlsCreatorBootstrapIntent,
 ) -> Result<CreatorScopeRead> {
-    static NEXT_READ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     intent.validate()?;
     let realm = intent.effective_scope().realm_id();
     let before = client.snapshot_head(realm).await?;
@@ -56,14 +72,7 @@ pub async fn read_creator_scope(
         })
         .ok_or_else(|| protocol("creator current cut omits Realm origin"))?;
     let origin: RealmGenesis = serde_json::from_value(origin.clone()).map_err(protocol)?;
-    let sequence = NEXT_READ
-        .try_update(
-            std::sync::atomic::Ordering::SeqCst,
-            std::sync::atomic::Ordering::SeqCst,
-            |value| value.checked_add(1),
-        )
-        .map_err(|_| protocol("creator query sequence exhausted"))?
-        + 1;
+    let sequence = next_creator_read_sequence()?;
     let session = before.session();
     if intent.owner_actor_id().as_account_id() != Some(session.account_id()) {
         return Err(protocol("creator read belongs to another complete Account"));
@@ -179,4 +188,31 @@ pub async fn read_creator_scope(
         authority,
         genesis,
     })
+}
+
+#[cfg(test)]
+mod read_identity_tests {
+    #[test]
+    fn host_and_shared_adapters_allocate_distinct_reads_concurrently() {
+        let mut workers = Vec::new();
+        for _ in 0..4 {
+            workers.push(std::thread::spawn(|| {
+                (0..64)
+                    .map(|_| super::next_creator_read_sequence().unwrap())
+                    .collect::<Vec<_>>()
+            }));
+        }
+        let reads: Vec<_> = workers
+            .into_iter()
+            .flat_map(|worker| worker.join().unwrap())
+            .collect();
+        assert_eq!(
+            reads
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            256
+        );
+        assert!(reads.iter().all(|value| *value > 0));
+    }
 }
