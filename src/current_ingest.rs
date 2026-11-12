@@ -503,7 +503,7 @@ pub fn validate_floor_product_rows(
                 RealmInviteLinkCreatePayload {
                     public_key: definition.public_key,
                     expires_at: definition.expires_at,
-                    max_uses: definition.max_uses,
+                    max_use_count: definition.max_use_count,
                 }
                 .validate()
                 .map_err(protocol)?;
@@ -970,7 +970,7 @@ mod tests {
                 },
                 json!({
                     "public_key": arkret_canonical::base64url_encode([7; 32]),
-                    "expires_at": "2020-01-01T00:00:00.000Z", "max_uses": 2,
+                    "expires_at": "2020-01-01T00:00:00.000Z", "max_use_count": 2,
                     "create_event_id": create, "creator_actor_id": fixture.actor,
                 }),
             ),
@@ -1017,7 +1017,7 @@ mod tests {
         let rows = invite_link_rows(&fixture);
         let first = fixture.rows.len();
         for (index, field, value) in [
-            (first, "max_uses", json!(0)),
+            (first, "max_use_count", json!(0)),
             (first, "public_key", json!("bad-key")),
             (
                 first,
