@@ -1018,6 +1018,7 @@ mod tests {
         let first = fixture.rows.len();
         for (index, field, value) in [
             (first, "max_use_count", json!(0)),
+            (first, "max_uses", json!(2)),
             (first, "public_key", json!("bad-key")),
             (
                 first,
@@ -1056,6 +1057,13 @@ mod tests {
                 "invalid invite link field {field} was accepted"
             );
         }
+        let mut legacy = rows.clone();
+        let CurrentState::Value { value, .. } = &mut legacy[first];
+        let definition = value.as_object_mut().unwrap();
+        let allowance = definition.remove("max_use_count").unwrap();
+        definition.insert("max_uses".to_owned(), allowance);
+        assert!(fixture.validate(&legacy).is_err());
+
         let mut changed = rows;
         let CurrentState::Value { value, .. } = &mut changed[first + 1];
         *value = json!("expired");

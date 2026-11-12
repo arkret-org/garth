@@ -1,5 +1,8 @@
 //! Deterministic fixtures shared by the behavior tests in this crate.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) mod native_tls;
+
 use arkret_canonical::DigestSuite;
 use arkret_wire::{
     ActorId, Base64UrlString, CommitStreamRef, DetachedObjectSignature, DetachedSignatureAlgorithm,

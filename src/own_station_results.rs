@@ -1647,27 +1647,20 @@ fn bound_self_agent_pcr_controller_source(
     Ok(OriginalSource::BoundSelfAgentPcrController)
 }
 
-/// Read the exact founding original disclosed to a current collaboration
-/// member. The history floor can omit position zero from the ordinary scan.
-pub async fn read_collaboration_realm_genesis(
-    client: &OwnStationStateClient,
-    realm: &RealmId,
-) -> Result<BoundOwnStationResponse<EventId, CommittedEventView>> {
-    let event_id = realm.event_id();
-    let response = client.committed_event_get(&event_id).await?;
-    let row = response.value()?;
+fn validate_member_realm_genesis(row: &CommittedEventView, realm: &RealmId) -> Result<()> {
     let CommittedEventView::Full(full) = row else {
         return Err(protocol("Realm Genesis original is withheld"));
     };
-    if response.session() != client.session()?
-        || response.request() != &event_id
-        || full.event.event_id != event_id
+    if full.event.event_id != realm.event_id()
+        || full.event.kind != arkret_wire::EventKind::RealmCreate
         || &full.event.realm_id != realm
         || full.event.scope_ref != arkret_wire::ScopeRef::RealmGenesis
         || full.commit.stream_ref
             != (CommitStreamRef::Realm {
                 realm_id: realm.clone(),
             })
+        || &full.commit.realm_id != realm
+        || full.commit.event_ref != full.event.event_id
         || full.commit.stream_position != 0
         || full.commit.previous_commit_ref.is_some()
         || full.commit.governance_generation != 0
@@ -1678,11 +1671,60 @@ pub async fn read_collaboration_realm_genesis(
         )
     {
         return Err(protocol(
-            "own Station Genesis differs from the collaboration Realm",
+            "own Station Genesis differs from the member Realm",
         ));
     }
-    verify_row(client, row).await?;
-    response.value()?;
+    Ok(())
+}
+
+/// Consume only the exact founding original disclosed to this live native
+/// Device. This narrow authenticated GET source does not admit another
+/// pre-join original, replace the ordinary scan source, or advance a head.
+pub async fn consume_own_station_device_realm_genesis(
+    client: &arkret_http_client::own_station_device_results::OwnStationDeviceClient,
+    realm: &RealmId,
+    response: arkret_http_client::own_station_device_results::BoundOwnStationDeviceResponse<
+        EventId,
+        CommittedEventView,
+    >,
+) -> Result<
+    arkret_http_client::own_station_device_results::BoundOwnStationDeviceResponse<
+        EventId,
+        CommittedEventView,
+    >,
+> {
+    if response.context() != client.context()?
+        || response.request() != &realm.event_id()
+        || client.context()?.effective_scope().realm_id_opt() != Some(realm)
+    {
+        return Err(protocol(
+            "native Genesis belongs to another request or endpoint context",
+        ));
+    }
+    validate_member_realm_genesis(response.value()?, realm)?;
+    verify_row_from_source(client, response.value()?, OriginalSource::Ordinary).await?;
+    client.check_context()?;
+    validate_member_realm_genesis(response.value()?, realm)?;
+    Ok(response)
+}
+
+/// Read the exact founding original disclosed to a current collaboration
+/// member. The history floor can omit position zero from the ordinary scan.
+pub async fn read_collaboration_realm_genesis(
+    client: &OwnStationStateClient,
+    realm: &RealmId,
+) -> Result<BoundOwnStationResponse<EventId, CommittedEventView>> {
+    let event_id = realm.event_id();
+    let response = client.committed_event_get(&event_id).await?;
+    if response.session() != client.session()? || response.request() != &event_id {
+        return Err(protocol(
+            "member Genesis belongs to another request or session",
+        ));
+    }
+    validate_member_realm_genesis(response.value()?, realm)?;
+    verify_row(client, response.value()?).await?;
+    client.session()?;
+    validate_member_realm_genesis(response.value()?, realm)?;
     Ok(response)
 }
 
@@ -1945,6 +1987,8 @@ async fn read_agent_interaction_at_cut(
 #[cfg(test)]
 pub(crate) mod tests {
     mod agent_interaction;
+    #[cfg(not(target_arch = "wasm32"))]
+    pub(crate) mod member_genesis;
 
     use std::io::{Read, Write};
     use std::sync::Arc;

@@ -20,3 +20,17 @@ The SDK is a sibling path dependency at `../arkret-rust-sdk`. See
 [Building a client on garth](docs/building-a-client.md) for host integration.
 The capability-by-capability migration audit is in
 [CAPABILITY-MIGRATION.md](CAPABILITY-MIGRATION.md).
+
+Native library tests include HTTPS-bound Device reads. Ordinary CI tests generate
+an ephemeral CA and server credentials with OpenSSL and explicitly trust that CA:
+
+```powershell
+cargo test --locked -j 4 -p garth --features native --lib
+```
+
+The tests also accept the complete certificate environment supplied by the joint
+native runner. They keep certificate and hostname validation enabled in both modes:
+
+```powershell
+python -B ../cotest/scripts/run-native-rust-tests.py -- cargo test --locked -j 4 -p garth --features native --lib
+```

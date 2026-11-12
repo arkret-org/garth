@@ -189,6 +189,7 @@ mod tests {
                 ),
                 device_generation_ref: sequence + 1,
             }),
+            auth_binding: None,
             extra: Default::default(),
         };
         if let Some(previous) = previous {

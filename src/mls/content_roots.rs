@@ -14,6 +14,14 @@ use crate::{Error, Result, SecureKeyStore};
 
 const CAS_ATTEMPTS: usize = 8;
 
+#[path = "native_root_publication.rs"]
+mod native_root_publication;
+pub use native_root_publication::{
+    NativeRootPublicationHistory, NativeRootPublicationOutcome, NativeRootPublicationParameters,
+    NativeRootPublicationState, publish_native_content_root, retry_frozen_native_root_publication,
+    retry_native_root_publication,
+};
+
 pub fn is_content_root_vault_key(key: &str) -> bool {
     [
         "content-root/v1/",
