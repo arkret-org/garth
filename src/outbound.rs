@@ -855,6 +855,8 @@ mod tests {
         #[cfg(feature = "native")]
         Retryable,
         Transport,
+        #[cfg(feature = "native")]
+        SessionChanged,
         Protocol,
     }
 
@@ -949,6 +951,10 @@ mod tests {
                     reason_code: "revision_unavailable".to_owned(),
                 }),
                 Scripted::Transport => Err(Error::Http("connection reset".to_owned())),
+                #[cfg(feature = "native")]
+                Scripted::SessionChanged => {
+                    Err(arkret_http_client::Error::OwnStationSessionChanged.into())
+                }
                 Scripted::Protocol => Err(Error::Api {
                     status: 400,
                     error: Box::new(Problem::new("param_invalid", 400, "bad payload")),
@@ -1255,6 +1261,53 @@ mod tests {
                 .unwrap(),
             OutboundEngineOutcome::Idle
         );
+    }
+
+    #[cfg(feature = "native")]
+    #[tokio::test]
+    async fn retired_own_session_retains_unknown_write_for_exact_replay_after_restart() {
+        #[derive(Clone, Copy)]
+        struct LaterClock;
+        impl HostClock for LaterClock {
+            fn now(&self) -> DateTime<Utc> {
+                FixedClock.now() + chrono::Duration::hours(1)
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("garth-state.json");
+        let engine = OutboundEngine::new(crate::FileStore::open(&path).unwrap(), FixedClock);
+        let original = submission(3);
+        let event_id = original.event_id.clone();
+        let bytes = arkret_canonical::canonical_json_bytes(&original.request).unwrap();
+        engine.enqueue(original).await.unwrap();
+        let retired = AuthorityClient::new(ScriptedTransport::new(Scripted::SessionChanged));
+        let OutboundEngineOutcome::Retry { item, .. } = engine
+            .submit_next(&retired, &ClientRequestOptions::default(), verify_fixture)
+            .await
+            .unwrap()
+        else {
+            panic!("retired context cannot determine a permanent failure")
+        };
+        assert_eq!(item.status, SendQueueStatus::Queued);
+        assert!(matches!(item.submission.state, SubmissionState::Queued));
+        assert!(item.commit().is_none());
+        assert!(item.settled_at.is_none());
+        drop(engine);
+        let reopened = OutboundEngine::new(crate::FileStore::open(&path).unwrap(), LaterClock);
+        let fresh = AuthorityClient::new(ScriptedTransport::new(Scripted::Accept));
+        let OutboundEngineOutcome::Committed { item, .. } = reopened
+            .submit_next(&fresh, &ClientRequestOptions::default(), verify_fixture)
+            .await
+            .unwrap()
+        else {
+            panic!("fresh context must reconcile the frozen request")
+        };
+        assert_eq!(item.event_id(), &event_id);
+        assert_eq!(
+            arkret_canonical::canonical_json_bytes(item.request()).unwrap(),
+            bytes
+        );
+        assert_eq!(fresh.transport().calls.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

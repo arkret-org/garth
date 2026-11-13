@@ -46,6 +46,9 @@ pub enum Error {
     },
     #[error("protocol error: {0}")]
     Protocol(String),
+    /// Local context retirement leaves an in-flight write's outcome unknown.
+    #[error("own Station session context changed")]
+    OwnStationSessionChanged,
     #[error("storage error: {0}")]
     Storage(String),
 }
@@ -207,6 +210,7 @@ impl From<arkret_http_client::Error> for Error {
                 Self::AccountStreamInterrupt(interrupt)
             }
             arkret_http_client::Error::Protocol(message) => Self::Protocol(message),
+            arkret_http_client::Error::OwnStationSessionChanged => Self::OwnStationSessionChanged,
             arkret_http_client::Error::Url(source) => Self::Url(source),
             _ => Self::Protocol(error.to_string()),
         }
