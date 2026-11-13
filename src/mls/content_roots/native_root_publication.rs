@@ -645,5 +645,4 @@ impl ContentRootVault<'_> {
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
-#[path = "native_root_publication_tests.rs"]
 mod tests;

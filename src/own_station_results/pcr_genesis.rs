@@ -20,7 +20,6 @@ mod root_download;
 pub use root_download::PcrHistoryBackupReader;
 
 #[cfg(test)]
-#[path = "pcr_history_tests.rs"]
 mod tests;
 
 type Principal = BoundOwnStationResponse<CurrentPrincipalRequestBody, CurrentPrincipalResponseBody>;

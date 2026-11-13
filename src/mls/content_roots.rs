@@ -14,7 +14,6 @@ use crate::{Error, Result, SecureKeyStore};
 
 const CAS_ATTEMPTS: usize = 8;
 
-#[path = "native_root_publication.rs"]
 mod native_root_publication;
 pub use native_root_publication::{
     NativeRootPublicationHistory, NativeRootPublicationOutcome, NativeRootPublicationParameters,
@@ -47,7 +46,6 @@ pub struct ContentSaltBinding<'a> {
 }
 
 #[cfg(test)]
-#[path = "content_roots_tests.rs"]
 mod tests;
 
 impl ContentSaltBinding<'_> {

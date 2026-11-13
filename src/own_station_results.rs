@@ -23,7 +23,6 @@ use arkret_wire::{
 
 use crate::{Error, Result};
 
-#[path = "own_station_device_replica.rs"]
 mod device_replica;
 pub use device_replica::{
     OwnStationDeviceReplica, OwnStationDeviceScanPage, consume_own_station_device_snapshot,

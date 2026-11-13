@@ -17,7 +17,6 @@ use crate::mls::content_roots::ContentRootVault;
 use crate::{Result, SecureKeyStore};
 
 #[cfg(test)]
-#[path = "root_backup_tests.rs"]
 mod tests;
 
 fn protocol(detail: impl std::fmt::Display) -> crate::Error {

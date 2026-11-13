@@ -12,7 +12,6 @@ use ed25519_dalek::{Signer, SigningKey};
 use super::*;
 use crate::{SecureKeyStoreBackendInfo, SecureKeyStoreError, SecureKeyStoreResult};
 
-#[path = "native_root_publication_flow_tests.rs"]
 mod flow_tests;
 
 fn fixture() -> (

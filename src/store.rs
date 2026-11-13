@@ -10,11 +10,8 @@ use serde::{Deserialize, Serialize};
 use crate::{MaybeSendSync, Result};
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
-#[path = "store/file.rs"]
 mod file;
-#[path = "store/keystore.rs"]
 mod keystore;
-#[path = "store/seen_window.rs"]
 mod seen_window;
 
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]

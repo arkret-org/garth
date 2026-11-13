@@ -1,22 +1,16 @@
 //! Host-neutral MLS installation queue and provider-opaque local state.
 
 pub mod accepted_artifact;
-#[path = "mls/backup_selection.rs"]
 pub mod backup_selection;
-#[path = "mls/backup_series.rs"]
 pub mod backup_series;
 pub mod checkpoint;
 pub mod checkpoint_port;
 pub mod content_roots;
 pub mod creator;
-#[path = "mls/key_package.rs"]
 pub mod key_package;
 pub mod membership;
-#[path = "mls/self_preservation.rs"]
 pub mod self_preservation;
-#[path = "mls/status.rs"]
 pub mod status;
-#[path = "mls/welcome_admission.rs"]
 pub mod welcome_admission;
 
 use std::collections::VecDeque;
