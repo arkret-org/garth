@@ -81,7 +81,7 @@ pub async fn read_creator_scope(
         snapshot.clone(),
         origin,
         session.account_id().clone(),
-        session.grant_id().clone(),
+        session.grant_ref().clone(),
         session.epoch(),
         sequence,
     )?;

@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
-use arkret_wire::SessionGrantId;
+#[cfg(test)]
+use arkret_wire::SessionGrantRef;
 
 use super::{
     NoopSessionGrantStore, SessionEngine, SessionGrantState, SessionGrantStore,
@@ -8,7 +9,7 @@ use super::{
 };
 use crate::{Error, HostClock, Result, TransportProvider};
 
-type TransportCache<T> = Arc<Mutex<Option<(SessionGrantId, T)>>>;
+type TransportCache<T> = Arc<Mutex<Option<(SessionGrantState, T)>>>;
 
 pub trait AuthenticatedTransportFactory: Clone + crate::MaybeSendSync + 'static {
     type Transport: Clone + crate::MaybeSend;
@@ -89,7 +90,7 @@ where
     factory: F,
     refresh_options: SessionRefreshOptions,
     state_store: S,
-    persisted_grant_id: Arc<Mutex<Option<SessionGrantId>>>,
+    persisted_state: Arc<Mutex<Option<SessionGrantState>>>,
     cached: TransportCache<F::Transport>,
     clock: E,
 }
@@ -105,9 +106,7 @@ where
         refresh_options: SessionRefreshOptions,
     ) -> Self {
         Self {
-            persisted_grant_id: Arc::new(Mutex::new(
-                session.current_state().map(|state| state.grant_id.clone()),
-            )),
+            persisted_state: Arc::new(Mutex::new(session.current_state())),
             session,
             factory,
             refresh_options,
@@ -135,11 +134,19 @@ where
             factory,
             refresh_options,
             state_store,
-            persisted_grant_id: Arc::new(Mutex::new(None)),
+            persisted_state: Arc::new(Mutex::new(None)),
             cached: Arc::new(Mutex::new(None)),
             clock: crate::SystemClock,
         };
-        provider.persist_current_state().await?;
+        let state = provider
+            .session
+            .current_state()
+            .ok_or_else(|| Error::Protocol("no initial session grant".into()))?;
+        provider.state_store.save(&state).await?;
+        *provider
+            .persisted_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(state);
         Ok(provider)
     }
 
@@ -150,7 +157,7 @@ where
         state_store: S,
     ) -> Result<Self> {
         let restored = state_store.load()?;
-        let persisted_grant_id = restored.as_ref().map(|state| state.grant_id.clone());
+        let persisted_state = restored.clone();
         let session = match restored {
             Some(state) => SessionEngine::with_state(transport, state),
             None => SessionEngine::new(transport),
@@ -160,7 +167,7 @@ where
             factory,
             refresh_options,
             state_store,
-            persisted_grant_id: Arc::new(Mutex::new(persisted_grant_id)),
+            persisted_state: Arc::new(Mutex::new(persisted_state)),
             cached: Arc::new(Mutex::new(None)),
             clock: crate::SystemClock,
         })
@@ -180,7 +187,7 @@ where
             factory: self.factory,
             refresh_options: self.refresh_options,
             state_store: self.state_store,
-            persisted_grant_id: self.persisted_grant_id,
+            persisted_state: self.persisted_state,
             cached: self.cached,
             clock,
         }
@@ -226,13 +233,10 @@ where
     /// callers must first establish the provider through `provide`, and treat
     /// `None` as a signal to use an asynchronous provider-aware path.
     pub fn cached_transport(&self) -> Option<F::Transport> {
-        let current_grant_id = self
-            .session
-            .current_state()
-            .map(|state| state.grant_id.clone());
+        let current_state = self.session.current_state();
         self.cache_lock()
             .as_ref()
-            .filter(|(grant_id, _)| Some(grant_id) == current_grant_id.as_ref())
+            .filter(|(state, _)| Some(state) == current_state.as_ref())
             .map(|(_, transport)| transport.clone())
     }
 
@@ -242,7 +246,7 @@ where
         self.session.clear_state();
         self.state_store.clear()?;
         *self
-            .persisted_grant_id
+            .persisted_state
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = None;
         self.clear_cached_transport();
@@ -253,17 +257,19 @@ where
         let Some(previous_state) = self.session.current_state() else {
             return Ok(false);
         };
-        let previous_session_grant_id = Some(previous_state.grant_id.clone());
-        let refresh_options = self
-            .factory
-            .refresh_options(&previous_state, &self.refresh_options)?;
+        let previous_session_grant_id = Some(previous_state.grant_ref.clone());
+        let refresh_options = self.options_for(&previous_state)?;
         self.session
-            .refresh_after_unauthorized(refresh_options, self.clock.clone())
+            .refresh_after_unauthorized_with_store(
+                refresh_options,
+                self.clock.clone(),
+                &self.state_store,
+            )
             .await?;
         let refreshed_grant_id = self
             .session
             .current_state()
-            .map(|state| state.grant_id.clone());
+            .map(|state| state.grant_ref.clone());
         if refreshed_grant_id == previous_session_grant_id {
             // Another runner may already have rotated the shared session while
             // this request was still in flight with the previous transport.
@@ -286,20 +292,55 @@ where
     /// the post-success cooldown. The issuer therefore re-evaluates current
     /// principal lifecycle, runtime-key authorization, and scopes before the
     /// returned transport can be used.
+    /// An overlapping refresh fails locally; its unconfirmed predecessor must
+    /// never satisfy this stronger requirement.
     pub async fn refresh_for_sensitive_action(&self) -> Result<F::Transport> {
         let previous_state = self
             .session
             .current_state()
             .ok_or_else(|| Error::Protocol("no active session grant".to_owned()))?;
-        let refresh_options = self
-            .factory
-            .refresh_options(&previous_state, &self.refresh_options)?;
-        self.session
-            .refresh_once(refresh_options, self.clock.clone())
+        let refresh_options = self.options_for(&previous_state)?;
+        let refreshed = self
+            .session
+            .refresh_for_sensitive_action_with_store(
+                refresh_options,
+                self.clock.clone(),
+                &self.state_store,
+            )
             .await?;
-        self.persist_current_state().await?;
+        let state = self
+            .session
+            .current_state()
+            .ok_or(Error::OwnStationSessionChanged)?;
+        if state.pending_refresh.is_some()
+            || state.handle() != refreshed
+            || state.expires_at <= self.clock.now()
+        {
+            return Err(Error::OwnStationSessionChanged);
+        }
+        self.persist_state_if_needed(&state).await?;
+        if self.session.current_state().as_ref() != Some(&state) {
+            return Err(Error::OwnStationSessionChanged);
+        }
+        let transport = self.factory.build(&state)?;
+        if self.session.current_state().as_ref() != Some(&state)
+            || state.expires_at <= self.clock.now()
+        {
+            return Err(Error::OwnStationSessionChanged);
+        }
         self.clear_cached_transport();
-        self.provide_authenticated().await
+        *self.cache_lock() = Some((state, transport.clone()));
+        Ok(transport)
+    }
+
+    fn options_for(&self, state: &SessionGrantState) -> Result<SessionRefreshOptions> {
+        if let Some(pending) = &state.pending_refresh {
+            return Ok(SessionRefreshOptions {
+                request: Some(pending.request.clone()),
+                expected_dpop_jkt: Some(pending.expected_dpop_jkt.clone()),
+            });
+        }
+        self.factory.refresh_options(state, &self.refresh_options)
     }
 
     async fn provide_authenticated(&self) -> Result<F::Transport> {
@@ -307,28 +348,26 @@ where
             .session
             .current_state()
             .ok_or_else(|| Error::Protocol("no active session grant".to_owned()))?;
-        let refresh_options = self
-            .factory
-            .refresh_options(&current, &self.refresh_options)?;
+        let refresh_options = self.options_for(&current)?;
         self.session
-            .refresh_if_due(refresh_options, self.clock.clone())
+            .refresh_if_due_with_store(refresh_options, self.clock.clone(), &self.state_store)
             .await?;
         let state = self
             .session
             .current_state()
             .ok_or_else(|| Error::Protocol("no active session grant".to_owned()))?;
         self.persist_state_if_needed(&state).await?;
-        if let Some((grant_id, transport)) = self.cache_lock().as_ref()
-            && grant_id == &state.grant_id
+        if let Some((cached_state, transport)) = self.cache_lock().as_ref()
+            && cached_state == &state
         {
             return Ok(transport.clone());
         }
         let transport = self.factory.build(&state)?;
-        *self.cache_lock() = Some((state.grant_id.clone(), transport.clone()));
+        *self.cache_lock() = Some((state.clone(), transport.clone()));
         Ok(transport)
     }
 
-    fn cache_lock(&self) -> std::sync::MutexGuard<'_, Option<(SessionGrantId, F::Transport)>> {
+    fn cache_lock(&self) -> std::sync::MutexGuard<'_, Option<(SessionGrantState, F::Transport)>> {
         self.cached.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -342,19 +381,34 @@ where
 
     async fn persist_state_if_needed(&self, state: &SessionGrantState) -> Result<()> {
         if self
-            .persisted_grant_id
+            .persisted_state
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
-            == Some(&state.grant_id)
+            == Some(state)
         {
             return Ok(());
         }
-        self.state_store.save(state).await?;
+        if self.state_store.persistence_required() {
+            let mut durable = self
+                .state_store
+                .load()?
+                .ok_or(Error::OwnStationSessionChanged)?;
+            // Some host records persist the actual private holder and restore
+            // its JKT without duplicating the optional public-JWK display value.
+            if durable.session_public_key.is_none() {
+                durable.session_public_key = state.session_public_key.clone();
+            }
+            if &durable != state {
+                return Err(Error::OwnStationSessionChanged);
+            }
+        }
+        // The engine has already installed a successor through atomic CAS.
+        // Verification must never repair a changed durable slot by blind write.
         *self
-            .persisted_grant_id
+            .persisted_state
             .lock()
-            .unwrap_or_else(PoisonError::into_inner) = Some(state.grant_id.clone());
+            .unwrap_or_else(PoisonError::into_inner) = Some(state.clone());
         Ok(())
     }
 }
@@ -424,16 +478,94 @@ mod tests {
         calls: Arc<Mutex<usize>>,
     }
 
+    #[derive(Clone)]
+    struct GatedRefreshTransport {
+        started: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+        outcome: Arc<Mutex<Option<Result<SessionGrantResponseBody>>>>,
+        requests: Arc<Mutex<Vec<SessionGrantRefreshRequestBody>>>,
+    }
+
+    impl SessionGrantTransport for GatedRefreshTransport {
+        fn issue_session_grant<'a>(
+            &'a self,
+            _request: SessionGrantRequestBody,
+        ) -> BoxSessionFuture<'a, SessionGrantResponseBody> {
+            Box::pin(async { Err(Error::Protocol("unexpected issue".into())) })
+        }
+
+        fn refresh_session_grant<'a>(
+            &'a self,
+            request: SessionGrantRefreshRequestBody,
+        ) -> BoxSessionFuture<'a, SessionGrantResponseBody> {
+            self.requests.lock().unwrap().push(request);
+            Box::pin(async move {
+                self.started.notify_one();
+                self.release.notified().await;
+                self.outcome.lock().unwrap().take().unwrap()
+            })
+        }
+    }
+
+    type GatedProvider = SessionTransportProvider<
+        GatedRefreshTransport,
+        TokenFactory,
+        crate::SecureSessionGrantStore<crate::MemorySecureKeyStore>,
+        FixedClock,
+    >;
+
+    #[derive(Clone)]
+    struct FixedClock(chrono::DateTime<Utc>);
+
+    impl HostClock for FixedClock {
+        fn now(&self) -> chrono::DateTime<Utc> {
+            self.0
+        }
+    }
+
+    async fn gated_provider(rejected: bool) -> (GatedProvider, GatedRefreshTransport) {
+        let transport = GatedRefreshTransport {
+            started: Arc::new(tokio::sync::Notify::new()),
+            release: Arc::new(tokio::sync::Notify::new()),
+            outcome: Arc::new(Mutex::new(Some(if rejected {
+                Err(Error::Protocol("issuer refused current authority".into()))
+            } else {
+                Ok(refresh_outcome())
+            }))),
+            requests: Arc::new(Mutex::new(Vec::new())),
+        };
+        let provider = SessionTransportProvider::with_store(
+            SessionEngine::with_state(transport.clone(), state()),
+            TokenFactory {
+                calls: Arc::new(Mutex::new(0)),
+            },
+            refresh_options(),
+            crate::SecureSessionGrantStore::new(
+                crate::MemorySecureKeyStore::new(),
+                "session/sensitive-refresh",
+            ),
+        )
+        .await
+        .unwrap()
+        .with_clock(FixedClock(Utc::now()));
+        (provider, transport)
+    }
+
+    async fn wait_for_refresh(transport: &GatedRefreshTransport) {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            transport.started.notified(),
+        )
+        .await
+        .expect("valid sensitive refresh reaches the issuer");
+    }
+
     impl AuthenticatedTransportFactory for TokenFactory {
         type Transport = String;
 
         fn build(&self, state: &SessionGrantState) -> Result<Self::Transport> {
             *self.calls.lock().unwrap() += 1;
-            let payload = state.grant_jwt.split('.').nth(1).unwrap();
-            let claims: arkret_models_identity::SignedSessionGrantClaims =
-                serde_json::from_slice(&arkret_canonical::base64url_decode(payload).unwrap())
-                    .unwrap();
-            Ok(claims.session_id)
+            Ok(state.session_grant.as_str().to_owned())
         }
 
         fn refresh_options(
@@ -443,16 +575,23 @@ mod tests {
         ) -> Result<SessionRefreshOptions> {
             let mut options = fallback.clone();
             if let Some(SessionGrantRefreshRequestBody::Agent(request)) = &mut options.request {
-                request.grant_jwt = state.grant_jwt.clone();
+                request.session_grant = state.session_grant.clone();
+                request.agent_session_refresh_proof.request_canonical_digest = arkret_models_collaboration::session_grant_bodies::agent_session_refresh_request_digest(
+                    &request.session_grant,&request.principal_id,&request.agent_key_authorization_ref,&state.audience_id,&request.agent_session_refresh_proof.verification_method,
+                )?;
             }
             Ok(options)
         }
     }
 
-    fn grant_id(n: u64) -> SessionGrantId {
-        let mut digest = [0_u8; 32];
-        digest[24..].copy_from_slice(&n.to_be_bytes());
-        SessionGrantId::from_issuance_digest(digest)
+    fn grant_ref(n: u64) -> SessionGrantRef {
+        SessionGrantRef::new(
+            DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+            arkret_wire::SessionGrantId::new(format!(
+                "ak:session_grant:01904100-0000-7000-8000-{n:012x}"
+            ))
+            .unwrap(),
+        )
     }
 
     /// The single grant-binding public JWK every provider fixture speaks for.
@@ -483,14 +622,24 @@ mod tests {
             // The refresh options below exercise the Agent branch, whose
             // holder is the principal alone and never carries a Device.
             device_id: None,
-            grant_id: grant_id(1),
-            grant_jwt: super::super::engine::tests::agent_jwt("grant-1", grant_id(1), expires),
+            grant_ref: grant_ref(1),
+            session_grant: super::super::engine::tests::opaque_secret(
+                "grant-1",
+                grant_ref(1),
+                expires,
+            ),
             expires_at: expires,
             audience_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec!["ak.self.committed_event.stream.subscribe.v1".to_owned()],
             session_public_key: Some(session_public_jwk().into_string()),
             dpop_jkt: Some(session_dpop_jkt()),
+            pending_refresh: None,
         }
+    }
+
+    fn state_secret(n: u64) -> String {
+        super::super::engine::tests::opaque_secret(&format!("grant-{n}"), grant_ref(n), Utc::now())
+            .into_string()
     }
 
     #[test]
@@ -553,23 +702,29 @@ mod tests {
         let expires =
             arkret_canonical::normalize_timestamp_canonical(Utc::now()) + Duration::hours(1);
         SessionGrantResponseBody {
-            session_grant_id: grant_id(2),
+            issuer_id: grant_ref(2).issuer_id,
+            session_grant_id: grant_ref(2).id,
             account_id: AccountId::new(
                 DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example").unwrap(),
                 DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             ),
             device_id: None,
-            session_grant: super::super::engine::tests::agent_jwt("grant-2", grant_id(2), expires),
+            session_grant: super::super::engine::tests::opaque_secret(
+                "grant-2",
+                grant_ref(2),
+                expires,
+            ),
             session_public_key: session_public_jwk(),
             expires_at: expires,
             audience_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec!["ak.self.committed_event.stream.subscribe.v1".to_owned()],
-            previous_session_grant_id: Some(grant_id(1)),
+            previous_session_grant_id: Some(grant_ref(1).id),
         }
     }
 
     fn refresh_options() -> SessionRefreshOptions {
         let audience = DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap();
+        let issued_at = arkret_canonical::normalize_timestamp_canonical(Utc::now());
         let proof = UnsignedAgentSessionRefreshProof {
             context: AgentSessionRefreshProofContext::V1,
             request_canonical_digest: Hash::new(
@@ -577,8 +732,8 @@ mod tests {
             )
             .unwrap(),
             audience_id: audience.clone(),
-            issued_at: Utc::now(),
-            expires_at: Utc::now() + Duration::minutes(5),
+            issued_at,
+            expires_at: issued_at + Duration::minutes(5),
             verification_method: DidUrl::new("did:webvh:z6mkfixture:agent.example#runtime-key-1")
                 .unwrap(),
         }
@@ -589,7 +744,7 @@ mod tests {
         SessionRefreshOptions {
             request: Some(SessionGrantRefreshRequestBody::Agent(
                 AgentSessionGrantRefreshRequestBody {
-                    grant_jwt: "grant-1".to_owned(),
+                    session_grant: state().session_grant.clone(),
                     audience_id: Some(audience),
                     principal_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:alice.example")
                         .unwrap(),
@@ -634,8 +789,8 @@ mod tests {
     async fn provide_builds_once_per_grant() {
         let (provider, refresh_calls, factory_calls) = provider();
 
-        assert_eq!(provider.provide().await.unwrap(), "grant-1");
-        assert_eq!(provider.provide().await.unwrap(), "grant-1");
+        assert_eq!(provider.provide().await.unwrap(), state_secret(1));
+        assert_eq!(provider.provide().await.unwrap(), state_secret(1));
         assert_eq!(*refresh_calls.lock().unwrap(), 0);
         assert_eq!(*factory_calls.lock().unwrap(), 1);
     }
@@ -643,10 +798,10 @@ mod tests {
     #[tokio::test]
     async fn unauthorized_refresh_rebuilds_authenticated_transport() {
         let (provider, refresh_calls, factory_calls) = provider();
-        assert_eq!(provider.provide().await.unwrap(), "grant-1");
+        assert_eq!(provider.provide().await.unwrap(), state_secret(1));
 
         assert!(provider.recover_unauthorized().await.unwrap());
-        assert_eq!(provider.provide().await.unwrap(), "grant-2");
+        assert_eq!(provider.provide().await.unwrap(), state_secret(2));
         assert_eq!(*refresh_calls.lock().unwrap(), 1);
         assert_eq!(*factory_calls.lock().unwrap(), 2);
     }
@@ -654,14 +809,129 @@ mod tests {
     #[tokio::test]
     async fn sensitive_action_forces_issuer_refresh_while_grant_is_locally_fresh() {
         let (provider, refresh_calls, factory_calls) = provider();
-        assert_eq!(provider.provide().await.unwrap(), "grant-1");
+        assert_eq!(provider.provide().await.unwrap(), state_secret(1));
 
         assert_eq!(
             provider.refresh_for_sensitive_action().await.unwrap(),
-            "grant-2"
+            state_secret(2)
         );
         assert_eq!(*refresh_calls.lock().unwrap(), 1);
         assert_eq!(*factory_calls.lock().unwrap(), 2);
+    }
+
+    #[tokio::test]
+    async fn sensitive_refresh_never_uses_an_unconfirmed_in_flight_predecessor() {
+        for rejected in [false, true] {
+            let (provider, transport) = gated_provider(rejected).await;
+            assert_eq!(provider.provide().await.unwrap(), state_secret(1));
+            let first = {
+                let provider = provider.clone();
+                tokio::spawn(async move { provider.refresh_for_sensitive_action().await })
+            };
+            wait_for_refresh(&transport).await;
+            let builds = *provider.factory.calls.lock().unwrap();
+            assert!(provider.refresh_for_sensitive_action().await.is_err());
+            assert_eq!(*provider.factory.calls.lock().unwrap(), builds);
+            assert_eq!(transport.requests.lock().unwrap().len(), 1);
+            // Ordinary traffic remains live while the stronger operation fails closed.
+            assert_eq!(provider.provide().await.unwrap(), state_secret(1));
+            // An in-flight 401 recovery must not turn the same pending request
+            // into proof that an issuer has already approved a sensitive call.
+            assert!(provider.refresh_after_unauthorized().await.unwrap());
+            assert!(provider.refresh_for_sensitive_action().await.is_err());
+
+            transport.release.notify_one();
+            let result = tokio::time::timeout(std::time::Duration::from_secs(5), first)
+                .await
+                .unwrap()
+                .unwrap();
+            let durable = provider.state_store.load().unwrap().unwrap();
+            if rejected {
+                assert!(result.is_err());
+                assert_eq!(durable.grant_ref, grant_ref(1));
+                assert!(durable.pending_refresh.is_some());
+            } else {
+                assert_eq!(result.unwrap(), state_secret(2));
+                assert_eq!(durable.grant_ref, grant_ref(2));
+                assert!(durable.pending_refresh.is_none());
+                // A late 401 from the old transport rebuilds the committed
+                // successor inside cooldown without issuing another rotation.
+                assert!(provider.refresh_after_unauthorized().await.unwrap());
+                assert_eq!(provider.provide().await.unwrap(), state_secret(2));
+                assert_eq!(transport.requests.lock().unwrap().len(), 1);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn cancelled_sensitive_refresh_releases_gate_and_replays_exact_durable_request() {
+        let (provider, transport) = gated_provider(false).await;
+        let cancelled = {
+            let provider = provider.clone();
+            tokio::spawn(async move { provider.refresh_for_sensitive_action().await })
+        };
+        wait_for_refresh(&transport).await;
+        assert!(provider.refresh_for_sensitive_action().await.is_err());
+        let pending = provider.state_store.load().unwrap().unwrap();
+        assert!(pending.pending_refresh.is_some());
+        cancelled.abort();
+        assert!(cancelled.await.unwrap_err().is_cancelled());
+
+        let retry = {
+            let provider = provider.clone();
+            tokio::spawn(async move { provider.refresh_for_sensitive_action().await })
+        };
+        wait_for_refresh(&transport).await;
+        assert!(provider.refresh_for_sensitive_action().await.is_err());
+        assert_eq!(provider.state_store.load().unwrap().unwrap(), pending);
+        {
+            let requests = transport.requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            assert_eq!(
+                arkret_canonical::canonical_json_bytes(&requests[0]).unwrap(),
+                arkret_canonical::canonical_json_bytes(&requests[1]).unwrap(),
+            );
+        }
+        transport.release.notify_one();
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), retry)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            state_secret(2),
+        );
+        let durable = provider.state_store.load().unwrap().unwrap();
+        assert_eq!(durable.grant_ref, grant_ref(2));
+        assert!(durable.pending_refresh.is_none());
+    }
+
+    #[tokio::test]
+    async fn sensitive_refresh_cannot_overwrite_a_new_durable_login() {
+        let (provider, transport) = gated_provider(false).await;
+        let pending = {
+            let provider = provider.clone();
+            tokio::spawn(async move { provider.refresh_for_sensitive_action().await })
+        };
+        wait_for_refresh(&transport).await;
+        let mut newer = state();
+        newer.grant_ref = grant_ref(99);
+        newer.session_grant = super::super::engine::tests::opaque_secret(
+            "new-login",
+            grant_ref(99),
+            newer.expires_at,
+        );
+        provider.state_store.save(&newer).await.unwrap();
+        transport.release.notify_one();
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), pending)
+                .await
+                .unwrap()
+                .unwrap(),
+            Err(Error::OwnStationSessionChanged),
+        ));
+        assert_eq!(provider.state_store.load().unwrap().unwrap(), newer);
+        assert_eq!(*provider.factory.calls.lock().unwrap(), 0);
     }
 
     #[tokio::test]
@@ -695,7 +965,7 @@ mod tests {
             store.clone(),
         )
         .unwrap();
-        assert_eq!(restored.provide().await.unwrap(), "grant-1");
+        assert_eq!(restored.provide().await.unwrap(), state_secret(1));
         assert!(provider.refresh_after_unauthorized().await.unwrap());
         assert_eq!(*refresh_calls.lock().unwrap(), 1);
 
@@ -709,7 +979,7 @@ mod tests {
             store,
         )
         .unwrap();
-        assert_eq!(after_rotation.provide().await.unwrap(), "grant-2");
+        assert_eq!(after_rotation.provide().await.unwrap(), state_secret(2));
     }
 
     #[tokio::test]
@@ -725,12 +995,12 @@ mod tests {
         assert!(first_result.unwrap() || second_result.unwrap());
         assert_eq!(*refresh_calls.lock().unwrap(), 1);
         assert_eq!(
-            first.session().current_state().unwrap().grant_id,
-            grant_id(2)
+            first.session().current_state().unwrap().grant_ref,
+            grant_ref(2)
         );
         assert_eq!(
-            second.session().current_state().unwrap().grant_id,
-            grant_id(2)
+            second.session().current_state().unwrap().grant_ref,
+            grant_ref(2)
         );
     }
 
@@ -739,7 +1009,7 @@ mod tests {
         let (first, refresh_calls, factory_calls) = provider();
         let second = first.clone();
 
-        assert_eq!(second.provide().await.unwrap(), "grant-1");
+        assert_eq!(second.provide().await.unwrap(), state_secret(1));
         assert!(first.refresh_after_unauthorized().await.unwrap());
         assert_eq!(*refresh_calls.lock().unwrap(), 1);
 
@@ -747,7 +1017,7 @@ mod tests {
         // rotated and returned its 401 afterwards, inside the shared cooldown.
         assert!(second.refresh_after_unauthorized().await.unwrap());
         assert_eq!(*refresh_calls.lock().unwrap(), 1);
-        assert_eq!(second.provide().await.unwrap(), "grant-2");
+        assert_eq!(second.provide().await.unwrap(), state_secret(2));
         assert_eq!(*factory_calls.lock().unwrap(), 2);
     }
 }

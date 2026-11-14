@@ -39,6 +39,13 @@ pub(crate) fn founding_original() -> (CommittedEventFullView, ResolvedSignerKey)
 fn founding_original_with_purpose(
     purpose: arkret_models_collaboration::events_payloads::realm::RealmPurpose,
 ) -> (CommittedEventFullView, ResolvedSignerKey) {
+    founding_original_for_station(purpose, None)
+}
+
+fn founding_original_for_station(
+    purpose: arkret_models_collaboration::events_payloads::realm::RealmPurpose,
+    station: Option<&arkret_test_kit::service_identity::ServiceIdentityFixture>,
+) -> (CommittedEventFullView, ResolvedSignerKey) {
     use arkret_models_collaboration::authority_commit::AccountDeviceHistoricalSignerFact;
     use arkret_models_collaboration::events_payloads::realm::{RealmCreatePayload, RealmGenesis};
     use arkret_signatures::{Ed25519DetachedJwsSigner, SignEventOptions, sign_event};
@@ -49,7 +56,7 @@ fn founding_original_with_purpose(
         arkret_wire::GenesisSalt::new("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").unwrap(),
         arkret_wire::TrustDomainId::new("ak:trust_domain:station.example").unwrap(),
         arkret_wire::SecurityClass::Standard,
-        account.station_id.clone(),
+        station.map_or_else(|| account.station_id.clone(), |s| s.service_id.clone()),
         arkret_wire::JoinRule::Invite,
         arkret_wire::HistoryAccess::SinceJoin,
         arkret_wire::Discoverability::Listed,
@@ -108,13 +115,18 @@ fn founding_original_with_purpose(
     commit.authority_ref =
         arkret_wire::RealmCommitAuthorityRef::GenesisOrChangeEvent(event.event_id.clone());
     commit.producer_signer_fact_digest = Some(fact.digest().unwrap());
-    (
-        CommittedEventFullView {
-            event,
-            commit: seal_native_fixture_commit(commit),
-        },
-        key,
-    )
+    let mut commit = seal_native_fixture_commit(commit);
+    if let Some(station) = station {
+        commit.signature = arkret_signatures::detached_object::sign_detached_object(
+            &arkret_canonical::canonical::unsigned_value(&commit, &["signature"]).unwrap(),
+            DetachedSignatureContext::RealmCommit,
+            station.verification_method.clone(),
+            commit.committed_at,
+            &station.signing_key,
+        )
+        .unwrap();
+    }
+    (CommittedEventFullView { event, commit }, key)
 }
 
 pub(crate) fn native_client(
@@ -137,14 +149,62 @@ pub(crate) fn native_client_materials(
     base: &str,
     original: &CommittedEventFullView,
 ) -> NativeClientMaterials {
+    native_client_materials_for_station(base, original, None)
+}
+
+/// Historical consumers receive a genuine, reproducible WebVH Station history.
+pub(crate) fn historical_native_client_materials(
+    base: &str,
+) -> (
+    CommittedEventFullView,
+    NativeClientMaterials,
+    arkret_test_kit::service_identity::ServiceIdentityFixture,
+) {
+    let station = arkret_test_kit::service_identity::ServiceIdentityFixture::webvh(
+        &url::Url::parse("https://station.example/").unwrap(),
+        743,
+        [43; 32],
+        "signing-1",
+        crate::test_fixtures::at(0) - chrono::Duration::days(1),
+        chrono::Utc::now(),
+    )
+    .unwrap();
+    let (original, _) = founding_original_for_station(
+        arkret_models_collaboration::events_payloads::realm::RealmPurpose::Collaboration,
+        Some(&station),
+    );
+    let materials = native_client_materials_for_station(base, &original, Some(&station));
+    (original, materials, station)
+}
+
+fn native_client_materials_for_station(
+    base: &str,
+    original: &CommittedEventFullView,
+    station: Option<&arkret_test_kit::service_identity::ServiceIdentityFixture>,
+) -> NativeClientMaterials {
     use arkret_identity::{
         RealmAuthorityFreshness, RealmAuthorityKeyMap, verify_realm_authority_bundle,
     };
-    let route = crate::service_route_material::test_fixture::current_web_route_fixture(
+    let mut route = crate::service_route_material::test_fixture::current_web_route_fixture(
         "station.example",
         "station",
         43,
     );
+    let method = if let Some(station) = station {
+        route.service_id = station.service_id.clone();
+        route.resolution = station.resolution.clone();
+        route.document = station.resolution.normalized_did_document.clone();
+        route.describe.service_id = station.service_id.clone();
+        let projection = route.resolution.projection().unwrap();
+        route.describe.service_resolution = arkret_models_identity::ResolutionCommitment {
+            did: route.document.id.clone(),
+            method_history_head: projection.method_history_head,
+            version_id: projection.version_id,
+        };
+        station.verification_method.clone()
+    } else {
+        arkret_wire::DidUrl::new("did:web:station.example#signing-1").unwrap()
+    };
     let now = chrono::Utc::now();
     let nonce = arkret_wire::Base64UrlString::new("AAAAAAAAAAAAAAAAAAAAAA").unwrap();
     let head = CommitStreamHead {
@@ -167,7 +227,7 @@ pub(crate) fn native_client_materials(
     assertion.signature = arkret_signatures::detached_object::sign_detached_object(
         &arkret_canonical::canonical::unsigned_value(&assertion, &["signature"]).unwrap(),
         DetachedSignatureContext::RealmAuthorityCurrentAssertion,
-        arkret_wire::DidUrl::new("did:web:station.example#signing-1").unwrap(),
+        method,
         now,
         &route.signing_key,
     )
@@ -185,7 +245,7 @@ pub(crate) fn native_client_materials(
         current_assertion: assertion,
     };
     let keys = RealmAuthorityKeyMap::new().with_key(
-        &arkret_wire::DidUrl::new("did:web:station.example#notary").unwrap(),
+        &original.commit.signature.verification_method,
         arkret_signatures::PublicKeyMaterial::Ed25519Raw {
             bytes: route.signing_key.verifying_key().to_bytes().to_vec(),
         },
@@ -294,8 +354,12 @@ fn native_server(
                     Err(error) => panic!("native TLS accept failed: {error}"),
                 }
             };
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(std::time::Duration::from_secs(10)))
                 .unwrap();
             let connection = rustls::ServerConnection::new(tls.clone()).unwrap();
             let mut stream = rustls::StreamOwned::new(connection, socket);
@@ -392,6 +456,7 @@ fn native_server(
             };
             let body = serde_json::to_string(&body).unwrap();
             write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",body.len(),body).unwrap();
+            stream.conn.send_close_notify();
             stream.flush().unwrap();
         }
     });

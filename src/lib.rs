@@ -127,12 +127,12 @@ pub use run::{
 pub use runtime_journey::{ParticipationAction, ParticipationAdmissionFacts};
 pub use security_transaction::{
     ClientStepAttestation, DurableCompletedRecoveryReceipt, DurableSecurityTransaction,
-    MemorySecurityTransactionStore, PcrPolicyRecoveryPlan, PendingSecurityTransactionContinue,
-    RecoveryReceipt, RecoveryTerminalCommit, RecoveryTransactionCreateRequestBody,
-    SecurityTransaction, SecurityTransactionContinueRequestBody,
-    SecurityTransactionCreateRequestBody, SecurityTransactionEngine,
-    SecurityTransactionPreparedPlan, SecurityTransactionStore, SecurityTransactionTerminalOutcome,
-    SecurityTransactionTransport, validate_recovery_commit_boundary,
+    MemorySecurityTransactionStore, PendingSecurityTransactionContinue, RecoveryReceipt,
+    RecoveryTransactionCompletion, RecoveryTransactionCreateRequestBody, RecoveryUnit,
+    SecurityRotationTransaction, SecurityTransaction, SecurityTransactionContinueRequestBody,
+    SecurityTransactionCreateRequestBody, SecurityTransactionEngine, SecurityTransactionStore,
+    SecurityTransactionTerminalOutcome, SecurityTransactionTransport,
+    validate_recovery_commit_boundary,
 };
 pub use service_route::{
     MemoryServiceRouteStateStore, RouteCandidateSource, RouteForkQuarantine, RouteResolution,
@@ -144,10 +144,11 @@ pub use service_route_material::{
 };
 pub use session::{
     AgentKeyProofLogin, AuthenticatedTransportFactory, BoxSessionFuture, GRANT_ROTATION_SKEW_SECS,
-    LoginKind, NoopSessionGrantStore, POLL_INTERVAL_SECS, REFRESH_SKEW_SECS, RefreshDecision,
-    SecureSessionGrantStore, SessionEngine, SessionGrantRefreshState, SessionGrantState,
-    SessionGrantStore, SessionGrantTransport, SessionHandle, SessionRefreshOptions,
-    SessionTransportProvider, grant_due_for_rotation, grant_is_dead, refresh_decision,
+    LoginKind, NoopSessionGrantStore, POLL_INTERVAL_SECS, PendingSessionGrantRefresh,
+    REFRESH_SKEW_SECS, RefreshDecision, SecureSessionGrantStore, SessionEngine,
+    SessionGrantRefreshState, SessionGrantState, SessionGrantStore, SessionGrantTransport,
+    SessionHandle, SessionRefreshOptions, SessionTransportProvider, grant_due_for_rotation,
+    grant_is_dead, refresh_decision,
 };
 pub use signal::{
     SignalDecryptor, SignalFrameSource, SignalReceiveOutcome, SignalReceiver, SignalSink,

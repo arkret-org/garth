@@ -433,6 +433,33 @@ where
         }
     }
 
+    fn read_secret_bytes_durable<'a>(
+        &'a self,
+        key: &'a str,
+    ) -> BoxSecureStoreFuture<'a, SecureKeyStoreResult<Option<KeyBytes>>> {
+        // SDK backends read committed storage on every call; no instance cache.
+        let result = self.get_secret_bytes(key);
+        Box::pin(async move { result })
+    }
+
+    fn compare_exchange_secret_bytes_durable<'a>(
+        &'a self,
+        key: &'a str,
+        expected: Option<&'a [u8]>,
+        replacement: &'a [u8],
+    ) -> BoxSecureStoreFuture<'a, SecureKeyStoreResult<bool>> {
+        let result = self
+            .inner
+            .compare_exchange(key, expected, replacement)
+            .map_err(|error| match error {
+                KeyStoreError::Unsupported { .. } => {
+                    SecureKeyStoreError::Unsupported("atomic secret compare exchange")
+                }
+                other => SecureKeyStoreError::Backend(other.to_string()),
+            });
+        Box::pin(async move { result })
+    }
+
     fn delete_secret(&self, key: &str) -> SecureKeyStoreResult<()> {
         self.inner
             .delete(key)
@@ -505,10 +532,13 @@ mod tests {
     #[tokio::test]
     async fn unsupported_backends_cannot_emulate_atomic_secret_updates() {
         let store = SdkKeyStoreSecureAdapter::new(MissingKeyStore);
-        assert!(matches!(
-            store.read_secret_bytes_durable("queue").await,
-            Err(SecureKeyStoreError::Unsupported(_))
-        ));
+        assert!(
+            store
+                .read_secret_bytes_durable("queue")
+                .await
+                .unwrap()
+                .is_none()
+        );
         assert!(matches!(
             store
                 .compare_exchange_secret_bytes_durable("queue", None, b"first")
@@ -551,6 +581,103 @@ mod tests {
         assert!(
             second
                 .compare_exchange_secret_bytes_durable("queue", Some(b"first"), b"next")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[derive(Clone, Debug, Default)]
+    struct AtomicSdkStore(Arc<Mutex<Option<Vec<u8>>>>);
+
+    impl KeyStore for AtomicSdkStore {
+        fn load(&self, id: &str) -> Result<KeyBytes, KeyStoreError> {
+            self.0
+                .lock()
+                .unwrap()
+                .clone()
+                .map(KeyBytes::new)
+                .ok_or_else(|| KeyStoreError::not_found(id))
+        }
+        fn store(&self, _: &str, bytes: &[u8]) -> Result<(), KeyStoreError> {
+            *self.0.lock().unwrap() = Some(bytes.to_vec());
+            Ok(())
+        }
+        fn compare_exchange(
+            &self,
+            _: &str,
+            expected: Option<&[u8]>,
+            replacement: &[u8],
+        ) -> Result<bool, KeyStoreError> {
+            let mut value = self.0.lock().unwrap();
+            if value.as_deref() != expected {
+                return Ok(false);
+            }
+            *value = Some(replacement.to_vec());
+            Ok(true)
+        }
+        fn list(&self) -> Result<Vec<String>, KeyStoreError> {
+            Ok(Vec::new())
+        }
+        fn delete(&self, _: &str) -> Result<(), KeyStoreError> {
+            *self.0.lock().unwrap() = None;
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn sdk_adapter_passes_exact_cas_to_backend_without_load_store_emulation() {
+        let backend = AtomicSdkStore::default();
+        let first = SdkKeyStoreSecureAdapter::new(backend.clone());
+        let second = SdkKeyStoreSecureAdapter::new(backend.clone());
+        assert!(
+            first
+                .compare_exchange_secret_bytes_durable("queue", None, b"first")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !second
+                .compare_exchange_secret_bytes_durable("queue", None, b"stale")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !second
+                .compare_exchange_secret_bytes_durable("queue", Some(b"wrong"), b"stale")
+                .await
+                .unwrap()
+        );
+        backend.store("queue", b"ordinary write").unwrap();
+        assert_eq!(
+            first
+                .read_secret_bytes_durable("queue")
+                .await
+                .unwrap()
+                .unwrap()
+                .as_slice(),
+            b"ordinary write"
+        );
+        assert!(
+            !second
+                .compare_exchange_secret_bytes_durable("queue", Some(b"first"), b"stale")
+                .await
+                .unwrap()
+        );
+        assert!(
+            second
+                .compare_exchange_secret_bytes_durable("queue", Some(b"ordinary write"), b"")
+                .await
+                .unwrap()
+        );
+        assert!(
+            !first
+                .compare_exchange_secret_bytes_durable("queue", None, b"not absent")
+                .await
+                .unwrap()
+        );
+        assert!(
+            first
+                .compare_exchange_secret_bytes_durable("queue", Some(b""), b"successor")
                 .await
                 .unwrap()
         );

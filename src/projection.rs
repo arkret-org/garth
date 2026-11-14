@@ -304,16 +304,58 @@ pub struct RealmProjectionState {
     pub snapshot: Option<RealmStateSnapshot>,
     pub product: Option<Value>,
     pub stream_positions: BTreeMap<CommitStreamRef, u64>,
+    stream_commits: BTreeMap<CommitStreamRef, arkret_wire::RealmCommitId>,
 }
 
 impl RealmProjectionState {
     /// Install a Station-signed typed snapshot as the projection baseline.
-    pub fn install_snapshot(&mut self, snapshot: RealmStateSnapshot) {
+    pub fn install_snapshot(&mut self, snapshot: RealmStateSnapshot) -> Result<()> {
+        snapshot
+            .require_full_recovery()
+            .map_err(|error| Error::Protocol(error.to_string()))?;
+        crate::replica::validate_snapshot(&snapshot, &snapshot.realm_id)?;
+        if let Some(previous) = &self.snapshot {
+            crate::replica::validate_snapshot_coordinate_continuity(previous, &snapshot)?;
+        }
+        if self.snapshot.as_ref().is_some_and(|old| {
+            old.realm_id != snapshot.realm_id
+                || old.governance_generation > snapshot.governance_generation
+        }) {
+            return Err(Error::Protocol(
+                "current Snapshot changed Realm or regressed its governance generation".into(),
+            ));
+        }
+        crate::current_ingest::validate_reaction_current_continuity(
+            &snapshot,
+            self.snapshot.as_ref(),
+        )?;
+        for head in &snapshot.visible_stream_heads {
+            if let Some(position) = self.stream_positions.get(&head.stream_ref) {
+                if head.stream_position != *position
+                    && self.stream_commits.get(&head.stream_ref) == Some(&head.commit_id)
+                {
+                    return Err(Error::Protocol(
+                        "current Snapshot changed an installed Commit position".into(),
+                    ));
+                }
+                if head.stream_position < *position
+                    || (head.stream_position == *position
+                        && self.stream_commits.get(&head.stream_ref) != Some(&head.commit_id))
+                {
+                    return Err(Error::Protocol(
+                        "current Snapshot regressed or forked an installed stream".into(),
+                    ));
+                }
+            }
+        }
         for head in &snapshot.visible_stream_heads {
             self.stream_positions
                 .insert(head.stream_ref.clone(), head.stream_position);
+            self.stream_commits
+                .insert(head.stream_ref.clone(), head.commit_id.clone());
         }
         self.snapshot = Some(snapshot);
+        Ok(())
     }
 
     /// Apply one committed delta on its own stream. A delta must land exactly
@@ -326,16 +368,44 @@ impl RealmProjectionState {
         }
         let stream_ref = delta.stream_ref().clone();
         let position = delta.stream_position();
+        if self
+            .stream_positions
+            .get(&stream_ref)
+            .is_some_and(|old| *old != position)
+            && self.stream_commits.get(&stream_ref) == Some(&delta.commit().commit_id)
+        {
+            return Err(Error::Protocol(
+                "one Commit changed its stream position".into(),
+            ));
+        }
         match self.stream_positions.get(&stream_ref).copied() {
-            Some(installed) if position == installed => return Ok(()),
-            Some(installed) if position != installed + 1 => {
+            Some(installed) if position == installed => {
+                if self.stream_commits.get(&stream_ref) == Some(&delta.commit().commit_id) {
+                    return Ok(());
+                }
+                return Err(Error::Protocol(
+                    "duplicate stream position changed its Commit".into(),
+                ));
+            }
+            Some(installed)
+                if installed.checked_add(1) != Some(position)
+                    || delta.commit().previous_commit_ref.as_ref()
+                        != self.stream_commits.get(&stream_ref) =>
+            {
                 return Err(Error::Protocol(format!(
                     "stream {stream_ref:?} advanced to {position} from {installed}"
                 )));
             }
+            None if position != 0 => {
+                return Err(Error::Protocol(
+                    "stream tail has no installed baseline".into(),
+                ));
+            }
             _ => {}
         }
-        self.stream_positions.insert(stream_ref, position);
+        self.stream_positions.insert(stream_ref.clone(), position);
+        self.stream_commits
+            .insert(stream_ref, delta.commit().commit_id.clone());
         Ok(())
     }
 
@@ -699,12 +769,11 @@ mod tests {
         state
             .apply(&delta(
                 realm_event.clone(),
-                commit(7, &realm_event, realm_stream(), 1),
+                commit(7, &realm_event, realm_stream(), 0),
             ))
             .unwrap();
 
-        // A Circle stream starts at its own position 1 while the Realm stream
-        // is already at 1; no global counter is consulted.
+        // Each independent stream starts at its own position zero.
         let circle_stream = circle_stream();
         let CommitStreamRef::Circle { circle_id, .. } = &circle_stream else {
             unreachable!("the fixture constructs a Circle stream")
@@ -717,11 +786,11 @@ mod tests {
         state
             .apply(&delta(
                 circle_event.clone(),
-                commit(8, &circle_event, circle_stream.clone(), 1),
+                commit(8, &circle_event, circle_stream.clone(), 0),
             ))
             .unwrap();
-        assert_eq!(state.tail(&realm_stream()), Some(1));
-        assert_eq!(state.tail(&circle_stream), Some(1));
+        assert_eq!(state.tail(&realm_stream()), Some(0));
+        assert_eq!(state.tail(&circle_stream), Some(0));
     }
 
     #[test]
@@ -731,7 +800,7 @@ mod tests {
         state
             .apply(&delta(
                 realm_event.clone(),
-                commit(7, &realm_event, realm_stream(), 1),
+                commit(7, &realm_event, realm_stream(), 0),
             ))
             .unwrap();
         assert!(
@@ -742,6 +811,18 @@ mod tests {
                 ))
                 .is_err()
         );
+        let before = state.clone();
+        let mut moved = commit(7, &realm_event, realm_stream(), 1);
+        moved.previous_commit_ref = Some(arkret_wire::RealmCommitId::from_digest([7; 32]));
+        assert!(state.apply(&delta(realm_event.clone(), moved)).is_err());
+        assert_eq!(state, before);
+        state
+            .apply(&delta(
+                realm_event.clone(),
+                commit(8, &realm_event, realm_stream(), 1),
+            ))
+            .unwrap();
+        assert_eq!(state.tail(&realm_stream()), Some(1));
     }
 
     #[test]

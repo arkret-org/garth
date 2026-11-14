@@ -298,15 +298,8 @@ pub fn validate_floor_product_rows(
                 .validate_for_scope(pin_scope)
                 .map_err(protocol)?;
             }
-            CurrentSelector::MessageReactions { target_ref } => {
-                // This row retains assertions, not actor membership. The chat
-                // fold still requires signed Events in a verified prefix.
-                arkret_wire::MessageId::new(target_ref.as_str()).map_err(protocol)?;
-                closed_current_value::<
-                    arkret_models_collaboration::events_payloads::reaction::MessageReactionsCurrentValue,
-                >(value, "message_reactions")?
-                .validate_for_target(target_ref)
-                .map_err(protocol)?;
+            CurrentSelector::MessageReactions { .. } => {
+                validate_reaction_current(row, rows, signed_head, None)?;
             }
             CurrentSelector::ObjectRedaction { target_ref } => {
                 // Message termination and Event field cropping are independent
@@ -552,6 +545,7 @@ pub fn validate_floor_product_rows(
             CurrentSelector::CapabilityGrant { grant_id } => {
                 let grant: arkret_models_collaboration::governance::grant_constraint::CapabilityGrant =
                     closed_current_value(value, "capability_grant")?;
+                grant.validate_authority_shape().map_err(protocol)?;
                 if &grant.id != grant_id
                     || grant.realm_id.as_ref() != Some(realm_id)
                     || grant.schema != arkret_wire::SchemaId::CAPABILITY_V1
@@ -763,6 +757,133 @@ pub fn committed_views_to_client_events(
     Ok(batch)
 }
 
+fn current_selector(row: &arkret_wire::CurrentState) -> &arkret_wire::CurrentSelector {
+    let arkret_wire::CurrentState::Value { selector, .. } = row;
+    selector
+}
+
+fn validate_reaction_current(
+    row: &arkret_wire::CurrentState,
+    rows: &[arkret_wire::CurrentState],
+    head: &arkret_wire::CommitStreamHead,
+    previous: Option<&arkret_wire::CurrentState>,
+) -> crate::Result<()> {
+    use arkret_models_collaboration::events_payloads::MessageReactionsCurrentValue;
+    use arkret_wire::{CurrentSelector, CurrentState};
+    let CurrentState::Value {
+        selector: CurrentSelector::MessageReactions { target_ref },
+        source_stream_ref,
+        revision,
+        value,
+    } = row
+    else {
+        return Err(protocol(
+            "reaction validator requires its exact current selector",
+        ));
+    };
+    let current: MessageReactionsCurrentValue = closed_current_value(value, "message_reactions")?;
+    let retained = previous
+        .map(|previous| {
+            let CurrentState::Value {
+                selector,
+                source_stream_ref: old_stream,
+                revision,
+                value,
+            } = previous;
+            if selector != current_selector(row) || old_stream != source_stream_ref {
+                return Err(protocol(
+                    "reaction current changes its selector or source stream",
+                ));
+            }
+            let value: MessageReactionsCurrentValue =
+                closed_current_value(value, "message_reactions")?;
+            Ok((value, revision))
+        })
+        .transpose()?;
+    current
+        .validate_installation(
+            target_ref,
+            source_stream_ref,
+            revision,
+            head,
+            retained
+                .as_ref()
+                .map(|(value, revision)| (value, *revision)),
+        )
+        .map_err(protocol)?;
+    let message = arkret_wire::MessageId::new(target_ref).map_err(protocol)?;
+    if !rows.iter().any(|entry| matches!(entry, CurrentState::Value {
+        selector: CurrentSelector::MessageRevision { message_id }, source_stream_ref: target_stream, ..
+    } if message_id == &message && target_stream == source_stream_ref)) {
+        return Err(protocol("reaction current has no currently disclosed target"));
+    }
+    if rows.iter().any(|entry| {
+        matches!(entry, CurrentState::Value {
+        selector: CurrentSelector::ObjectRedaction { target_ref: redacted }, ..
+    } if redacted == target_ref)
+    }) {
+        return Err(protocol("reaction current target is redacted"));
+    }
+    Ok(())
+}
+
+/// Compare only whole current rows at authenticated current cuts. Historical
+/// scans and by-ref floor slices never invoke this installer or alter current.
+pub(crate) fn validate_reaction_current_continuity(
+    snapshot: &arkret_wire::RealmStateSnapshot,
+    previous: Option<&arkret_wire::RealmStateSnapshot>,
+) -> crate::Result<()> {
+    use arkret_wire::{CurrentSelector, CurrentState};
+    for row in &snapshot.current_state_entries {
+        let CurrentState::Value {
+            selector,
+            source_stream_ref,
+            ..
+        } = row;
+        if !matches!(selector, CurrentSelector::MessageReactions { .. }) {
+            continue;
+        }
+        let head = snapshot
+            .visible_stream_heads
+            .iter()
+            .find(|head| &head.stream_ref == source_stream_ref)
+            .ok_or_else(|| protocol("reaction current has no disclosed head"))?;
+        let old = previous.and_then(|old| {
+            old.current_state_entries
+                .iter()
+                .find(|row| current_selector(row) == selector)
+        });
+        validate_reaction_current(row, &snapshot.current_state_entries, head, old)?;
+    }
+    if let Some(previous) = previous {
+        for old in &previous.current_state_entries {
+            let CurrentState::Value {
+                selector: CurrentSelector::MessageReactions { target_ref },
+                source_stream_ref,
+                ..
+            } = old
+            else {
+                continue;
+            };
+            let message = arkret_wire::MessageId::new(target_ref).map_err(protocol)?;
+            let target_visible = snapshot.current_state_entries.iter().any(|row| matches!(row, CurrentState::Value {
+                selector: CurrentSelector::MessageRevision { message_id }, source_stream_ref: stream, ..
+            } if message_id == &message && stream == source_stream_ref));
+            if target_visible
+                && !snapshot
+                    .current_state_entries
+                    .iter()
+                    .any(|row| current_selector(row) == current_selector(old))
+            {
+                return Err(protocol(
+                    "complete current Snapshot omits an initialized visible reaction row",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_current_product(
     snapshot: &arkret_wire::RealmStateSnapshot,
     realm: &arkret_wire::RealmId,
@@ -774,6 +895,27 @@ pub fn validate_current_product(
             revision,
             value,
         } = row;
+        if matches!(
+            selector,
+            arkret_wire::CurrentSelector::MessageReactions { .. }
+        ) {
+            let head = snapshot
+                .visible_stream_heads
+                .iter()
+                .find(|head| &head.stream_ref == source_stream_ref)
+                .ok_or_else(|| protocol("reaction current has no disclosed stream head"))?;
+            validate_reaction_current(row, &snapshot.current_state_entries, head, None)?;
+        }
+        if let arkret_wire::CurrentSelector::CapabilityGrant { grant_id } = selector {
+            let grant: arkret_models_collaboration::governance::grant_constraint::CapabilityGrant =
+                closed_current_value(value, "capability_grant")?;
+            grant.validate_authority_shape().map_err(protocol)?;
+            if &grant.id != grant_id || grant.realm_id.as_ref() != Some(realm) {
+                return Err(protocol(
+                    "grant current does not bind its selector and Realm",
+                ));
+            }
+        }
         if let arkret_wire::CurrentSelector::ScopeReadReceiptPolicy { scope_ref } = selector {
             if scope_ref.realm_id_opt() != Some(realm) {
                 return Err(protocol("receipt policy belongs to another Realm"));
@@ -851,6 +993,89 @@ mod tests {
     use serde_json::json;
 
     use super::*;
+
+    #[test]
+    fn active_reaction_metadata_needs_no_old_add_original_and_cannot_roll_back() {
+        let realm = crate::test_fixtures::realm_id();
+        let stream = CommitStreamRef::Realm {
+            realm_id: realm.clone(),
+        };
+        let target = arkret_wire::MessageId::from_event_id(&arkret_wire::EventId::from_digest(
+            arkret_canonical::DigestSuite::Sha256,
+            [31; 32],
+        ));
+        let revision = CurrentRevision {
+            commit_id: RealmCommitId::from_digest([10; 32]),
+            stream_position: 10,
+        };
+        let head = arkret_wire::CommitStreamHead {
+            stream_ref: stream.clone(),
+            commit_id: revision.commit_id.clone(),
+            stream_position: 10,
+        };
+        let target_row = CurrentState::Value {
+            selector: CurrentSelector::MessageRevision {
+                message_id: target.clone(),
+            },
+            source_stream_ref: stream.clone(),
+            revision: revision.clone(),
+            value: json!({}),
+        };
+        let active = CurrentState::Value {
+            selector: CurrentSelector::MessageReactions {
+                target_ref: target.to_string(),
+            },
+            source_stream_ref: stream.clone(),
+            revision: revision.clone(),
+            value: json!({"entries":[{"actor_id":crate::test_fixtures::actor_id(),"key":"👍","source":{
+                "event_id":arkret_wire::EventId::from_digest(arkret_canonical::DigestSuite::Sha256,[32;32]),
+                "commit_id":RealmCommitId::from_digest([2;32]),"stream_ref":stream,"stream_position":2
+            }}]}),
+        };
+        assert!(validate_reaction_current(&active, &[target_row.clone()], &head, None).is_ok());
+        let mut empty = active.clone();
+        let CurrentState::Value {
+            value, revision, ..
+        } = &mut empty;
+        *value = json!({"entries":[]});
+        revision.commit_id = RealmCommitId::from_digest([11; 32]);
+        revision.stream_position = 11;
+        let head = arkret_wire::CommitStreamHead {
+            stream_ref: stream,
+            commit_id: revision.commit_id.clone(),
+            stream_position: 11,
+        };
+        assert!(
+            validate_reaction_current(&empty, &[target_row.clone()], &head, Some(&active)).is_ok()
+        );
+        assert!(
+            validate_reaction_current(&active, &[target_row.clone()], &head, Some(&empty)).is_err()
+        );
+        let mut changed = empty.clone();
+        let CurrentState::Value { value, .. } = &mut changed;
+        let CurrentState::Value {
+            value: active_value,
+            ..
+        } = &active;
+        *value = active_value.clone();
+        assert!(
+            validate_reaction_current(&changed, &[target_row.clone()], &head, Some(&empty))
+                .is_err()
+        );
+        assert!(validate_reaction_current(&active, &[], &head, None).is_err());
+        let redaction = CurrentState::Value {
+            selector: CurrentSelector::ObjectRedaction {
+                target_ref: target.to_string(),
+            },
+            source_stream_ref: head.stream_ref.clone(),
+            revision: CurrentRevision {
+                commit_id: head.commit_id.clone(),
+                stream_position: 11,
+            },
+            value: json!({}),
+        };
+        assert!(validate_reaction_current(&active, &[target_row, redaction], &head, None).is_err());
+    }
 
     struct FloorProductFixture {
         realm: arkret_wire::RealmId,

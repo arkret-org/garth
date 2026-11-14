@@ -455,6 +455,11 @@ async fn mnemonic_root_import_checks_original_signers_and_keeps_only_selected_hi
                 recipient_key_ref: envelope.encryption.recipient_key_ref.clone(),
             },
         };
+        // HTTP challenge validation uses real UTC. Advance only the injected
+        // reader clock to exercise host-side expiry without returning a stale
+        // transport response or weakening the SDK's independent window check.
+        let challenge_epoch = arkret_canonical::normalize_timestamp_canonical(chrono::Utc::now())
+            - chrono::Duration::seconds(2);
         if download_case && refusal != "request_flush_failure" {
             let mut challenge = arkret_models_crypto::KeysBackupsUnlockChallenge {
                 challenge_id: arkret_wire::Base64UrlString::new(
@@ -463,10 +468,6 @@ async fn mnemonic_root_import_checks_original_signers_and_keeps_only_selected_hi
                 .unwrap(),
                 challenge: arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
                     [72; 32],
-                ))
-                .unwrap(),
-                nonce: arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode(
-                    [73; 32],
                 ))
                 .unwrap(),
                 operation: arkret_wire::ServiceOperationId::SELF_KEYS_BACKUPS_COMMAND_UNLOCK_V1
@@ -482,8 +483,8 @@ async fn mnemonic_root_import_checks_original_signers_and_keeps_only_selected_hi
                     [74; 32],
                 ))
                 .unwrap(),
-                issued_at: at(5),
-                expires_at: at(55),
+                issued_at: challenge_epoch,
+                expires_at: challenge_epoch + chrono::Duration::seconds(50),
                 subject_actor_id: None,
                 custody_authorization_ref: None,
                 content_history: Some(arkret_models_crypto::ContentHistoryBackupAccess {
@@ -500,36 +501,27 @@ async fn mnemonic_root_import_checks_original_signers_and_keeps_only_selected_hi
                 challenge.requesting_device_id = backup_device.clone();
             }
             if refusal == "expired_response" {
-                challenge.expires_at = at(5) + chrono::Duration::milliseconds(1);
+                challenge.expires_at = challenge_epoch + chrono::Duration::seconds(30);
             }
             bodies.push(json!({"__history_challenge":challenge,"__drop_response":refusal == "lost_challenge_response"}));
             if success {
                 if !matches!(refusal, "expired_response" | "lost_challenge_response") {
                     bodies.push(json!({"__history_unlock":envelope,"__history_key":current_public,"__drop_response":refusal != "ciphertext_flush_failure"}));
                 }
-                if matches!(
-                    refusal,
-                    "expired_retry" | "expired_response" | "lost_challenge_response"
-                ) {
-                    challenge.issued_at = if refusal == "expired_response" {
-                        at(6)
-                    } else {
-                        at(56)
-                    };
-                    challenge.expires_at = challenge.issued_at + chrono::Duration::seconds(60);
+                if matches!(refusal, "expired_retry" | "expired_response") {
+                    challenge.issued_at = challenge_epoch + chrono::Duration::seconds(1);
+                    challenge.expires_at = challenge_epoch + chrono::Duration::seconds(120);
                     challenge.challenge_id = arkret_wire::Base64UrlString::new(
                         arkret_canonical::base64url_encode([75; 32]),
-                    )
-                    .unwrap();
-                    challenge.nonce = arkret_wire::Base64UrlString::new(
-                        arkret_canonical::base64url_encode([76; 32]),
                     )
                     .unwrap();
                     challenge.challenge = arkret_wire::Base64UrlString::new(
                         arkret_canonical::base64url_encode([77; 32]),
                     )
                     .unwrap();
-                    bodies.push(json!({"__history_challenge":challenge,"__fresh_request":refusal != "lost_challenge_response","__same_request":refusal == "lost_challenge_response"}));
+                    bodies.push(json!({"__history_challenge":challenge,"__fresh_request":true}));
+                } else if refusal == "lost_challenge_response" {
+                    bodies.push(json!({"__history_challenge":challenge,"__same_request":true}));
                 }
                 bodies.push(json!({"__history_unlock":envelope,"__history_key":current_public}));
             }
@@ -551,6 +543,10 @@ async fn mnemonic_root_import_checks_original_signers_and_keeps_only_selected_hi
         let active = Arc::new(AtomicBool::new(true));
         let (client, server, requests) =
             observed_client_for_account(bodies, f.account.clone(), active.clone());
+        let live_audience = url::Url::parse(&client.binding().base_url)
+            .unwrap()
+            .origin()
+            .ascii_serialization();
         let principal = client
             .current_principal(&CurrentPrincipalRequestBody {
                 request_id: "ak:request:0196419b-0000-7000-8000-000000000001"
@@ -636,17 +632,17 @@ async fn mnemonic_root_import_checks_original_signers_and_keeps_only_selected_hi
             let sign = |bytes: &[u8]| Ok(current_key.sign(bytes).to_bytes().to_vec());
             let resumed = AtomicBool::new(false);
             let now = || {
-                if resumed.load(Ordering::SeqCst)
-                    && matches!(refusal, "expired_retry" | "lost_challenge_response")
-                {
-                    at(56)
+                if refusal == "expired_response" {
+                    challenge_epoch + chrono::Duration::seconds(31)
+                } else if resumed.load(Ordering::SeqCst) && refusal == "expired_retry" {
+                    challenge_epoch + chrono::Duration::seconds(56)
                 } else {
-                    at(6)
+                    challenge_epoch + chrono::Duration::seconds(3)
                 }
             };
             let reader = PcrHistoryBackupReader {
                 device: &current,
-                audience,
+                audience: &live_audience,
                 store: &fault_store,
                 signing_key: &current_public,
                 sign_raw: &sign,

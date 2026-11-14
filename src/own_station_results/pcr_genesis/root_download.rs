@@ -185,7 +185,6 @@ impl OwnStationHumanPcrEvent<'_> {
                     schema: KeyBackupUnlockProof::SCHEMA.into(),
                     authority: KeyBackupUnlockAuthority::CurrentDevice {
                         challenge_id: challenge.challenge_id.clone(),
-                        nonce: challenge.nonce.clone(),
                     },
                     account_id: account.clone(),
                     requesting_device_id: reader.device.clone(),
@@ -269,11 +268,10 @@ impl OwnStationHumanPcrEvent<'_> {
         challenge.validate_for_request(request, &summary.backup_id)?;
         self.validate_download_challenge(summary, reader, challenge)?;
         let proof = &body.proof;
-        proof.validate()?;
+        proof.validate_for_challenge(challenge)?;
         if proof.authority
             != (KeyBackupUnlockAuthority::CurrentDevice {
                 challenge_id: challenge.challenge_id.clone(),
-                nonce: challenge.nonce.clone(),
             })
             || proof.account_id != challenge.account_id
             || proof.requesting_device_id != *reader.device

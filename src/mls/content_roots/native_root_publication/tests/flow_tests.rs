@@ -97,18 +97,15 @@ fn signed_material(
     if bad_nonce {
         nonce.replace_range(..1, if nonce.starts_with('A') { "B" } else { "A" });
     }
-    let (genesis, _) = crate::own_station_results::tests::member_genesis::founding_original();
     let unsigned = RealmActorMaterialSignatureInput {
-        realm_id: genesis.event.realm_id.clone(),
+        realm_id: fixture.authority.realm_id().clone(),
         actor_id: actor_id.clone(),
         purpose: RealmActorMaterialPurpose::Current,
         request_digest: Hash::new(arkret_canonical::canonical_sha256(&request).unwrap()).unwrap(),
         request_nonce: nonce,
         requester_actor_id: actor_id.clone(),
         governance_generation: 0,
-        authority_ref: arkret_wire::RealmCommitAuthorityRef::GenesisOrChangeEvent(
-            genesis.event.event_id,
-        ),
+        authority_ref: fixture.response.admission.authority_ref.clone(),
         control_stream_head: Some(CommitStreamHead {
             stream_ref: head_source.stream_ref.clone(),
             stream_position: head_source.stream_position,
@@ -135,9 +132,9 @@ fn signed_material(
     let signature = arkret_signatures::detached_object::sign_detached_object(
         &unsigned,
         DetachedSignatureContext::RealmActorMaterial,
-        arkret_wire::DidUrl::new("did:web:station.example#signing-1").unwrap(),
+        fixture.station.verification_method.clone(),
         issued_at,
-        &SigningKey::from_bytes(&[43; 32]),
+        &fixture.station.signing_key,
     )
     .unwrap();
     serde_json::to_value(unsigned.into_signed(signature)).unwrap()
@@ -196,8 +193,8 @@ fn signed_put_reply(fixture: &NativeHttpFixture, packet: &KeyBackup) -> serde_js
     let admission =
         arkret_signatures::realm_actor_content_backup::sign_realm_actor_content_backup_admission(
             admission,
-            arkret_wire::DidUrl::new("did:web:station.example#signing-1").unwrap(),
-            &SigningKey::from_bytes(&[43; 32]),
+            fixture.station.verification_method.clone(),
+            &fixture.station.signing_key,
         )
         .unwrap();
     arkret_signatures::realm_actor_content_backup::verify_realm_actor_backup_packet(
@@ -278,8 +275,6 @@ fn challenge_reply(
         .unwrap(),
         challenge: arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode([22; 32]))
             .unwrap(),
-        nonce: arkret_wire::Base64UrlString::new(arkret_canonical::base64url_encode([23; 32]))
-            .unwrap(),
         operation: arkret_models_crypto::RealmActorBackupUnlockChallengeOperation::Value,
         backup_id: fixture.packet.backup_id.clone(),
         audience: arkret_wire::NonEmptyString::new(
@@ -355,8 +350,12 @@ fn serve_flow_at_cut(
                     Err(error) => panic!("TLS accept: {error}"),
                 }
             };
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(std::time::Duration::from_secs(10)))
                 .unwrap();
             let mut stream = rustls::StreamOwned::new(
                 rustls::ServerConnection::new(tls.clone()).unwrap(),
@@ -455,6 +454,7 @@ fn serve_flow_at_cut(
             let response = serde_json::to_vec(&response).unwrap();
             write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",response.len()).unwrap();
             stream.write_all(&response).unwrap();
+            stream.conn.send_close_notify();
             stream.flush().unwrap();
         }
     });
@@ -470,10 +470,10 @@ async fn native_first_publication_uses_signed_current_input_real_https_and_sdk_h
         let fixture = native_http_fixture(&base);
         let root = fixture.root.clone();
         let packet = fixture.packet.clone();
-        let (genesis, _) = crate::own_station_results::tests::member_genesis::founding_original();
-        let materials = crate::own_station_results::tests::member_genesis::native_client_materials(
-            &base, &genesis,
-        );
+        let client = fixture.client.clone();
+        let authority = fixture.authority.clone();
+        let resolution = fixture.resolution.clone();
+        let keys = fixture.keys.clone();
         let (server, trace) = serve_flow(listener, fixture, bad_nonce);
         let directory = tempfile::tempdir().unwrap();
         let store = DurableStore::open(directory.path());
@@ -496,19 +496,18 @@ async fn native_first_publication_uses_signed_current_input_real_https_and_sdk_h
                     .unwrap(),
             },
             domain_separation: packet.domain_separation.clone(),
-            authority: &materials.authority,
-            station_resolution: &materials.resolution,
-            authority_keys: &materials.keys,
+            authority: &authority,
+            station_resolution: &resolution,
+            authority_keys: &keys,
         };
-        let result =
-            publish_native_content_root(&materials.client, &vault, parameters, move |bytes| {
-                signed.fetch_add(1, Ordering::SeqCst);
-                Ok(SigningKey::from_bytes(&[123; 32])
-                    .sign(bytes)
-                    .to_bytes()
-                    .to_vec())
-            })
-            .await;
+        let result = publish_native_content_root(&client, &vault, parameters, move |bytes| {
+            signed.fetch_add(1, Ordering::SeqCst);
+            Ok(SigningKey::from_bytes(&[123; 32])
+                .sign(bytes)
+                .to_bytes()
+                .to_vec())
+        })
+        .await;
         server.join().unwrap();
         if bad_nonce {
             let error = match result {
@@ -596,9 +595,10 @@ async fn historical_ack_requires_current_cut(change: &str) {
         _ => panic!("unknown current cut mutation"),
     }
     let expected_input = prepared.clone();
-    let (genesis, _) = crate::own_station_results::tests::member_genesis::founding_original();
-    let materials =
-        crate::own_station_results::tests::member_genesis::native_client_materials(&base, &genesis);
+    let client = fixture.client.clone();
+    let authority = fixture.authority.clone();
+    let resolution = fixture.resolution.clone();
+    let keys = fixture.keys.clone();
     let directory = tempfile::tempdir().unwrap();
     let endpoint = endpoint(&packet);
     let operation = "stable-business-operation";
@@ -637,7 +637,7 @@ async fn historical_ack_requires_current_cut(change: &str) {
     let signatures = Arc::new(AtomicUsize::new(0));
     let signed = signatures.clone();
     let outcome = publish_native_content_root(
-        &materials.client,
+        &client,
         &vault,
         NativeRootPublicationParameters {
             operation,
@@ -654,9 +654,9 @@ async fn historical_ack_requires_current_cut(change: &str) {
                     .unwrap(),
             },
             domain_separation: packet.domain_separation.clone(),
-            authority: &materials.authority,
-            station_resolution: &materials.resolution,
-            authority_keys: &materials.keys,
+            authority: &authority,
+            station_resolution: &resolution,
+            authority_keys: &keys,
         },
         move |bytes| {
             signed.fetch_add(1, Ordering::SeqCst);

@@ -7,12 +7,30 @@ use crate::{
 };
 
 pub trait SessionGrantStore: Clone + crate::MaybeSendSync + 'static {
+    fn persistence_required(&self) -> bool {
+        true
+    }
     fn load(&self) -> Result<Option<SessionGrantState>>;
 
     fn save<'a>(
         &'a self,
         state: &'a SessionGrantState,
     ) -> impl std::future::Future<Output = Result<()>> + crate::MaybeSend + 'a;
+
+    /// Atomically replace the exact durable predecessor record. A backend
+    /// without native compare/exchange cannot emulate this with read + write.
+    fn compare_exchange<'a>(
+        &'a self,
+        expected: &'a SessionGrantState,
+        next: &'a SessionGrantState,
+    ) -> impl std::future::Future<Output = Result<bool>> + crate::MaybeSend + 'a {
+        let _ = (expected, next);
+        async {
+            Err(Error::Protocol(
+                "session grant store has no atomic compare exchange".into(),
+            ))
+        }
+    }
 
     fn clear(&self) -> Result<()>;
 }
@@ -21,6 +39,9 @@ pub trait SessionGrantStore: Clone + crate::MaybeSendSync + 'static {
 pub struct NoopSessionGrantStore;
 
 impl SessionGrantStore for NoopSessionGrantStore {
+    fn persistence_required(&self) -> bool {
+        false
+    }
     fn load(&self) -> Result<Option<SessionGrantState>> {
         Ok(None)
     }
@@ -30,6 +51,14 @@ impl SessionGrantStore for NoopSessionGrantStore {
         _state: &'a SessionGrantState,
     ) -> impl std::future::Future<Output = Result<()>> + crate::MaybeSend + 'a {
         async { Ok(()) }
+    }
+
+    fn compare_exchange<'a>(
+        &'a self,
+        _expected: &'a SessionGrantState,
+        _next: &'a SessionGrantState,
+    ) -> impl std::future::Future<Output = Result<bool>> + crate::MaybeSend + 'a {
+        async { Ok(true) }
     }
 
     fn clear(&self) -> Result<()> {
@@ -98,6 +127,21 @@ where
         }
     }
 
+    fn compare_exchange<'a>(
+        &'a self,
+        expected: &'a SessionGrantState,
+        next: &'a SessionGrantState,
+    ) -> impl std::future::Future<Output = Result<bool>> + crate::MaybeSend + 'a {
+        async move {
+            let expected = Zeroizing::new(serde_json::to_vec(expected)?);
+            let next = Zeroizing::new(serde_json::to_vec(next)?);
+            self.secure_store
+                .compare_exchange_secret_bytes_durable(&self.storage_key, Some(&expected), &next)
+                .await
+                .map_err(Error::from)
+        }
+    }
+
     fn clear(&self) -> Result<()> {
         match self.secure_store.delete_secret(&self.storage_key) {
             Ok(()) | Err(SecureKeyStoreError::NotFound) => Ok(()),
@@ -133,13 +177,18 @@ mod tests {
             device_id: Some(
                 DeviceId::new("ak:device:01904100-0000-7000-8000-000000000001").unwrap(),
             ),
-            grant_id: SessionGrantId::from_issuance_digest([1_u8; 32]),
-            grant_jwt: "secret-grant".to_owned(),
+            grant_ref: arkret_wire::SessionGrantRef::new(
+                DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
+                SessionGrantId::new("ak:session_grant:01904100-0000-7000-8000-000000000001")
+                    .unwrap(),
+            ),
+            session_grant: arkret_wire::SessionGrantSecret::from_bytes([17; 32]),
             expires_at: Utc::now() + Duration::hours(1),
             audience_id: DidCoreId::new("ak:did_core:webvh:z6mkfixture:service.example").unwrap(),
             granted_scope: vec!["ak.self.committed_event.stream.subscribe.v1".to_owned()],
             session_public_key: Some(session_public_jwk().into_string()),
             dpop_jkt: Some(session_public_jwk().thumbprint_sha256().unwrap()),
+            pending_refresh: None,
         }
     }
 

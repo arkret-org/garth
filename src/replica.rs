@@ -195,6 +195,10 @@ impl RealmReplica {
             .as_ref()
             .filter(|_| self.authority_request.is_some())
         {
+            require_same_commit_coordinates(
+                &previous.realm_stream_head,
+                &incoming.realm_stream_head,
+            )?;
             if incoming.genesis_event != previous.genesis_event
                 || incoming.genesis_commit != previous.genesis_commit
                 || incoming.current_generation < previous.current_generation
@@ -221,6 +225,7 @@ impl RealmReplica {
             }
         }
         if let Some(head) = self.verified_head(&incoming.realm_stream_head.stream_ref) {
+            require_same_commit_coordinates(head, &incoming.realm_stream_head)?;
             if head.stream_position > incoming.realm_stream_head.stream_position {
                 return Err(Error::AuthorityCutBehind);
             }
@@ -576,6 +581,45 @@ impl RealmReplica {
             .require_full_recovery()
             .map_err(|e| Error::Protocol(e.to_string()))?;
         validate_snapshot(&snapshot, &self.realm_id)?;
+        if let Some(previous) = &self.snapshot {
+            validate_snapshot_coordinate_continuity(previous, &snapshot)?;
+        }
+        crate::current_ingest::validate_reaction_current_continuity(
+            &snapshot,
+            self.snapshot.as_ref(),
+        )?;
+        if self
+            .snapshot
+            .as_ref()
+            .is_some_and(|old| old.governance_generation > snapshot.governance_generation)
+        {
+            return Err(Error::Protocol(
+                "current Snapshot governance generation regressed".into(),
+            ));
+        }
+        for incoming in &snapshot.visible_stream_heads {
+            if let Some(old) = self
+                .streams
+                .get(&incoming.stream_ref)
+                .and_then(|stream| stream.head.as_ref())
+            {
+                require_same_commit_coordinates(old, incoming)?;
+            }
+            if self
+                .streams
+                .get(&incoming.stream_ref)
+                .and_then(|stream| stream.head.as_ref())
+                .is_some_and(|old| {
+                    incoming.stream_position < old.stream_position
+                        || (incoming.stream_position == old.stream_position
+                            && incoming.commit_id != old.commit_id)
+                })
+            {
+                return Err(Error::Protocol(
+                    "current Snapshot head regressed or forked its stream".into(),
+                ));
+            }
+        }
         for head in &snapshot.visible_stream_heads {
             self.streams
                 .entry(head.stream_ref.clone())
@@ -843,6 +887,63 @@ impl RealmReplica {
     }
 }
 
+pub(crate) fn require_same_commit_coordinates(
+    previous: &CommitStreamHead,
+    incoming: &CommitStreamHead,
+) -> Result<()> {
+    if previous.stream_ref == incoming.stream_ref
+        && previous.commit_id == incoming.commit_id
+        && previous.stream_position != incoming.stream_position
+    {
+        return Err(Error::Protocol(
+            "one Commit changed its position within the same stream".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Retained signed rows and heads cannot assign conflicting native coordinates
+/// to the same stream prefix, even when the affected selector has changed.
+pub(crate) fn validate_snapshot_coordinate_continuity(
+    previous: &RealmStateSnapshot,
+    incoming: &RealmStateSnapshot,
+) -> Result<()> {
+    let mut positions = BTreeMap::new();
+    let mut commits = BTreeMap::new();
+    for snapshot in [previous, incoming] {
+        let heads = snapshot
+            .visible_stream_heads
+            .iter()
+            .map(|head| (&head.stream_ref, &head.commit_id, head.stream_position));
+        let rows = snapshot.current_state_entries.iter().map(|row| {
+            let CurrentState::Value {
+                source_stream_ref,
+                revision,
+                ..
+            } = row;
+            (
+                source_stream_ref,
+                &revision.commit_id,
+                revision.stream_position,
+            )
+        });
+        for (stream, commit, position) in heads.chain(rows) {
+            if positions
+                .insert((stream, position), commit)
+                .is_some_and(|old| old != commit)
+                || commits
+                    .insert((stream, commit), position)
+                    .is_some_and(|old| old != position)
+            {
+                return Err(Error::Protocol(
+                    "current Snapshots conflict on native stream coordinates".into(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn validate_snapshot(snapshot: &RealmStateSnapshot, realm_id: &RealmId) -> Result<()> {
     snapshot
         .validate_purpose()
@@ -892,6 +993,17 @@ pub(crate) fn validate_snapshot(snapshot: &RealmStateSnapshot, realm_id: &RealmI
     }
     let mut subjects = BTreeSet::new();
     let mut commits = BTreeMap::new();
+    let mut commit_positions = BTreeMap::new();
+    for head in &snapshot.visible_stream_heads {
+        if let Some(previous) =
+            commit_positions.insert(&head.commit_id, (&head.stream_ref, head.stream_position))
+            && previous != (&head.stream_ref, head.stream_position)
+        {
+            return Err(Error::Protocol(
+                "Snapshot head reuses one Commit at different stream coordinates".into(),
+            ));
+        }
+    }
     for row in &snapshot.current_state_entries {
         let (selector, source_stream_ref, revision) = match row {
             arkret_wire::CurrentState::Value {
@@ -924,6 +1036,15 @@ pub(crate) fn validate_snapshot(snapshot: &RealmStateSnapshot, realm_id: &RealmI
         {
             return Err(Error::Protocol(
                 "Realm snapshot rows name two Commits at one stream position".to_owned(),
+            ));
+        }
+        if let Some(previous) = commit_positions.insert(
+            &revision.commit_id,
+            (source_stream_ref, revision.stream_position),
+        ) && previous != (source_stream_ref, revision.stream_position)
+        {
+            return Err(Error::Protocol(
+                "Snapshot current reuses one Commit at different stream coordinates".into(),
             ));
         }
         let bytes = arkret_canonical::canonical_json_bytes(selector)
@@ -2336,6 +2457,25 @@ mod tests {
                     &renewed_freshness,
                     &RealmAuthorityKeyMap::new()
                 )
+                .is_err()
+        );
+        assert_eq!(replica, before);
+        let mut forked = refreshed.clone();
+        forked.realm_stream_head.stream_position += 1;
+        forked.current_assertion.realm_stream_head = forked.realm_stream_head.clone();
+        forked.current_assertion.signature = sign_detached_object(
+            &arkret_canonical::unsigned_value(&forked.current_assertion, &["signature"]).unwrap(),
+            DetachedSignatureContext::RealmAuthorityCurrentAssertion,
+            method.clone(),
+            now,
+            &route.signing_key,
+        )
+        .unwrap();
+        // The response has a genuine fresh nonce-bound Station signature;
+        // a reused Commit still cannot acquire a different native position.
+        assert!(
+            replica
+                .refresh_verified_authority(&renewed_request, forked, &renewed_freshness, &keys,)
                 .is_err()
         );
         assert_eq!(replica, before);

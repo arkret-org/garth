@@ -361,12 +361,17 @@ struct NativeHttpFixture {
     root: ContentRootBackupEntry,
     packet: KeyBackup,
     response: RealmActorBackupPutResponseBody,
+    authority: arkret_identity::VerifiedRealmAuthority,
+    resolution: arkret_models_identity::AuthenticatedServiceResolution,
+    keys: arkret_identity::RealmAuthorityKeyMap,
+    station: arkret_test_kit::service_identity::ServiceIdentityFixture,
 }
 
 fn native_http_fixture(base: &str) -> NativeHttpFixture {
-    use crate::own_station_results::tests::member_genesis::{founding_original, native_client};
-    let (genesis, _) = founding_original();
-    let (client, source) = native_client(base, &genesis);
+    let (genesis, materials, station) =
+        crate::own_station_results::tests::member_genesis::historical_native_client_materials(base);
+    let client = materials.client;
+    let source = materials.source;
     let context = client.context().unwrap();
     let data = arkret_schema_conformance::spec_json_artifact(
         "fixtures/realm-actor-content-backup-fixture.json",
@@ -453,8 +458,8 @@ fn native_http_fixture(base: &str) -> NativeHttpFixture {
         arkret_signatures::realm_actor_content_backup::sign_realm_actor_content_backup_admission(
             arkret_signatures::realm_actor_content_backup::admission_signing_input(&admission)
                 .unwrap(),
-            arkret_wire::DidUrl::new("did:web:station.example#signing-1").unwrap(),
-            &SigningKey::from_bytes(&[43; 32]),
+            station.verification_method.clone(),
+            &station.signing_key,
         )
         .unwrap();
     let response = RealmActorBackupPutResponseBody {
@@ -469,6 +474,10 @@ fn native_http_fixture(base: &str) -> NativeHttpFixture {
         root,
         packet,
         response,
+        authority: materials.authority,
+        resolution: materials.resolution,
+        keys: materials.keys,
+        station,
     }
 }
 
@@ -499,8 +508,12 @@ fn serve_native_puts(
                     Err(error) => panic!("native TLS accept: {error}"),
                 }
             };
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(std::time::Duration::from_secs(10)))
                 .unwrap();
             let mut stream = rustls::StreamOwned::new(
                 rustls::ServerConnection::new(tls.clone()).unwrap(),
@@ -545,6 +558,7 @@ fn serve_native_puts(
             let body = serde_json::to_vec(&response).unwrap();
             write!(stream,"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",body.len()).unwrap();
             stream.write_all(&body).unwrap();
+            stream.conn.send_close_notify();
             stream.flush().unwrap();
         }
     });
@@ -664,7 +678,7 @@ async fn native_real_https_late_context_or_signed_wrong_digest_cannot_write_ack_
                 Hash::new(arkret_canonical::sha256_digest(b"wrong original packet")).unwrap();
             response.admission=arkret_signatures::realm_actor_content_backup::sign_realm_actor_content_backup_admission(
                 arkret_signatures::realm_actor_content_backup::admission_signing_input(&response.admission).unwrap(),
-                arkret_wire::DidUrl::new("did:web:station.example#signing-1").unwrap(),&SigningKey::from_bytes(&[43;32]),
+                fixture.station.verification_method.clone(),&fixture.station.signing_key,
             ).unwrap();
         }
         let retire = if failure == "late_context" {

@@ -616,6 +616,13 @@ impl OwnStationReplica {
             .require_full_recovery()
             .map_err(|e| protocol(&e.to_string()))?;
         validate_snapshot(snapshot, &self.realm_id)?;
+        if let Some(previous) = &self.snapshot {
+            crate::replica::validate_snapshot_coordinate_continuity(previous, snapshot)?;
+        }
+        crate::current_ingest::validate_reaction_current_continuity(
+            snapshot,
+            self.snapshot.as_ref(),
+        )?;
         if self
             .snapshot
             .as_ref()
@@ -658,6 +665,8 @@ impl OwnStationReplica {
                 continue;
             };
             if next_stream != stream
+                || (next_revision.commit_id == revision.commit_id
+                    && next_revision.stream_position != revision.stream_position)
                 || next_revision.stream_position < revision.stream_position
                 || (next_revision.stream_position == revision.stream_position
                     && (next_revision != revision || next_digest != digest))
@@ -668,6 +677,15 @@ impl OwnStationReplica {
             }
         }
         for incoming in &snapshot.visible_stream_heads {
+            for old in [
+                self.heads.get(&incoming.stream_ref),
+                self.current_heads.get(&incoming.stream_ref),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                crate::replica::require_same_commit_coordinates(old, incoming)?;
+            }
             if self.heads.get(&incoming.stream_ref).is_some_and(|old| {
                 incoming.stream_position < old.stream_position
                     || (incoming.stream_position == old.stream_position
@@ -2086,8 +2104,14 @@ pub(crate) mod tests {
         let snapshot = OwnStationSessionSnapshot::new(
             binding.clone(),
             account,
-            station,
-            arkret_wire::SessionGrantId::from_issuance_digest([3; 32]),
+            station.clone(),
+            arkret_wire::SessionGrantRef::new(
+                station.clone(),
+                arkret_wire::SessionGrantId::new(
+                    "ak:session_grant:01904100-0000-7000-8000-000000000003",
+                )
+                .unwrap(),
+            ),
             0,
             "test-grant".into(),
         )
@@ -2099,13 +2123,37 @@ pub(crate) mod tests {
             .build()
             .unwrap();
         let server_active = active.clone();
+        let history_audience = url::Url::parse(&base)
+            .unwrap()
+            .origin()
+            .ascii_serialization();
+        listener.set_nonblocking(true).unwrap();
         let server = std::thread::spawn(move || {
             let mut history_unlock = None;
             let mut history_request = None;
+            let mut history_challenge: Option<arkret_models_crypto::KeysBackupsUnlockChallenge> =
+                None;
             for body in bodies {
-                let (mut stream, _) = listener.accept().unwrap();
+                let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => break stream,
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            assert!(
+                                std::time::Instant::now() < deadline,
+                                "expected own-Station fixture request did not arrive"
+                            );
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("own-Station fixture accept failed: {error}"),
+                    }
+                };
+                stream.set_nonblocking(false).unwrap();
                 stream
                     .set_read_timeout(Some(std::time::Duration::from_secs(10)))
+                    .unwrap();
+                stream
+                    .set_write_timeout(Some(std::time::Duration::from_secs(10)))
                     .unwrap();
                 let mut buffer = [0; 16384];
                 let count = stream.read(&mut buffer).unwrap();
@@ -2143,11 +2191,22 @@ pub(crate) mod tests {
                 let withdraw =
                     body.get("__withdraw_source") == Some(&serde_json::Value::Bool(true));
                 let body = if let Some(template) = body.get("__history_challenge") {
+                    assert!(
+                        headers
+                            .lines()
+                            .next()
+                            .unwrap()
+                            .ends_with("/unlock-challenge http/1.1")
+                    );
                     let request: arkret_models_crypto::KeysBackupsIssueUnlockChallengeRequestBody =
                         serde_json::from_slice(&request_bytes[header_end..header_end + body_len])
                             .unwrap();
                     let mut challenge: arkret_models_crypto::KeysBackupsUnlockChallenge =
                         serde_json::from_value(template.clone()).unwrap();
+                    // The server binds its own origin before the holder signs
+                    // the complete challenge; the fixture's history stays exact.
+                    challenge.audience =
+                        arkret_wire::NonEmptyString::new(history_audience.clone()).unwrap();
                     assert_eq!(request.content_history, challenge.content_history);
                     assert!(request.subject_actor_id.is_none());
                     assert!(request.custody_authorization_ref.is_none());
@@ -2160,15 +2219,33 @@ pub(crate) mod tests {
                     }
                     history_request = Some(request.request_id.clone());
                     challenge.request_id = request.request_id;
+                    if body["__same_request"] == true {
+                        assert_eq!(
+                            serde_json::to_value(history_challenge.as_ref().unwrap()).unwrap(),
+                            serde_json::to_value(&challenge).unwrap(),
+                            "an identical live issuance retry must retain the complete challenge"
+                        );
+                    }
+                    history_challenge = Some(challenge.clone());
                     if body["__drop_response"] == true {
                         continue;
                     }
                     serde_json::to_value(challenge).unwrap()
                 } else if let Some(backup) = body.get("__history_unlock") {
+                    assert!(
+                        headers
+                            .lines()
+                            .next()
+                            .unwrap()
+                            .ends_with("/unlock http/1.1")
+                    );
                     let proof: arkret_models_crypto::KeysBackupsUnlockRequestBody =
                         serde_json::from_slice(&request_bytes[header_end..header_end + body_len])
                             .unwrap();
                     proof.proof.validate().unwrap();
+                    let challenge = history_challenge.as_ref().unwrap();
+                    proof.proof.validate_for_challenge(challenge).unwrap();
+                    assert_eq!(proof.proof.content_history, challenge.content_history);
                     let key: arkret_signatures::PublicKeyMaterial =
                         serde_json::from_value(body["__history_key"].clone()).unwrap();
                     arkret_signatures::proof::verify_ed25519_raw_transcript_signature(
@@ -2442,7 +2519,13 @@ pub(crate) mod tests {
                 binding.clone(),
                 arkret_wire::AccountId::new(account.principal_id.clone(), other),
                 station.clone(),
-                arkret_wire::SessionGrantId::from_issuance_digest([3; 32]),
+                arkret_wire::SessionGrantRef::new(
+                    station.clone(),
+                    arkret_wire::SessionGrantId::new(
+                        "ak:session_grant:01904100-0000-7000-8000-000000000003"
+                    )
+                    .unwrap()
+                ),
                 0,
                 "test-grant".into(),
             )
@@ -2451,8 +2534,14 @@ pub(crate) mod tests {
         let session = OwnStationSessionSnapshot::new(
             binding.clone(),
             account,
-            station,
-            arkret_wire::SessionGrantId::from_issuance_digest([3; 32]),
+            station.clone(),
+            arkret_wire::SessionGrantRef::new(
+                station.clone(),
+                arkret_wire::SessionGrantId::new(
+                    "ak:session_grant:01904100-0000-7000-8000-000000000003",
+                )
+                .unwrap(),
+            ),
             0,
             "test-grant".into(),
         )
@@ -4790,6 +4879,117 @@ pub(crate) mod tests {
         );
         assert_eq!(replica.snapshot().unwrap(), &hidden);
         server.join().unwrap();
+    }
+
+    #[tokio::test]
+    async fn signed_current_cuts_preserve_commit_coordinates_across_actual_installation() {
+        let stream = CommitStreamRef::Realm {
+            realm_id: crate::test_fixtures::realm_id(),
+        };
+        let head_at = |position, seed| CommitStreamHead {
+            stream_ref: stream.clone(),
+            stream_position: position,
+            commit_id: arkret_wire::RealmCommitId::from_digest([seed; 32]),
+        };
+        let signed = |heads| {
+            let mut value = snapshot(heads);
+            value.signature = arkret_signatures::detached_object::sign_detached_object(
+                &arkret_canonical::unsigned_value(&value, &["signature"]).unwrap(),
+                arkret_wire::DetachedSignatureContext::RealmSnapshot,
+                arkret_wire::DidUrl::new("did:web:station.example#notary").unwrap(),
+                value.created_at,
+                &ed25519_dalek::SigningKey::from_bytes(&[43; 32]),
+            )
+            .unwrap();
+            arkret_signatures::detached_object::verify_detached_object_signature(
+                &value.signature,
+                &arkret_canonical::unsigned_value(&value, &["signature"]).unwrap(),
+                arkret_wire::DetachedSignatureContext::RealmSnapshot,
+                &arkret_signatures::PublicKeyMaterial::Ed25519Raw {
+                    bytes: ed25519_dalek::SigningKey::from_bytes(&[43; 32])
+                        .verifying_key()
+                        .to_bytes()
+                        .to_vec(),
+                },
+            )
+            .unwrap();
+            value
+        };
+        let initial = signed(vec![head_at(8, 8)]);
+        let advanced = signed(vec![head_at(9, 9)]);
+        let circle = CommitStreamRef::Circle {
+            realm_id: initial.realm_id.clone(),
+            circle_id: arkret_wire::CircleId::from_event_id(&EventId::from_digest(
+                arkret_canonical::DigestSuite::Sha256,
+                [65; 32],
+            )),
+        };
+        let other_head = CommitStreamHead {
+            stream_ref: circle,
+            stream_position: 0,
+            commit_id: arkret_wire::RealmCommitId::from_digest([66; 32]),
+        };
+        let hidden = signed(vec![other_head.clone()]);
+        let independent = signed(vec![head_at(9, 9), other_head]);
+        let cases = vec![
+            (initial.clone(), true),
+            (initial.clone(), true),
+            (signed(vec![head_at(9, 8)]), false),
+            (signed(vec![head_at(8, 7)]), false),
+            (signed(vec![head_at(7, 7)]), false),
+            (advanced.clone(), true),
+            (hidden, true),
+            (signed(vec![head_at(10, 9)]), false),
+            (independent, true),
+        ];
+        let (client, server) = client(
+            cases
+                .iter()
+                .map(|(cut, _)| serde_json::to_value(cut).unwrap())
+                .collect(),
+        );
+        let mut replica = OwnStationReplica::new(initial.realm_id.clone());
+        let mut staging = crate::RealmReplica::new(initial.realm_id.clone());
+        let mut projection = crate::RealmProjectionState::default();
+        for (cut, accepted) in cases {
+            let before = replica.clone();
+            let staged_before = staging.clone();
+            let projection_before = projection.clone();
+            let response = client.snapshot_head(&initial.realm_id).await.unwrap();
+            assert_eq!(replica.install_bound_snapshot(&response).is_ok(), accepted);
+            assert_eq!(staging.install_snapshot(cut.clone()).is_ok(), accepted);
+            assert_eq!(projection.install_snapshot(cut).is_ok(), accepted);
+            if !accepted {
+                assert!(replica.context == before.context);
+                assert_eq!(replica.heads, before.heads);
+                assert_eq!(replica.current_heads, before.current_heads);
+                assert_eq!(replica.generations, before.generations);
+                assert_eq!(
+                    replica.complete_sidecar_heads,
+                    before.complete_sidecar_heads
+                );
+                assert_eq!(replica.call_axis_stamps, before.call_axis_stamps);
+                assert_eq!(replica.snapshot, before.snapshot);
+                assert_eq!(staging, staged_before);
+                assert_eq!(projection, projection_before);
+            }
+        }
+        server.join().unwrap();
+        assert_eq!(replica.current_heads.get(&stream), Some(&head_at(9, 9)));
+        assert!(
+            replica.head(&stream).is_none(),
+            "current cuts never install replay predecessors"
+        );
+        assert_eq!(
+            staging
+                .snapshot
+                .as_ref()
+                .unwrap()
+                .visible_stream_heads
+                .len(),
+            2
+        );
+        assert_eq!(projection.tail(&stream), Some(9));
     }
 
     #[tokio::test]
