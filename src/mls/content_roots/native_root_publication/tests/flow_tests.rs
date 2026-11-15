@@ -485,7 +485,7 @@ async fn native_first_publication_uses_signed_current_input_real_https_and_sdk_h
             operation: "first-native-root",
             root: &root,
             created_at: packet.created_at,
-            author: arkret_crypto::backup::KeyBackupAuthBinding {
+            author: arkret_crypto::backup::KeyBackupAuthorizationBinding {
                 device_id: packet.device_id.clone().unwrap(),
                 verification_method: packet.signature_proof.verification_method.clone(),
                 signature_algorithm: packet.signature_proof.signature_algorithm,
@@ -644,7 +644,7 @@ async fn historical_ack_requires_current_cut(change: &str) {
             operation,
             root: &root,
             created_at: packet.created_at,
-            author: arkret_crypto::backup::KeyBackupAuthBinding {
+            author: arkret_crypto::backup::KeyBackupAuthorizationBinding {
                 device_id: packet.device_id.clone().unwrap(),
                 verification_method: packet.signature_proof.verification_method.clone(),
                 signature_algorithm: packet.signature_proof.signature_algorithm,

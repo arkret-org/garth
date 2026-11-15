@@ -19,7 +19,7 @@ pub struct NativeRootPublicationParameters<'a> {
     pub operation: &'a str,
     pub root: &'a ContentRootBackupEntry,
     pub created_at: chrono::DateTime<chrono::Utc>,
-    pub author: arkret_crypto::backup::KeyBackupAuthBinding,
+    pub author: arkret_crypto::backup::KeyBackupAuthorizationBinding,
     pub domain_separation: arkret_models_crypto::KeyBackupDomainSeparation,
     pub authority: &'a arkret_identity::VerifiedRealmAuthority,
     pub station_resolution: &'a arkret_models_identity::AuthenticatedServiceResolution,
