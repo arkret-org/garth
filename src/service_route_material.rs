@@ -120,7 +120,7 @@ pub mod test_fixture {
                 ("assertionMethod".into(), serde_json::json!([method])),
                 (
                     "service".into(),
-                    serde_json::json!([{"id":format!("{did}#arkret"),"type":"ArkretService","serviceKind":kind,"serviceEndpoint":base}]),
+                    serde_json::json!([{"id":format!("{did}#arkret"),"type":"ArkretService","service_kind":kind,"serviceEndpoint":base}]),
                 ),
             ]),
         };

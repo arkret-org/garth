@@ -387,16 +387,16 @@ fn native_http_fixture(base: &str) -> NativeHttpFixture {
         arkret_crypto::content_history::content_root_ref(&root.root_base64url, &root.root_context)
             .unwrap();
     let mut input:arkret_models_crypto::ContentBackupNextPrepareInput=serde_json::from_value(serde_json::json!({
-        "auth_binding":data["native_packet"]["auth_binding"],"content_backup_recipient":data["recipient"],
+        "authorization_binding":data["native_packet"]["authorization_binding"],"content_backup_recipient":data["recipient"],
         "active_series_id":data["native_packet"]["series_id"],
     })).unwrap();
     let stream = arkret_wire::CommitStreamRef::RealmControl {
         realm_id: genesis.event.realm_id.clone(),
     };
     for reference in [
-        &mut input.auth_binding.manager_ref,
-        &mut input.auth_binding.recovery_ref,
-        &mut input.auth_binding.recipient_ref,
+        &mut input.authorization_binding.manager_ref,
+        &mut input.authorization_binding.recovery_ref,
+        &mut input.authorization_binding.recipient_ref,
     ] {
         reference.stream_ref = stream.clone();
     }
@@ -410,7 +410,7 @@ fn native_http_fixture(base: &str) -> NativeHttpFixture {
         backup_id: serde_json::from_value(data["native_packet"]["backup_id"].clone()).unwrap(),
         realm_actor_id: context.actor_id().as_realm_actor_id().unwrap().clone(),
         created_at,
-        author: arkret_crypto::backup::KeyBackupAuthBinding {
+        author: arkret_crypto::backup::KeyBackupAuthorizationBinding {
             device_id: context.device_id().clone(),
             device_authorize_event_id: context.authorization_event_id().clone(),
             verification_method: arkret_wire::DidUrl::new(format!(
@@ -444,7 +444,7 @@ fn native_http_fixture(base: &str) -> NativeHttpFixture {
     admission.device_authorize_ref.stream_ref = stream;
     admission.device_public_key_base64url =
         arkret_canonical::base64url_encode(device_key.verifying_key().as_bytes());
-    let auth = packet.auth_binding.as_ref().unwrap();
+    let auth = packet.authorization_binding.as_ref().unwrap();
     admission.manager_ref = auth.manager_ref.clone();
     admission.recovery_ref = auth.recovery_ref.clone();
     admission.recipient_ref = auth.recipient_ref.clone();
