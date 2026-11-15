@@ -1149,7 +1149,7 @@ pub(super) mod tests {
         _expires: DateTime<Utc>,
     ) -> SessionGrantSecret {
         SessionGrantSecret::from_bytes(arkret_canonical::sha256_bytes(
-            &arkret_canonical::canonical_json_bytes(&serde_json::json!([label, grant])).unwrap(),
+            arkret_canonical::canonical_json_bytes(&serde_json::json!([label, grant])).unwrap(),
         ))
     }
     fn issue_outcome(

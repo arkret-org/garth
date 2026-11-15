@@ -534,15 +534,16 @@ async fn native_first_publication_uses_signed_current_input_real_https_and_sdk_h
                 vec![packet.backup_id.clone()]
             );
             assert_eq!(signatures.load(Ordering::SeqCst), 1);
-            let trace = trace.lock().unwrap();
-            assert_eq!(trace.len(), 3);
-            let sent: KeyBackup = serde_json::from_slice(&trace[2].1).unwrap();
-            assert!(same_packet(outcome.original_packet().unwrap(), &sent).unwrap());
-            assert_ne!(
-                sent.authorization_binding.as_ref().unwrap().recovery_ref,
-                packet.authorization_binding.as_ref().unwrap().recovery_ref
-            );
-            drop(trace);
+            {
+                let trace = trace.lock().unwrap();
+                assert_eq!(trace.len(), 3);
+                let sent: KeyBackup = serde_json::from_slice(&trace[2].1).unwrap();
+                assert!(same_packet(outcome.original_packet().unwrap(), &sent).unwrap());
+                assert_ne!(
+                    sent.authorization_binding.as_ref().unwrap().recovery_ref,
+                    packet.authorization_binding.as_ref().unwrap().recovery_ref
+                );
+            }
             let intents = vault
                 .native_publication_intents("first-native-root")
                 .await

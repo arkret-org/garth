@@ -1032,7 +1032,10 @@ mod tests {
                 "commit_id":RealmCommitId::from_digest([2;32]),"stream_ref":stream,"stream_position":2
             }}]}),
         };
-        assert!(validate_reaction_current(&active, &[target_row.clone()], &head, None).is_ok());
+        assert!(
+            validate_reaction_current(&active, std::slice::from_ref(&target_row), &head, None)
+                .is_ok()
+        );
         let mut empty = active.clone();
         let CurrentState::Value {
             value, revision, ..
@@ -1046,10 +1049,22 @@ mod tests {
             stream_position: 11,
         };
         assert!(
-            validate_reaction_current(&empty, &[target_row.clone()], &head, Some(&active)).is_ok()
+            validate_reaction_current(
+                &empty,
+                std::slice::from_ref(&target_row),
+                &head,
+                Some(&active)
+            )
+            .is_ok()
         );
         assert!(
-            validate_reaction_current(&active, &[target_row.clone()], &head, Some(&empty)).is_err()
+            validate_reaction_current(
+                &active,
+                std::slice::from_ref(&target_row),
+                &head,
+                Some(&empty)
+            )
+            .is_err()
         );
         let mut changed = empty.clone();
         let CurrentState::Value { value, .. } = &mut changed;
@@ -1059,8 +1074,13 @@ mod tests {
         } = &active;
         *value = active_value.clone();
         assert!(
-            validate_reaction_current(&changed, &[target_row.clone()], &head, Some(&empty))
-                .is_err()
+            validate_reaction_current(
+                &changed,
+                std::slice::from_ref(&target_row),
+                &head,
+                Some(&empty)
+            )
+            .is_err()
         );
         assert!(validate_reaction_current(&active, &[], &head, None).is_err());
         let redaction = CurrentState::Value {
