@@ -401,16 +401,6 @@ where
         }
     }
 
-    pub fn with_retry_policy(mut self, policy: RetryPolicy) -> Self {
-        self.policy = policy;
-        self
-    }
-
-    pub fn with_jitter_seed(mut self, seed: u64) -> Self {
-        self.jitter_seed = seed;
-        self
-    }
-
     pub fn store(&self) -> &S {
         &self.store
     }

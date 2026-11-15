@@ -11,7 +11,6 @@ mod error;
 pub mod account_handoff;
 pub mod account_sync;
 pub mod actor_profile_directory;
-pub mod agent_draft_pending_intent_projection;
 pub mod agent_interaction;
 pub mod authority;
 pub mod call_invitation;
@@ -58,9 +57,6 @@ pub use account_sync::*;
 pub use actor_profile_directory::{
     ActorProfileDirectory, ActorProfileResolveTransport, ActorProfileUnavailableCause,
     ActorProfileView, DEFAULT_ACTOR_PROFILE_FRESH_FOR_SECONDS,
-};
-pub use agent_draft_pending_intent_projection::{
-    AgentDraftPendingIntentProjection, AgentDraftPendingIntentProjectionUpdate,
 };
 pub use arkret_models_collaboration::authority_commit::AuthorityRealmAuthorityHandoffRequestBody;
 pub use arkret_models_collaboration::signal_plaintext::{

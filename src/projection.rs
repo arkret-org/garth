@@ -302,7 +302,6 @@ fn overlay(target: &mut Value, delta: &Value) {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RealmProjectionState {
     pub snapshot: Option<RealmStateSnapshot>,
-    pub product: Option<Value>,
     pub stream_positions: BTreeMap<CommitStreamRef, u64>,
     stream_commits: BTreeMap<CommitStreamRef, arkret_wire::RealmCommitId>,
 }
@@ -411,10 +410,6 @@ impl RealmProjectionState {
 
     pub fn tail(&self, stream_ref: &CommitStreamRef) -> Option<u64> {
         self.stream_positions.get(stream_ref).copied()
-    }
-
-    pub fn apply_projection_frame(&mut self, frame: RealmProjectionFrame<'_>) {
-        self.product = Some(reconcile_realm_projection(self.product.as_ref(), frame));
     }
 }
 
