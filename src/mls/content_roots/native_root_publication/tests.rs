@@ -410,7 +410,7 @@ fn native_http_fixture(base: &str) -> NativeHttpFixture {
         backup_id: serde_json::from_value(data["native_packet"]["backup_id"].clone()).unwrap(),
         realm_actor_id: context.actor_id().as_realm_actor_id().unwrap().clone(),
         created_at,
-        author: arkret_crypto::backup::KeyBackupAuthBinding {
+        author: arkret_crypto::backup::KeyBackupAuthorizationBinding {
             device_id: context.device_id().clone(),
             device_authorize_event_id: context.authorization_event_id().clone(),
             verification_method: arkret_wire::DidUrl::new(format!(
