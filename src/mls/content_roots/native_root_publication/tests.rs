@@ -643,17 +643,18 @@ async fn native_unknown_result_cold_retries_real_https_put_before_any_new_prepar
         ]
     );
     server.join().unwrap();
-    let trace = trace.lock().unwrap();
-    assert_eq!(trace.len(), 2);
-    assert_eq!(trace[0].1, trace[1].1);
-    assert!(
-        same_packet(
-            &serde_json::from_slice::<KeyBackup>(&trace[0].1).unwrap(),
-            &fixture.packet
-        )
-        .unwrap()
-    );
-    drop(trace);
+    {
+        let trace = trace.lock().unwrap();
+        assert_eq!(trace.len(), 2);
+        assert_eq!(trace[0].1, trace[1].1);
+        assert!(
+            same_packet(
+                &serde_json::from_slice::<KeyBackup>(&trace[0].1).unwrap(),
+                &fixture.packet
+            )
+            .unwrap()
+        );
+    }
     fixture.source.active.store(false, Ordering::SeqCst);
     // A repaired history has no current refs/capability API, and remains cold
     // readable after the live original requester is retired.

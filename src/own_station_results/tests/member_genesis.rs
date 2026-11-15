@@ -318,16 +318,18 @@ fn native_client_materials_for_station(
     }
 }
 
-fn native_server(
-    original: &CommittedEventFullView,
-    bodies: Vec<serde_json::Value>,
-    retire_during_query: bool,
-) -> (
+type NativeServer = (
     OwnStationDeviceClient,
     Arc<NativeSource>,
     std::thread::JoinHandle<()>,
     Arc<Mutex<Vec<String>>>,
-) {
+);
+
+fn native_server(
+    original: &CommittedEventFullView,
+    bodies: Vec<serde_json::Value>,
+    retire_during_query: bool,
+) -> NativeServer {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let (client, source) = native_client(
         &format!("https://{}/", listener.local_addr().unwrap()),
@@ -419,17 +421,16 @@ fn native_server(
                 };
                 assert_eq!(committed_event_ref.stream_position, 0);
                 let mut selector = selector;
-                if body["__wrong_target"] == true {
-                    if let SignerKeyQuerySelector::HistoricalEvent {
+                if body["__wrong_target"] == true
+                    && let SignerKeyQuerySelector::HistoricalEvent {
                         sender:
                             HistoricalSignerKeyQuerySender::AccountDevice {
                                 committed_event_ref,
                                 ..
                             },
                     } = &mut selector
-                    {
-                        committed_event_ref.stream_position = 1;
-                    }
+                {
+                    committed_event_ref.stream_position = 1;
                 }
                 let resolution = if body["__unavailable"] == true {
                     SignerKeyResolution::Unavailable { selector }

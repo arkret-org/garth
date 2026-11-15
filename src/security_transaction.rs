@@ -372,11 +372,10 @@ async fn persist_observation<S: SecurityTransactionStore>(
                     SecurityTransaction::SecurityRotation(previous),
                     Some(SecurityTransaction::SecurityRotation(observed)),
                 ) = (previous, next.last_observed_resource.as_ref())
+                    && observed.accepted_steps.len() < previous.accepted_steps.len()
                 {
-                    if observed.accepted_steps.len() < previous.accepted_steps.len() {
-                        next.last_observed_resource =
-                            Some(SecurityTransaction::SecurityRotation(previous.clone()));
-                    }
+                    next.last_observed_resource =
+                        Some(SecurityTransaction::SecurityRotation(previous.clone()));
                 }
             }
         }
