@@ -16,13 +16,13 @@ fn input(fixture: &NativeHttpFixture) -> arkret_models_crypto::ContentBackupNext
         "fixtures/realm-actor-content-backup-fixture.json",
     )
     .unwrap();
-    let mut binding = fixture.packet.auth_binding.clone().unwrap();
+    let mut binding = fixture.packet.authorization_binding.clone().unwrap();
     binding.recovery_ref.event_id =
         arkret_wire::EventId::from_digest(arkret_canonical::DigestSuite::Sha256, [201; 32]);
     binding.recovery_ref.commit_id = arkret_wire::RealmCommitId::from_digest([202; 32]);
     binding.recovery_ref.stream_position += 20;
     arkret_models_crypto::ContentBackupNextPrepareInput {
-        auth_binding: binding,
+        authorization_binding: binding,
         content_backup_recipient: serde_json::from_value(data["recipient"].clone()).unwrap(),
         active_series_id: fixture.packet.series_id.clone(),
     }
@@ -45,7 +45,7 @@ fn signed_material(
     assert_eq!(selectors.len(), 2);
     assert_eq!(actor_id, &fixture.packet.actor_id);
     let prepared = prepared.clone();
-    let recovery_source = prepared.auth_binding.recovery_ref.clone();
+    let recovery_source = prepared.authorization_binding.recovery_ref.clone();
     let data = arkret_schema_conformance::spec_json_artifact(
         "fixtures/realm-actor-content-backup-fixture.json",
     )
@@ -55,20 +55,20 @@ fn signed_material(
     series_source.stream_ref = recovery_source.stream_ref.clone();
     let recovery:arkret_models_integration::RealmActorRecoveryValue=serde_json::from_value(serde_json::json!({
         "kind":"manager_native","enabled":false,"pending":null,"content_backup_recipient":prepared.content_backup_recipient,
-        "content_backup_recipient_ref":prepared.auth_binding.recipient_ref,
+        "content_backup_recipient_ref":prepared.authorization_binding.recipient_ref,
     })).unwrap();
     let series = arkret_models_collaboration::RealmActorKeyBackupActiveSeriesValue {
         active_series_id: prepared.active_series_id.clone(),
         series_pointer_version: 1,
-        manager_ref: prepared.auth_binding.manager_ref.clone(),
+        manager_ref: prepared.authorization_binding.manager_ref.clone(),
         recovery_ref: fixture
             .packet
-            .auth_binding
+            .authorization_binding
             .as_ref()
             .unwrap()
             .recovery_ref
             .clone(),
-        recipient_ref: prepared.auth_binding.recipient_ref.clone(),
+        recipient_ref: prepared.authorization_binding.recipient_ref.clone(),
     };
     let current = |selector: arkret_wire::CurrentSelector,
                    source: &arkret_wire::CommittedEventRef,
@@ -152,15 +152,15 @@ fn empty_head(
         active_series: arkret_models_crypto::RealmActorBackupActiveSeriesState {
             realm_actor_id: fixture.packet.actor_id.as_realm_actor_id().unwrap().clone(),
             effective_scope: fixture.root.root_context.effective_scope.clone(),
-            manager_ref: prepared.auth_binding.manager_ref,
+            manager_ref: prepared.authorization_binding.manager_ref,
             recovery_ref: fixture
                 .packet
-                .auth_binding
+                .authorization_binding
                 .as_ref()
                 .unwrap()
                 .recovery_ref
                 .clone(),
-            recipient_ref: prepared.auth_binding.recipient_ref,
+            recipient_ref: prepared.authorization_binding.recipient_ref,
             authority_commit_id: fixture
                 .response
                 .admission
@@ -186,7 +186,7 @@ fn signed_put_reply(fixture: &NativeHttpFixture, packet: &KeyBackup) -> serde_js
     admission.envelope_digest =
         Hash::new(arkret_canonical::canonical_sha256(packet).unwrap()).unwrap();
     admission.ciphertext_digest = packet.ciphertext_digest.clone();
-    let auth = packet.auth_binding.as_ref().unwrap();
+    let auth = packet.authorization_binding.as_ref().unwrap();
     admission.manager_ref = auth.manager_ref.clone();
     admission.recovery_ref = auth.recovery_ref.clone();
     admission.recipient_ref = auth.recipient_ref.clone();
@@ -230,7 +230,7 @@ fn head_with_original(
         "created_at",
         "updated_at",
         "ciphertext_digest",
-        "auth_binding",
+        "authorization_binding",
     ] {
         if let Some(value) = packet.get(field) {
             metadata.insert(field.to_owned(), value.clone());
@@ -294,12 +294,12 @@ fn challenge_reply(
         purpose: request.purpose,
         realm_actor_id: request.realm_actor_id,
         effective_scope: request.effective_scope,
-        manager_ref: prepared.auth_binding.manager_ref.clone(),
-        recovery_ref: prepared.auth_binding.recovery_ref.clone(),
-        recipient_ref: prepared.auth_binding.recipient_ref.clone(),
+        manager_ref: prepared.authorization_binding.manager_ref.clone(),
+        recovery_ref: prepared.authorization_binding.recovery_ref.clone(),
+        recipient_ref: prepared.authorization_binding.recipient_ref.clone(),
         requesting_device_id: Some(context.device_id().clone()),
         device_authorize_event_id: Some(context.authorization_event_id().clone()),
-        device_generation: Some(prepared.auth_binding.device_generation),
+        device_generation: Some(prepared.authorization_binding.device_generation),
         envelope_digest: request.envelope_digest,
     };
     challenge.validate_at(chrono::Utc::now()).unwrap();
@@ -540,8 +540,8 @@ async fn native_first_publication_uses_signed_current_input_real_https_and_sdk_h
                 let sent: KeyBackup = serde_json::from_slice(&trace[2].1).unwrap();
                 assert!(same_packet(outcome.original_packet().unwrap(), &sent).unwrap());
                 assert_ne!(
-                    sent.auth_binding.as_ref().unwrap().recovery_ref,
-                    packet.auth_binding.as_ref().unwrap().recovery_ref
+                    sent.authorization_binding.as_ref().unwrap().recovery_ref,
+                    packet.authorization_binding.as_ref().unwrap().recovery_ref
                 );
             }
             let intents = vault
@@ -579,8 +579,8 @@ async fn historical_ack_requires_current_cut(change: &str) {
             // input() advances only current Recovery while the real old series
             // keeps its historical declaration. No fresh series is required.
             assert_ne!(
-                prepared.auth_binding.recovery_ref,
-                packet.auth_binding.as_ref().unwrap().recovery_ref
+                prepared.authorization_binding.recovery_ref,
+                packet.authorization_binding.as_ref().unwrap().recovery_ref
             );
         }
         "epoch" => {
@@ -717,8 +717,8 @@ async fn historical_ack_requires_current_cut(change: &str) {
         assert_eq!(sent.supersedes_id.as_ref(), Some(&packet.backup_id));
     }
     assert_eq!(
-        sent.auth_binding.as_ref().unwrap(),
-        &expected_input.auth_binding
+        sent.authorization_binding.as_ref().unwrap(),
+        &expected_input.authorization_binding
     );
     assert_eq!(
         sent.contents[0].root_context.as_ref(),

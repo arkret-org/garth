@@ -3133,7 +3133,7 @@ pub(crate) mod tests {
                         head_commit_ref: tail.commit_id.clone(),
                         next_position: 11,
                         limited: true,
-                        window_limit: 1,
+                        max_window_event_count: 1,
                         complete: true,
                         preview_only: None,
                         window_start_basis: Some(basis),

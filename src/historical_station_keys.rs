@@ -590,7 +590,7 @@ mod tests {
                 "id": "did:web:station.example#station",
                 "type": "ArkretService",
                 "serviceEndpoint": "https://station.example/",
-                "serviceKind": "station"
+                "service_kind": "station"
             }]
         }))
         .unwrap();

@@ -230,8 +230,8 @@ pub async fn publish_native_content_root(
     let head_value = head.value()?;
     if head.context() != prepare.context()
         || head_value.active_series.secret_storage.series_id() != Some(&input.active_series_id)
-        || head_value.active_series.manager_ref != input.auth_binding.manager_ref
-        || head_value.active_series.recipient_ref != input.auth_binding.recipient_ref
+        || head_value.active_series.manager_ref != input.authorization_binding.manager_ref
+        || head_value.active_series.recipient_ref != input.authorization_binding.recipient_ref
     {
         return Err(rejected(
             "native head and bound prepare input have different manager, recipient or selected series",
@@ -318,7 +318,7 @@ pub async fn publish_native_content_root(
         // This intent includes the actual current input and predecessor cut.
         // A different series, recovery declaration or epoch gets another key.
         if packet.series_id != input.active_series_id
-            || packet.auth_binding.as_ref() != Some(&input.auth_binding)
+            || packet.authorization_binding.as_ref() != Some(&input.authorization_binding)
             || packet.series_sequence != series_sequence
             || packet.supersedes_id.as_ref() != supersedes.as_ref().map(|value| &value.0)
             || packet.supersedes_digest.as_ref() != supersedes.as_ref().map(|value| &value.1)
