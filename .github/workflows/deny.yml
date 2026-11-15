@@ -24,6 +24,7 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/arkret-rust-sdk
           path: arkret-rust-sdk
+          ref: 1bcd4af675bb9d6d96e64819e3e0df3b40e38426
           token: ${{ secrets.CI_REPO_TOKEN || github.token }}
       - uses: EmbarkStudios/cargo-deny-action@v2
         continue-on-error: true

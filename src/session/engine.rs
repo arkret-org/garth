@@ -143,15 +143,6 @@ impl fmt::Debug for SessionGrantState {
 }
 
 impl SessionGrantState {
-    /// Opaque credentials carry no client-readable participation observation.
-    /// A host may independently load the registered current projection; the
-    /// absence of this optional hint never replaces a server authority gate.
-    pub fn agent_participation_observation(
-        &self,
-        _now: DateTime<Utc>,
-    ) -> Result<Option<arkret_models_collaboration::governance::agent_participation::AgentParticipationObservation>>{
-        Ok(None)
-    }
     pub fn handle(&self) -> SessionHandle {
         SessionHandle {
             access_token: self.session_grant.as_str().to_owned(),
@@ -375,16 +366,6 @@ where
         let outcome = self.transport.issue_session_grant(request.clone()).await?;
         let now = clock.now();
         let state = state_from_issue_outcome(&request, outcome, now)?;
-        if let SessionGrantRequestBody::Agent(agent) = &request {
-            if let Some(observation) = state.agent_participation_observation(now)?
-                && (observation.agent_key_authorization_ref != agent.agent_key_authorization_ref
-                    || observation.verification_method != agent.proof.verification_method)
-            {
-                return Err(protocol(
-                    "Agent observation differs from requested runtime authorization",
-                ));
-            }
-        }
         let handle = state.handle();
         self.replace_state(Some(state));
         Ok(handle)
@@ -577,13 +558,6 @@ where
         }
         let request = pending.request;
         let expected_dpop_jkt = pending.expected_dpop_jkt;
-        // Validate the outgoing observation while its credential is valid.
-        // The old credential may expire during a successful rotation.
-        let previous_observation = if current.device_id.is_none() {
-            current.agent_participation_observation(now)?
-        } else {
-            None
-        };
         let outcome = self
             .transport
             .refresh_session_grant(request.clone())
@@ -591,14 +565,6 @@ where
         let now = clock.now();
         let state =
             state_from_refresh_outcome(&current, &request, &expected_dpop_jkt, outcome, now)?;
-        if let (Some(previous_observation), Some(next_observation)) = (
-            previous_observation,
-            state.agent_participation_observation(now)?,
-        ) {
-            previous_observation
-                .validate_successor(&next_observation)
-                .map_err(protocol)?;
-        }
         {
             let live = self.state_lock();
             if live.1 != current_epoch || live.0.as_ref() != Some(&current) {
@@ -1542,14 +1508,8 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn opaque_state_has_no_claims_or_mandatory_participation_hint() {
+    fn opaque_state_rejects_jwt_like_credentials() {
         let state = active_state();
-        assert!(
-            state
-                .agent_participation_observation(now())
-                .unwrap()
-                .is_none()
-        );
         let mut wire = serde_json::to_value(&state).unwrap();
         wire["session_grant"] = serde_json::json!("header.payload.signature");
         assert!(serde_json::from_value::<SessionGrantState>(wire).is_err());

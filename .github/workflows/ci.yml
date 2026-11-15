@@ -32,6 +32,7 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/arkret-rust-sdk
           path: arkret-rust-sdk
+          ref: 1bcd4af675bb9d6d96e64819e3e0df3b40e38426
           token: ${{ secrets.CI_REPO_TOKEN || github.token }}
 
       - name: Checkout Spec fixtures
@@ -39,6 +40,7 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/arkret-spec
           path: arkret-spec
+          ref: 4e46718f83a4fcbedc12ef7409bc68743ec41dc9
           token: ${{ secrets.CI_REPO_TOKEN || github.token }}
 
       - uses: dtolnay/rust-toolchain@nightly
@@ -77,6 +79,7 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/arkret-rust-sdk
           path: arkret-rust-sdk
+          ref: 1bcd4af675bb9d6d96e64819e3e0df3b40e38426
           token: ${{ secrets.CI_REPO_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -97,6 +100,7 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/arkret-rust-sdk
           path: arkret-rust-sdk
+          ref: 1bcd4af675bb9d6d96e64819e3e0df3b40e38426
           token: ${{ secrets.CI_REPO_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -130,6 +134,7 @@ jobs:
         with:
           repository: ${{ github.repository_owner }}/arkret-rust-sdk
           path: arkret-rust-sdk
+          ref: 1bcd4af675bb9d6d96e64819e3e0df3b40e38426
           token: ${{ secrets.CI_REPO_TOKEN || github.token }}
       - uses: dtolnay/rust-toolchain@master
         with:
