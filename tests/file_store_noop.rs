@@ -26,11 +26,23 @@ async fn identical_cursor_save_is_a_file_noop() {
         .await
         .unwrap();
     let before = std::fs::read(&path).unwrap();
+    let timestamp = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_000_000_000);
+    std::fs::File::options()
+        .write(true)
+        .open(&path)
+        .unwrap()
+        .set_times(std::fs::FileTimes::new().set_modified(timestamp))
+        .unwrap();
+    let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
     store
         .save(scope(), "ak:cursor:same".to_owned())
         .await
         .unwrap();
     assert_eq!(std::fs::read(&path).unwrap(), before);
+    assert_eq!(
+        std::fs::metadata(&path).unwrap().modified().unwrap(),
+        modified
+    );
 }
 
 #[tokio::test]

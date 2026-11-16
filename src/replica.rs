@@ -127,26 +127,6 @@ impl RealmReplica {
         Ok(fork)
     }
 
-    /// Shape-only staging data. This does not establish authority and cannot
-    /// enable [`Self::apply_verified_scan`].
-    pub fn install_authority(&mut self, bundle: RealmAuthorityBundle) -> Result<()> {
-        bundle.validate_shape()?;
-        if bundle.realm_id != self.realm_id {
-            return Err(Error::Protocol(
-                "authority bundle belongs to another Realm".to_owned(),
-            ));
-        }
-        self.streams
-            .entry(bundle.realm_stream_head.stream_ref.clone())
-            .or_default()
-            .head = Some(bundle.realm_stream_head.clone());
-        self.authority = Some(bundle);
-        self.authority_request = None;
-        self.verified_streams.clear();
-        self.verified_anchors.clear();
-        Ok(())
-    }
-
     /// Install only a fresh, nonce-bound, cryptographically verified authority
     /// chain. The request nonce must be the one the caller actually issued.
     pub fn install_verified_authority(
@@ -630,50 +610,6 @@ impl RealmReplica {
         Ok(())
     }
 
-    /// Shape-only legacy staging. Its public `streams` are not verified input
-    /// for [`Self::apply_verified_scan`] or any authority-sensitive projection.
-    pub fn apply_scan(
-        &mut self,
-        request: &StreamScanRequestBody,
-        outcome: StreamScanResponseBody,
-    ) -> Result<()> {
-        for item in &outcome.committed_events {
-            if let Some(event) = item.reducer_input() {
-                arkret_event_draft::validate_event_for_submit(event)
-                    .map_err(|error| Error::Protocol(error.to_string()))?;
-            }
-        }
-        outcome.validate_for_request(request)?;
-        if request.realm_id != self.realm_id {
-            return Err(Error::Protocol(
-                "stream scan belongs to another Realm".to_owned(),
-            ));
-        }
-        let StreamScanDirection::After(after_position) = request.direction else {
-            return Err(Error::Protocol(
-                "replica tail staging requires a forward scan".to_owned(),
-            ));
-        };
-        let replica = self.streams.entry(request.stream_ref.clone()).or_default();
-        if let Some(existing) = &replica.head
-            && after_position != Some(existing.stream_position)
-        {
-            return Err(Error::Protocol(
-                "stream tail must resume exactly after the installed head".to_owned(),
-            ));
-        }
-        if let Some(last) = outcome.committed_events.last() {
-            let commit = last.commit();
-            replica.head = Some(CommitStreamHead {
-                stream_ref: commit.stream_ref.clone(),
-                stream_position: commit.stream_position,
-                commit_id: commit.commit_id.clone(),
-            });
-        }
-        replica.items.extend(outcome.committed_events);
-        Ok(())
-    }
-
     /// Verify every Commit (and every disclosed Event's content binding)
     /// against a fresh authority chain before storing or returning any row.
     /// An empty page never advances the verified tail.
@@ -868,13 +804,6 @@ impl RealmReplica {
         self.verified_anchors
             .insert(commit.stream_ref.clone(), commit.clone());
         Ok(())
-    }
-
-    /// Retire only this stream's predecessor for an authorized floor rebuild.
-    /// Other independent streams retain their continuous verified heads.
-    pub fn reset_verified_stream(&mut self, stream_ref: &CommitStreamRef) {
-        self.verified_streams.remove(stream_ref);
-        self.verified_anchors.remove(stream_ref);
     }
 
     /// Projection owns the durable rows. A live follower needs only its exact
@@ -2314,6 +2243,29 @@ mod tests {
             }),
             truncated: false,
         };
+        let missing_keys = RealmAuthorityKeyMap::new();
+        for (scan_freshness, scan_keys) in [(&wrong_nonce, &keys), (&freshness, &missing_keys)] {
+            let before = replica.clone();
+            assert!(
+                replica
+                    .apply_verified_scan(&request, outcome.clone(), scan_freshness, scan_keys)
+                    .is_err()
+            );
+            assert_eq!(replica, before);
+        }
+        let mut wrong_generation = outcome.clone();
+        let CommittedEventView::Full(second) = &mut wrong_generation.committed_events[1] else {
+            unreachable!()
+        };
+        second.commit.governance_generation += 1;
+        let before = replica.clone();
+        assert!(
+            replica
+                .apply_verified_scan(&request, wrong_generation, &freshness, &keys)
+                .is_err()
+        );
+        assert_eq!(replica, before);
+
         // A concurrent append after the authority read is not a fork. The
         // old cut must publish nothing, and a fresh signed cut must verify
         // the same page before it can advance the replica.

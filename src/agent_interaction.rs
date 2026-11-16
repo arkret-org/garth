@@ -5,39 +5,13 @@
 //! is unknown, never the private default. DID method history remains a Station
 //! responsibility and this ordinary-client path performs no discovery.
 
-use arkret_http_client::Client;
-use arkret_models_collaboration::agent_interaction::AgentInteractionExactCurrentSelector;
 use arkret_models_collaboration::exact_current_state::{
     ExactCurrentState, ExactCurrentStateReadRequestBody, ExactCurrentStateReadResponseBody,
     ExactCurrentStateSelector,
 };
-use arkret_wire::{
-    AccountId, CommitStreamRef, CurrentSelector, CurrentState, RealmId, RealmStateSnapshot,
-};
+use arkret_wire::{CommitStreamRef, CurrentSelector, CurrentState, RealmStateSnapshot};
 
 use crate::{Error, Result};
-
-pub async fn read_verified_agent_interaction(
-    http: &Client,
-    realm: &RealmId,
-    agent: &AccountId,
-) -> Result<ExactCurrentStateReadResponseBody> {
-    let request = ExactCurrentStateReadRequestBody {
-        realm_id: realm.clone(),
-        selector: ExactCurrentStateSelector::AgentInteraction(
-            AgentInteractionExactCurrentSelector::new(agent.clone()),
-        ),
-    };
-    let snapshot = http.realm_state_snapshot_head(realm).await?;
-    if let Some(outcome) = present_from_snapshot(&request, &snapshot)? {
-        return Ok(outcome);
-    }
-    let outcome = http
-        .exact_current_state(&request, snapshot.governance_generation)
-        .await?;
-    bind_to_snapshot(&request, &snapshot, &outcome)?;
-    Ok(outcome)
-}
 
 // A present typed row in the authorized snapshot already supplies the exact
 // selector, revision and current cut. Do not require a second service scope to
@@ -148,8 +122,9 @@ fn bind_to_snapshot(
 
 #[cfg(test)]
 mod tests {
+    use arkret_models_collaboration::agent_interaction::AgentInteractionExactCurrentSelector;
     use arkret_models_collaboration::exact_current_state::NeverWrittenExactCurrentSelector;
-    use arkret_wire::{CommitStreamHead, RealmCommitId};
+    use arkret_wire::{AccountId, CommitStreamHead, RealmCommitId};
 
     use super::*;
 

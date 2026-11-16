@@ -356,11 +356,6 @@ impl ActorProfileDirectory {
         self.entries.retain(|(realm, _), _| realm != realm_id);
     }
 
-    /// Drop every cached row for one actor across all Realms.
-    pub fn forget_actor(&mut self, actor_id: &ActorId) {
-        self.entries.retain(|(_, actor), _| actor != actor_id);
-    }
-
     fn is_within_window(&self, observed_at: DateTime<Utc>, now: DateTime<Utc>) -> bool {
         // The stamp is always this client's own read time, so a stamp ahead of
         // `now` means the host clock stepped backwards. That reads as fresh and
