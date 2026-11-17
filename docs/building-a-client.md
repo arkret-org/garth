@@ -106,11 +106,10 @@ after observing a terminal authoritative resource.
 
 ## 7. Install and persist MLS state
 
-`MlsInstallQueue` accepts a Welcome or Commit only with its full
-`CommittedEventRef`. It invokes the host MLS provider, persists the returned
-provider-opaque checkpoint, and only then removes the queue item. Use
-`SecureMlsLocalStateStore` and `MlsDeviceSecretStore` with a platform secure
-store for checkpoints and device material.
+The host installs accepted full Event/Commit originals through the SDK MLS
+provider and owns its device secrets, durable checkpoints and consume journal.
+Garth supplies the shared admission checks and checkpoint installation port;
+it does not maintain a second provider installation queue.
 
 `mls::checkpoint` owns the encrypted v1 local envelope without linking an MLS
 provider. The host obtains its checkpoint secret and restores the SDK provider.

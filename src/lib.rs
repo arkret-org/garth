@@ -97,10 +97,8 @@ pub use message_authoring::{
     queue_authored_message,
 };
 pub use mls::{
-    AcceptedMlsArtifact, InstalledMlsEpoch, LocalMlsEndpoint, MemoryMlsLocalStateStore,
-    MlsDeviceSecretStore, MlsInstallQueue, MlsInstaller, MlsKeyPackageInventoryStore,
-    MlsLocalStateStore, MlsRuntimeError, MlsRuntimeStatus, QueuedMlsInstall,
-    SecureMlsLocalStateStore, admit_welcome, installed_mls_epoch, key_package_deficit,
+    InstalledMlsEpoch, LocalMlsEndpoint, MlsKeyPackageInventoryStore, MlsRuntimeError,
+    MlsRuntimeStatus, admit_welcome, installed_mls_epoch, key_package_deficit,
     mls_group_id_for_realm, mls_group_id_for_scope, retain_admissible_welcomes,
     select_active_series_tail, select_active_series_tail_for_recipient_method,
     should_force_epoch_advance, verify_series_chain,
