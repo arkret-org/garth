@@ -971,6 +971,7 @@ mod tests {
             realm_id: realm,
             genesis_event: genesis.clone(),
             genesis_commit: commit,
+            producer_signer_fact: None,
             authority_transitions: vec![],
             current_generation: 0,
             current_service_id: station(),

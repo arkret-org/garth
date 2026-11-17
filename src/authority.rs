@@ -905,6 +905,7 @@ mod acceptance_proof_tests {
             realm_id: realm_id.clone(),
             genesis_event: genesis.clone(),
             genesis_commit: genesis_commit.clone(),
+            producer_signer_fact: None,
             authority_transitions: vec![],
             current_generation: 0,
             current_service_id: station,

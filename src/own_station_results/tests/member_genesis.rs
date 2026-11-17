@@ -236,6 +236,7 @@ fn native_client_materials_for_station(
         realm_id: original.event.realm_id.clone(),
         genesis_event: original.event.clone(),
         genesis_commit: original.commit.clone(),
+        producer_signer_fact: None,
         authority_transitions: vec![],
         current_generation: 0,
         current_service_id: route.service_id.clone(),

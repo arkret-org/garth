@@ -439,6 +439,7 @@ mod tests {
             realm_id: crate::test_fixtures::realm_id(),
             genesis_event,
             genesis_commit,
+            producer_signer_fact: None,
             authority_transitions: vec![],
             current_generation: 0,
             current_service_id: station.service_id.clone(),
