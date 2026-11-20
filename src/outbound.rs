@@ -35,6 +35,10 @@ pub enum SendQueueStatus {
     Queued,
     /// Handed to the governance Station; the outcome is not known yet.
     Forwarding,
+    /// Explicitly withdrawn before any attempt. A new intent needs a new Event.
+    Withdrawn,
+    /// A send may already have reached the Station. Only read-side reconciliation is eligible.
+    AwaitingConfirmation,
     /// The Station returned an authority-signed RealmCommit for this Event.
     Committed,
     /// The Station refused the Event with a reason code.
@@ -49,7 +53,7 @@ impl SendQueueStatus {
     pub fn is_terminal(self) -> bool {
         matches!(
             self,
-            Self::Committed | Self::Rejected | Self::Failed | Self::Cancelled
+            Self::Committed | Self::Rejected | Self::Failed | Self::Cancelled | Self::Withdrawn
         )
     }
 }
@@ -60,6 +64,9 @@ pub struct SendQueueItem {
     pub submission: QueuedSubmission,
     pub status: SendQueueStatus,
     pub attempts: u32,
+    /// None on old records, whose attempts did not distinguish the host gate from IO.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transport_started: Option<bool>,
     pub next_attempt_at_ms: i64,
     pub last_error: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -171,6 +178,7 @@ impl SendQueue {
             submission,
             status: SendQueueStatus::Queued,
             attempts: 0,
+            transport_started: Some(false),
             next_attempt_at_ms: now.timestamp_millis(),
             last_error: None,
             last_problem: None,
@@ -203,6 +211,75 @@ impl SendQueue {
         }
     }
 
+    /// Stop new writes after a confirmed withdrawal. Keep an uncertain result
+    /// addressable by its original Event id across retry, compaction and restart.
+    pub fn stop_revoked(&mut self, id: &EventId, now: DateTime<Utc>) {
+        let Some(item) = self.items.iter_mut().find(|item| item.event_id() == id) else {
+            return;
+        };
+        if !matches!(
+            item.status,
+            SendQueueStatus::Queued
+                | SendQueueStatus::Forwarding
+                | SendQueueStatus::Failed
+                | SendQueueStatus::Cancelled
+        ) {
+            return;
+        }
+        if item.last_problem.is_some()
+            || matches!(
+                item.submission.state,
+                SubmissionState::Rejected {
+                    status: arkret_wire::AuthorityRejectionStatus::Rejected,
+                    ..
+                }
+            )
+        {
+            return;
+        }
+        if item.attempts == 0 || item.transport_started == Some(false) {
+            item.status = SendQueueStatus::Withdrawn;
+            item.settled_at = Some(now);
+        } else {
+            item.status = SendQueueStatus::AwaitingConfirmation;
+            item.settled_at = None;
+        }
+    }
+
+    /// Record only the exact Event and Commit proven on an authenticated read.
+    pub fn confirm_existing_event(
+        &mut self,
+        proof: &crate::own_station_results::OwnStationWindowDependency,
+        now: DateTime<Utc>,
+    ) -> Result<bool> {
+        let full = proof.full()?;
+        let Some(item) = self
+            .items
+            .iter_mut()
+            .find(|item| item.event_id() == &full.event.event_id)
+        else {
+            return Ok(false);
+        };
+        if item.status != SendQueueStatus::AwaitingConfirmation {
+            return Ok(false);
+        }
+        if !matches!(item.request(), SelfAuthoritySubmitRequestBody::Event(value) if value.event == full.event)
+        {
+            return Err(Error::Protocol(
+                "accepted original differs from held Event".into(),
+            ));
+        }
+        item.submission.state = SubmissionState::Committed {
+            status: arkret_wire::AuthorityCommitStatus::Committed,
+            commit: Box::new(full.commit.clone()),
+        };
+        item.status = SendQueueStatus::Committed;
+        item.last_error = None;
+        item.last_problem = None;
+        item.settled_at = Some(now);
+        Ok(true)
+    }
+
     /// Retry the frozen request after a local failure left its authority outcome unknown.
     pub fn retry_unknown(&mut self, event_id: &EventId, now: DateTime<Utc>) -> Result<bool> {
         let Some(item) = self
@@ -215,7 +292,8 @@ impl SendQueue {
         if !matches!(
             item.status,
             SendQueueStatus::Failed | SendQueueStatus::Cancelled
-        ) || item.submission.state != SubmissionState::Queued
+        ) || item.last_problem.is_some()
+            || item.submission.state != SubmissionState::Queued
         {
             return Ok(false);
         }
@@ -252,6 +330,17 @@ impl SendQueue {
             .ok_or_else(|| {
                 Error::Storage("the outbound item disappeared while in flight".to_owned())
             })?;
+        if item.status == SendQueueStatus::Withdrawn && status != SendQueueStatus::Committed {
+            return Ok(item.clone());
+        }
+        if item.status == SendQueueStatus::AwaitingConfirmation
+            && matches!(status, SendQueueStatus::Queued | SendQueueStatus::Failed)
+        {
+            // An older in-flight attempt can finish after the withdrawal. A
+            // timeout or a local failure cannot make the original writable.
+            item.last_error = error;
+            return Ok(item.clone());
+        }
         if item.status == SendQueueStatus::Committed
             && status == SendQueueStatus::Committed
             && submission.as_ref().is_some_and(|incoming| {
@@ -385,6 +474,7 @@ pub struct OutboundEngine<S, K> {
     clock: K,
     policy: RetryPolicy,
     jitter_seed: u64,
+    readback_on_uncertainty: bool,
 }
 
 impl<S, K> OutboundEngine<S, K>
@@ -398,7 +488,15 @@ where
             clock,
             policy: RetryPolicy::arkret_default(),
             jitter_seed: 0x0A11_0B0A_0C0D_0E0F,
+            readback_on_uncertainty: false,
         }
+    }
+
+    /// For revocable producer replies, keep an ambiguous Event for exact readback
+    /// instead of risking its first admission under a subsequent authorization.
+    pub fn with_readback_on_uncertainty(mut self) -> Self {
+        self.readback_on_uncertainty = true;
+        self
     }
 
     pub fn store(&self) -> &S {
@@ -471,9 +569,22 @@ where
         >,
     {
         let now = self.clock.now();
+        let readback = self.readback_on_uncertainty;
         let Some(claimed) = self
             .store
-            .mutate_outbound(move |queue| Ok(queue.claim_due(now)))
+            .mutate_outbound(move |queue| {
+                if readback {
+                    for item in &mut queue.items {
+                        if item.status == SendQueueStatus::Queued
+                            && item.attempts > 0
+                            && item.transport_started != Some(false)
+                        {
+                            item.status = SendQueueStatus::AwaitingConfirmation;
+                        }
+                    }
+                }
+                Ok(queue.claim_due(now))
+            })
             .await?
         else {
             return Ok(OutboundEngineOutcome::Idle);
@@ -486,6 +597,38 @@ where
             Ok(verified) => verified,
             Err(reason) => return self.defer_claimed(claimed, reason, settled_at).await,
         };
+        // The host gate may await a resource read. A withdrawal or another
+        // worker can supersede this claim before the transport handoff.
+        let claim_id = event_id.clone();
+        let attempt = claimed.attempts;
+        if !self
+            .store
+            .mutate_outbound(move |queue| {
+                let Some(item) = queue
+                    .items
+                    .iter_mut()
+                    .find(|item| item.event_id() == &claim_id)
+                else {
+                    return Ok(false);
+                };
+                if item.attempts != attempt
+                    || !matches!(
+                        item.status,
+                        SendQueueStatus::Queued | SendQueueStatus::Forwarding
+                    )
+                {
+                    return Ok(false);
+                }
+                item.transport_started = Some(true);
+                if readback {
+                    item.status = SendQueueStatus::AwaitingConfirmation;
+                }
+                Ok(true)
+            })
+            .await?
+        {
+            return Ok(OutboundEngineOutcome::Idle);
+        }
         match authority.submit(&mut submission, &verified, options).await {
             Ok(()) => {
                 if let SubmissionState::Rejected {
@@ -1225,6 +1368,94 @@ mod tests {
             expected
         );
         assert_eq!(accepting.transport().calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn withdrawal_survives_late_timeout_restore_and_restart_without_resending() {
+        let now = FixedClock.now();
+        let mut queue = SendQueue::default();
+        let first = submission(3);
+        let unsent = submission(4);
+        let unrelated = submission(5);
+        for candidate in [&first, &unsent, &unrelated] {
+            queue.enqueue(candidate.clone(), now).unwrap();
+        }
+        assert_eq!(queue.claim_due(now).unwrap().event_id(), &first.event_id);
+        queue
+            .items
+            .iter_mut()
+            .find(|i| i.event_id() == &first.event_id)
+            .unwrap()
+            .transport_started = Some(true);
+        queue.stop_revoked(&first.event_id, now);
+        queue.stop_revoked(&unsent.event_id, now);
+        queue
+            .settle(
+                &first.event_id,
+                SendQueueStatus::Queued,
+                Some(first.clone()),
+                Some("timeout".to_owned()),
+                Some(now.timestamp_millis()),
+                now,
+            )
+            .unwrap();
+        let mut reopened = SendQueue::from_snapshot(
+            serde_json::from_slice(&serde_json::to_vec(&queue.snapshot()).unwrap()).unwrap(),
+        );
+        assert_eq!(
+            reopened.get(&first.event_id).unwrap().status,
+            SendQueueStatus::AwaitingConfirmation
+        );
+        assert_eq!(
+            reopened.get(&unsent.event_id).unwrap().status,
+            SendQueueStatus::Withdrawn
+        );
+        for id in [&first.event_id, &unsent.event_id] {
+            assert!(!reopened.retry_unknown(id, now).unwrap());
+        }
+        assert_eq!(
+            reopened.claim_due(now).unwrap().event_id(),
+            &unrelated.event_id
+        );
+        assert!(reopened.claim_due(now).is_none());
+        reopened.compact_terminal_before(now + chrono::Duration::days(1));
+        assert_eq!(
+            reopened.get(&first.event_id).unwrap().request(),
+            &first.request
+        );
+    }
+
+    #[tokio::test]
+    async fn revocable_reply_timeout_never_posts_again_after_authority_returns() {
+        let engine = engine().with_readback_on_uncertainty();
+        let queued = submission(3);
+        let id = queued.event_id.clone();
+        engine.enqueue(queued).await.unwrap();
+        let unavailable = AuthorityClient::new(ScriptedTransport::new(Scripted::Transport));
+        let options = ClientRequestOptions::default();
+        engine
+            .submit_next(&unavailable, &options, verify_fixture)
+            .await
+            .unwrap();
+        assert_eq!(unavailable.transport().calls.load(Ordering::SeqCst), 1);
+        let state = engine.snapshot().await.unwrap();
+        assert_eq!(state.items[0].status, SendQueueStatus::AwaitingConfirmation);
+        let mut restarted = SendQueue::from_snapshot(state);
+        assert!(!restarted.retry_unknown(&id, FixedClock.now()).unwrap());
+        assert!(
+            restarted
+                .claim_due(FixedClock.now() + chrono::Duration::days(1))
+                .is_none()
+        );
+        let available = AuthorityClient::new(ScriptedTransport::new(Scripted::Accept));
+        assert_eq!(
+            engine
+                .submit_next(&available, &options, verify_fixture)
+                .await
+                .unwrap(),
+            OutboundEngineOutcome::Idle
+        );
+        assert_eq!(available.transport().calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
